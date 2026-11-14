@@ -279,81 +279,85 @@ mod tests {
         )
     }
 
-    #[test]
-    fn moderation_preview_decodes_report_and_appeal_and_uses_admitted_identity() {
-        for (appeal, action, purpose, target, content) in [
-            (
-                false,
-                "submit-report",
-                ModerationConsentPurpose::Report,
-                "org.example.app",
-                "The package description is misleading",
-            ),
-            (
-                true,
-                "appeal",
-                ModerationConsentPurpose::Appeal,
-                "case-one",
-                "The problem has been fixed",
-            ),
-        ] {
-            let preview = ModerationConsentPreview::from_argument(
-                action,
-                &moderation_argument(appeal),
-                &[0x12; 32],
-            )
-            .unwrap();
-            assert_eq!(preview.purpose, purpose);
-            assert_eq!(preview.target, target);
-            assert_eq!(preview.content, content);
-            assert_eq!(preview.signing_root, "12".repeat(32));
-            assert_eq!(preview.owner_root, "ab".repeat(32));
-            assert_eq!(preview.destination, "https://registry.example");
-            assert_eq!(preview.category.as_deref(), (!appeal).then_some("policy"));
-            assert_eq!(preview.evidence_digest, (!appeal).then(|| "cd".repeat(32)));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_moderation_preview_decodes_only_well_formed_operations;
 
-    #[test]
-    fn moderation_preview_refuses_missing_malformed_and_mismatched_operations() {
-        use tilo_actions::remote::InvokeArgument;
-        for argument in [
-            InvokeArgument::None,
-            InvokeArgument::Text("not json".into()),
-            InvokeArgument::Json(
-                serde_json::json!({"operation": "{}"})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            ),
-            moderation_argument(true),
-        ] {
+        phase moderation_preview_decodes_report_and_appeal_and_uses_admitted_identity;
+        {
+            for (appeal, action, purpose, target, content) in [
+                (
+                    false,
+                    "submit-report",
+                    ModerationConsentPurpose::Report,
+                    "org.example.app",
+                    "The package description is misleading",
+                ),
+                (
+                    true,
+                    "appeal",
+                    ModerationConsentPurpose::Appeal,
+                    "case-one",
+                    "The problem has been fixed",
+                ),
+            ] {
+                let preview = ModerationConsentPreview::from_argument(
+                    action,
+                    &moderation_argument(appeal),
+                    &[0x12; 32],
+                )
+                .unwrap();
+                assert_eq!(preview.purpose, purpose);
+                assert_eq!(preview.target, target);
+                assert_eq!(preview.content, content);
+                assert_eq!(preview.signing_root, "12".repeat(32));
+                assert_eq!(preview.owner_root, "ab".repeat(32));
+                assert_eq!(preview.destination, "https://registry.example");
+                assert_eq!(preview.category.as_deref(), (!appeal).then_some("policy"));
+                assert_eq!(preview.evidence_digest, (!appeal).then(|| "cd".repeat(32)));
+            }
+        }
+
+        phase moderation_preview_refuses_missing_malformed_and_mismatched_operations;
+        {
+            use tilo_actions::remote::InvokeArgument;
+            for argument in [
+                InvokeArgument::None,
+                InvokeArgument::Text("not json".into()),
+                InvokeArgument::Json(
+                    serde_json::json!({"operation": "{}"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                moderation_argument(true),
+            ] {
+                assert!(
+                    ModerationConsentPreview::from_argument("submit-report", &argument, &[1; 32])
+                        .is_err()
+                );
+            }
+            let refused = ModerationConsentPreview::from_argument(
+                "submit-report",
+                &InvokeArgument::Json(
+                    serde_json::json!({"app": "org.example.app", "operation": "{}"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                &[1; 32],
+            )
+            .unwrap_err();
+            assert!(refused.contains("operation is malformed"), "{refused}");
+            let slot = moderation_argument(false).to_slot().unwrap();
             assert!(
-                ModerationConsentPreview::from_argument("submit-report", &argument, &[1; 32])
-                    .is_err()
+                ModerationConsentPreview::from_argument(
+                    "submit-report",
+                    &InvokeArgument::Text(slot),
+                    &[2; 32]
+                )
+                .is_ok()
             );
         }
-        let refused = ModerationConsentPreview::from_argument(
-            "submit-report",
-            &InvokeArgument::Json(
-                serde_json::json!({"app": "org.example.app", "operation": "{}"})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            ),
-            &[1; 32],
-        )
-        .unwrap_err();
-        assert!(refused.contains("operation is malformed"), "{refused}");
-        let slot = moderation_argument(false).to_slot().unwrap();
-        assert!(
-            ModerationConsentPreview::from_argument(
-                "submit-report",
-                &InvokeArgument::Text(slot),
-                &[2; 32]
-            )
-            .is_ok()
-        );
     }
 
     #[test]

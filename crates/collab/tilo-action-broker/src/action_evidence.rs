@@ -539,231 +539,235 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn privacy_randomization_and_private_round_trip() {
-        let first = evidence();
-        let second = evidence();
-        assert_ne!(
-            first.receipt.intent_commitment,
-            second.receipt.intent_commitment
-        );
-        let public = serde_json::to_string(first.public_receipt()).unwrap();
-        for secret in [
-            "private phrase",
-            "private cause",
-            "private context",
-            "nonce",
-            "intent_digest",
-        ] {
-            assert!(!public.contains(secret));
-        }
-        let private = serde_json::to_string(&first).unwrap();
-        assert!(!private.contains("private phrase"));
-        assert!(private.contains("nonce"));
-        let recovered: AdmissionEvidence = serde_json::from_str(&private).unwrap();
-        recovered.validate(&facts()).unwrap();
-        let opening = recovered.opening_for_owner(&facts().actor).unwrap();
-        opening
-            .verify(recovered.public_receipt(), &intent())
-            .unwrap();
-        assert!(opening.verify(second.public_receipt(), &intent()).is_err());
-        let foreign = VerifiedActor::Certified {
-            root: [3; 32],
-            device: [4; 32],
-        };
-        assert!(recovered.opening_for_owner(&foreign).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn action_evidence_binds_its_intent_and_keeps_its_private_parts_private;
 
-    /// An authenticated local actor must say whether it is the person
-    /// (`null`) or the agent named: a statement that drops the field is not
-    /// read as the person's.
-    #[test]
-    fn an_authenticated_local_actor_that_omits_its_agent_is_refused() {
-        let evidence = evidence();
-        let mut encoded = serde_json::to_value(evidence.public_receipt()).unwrap();
-        assert_eq!(
-            encoded["facts"]["actor"]["AuthenticatedLocal"]["agent"],
-            "agent"
-        );
-        encoded["facts"]["actor"]["AuthenticatedLocal"]
-            .as_object_mut()
-            .unwrap()
-            .remove("agent");
-        // serde's field attribute does not fire through `Value` for this
-        // shape, so the omission arrives as the sentinel and is refused when
-        // the statement is validated: it is never read as the person's.
-        let receipt: AdmissionReceipt = serde_json::from_value(encoded).unwrap();
-        assert_eq!(
-            receipt.facts.actor.validate(),
-            Err("invalid authenticated local admission agent".into())
-        );
-        assert!(verify(&receipt, &facts()).is_err());
-    }
-
-    #[test]
-    fn every_intent_field_and_private_opening_are_bound() {
-        let evidence = evidence();
-        for field in ["arguments", "cause", "context"] {
-            let mut changed = intent();
-            changed[field] = Value::Null;
-            assert!(
-                evidence
-                    .opening
-                    .verify(&evidence.receipt, &changed)
-                    .is_err()
+        phase privacy_randomization_and_private_round_trip;
+        {
+            let first = evidence();
+            let second = evidence();
+            assert_ne!(
+                first.receipt.intent_commitment,
+                second.receipt.intent_commitment
             );
-        }
-        let mut corrupt = evidence.clone();
-        corrupt.opening.nonce[0] ^= 1;
-        assert!(corrupt.validate(&facts()).is_err());
-        let mut corrupt = evidence;
-        corrupt.opening.intent_digest[0] ^= 1;
-        assert!(corrupt.validate(&facts()).is_err());
-    }
-
-    #[test]
-    fn retry_digest_presence_and_contents_are_private_and_bound() {
-        for request in [
-            None,
-            Some(Value::Null),
-            Some(serde_json::json!({"argument": "secret"})),
-        ] {
-            let mut intent = intent();
-            if let Some(request) = request {
-                intent["request"] = request;
+            let public = serde_json::to_string(first.public_receipt()).unwrap();
+            for secret in [
+                "private phrase",
+                "private cause",
+                "private context",
+                "nonce",
+                "intent_digest",
+            ] {
+                assert!(!public.contains(secret));
             }
-            let evidence = evidence_for(&intent);
-            let digest = intent
-                .get("request")
-                .map(crate::collab_app_broker::admission_request_digest);
-            evidence.validate_request_digest(digest).unwrap();
-            assert!(evidence.validate_request_digest(Some([0; 32])).is_err());
-            if digest.is_some() {
-                assert!(evidence.validate_request_digest(None).is_err());
-            }
-            let mut removed = evidence.clone();
-            removed.opening.request = None;
-            assert!(
-                removed.validate(&facts()).is_err(),
-                "cannot downgrade a new opening"
-            );
-            let mut replaced = evidence;
-            replaced.opening.request.as_mut().unwrap().digest = Some([0; 32]);
-            assert!(replaced.validate(&facts()).is_err());
-        }
-    }
-
-    #[test]
-    fn historical_opening_keeps_its_original_commitment_encoding() {
-        let intent = serde_json::json!({"request": {"argument": "historical"}});
-        let evidence = evidence_for(&intent);
-        let mut historical = serde_json::to_value(&evidence).unwrap();
-        historical["opening"]
-            .as_object_mut()
-            .unwrap()
-            .remove("request");
-        // Reproduce the original three-component commitment independently of
-        // the current writer, then sign it with the fixture's device identity.
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"tilo-semantic-admission-commitment-v1\0");
-        hash.update(&evidence.opening.nonce);
-        hash.update(&evidence.opening.intent_digest);
-        hash.update(&evidence.opening.retained_digest);
-        let commitment = *hash.finalize().as_bytes();
-        let signature = SigningKey::from_bytes(&[12; 32])
-            .sign(&signing_bytes(&facts(), &commitment).unwrap())
-            .to_bytes();
-        historical["receipt"]["intent_commitment"] = serde_json::json!(commitment);
-        historical["receipt"]["signature"] = serde_json::json!(signature.to_vec());
-        let restored: AdmissionEvidence = serde_json::from_value(historical.clone()).unwrap();
-        restored.validate(&facts()).unwrap();
-        restored.opening.verify(&restored.receipt, &intent).unwrap();
-        restored.validate_retained(&serde_json::json!({})).unwrap();
-        assert_eq!(serde_json::to_value(restored).unwrap(), historical);
-    }
-
-    #[test]
-    fn substitution_and_cross_scope_replay_fail() {
-        let evidence = evidence();
-        let original = serde_json::to_value(facts()).unwrap();
-        for (field, value) in original.as_object().unwrap() {
-            let mut changed = original.clone();
-            changed[field] = match field.as_str() {
-                "host" | "invocation" => serde_json::to_value(Uuid::from_u128(99)).unwrap(),
-                "actor" => serde_json::to_value(VerifiedActor::NativeTask {
-                    root: [7; 32],
-                    device: [8; 32],
-                    agent: "other".into(),
-                    task: "task:other".into(),
-                    epoch: 1,
-                })
-                .unwrap(),
-                _ => Value::String(format!("changed-{value}")),
+            let private = serde_json::to_string(&first).unwrap();
+            assert!(!private.contains("private phrase"));
+            assert!(private.contains("nonce"));
+            let recovered: AdmissionEvidence = serde_json::from_str(&private).unwrap();
+            recovered.validate(&facts()).unwrap();
+            let opening = recovered.opening_for_owner(&facts().actor).unwrap();
+            opening
+                .verify(recovered.public_receipt(), &intent())
+                .unwrap();
+            assert!(opening.verify(second.public_receipt(), &intent()).is_err());
+            let foreign = VerifiedActor::Certified {
+                root: [3; 32],
+                device: [4; 32],
             };
-            let expected: AdmissionFacts = serde_json::from_value(changed).unwrap();
-            assert!(verify(&evidence.receipt, &expected).is_err(), "{field}");
-            let mut substituted = evidence.receipt.clone();
-            substituted.facts = expected.clone();
-            assert!(verify(&substituted, &expected).is_err(), "{field}");
+            assert!(recovered.opening_for_owner(&foreign).is_err());
         }
-        // Identical replay is a journal concern, never a new dispatch permit.
-        verify(&evidence.receipt, &facts()).unwrap();
-        verify(&evidence.receipt, &facts()).unwrap();
-    }
 
-    #[test]
-    fn signatures_certificates_and_commitments_cannot_be_replaced() {
-        let evidence = evidence();
-        let mut bad = evidence.receipt.clone();
-        bad.signature.pop();
-        assert!(verify(&bad, &facts()).is_err());
-        let mut bad = evidence.receipt.clone();
-        bad.signature[0] ^= 1;
-        assert!(verify(&bad, &facts()).is_err());
-        let mut bad = evidence.receipt.clone();
-        bad.certificate.signature[0] ^= 1;
-        assert!(verify(&bad, &facts()).is_err());
-        let mut bad = evidence.receipt.clone();
-        bad.certificate.device_public_key[0] ^= 1;
-        assert!(verify(&bad, &facts()).is_err());
-        let mut bad = evidence.receipt;
-        bad.intent_commitment[0] ^= 1;
-        assert!(verify(&bad, &facts()).is_err());
-    }
+        phase an_authenticated_local_actor_that_omits_its_agent_is_refused;
+        // An authenticated local actor must say whether it is the person
+        // (`null`) or the agent named: a statement that drops the field is not
+        // read as the person's.
+        {
+            let evidence = evidence();
+            let mut encoded = serde_json::to_value(evidence.public_receipt()).unwrap();
+            assert_eq!(
+                encoded["facts"]["actor"]["AuthenticatedLocal"]["agent"],
+                "agent"
+            );
+            encoded["facts"]["actor"]["AuthenticatedLocal"]
+                .as_object_mut()
+                .unwrap()
+                .remove("agent");
+            // serde's field attribute does not fire through `Value` for this
+            // shape, so the omission arrives as the sentinel and is refused when
+            // the statement is validated: it is never read as the person's.
+            let receipt: AdmissionReceipt = serde_json::from_value(encoded).unwrap();
+            assert_eq!(
+                receipt.facts.actor.validate(),
+                Err("invalid authenticated local admission agent".into())
+            );
+            assert!(verify(&receipt, &facts()).is_err());
+        }
 
-    #[test]
-    fn canonical_intent_covers_nested_order_null_and_arrays() {
-        let left: Value = serde_json::from_str(r#"{"b":{"y":2,"x":1},"a":[1,2]}"#).unwrap();
-        let right: Value = serde_json::from_str(r#"{"a":[1,2],"b":{"x":1,"y":2}}"#).unwrap();
-        assert_eq!(
-            intent_digest(&left).unwrap(),
-            intent_digest(&right).unwrap()
-        );
-        assert_ne!(
-            intent_digest(&serde_json::json!({})).unwrap(),
-            intent_digest(&serde_json::json!({"x":null})).unwrap()
-        );
-        assert_ne!(
-            intent_digest(&serde_json::json!([1, 2])).unwrap(),
-            intent_digest(&serde_json::json!([2, 1])).unwrap()
-        );
-        assert!(
-            serde_json::from_value::<VerifiedActor>(
-                serde_json::json!({"Local":{"actor":"person"}})
+        phase every_intent_field_and_private_opening_are_bound;
+        {
+            let evidence = evidence();
+            for field in ["arguments", "cause", "context"] {
+                let mut changed = intent();
+                changed[field] = Value::Null;
+                assert!(
+                    evidence
+                        .opening
+                        .verify(&evidence.receipt, &changed)
+                        .is_err()
+                );
+            }
+            let mut corrupt = evidence.clone();
+            corrupt.opening.nonce[0] ^= 1;
+            assert!(corrupt.validate(&facts()).is_err());
+            let mut corrupt = evidence;
+            corrupt.opening.intent_digest[0] ^= 1;
+            assert!(corrupt.validate(&facts()).is_err());
+        }
+
+        phase retry_digest_presence_and_contents_are_private_and_bound;
+        {
+            for request in [
+                None,
+                Some(Value::Null),
+                Some(serde_json::json!({"argument": "secret"})),
+            ] {
+                let mut intent = intent();
+                if let Some(request) = request {
+                    intent["request"] = request;
+                }
+                let evidence = evidence_for(&intent);
+                let digest = intent
+                    .get("request")
+                    .map(crate::collab_app_broker::admission_request_digest);
+                evidence.validate_request_digest(digest).unwrap();
+                assert!(evidence.validate_request_digest(Some([0; 32])).is_err());
+                if digest.is_some() {
+                    assert!(evidence.validate_request_digest(None).is_err());
+                }
+                let mut removed = evidence.clone();
+                removed.opening.request = None;
+                assert!(
+                    removed.validate(&facts()).is_err(),
+                    "cannot downgrade a new opening"
+                );
+                let mut replaced = evidence;
+                replaced.opening.request.as_mut().unwrap().digest = Some([0; 32]);
+                assert!(replaced.validate(&facts()).is_err());
+            }
+        }
+
+        phase historical_opening_keeps_its_original_commitment_encoding;
+        {
+            let intent = serde_json::json!({"request": {"argument": "historical"}});
+            let evidence = evidence_for(&intent);
+            let mut historical = serde_json::to_value(&evidence).unwrap();
+            historical["opening"]
+                .as_object_mut()
+                .unwrap()
+                .remove("request");
+            // Reproduce the original three-component commitment independently of
+            // the current writer, then sign it with the fixture's device identity.
+            let mut hash = blake3::Hasher::new();
+            hash.update(b"tilo-semantic-admission-commitment-v1\0");
+            hash.update(&evidence.opening.nonce);
+            hash.update(&evidence.opening.intent_digest);
+            hash.update(&evidence.opening.retained_digest);
+            let commitment = *hash.finalize().as_bytes();
+            let signature = SigningKey::from_bytes(&[12; 32])
+                .sign(&signing_bytes(&facts(), &commitment).unwrap())
+                .to_bytes();
+            historical["receipt"]["intent_commitment"] = serde_json::json!(commitment);
+            historical["receipt"]["signature"] = serde_json::json!(signature.to_vec());
+            let restored: AdmissionEvidence = serde_json::from_value(historical.clone()).unwrap();
+            restored.validate(&facts()).unwrap();
+            restored.opening.verify(&restored.receipt, &intent).unwrap();
+            restored.validate_retained(&serde_json::json!({})).unwrap();
+            assert_eq!(serde_json::to_value(restored).unwrap(), historical);
+        }
+
+        phase substitution_and_cross_scope_replay_fail;
+        {
+            let evidence = evidence();
+            let original = serde_json::to_value(facts()).unwrap();
+            for (field, value) in original.as_object().unwrap() {
+                let mut changed = original.clone();
+                changed[field] = match field.as_str() {
+                    "host" | "invocation" => serde_json::to_value(Uuid::from_u128(99)).unwrap(),
+                    "actor" => serde_json::to_value(VerifiedActor::NativeTask {
+                        root: [7; 32],
+                        device: [8; 32],
+                        agent: "other".into(),
+                        task: "task:other".into(),
+                        epoch: 1,
+                    })
+                    .unwrap(),
+                    _ => Value::String(format!("changed-{value}")),
+                };
+                let expected: AdmissionFacts = serde_json::from_value(changed).unwrap();
+                assert!(verify(&evidence.receipt, &expected).is_err(), "{field}");
+                let mut substituted = evidence.receipt.clone();
+                substituted.facts = expected.clone();
+                assert!(verify(&substituted, &expected).is_err(), "{field}");
+            }
+            // Identical replay is a journal concern, never a new dispatch permit.
+            verify(&evidence.receipt, &facts()).unwrap();
+            verify(&evidence.receipt, &facts()).unwrap();
+        }
+
+        phase signatures_certificates_and_commitments_cannot_be_replaced;
+        {
+            let evidence = evidence();
+            let mut bad = evidence.receipt.clone();
+            bad.signature.pop();
+            assert!(verify(&bad, &facts()).is_err());
+            let mut bad = evidence.receipt.clone();
+            bad.signature[0] ^= 1;
+            assert!(verify(&bad, &facts()).is_err());
+            let mut bad = evidence.receipt.clone();
+            bad.certificate.signature[0] ^= 1;
+            assert!(verify(&bad, &facts()).is_err());
+            let mut bad = evidence.receipt.clone();
+            bad.certificate.device_public_key[0] ^= 1;
+            assert!(verify(&bad, &facts()).is_err());
+            let mut bad = evidence.receipt;
+            bad.intent_commitment[0] ^= 1;
+            assert!(verify(&bad, &facts()).is_err());
+        }
+
+        phase canonical_intent_covers_nested_order_null_and_arrays;
+        {
+            let left: Value = serde_json::from_str(r#"{"b":{"y":2,"x":1},"a":[1,2]}"#).unwrap();
+            let right: Value = serde_json::from_str(r#"{"a":[1,2],"b":{"x":1,"y":2}}"#).unwrap();
+            assert_eq!(
+                intent_digest(&left).unwrap(),
+                intent_digest(&right).unwrap()
+            );
+            assert_ne!(
+                intent_digest(&serde_json::json!({})).unwrap(),
+                intent_digest(&serde_json::json!({"x":null})).unwrap()
+            );
+            assert_ne!(
+                intent_digest(&serde_json::json!([1, 2])).unwrap(),
+                intent_digest(&serde_json::json!([2, 1])).unwrap()
+            );
+            assert!(
+                serde_json::from_value::<VerifiedActor>(
+                    serde_json::json!({"Local":{"actor":"person"}})
+                )
+                .is_err()
+            );
+            let zeros = [0u8; 32];
+            // An authenticated local actor that drops its `agent` is refused: an
+            // omitted field is not the person. `validate` refuses it, and so does
+            // every path that checks a statement before believing it.
+            let omitted: VerifiedActor = serde_json::from_value(
+                serde_json::json!({"AuthenticatedLocal":{"root":zeros,"device":zeros}}),
             )
-            .is_err()
-        );
-        let zeros = [0u8; 32];
-        // An authenticated local actor that drops its `agent` is refused: an
-        // omitted field is not the person. `validate` refuses it, and so does
-        // every path that checks a statement before believing it.
-        let omitted: VerifiedActor = serde_json::from_value(
-            serde_json::json!({"AuthenticatedLocal":{"root":zeros,"device":zeros}}),
-        )
-        .unwrap();
-        assert_eq!(
-            omitted.validate(),
-            Err("invalid authenticated local admission agent".into())
-        );
+            .unwrap();
+            assert_eq!(
+                omitted.validate(),
+                Err("invalid authenticated local admission agent".into())
+            );
+        }
     }
 }

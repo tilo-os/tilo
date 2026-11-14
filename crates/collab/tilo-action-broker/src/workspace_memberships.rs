@@ -1348,274 +1348,279 @@ mod tests {
         }
     }
 
-    #[test]
-    fn adding_and_removing_a_directory_bot_are_closed_commands() {
-        let request = envelope(
-            WORKSPACE,
-            "request-bot",
-            Some(serde_json::json!({"entry": "so.tilo.bots.standup", "version": "1.2.0"})),
-        );
-        let command = membership_command(&request).unwrap();
-        assert_eq!(
-            command,
-            WorkspaceMembershipCommand::RequestBot(
-                tilo_peer_state::workspace_membership::BotRequest {
-                    entry: "so.tilo.bots.standup".into(),
-                    version: "1.2.0".into(),
-                    inputs: std::collections::BTreeMap::new(),
-                    program: None,
-                }
-            )
-        );
-        let (action, argument) = bot_invocation(&command).unwrap();
-        assert_eq!(action, "request-bot");
-        assert_eq!(
-            membership_command(&InvocationEnvelope {
-                argument: Some(argument),
-                ..request
-            })
-            .unwrap(),
-            command,
-            "the command travels as the arguments it is read from"
-        );
-        let withdraw = envelope(
-            WORKSPACE,
-            "withdraw-bot-request",
-            Some(serde_json::json!({"entry": "so.tilo.bots.standup"})),
-        );
-        assert_eq!(
-            membership_command(&withdraw).unwrap(),
-            WorkspaceMembershipCommand::WithdrawBotRequest {
-                entry: "so.tilo.bots.standup".into()
-            }
-        );
-        for forged in [
-            serde_json::json!({"entry": "so.tilo.bots.standup", "version": "1.2.0", "requested_by": "ada"}),
-            serde_json::json!({"entry": "../standup", "version": "1.2.0"}),
-            serde_json::json!({"entry": "so.tilo.bots.standup"}),
-        ] {
-            assert!(
-                membership_command(&envelope(WORKSPACE, "request-bot", Some(forged.clone())))
-                    .is_err(),
-                "{forged}"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
+        fn membership_commands_are_closed_and_admin_only;
 
-    #[test]
-    fn public_arguments_choose_only_closed_commands() {
-        let governance = governance_resource("8f0ee7bd-30e8-4e2f-9f17-2e57cbcf84b2");
-        assert!(
-            membership_command(&envelope(
+        phase adding_and_removing_a_directory_bot_are_closed_commands;
+        {
+            let request = envelope(
                 WORKSPACE,
-                "add-agent",
-                Some(serde_json::json!({"agent": "scribe", "preset": "custom"}))
-            ))
-            .is_err(),
-            "agent admission by preset is retired"
-        );
-        for field in [
-            "caller",
-            "certificate",
-            "workspace",
-            "capability",
-            "signing_key",
-        ] {
-            let mut arguments = serde_json::json!({"name": "Studio"});
-            arguments[field] = serde_json::json!("forged");
-            assert!(membership_command(&envelope(&governance, "rename", Some(arguments))).is_err());
+                "request-bot",
+                Some(serde_json::json!({"entry": "so.tilo.bots.standup", "version": "1.2.0"})),
+            );
+            let command = membership_command(&request).unwrap();
+            assert_eq!(
+                command,
+                WorkspaceMembershipCommand::RequestBot(
+                    tilo_peer_state::workspace_membership::BotRequest {
+                        entry: "so.tilo.bots.standup".into(),
+                        version: "1.2.0".into(),
+                        inputs: std::collections::BTreeMap::new(),
+                        program: None,
+                    }
+                )
+            );
+            let (action, argument) = bot_invocation(&command).unwrap();
+            assert_eq!(action, "request-bot");
+            assert_eq!(
+                membership_command(&InvocationEnvelope {
+                    argument: Some(argument),
+                    ..request
+                })
+                .unwrap(),
+                command,
+                "the command travels as the arguments it is read from"
+            );
+            let withdraw = envelope(
+                WORKSPACE,
+                "withdraw-bot-request",
+                Some(serde_json::json!({"entry": "so.tilo.bots.standup"})),
+            );
+            assert_eq!(
+                membership_command(&withdraw).unwrap(),
+                WorkspaceMembershipCommand::WithdrawBotRequest {
+                    entry: "so.tilo.bots.standup".into()
+                }
+            );
+            for forged in [
+                serde_json::json!({"entry": "so.tilo.bots.standup", "version": "1.2.0", "requested_by": "ada"}),
+                serde_json::json!({"entry": "../standup", "version": "1.2.0"}),
+                serde_json::json!({"entry": "so.tilo.bots.standup"}),
+            ] {
+                assert!(
+                    membership_command(&envelope(WORKSPACE, "request-bot", Some(forged.clone())))
+                        .is_err(),
+                    "{forged}"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn a_bot_install_carries_its_whole_program_and_parses_back() {
-        let install = tilo_peer_state::workspace_membership::BotInstall {
-            installation: tilo_peer_state::Installation {
-                id: tilo_peer_state::InstallationId::parse("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6")
-                    .unwrap(),
-                program: "a".repeat(64),
-                name: "Discord Bridge".into(),
-                icon: None,
-                installed_by: "0".repeat(64),
-                installed_at_ms: 1,
-                appearance: tilo_peer_state::AppearancePolicy::Personas,
-                source: None,
-                armed_at: vec![],
-                connector_cursors_from_ms: 1,
-                inputs: std::collections::BTreeMap::default(),
-                paused: false,
-            },
-            program: "x".repeat(8 * 1024),
-            device: None,
-        };
-        let parsed = membership_command(&envelope(
-            WORKSPACE,
-            "install-bot",
-            Some(serde_json::json!({ "install": install })),
-        ))
-        .unwrap();
-        assert_eq!(
-            parsed,
-            WorkspaceMembershipCommand::InstallBot(Box::new(install.clone()))
-        );
-        let forged = membership_command(&envelope(
-            WORKSPACE,
-            "install-bot",
-            Some(serde_json::json!({ "install": install, "caller": "forged" })),
-        ));
-        assert!(forged.is_err());
-        assert!(
-            membership_command(&envelope(
-                &governance_resource("8f0ee7bd-30e8-4e2f-9f17-2e57cbcf84b2"),
-                "rename",
-                Some(serde_json::json!({ "name": "x".repeat(2048) })),
+        phase public_arguments_choose_only_closed_commands;
+        {
+            let governance = governance_resource("8f0ee7bd-30e8-4e2f-9f17-2e57cbcf84b2");
+            assert!(
+                membership_command(&envelope(
+                    WORKSPACE,
+                    "add-agent",
+                    Some(serde_json::json!({"agent": "scribe", "preset": "custom"}))
+                ))
+                .is_err(),
+                "agent admission by preset is retired"
+            );
+            for field in [
+                "caller",
+                "certificate",
+                "workspace",
+                "capability",
+                "signing_key",
+            ] {
+                let mut arguments = serde_json::json!({"name": "Studio"});
+                arguments[field] = serde_json::json!("forged");
+                assert!(membership_command(&envelope(&governance, "rename", Some(arguments))).is_err());
+            }
+        }
+
+        phase a_bot_install_carries_its_whole_program_and_parses_back;
+        {
+            let install = tilo_peer_state::workspace_membership::BotInstall {
+                installation: tilo_peer_state::Installation {
+                    id: tilo_peer_state::InstallationId::parse("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6")
+                        .unwrap(),
+                    program: "a".repeat(64),
+                    name: "Discord Bridge".into(),
+                    icon: None,
+                    installed_by: "0".repeat(64),
+                    installed_at_ms: 1,
+                    appearance: tilo_peer_state::AppearancePolicy::Personas,
+                    source: None,
+                    armed_at: vec![],
+                    connector_cursors_from_ms: 1,
+                    inputs: std::collections::BTreeMap::default(),
+                    paused: false,
+                },
+                program: "x".repeat(8 * 1024),
+                device: None,
+            };
+            let parsed = membership_command(&envelope(
+                WORKSPACE,
+                "install-bot",
+                Some(serde_json::json!({ "install": install })),
             ))
-            .is_err(),
-            "other commands keep their small bound"
-        );
-        let pause = membership_command(&envelope(
-            WORKSPACE,
-            "pause-bot",
-            Some(serde_json::json!({ "installation": "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6" })),
-        ))
-        .unwrap();
-        assert!(matches!(pause, WorkspaceMembershipCommand::PauseBot { .. }));
-        assert!(
-            membership_command(&envelope(
+            .unwrap();
+            assert_eq!(
+                parsed,
+                WorkspaceMembershipCommand::InstallBot(Box::new(install.clone()))
+            );
+            let forged = membership_command(&envelope(
+                WORKSPACE,
+                "install-bot",
+                Some(serde_json::json!({ "install": install, "caller": "forged" })),
+            ));
+            assert!(forged.is_err());
+            assert!(
+                membership_command(&envelope(
+                    &governance_resource("8f0ee7bd-30e8-4e2f-9f17-2e57cbcf84b2"),
+                    "rename",
+                    Some(serde_json::json!({ "name": "x".repeat(2048) })),
+                ))
+                .is_err(),
+                "other commands keep their small bound"
+            );
+            let pause = membership_command(&envelope(
                 WORKSPACE,
                 "pause-bot",
-                Some(serde_json::json!({ "installation": "nope" })),
+                Some(serde_json::json!({ "installation": "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6" })),
             ))
-            .is_err()
-        );
-        let appearance = membership_command(&envelope(
-            WORKSPACE,
-            "set-bot-appearance",
-            Some(serde_json::json!({
-                "installation": "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6",
-                "appearance": "personas"
-            })),
-        ))
-        .unwrap();
-        assert!(matches!(
-            appearance,
-            WorkspaceMembershipCommand::SetBotAppearance {
-                appearance: tilo_peer_state::AppearancePolicy::Personas,
-                ..
-            }
-        ));
-    }
+            .unwrap();
+            assert!(matches!(pause, WorkspaceMembershipCommand::PauseBot { .. }));
+            assert!(
+                membership_command(&envelope(
+                    WORKSPACE,
+                    "pause-bot",
+                    Some(serde_json::json!({ "installation": "nope" })),
+                ))
+                .is_err()
+            );
+            let appearance = membership_command(&envelope(
+                WORKSPACE,
+                "set-bot-appearance",
+                Some(serde_json::json!({
+                    "installation": "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6",
+                    "appearance": "personas"
+                })),
+            ))
+            .unwrap();
+            assert!(matches!(
+                appearance,
+                WorkspaceMembershipCommand::SetBotAppearance {
+                    appearance: tilo_peer_state::AppearancePolicy::Personas,
+                    ..
+                }
+            ));
+        }
 
-    #[test]
-    fn a_change_to_the_workspaces_people_is_the_governance_action_it_names() {
-        use tilo_action_policy::Change;
-        let governance = governance_resource("8f0ee7bd-30e8-4e2f-9f17-2e57cbcf84b2");
-        for change in [
-            Change::SetRole {
-                person: "a".repeat(64),
-                role: tilo_action_policy::Role::Editor,
-            },
-            Change::Ban {
-                person: "b".repeat(64),
-            },
-            Change::Restrict {
-                person: "c".repeat(64),
-                until_ms: 1_790_000_000_000,
-            },
-            Change::Unrestrict {
-                person: "c".repeat(64),
-            },
-        ] {
-            let request = envelope(
-                &governance,
-                change.action(),
-                Some(serde_json::to_value(&change).unwrap()),
-            );
-            assert_eq!(
-                membership_command(&request).unwrap(),
-                WorkspaceMembershipCommand::Member {
-                    change: change.clone()
+        phase a_change_to_the_workspaces_people_is_the_governance_action_it_names;
+        {
+            use tilo_action_policy::Change;
+            let governance = governance_resource("8f0ee7bd-30e8-4e2f-9f17-2e57cbcf84b2");
+            for change in [
+                Change::SetRole {
+                    person: "a".repeat(64),
+                    role: tilo_action_policy::Role::Editor,
                 },
-                "{} travels as its own change",
-                change.action()
+                Change::Ban {
+                    person: "b".repeat(64),
+                },
+                Change::Restrict {
+                    person: "c".repeat(64),
+                    until_ms: 1_790_000_000_000,
+                },
+                Change::Unrestrict {
+                    person: "c".repeat(64),
+                },
+            ] {
+                let request = envelope(
+                    &governance,
+                    change.action(),
+                    Some(serde_json::to_value(&change).unwrap()),
+                );
+                assert_eq!(
+                    membership_command(&request).unwrap(),
+                    WorkspaceMembershipCommand::Member {
+                        change: change.clone()
+                    },
+                    "{} travels as its own change",
+                    change.action()
+                );
+                assert_eq!(
+                    encoded(&change).unwrap(),
+                    request.argument.clone().unwrap(),
+                    "the change the broker publishes is the argument it reads back"
+                );
+            }
+            let rename = envelope(&governance, "rename", Some(serde_json::json!("Plans")));
+            assert!(
+                membership_command(&rename).is_err(),
+                "a name is not a bare string"
             );
             assert_eq!(
-                encoded(&change).unwrap(),
-                request.argument.clone().unwrap(),
-                "the change the broker publishes is the argument it reads back"
+                membership_command(&envelope(
+                    &governance,
+                    "rename",
+                    Some(serde_json::json!({"name": "Plans"})),
+                ))
+                .unwrap(),
+                WorkspaceMembershipCommand::Settings(SettingsChange::Rename {
+                    name: "Plans".into()
+                })
+            );
+            let ban = serde_json::to_value(Change::Ban {
+                person: "b".repeat(64),
+            })
+            .unwrap();
+            assert!(
+                membership_command(&envelope(&governance, "unban", Some(ban.clone()))).is_err(),
+                "a verb names the change it makes"
+            );
+            assert!(
+                membership_command(&envelope(WORKSPACE, "ban", Some(ban))).is_err(),
+                "a change to the people is made on the workspace's governance, not elsewhere"
+            );
+            assert!(
+                membership_command(&envelope(WORKSPACE, "grant", None)).is_err(),
+                "a grant is the governance's, not the desk's own"
             );
         }
-        let rename = envelope(&governance, "rename", Some(serde_json::json!("Plans")));
-        assert!(
-            membership_command(&rename).is_err(),
-            "a name is not a bare string"
-        );
-        assert_eq!(
-            membership_command(&envelope(
-                &governance,
-                "rename",
-                Some(serde_json::json!({"name": "Plans"})),
-            ))
-            .unwrap(),
-            WorkspaceMembershipCommand::Settings(SettingsChange::Rename {
-                name: "Plans".into()
-            })
-        );
-        let ban = serde_json::to_value(Change::Ban {
-            person: "b".repeat(64),
-        })
-        .unwrap();
-        assert!(
-            membership_command(&envelope(&governance, "unban", Some(ban.clone()))).is_err(),
-            "a verb names the change it makes"
-        );
-        assert!(
-            membership_command(&envelope(WORKSPACE, "ban", Some(ban))).is_err(),
-            "a change to the people is made on the workspace's governance, not elsewhere"
-        );
-        assert!(
-            membership_command(&envelope(WORKSPACE, "grant", None)).is_err(),
-            "a grant is the governance's, not the desk's own"
-        );
-    }
 
-    #[test]
-    fn membership_actions_are_admin_only() {
-        let workspace =
-            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Membership");
-        let actions = membership_actions();
-        assert!(actions.iter().all(|action| {
-            action.contract.kind == tilo_actions::ActionKind::Outside
-                && action.operation_kind == tilo_actions::OperationKind::Effect
-        }));
-        assert!(
-            actions
-                .iter()
-                .all(|action| action.action != "grant" && action.action != "revoke"),
-            "a grant is the workspace's governance, never the desk's own copy of it"
-        );
-        // The changes to the workspace's governance are the governance resource a
-        // client names without a catalogue page.
-        let governance = governance_resource(&workspace.id().to_string());
-        let changes = governance_actions(&governance);
-        assert_eq!(
-            changes.len(),
-            8,
-            "every change the workspace's governance takes"
-        );
-        assert!(changes.iter().all(|action| {
-            action.resource == governance
-                && action.resource_kind == tilo_actions::remote::WORKSPACE_GOVERNANCE_KIND
-                && action.contract.kind == tilo_actions::ActionKind::Outside
-        }));
-        assert!(changes.iter().any(|action| action.action == "ban"));
-        assert!(
-            changes.iter().all(|offered| offered
-                .params
-                .iter()
-                .all(|param| param.name != "target_app")),
-            "an app's use of another app's action is the person's setting, not the workspace's"
-        );
+        phase membership_actions_are_admin_only;
+        {
+            let workspace =
+                tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Membership");
+            let actions = membership_actions();
+            assert!(actions.iter().all(|action| {
+                action.contract.kind == tilo_actions::ActionKind::Outside
+                    && action.operation_kind == tilo_actions::OperationKind::Effect
+            }));
+            assert!(
+                actions
+                    .iter()
+                    .all(|action| action.action != "grant" && action.action != "revoke"),
+                "a grant is the workspace's governance, never the desk's own copy of it"
+            );
+            // The changes to the workspace's governance are the governance resource a
+            // client names without a catalogue page.
+            let governance = governance_resource(&workspace.id().to_string());
+            let changes = governance_actions(&governance);
+            assert_eq!(
+                changes.len(),
+                8,
+                "every change the workspace's governance takes"
+            );
+            assert!(changes.iter().all(|action| {
+                action.resource == governance
+                    && action.resource_kind == tilo_actions::remote::WORKSPACE_GOVERNANCE_KIND
+                    && action.contract.kind == tilo_actions::ActionKind::Outside
+            }));
+            assert!(changes.iter().any(|action| action.action == "ban"));
+            assert!(
+                changes.iter().all(|offered| offered
+                    .params
+                    .iter()
+                    .all(|param| param.name != "target_app")),
+                "an app's use of another app's action is the person's setting, not the workspace's"
+            );
+        }
     }
 
     /// The changes to a workspace's people are published where every client

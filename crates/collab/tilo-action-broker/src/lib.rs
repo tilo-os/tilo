@@ -143,42 +143,46 @@ fn running_surface(app: &str, hash: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod read_surface_tests {
-    #[test]
-    fn a_reader_holds_the_surface_of_an_installed_app_it_reads_that_is_not_running() {
-        let reader = b"reads = [\"so.tilo.test.owner.note\"]\n\n[[resources]]\nkind = \"so.tilo.test.reader\"\nlabel = \"Reader\"\nversion = 1\nfields = []\n";
-        let owner = b"[[resources]]\nkind = \"so.tilo.test.owner.note\"\nlabel = \"Note\"\nversion = 1\nfields = []\n";
-        let other = b"[[resources]]\nkind = \"so.tilo.test.unread.item\"\nlabel = \"Item\"\nversion = 1\nfields = []\n";
-        assert!(!ui::app_surface::reads_app(
-            "so.tilo.test.reader",
-            "so.tilo.test.owner"
-        ));
-        super::register_package_surface_and_reads("so.tilo.test.reader", reader, || {
-            [
-                ("so.tilo.test.owner".to_string(), owner.to_vec()),
-                ("so.tilo.test.unread".to_string(), other.to_vec()),
-            ]
-        });
-        assert!(
-            ui::app_surface::reads_app("so.tilo.test.reader", "so.tilo.test.owner"),
-            "the read the reader declares is decided by the owner's installed surface"
-        );
-        assert_eq!(
-            ui::app_surface::bytes_of("so.tilo.test.unread"),
-            None,
-            "a package the reader does not read stays unknown here"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_package_surface_holds_only_the_surfaces_it_reads;
 
-    #[test]
-    fn a_surface_that_reads_nothing_never_lists_the_installed_packages() {
-        let surface = b"[[resources]]\nkind = \"so.tilo.test.alone\"\nlabel = \"Alone\"\nversion = 1\nfields = []\n";
-        super::register_package_surface_and_reads(
-            "so.tilo.test.alone",
-            surface,
-            || -> Vec<(String, Vec<u8>)> {
-                panic!("listed the installed packages for a surface that reads nothing")
-            },
-        );
+        phase a_reader_holds_the_surface_of_an_installed_app_it_reads_that_is_not_running;
+        {
+            let reader = b"reads = [\"so.tilo.test.owner.note\"]\n\n[[resources]]\nkind = \"so.tilo.test.reader\"\nlabel = \"Reader\"\nversion = 1\nfields = []\n";
+            let owner = b"[[resources]]\nkind = \"so.tilo.test.owner.note\"\nlabel = \"Note\"\nversion = 1\nfields = []\n";
+            let other = b"[[resources]]\nkind = \"so.tilo.test.unread.item\"\nlabel = \"Item\"\nversion = 1\nfields = []\n";
+            assert!(!ui::app_surface::reads_app(
+                "so.tilo.test.reader",
+                "so.tilo.test.owner"
+            ));
+            super::register_package_surface_and_reads("so.tilo.test.reader", reader, || {
+                [
+                    ("so.tilo.test.owner".to_string(), owner.to_vec()),
+                    ("so.tilo.test.unread".to_string(), other.to_vec()),
+                ]
+            });
+            assert!(
+                ui::app_surface::reads_app("so.tilo.test.reader", "so.tilo.test.owner"),
+                "the read the reader declares is decided by the owner's installed surface"
+            );
+            assert_eq!(
+                ui::app_surface::bytes_of("so.tilo.test.unread"),
+                None,
+                "a package the reader does not read stays unknown here"
+            );
+        }
+
+        phase a_surface_that_reads_nothing_never_lists_the_installed_packages;
+        {
+            let surface = b"[[resources]]\nkind = \"so.tilo.test.alone\"\nlabel = \"Alone\"\nversion = 1\nfields = []\n";
+            super::register_package_surface_and_reads(
+                "so.tilo.test.alone",
+                surface,
+                || -> Vec<(String, Vec<u8>)> {
+                    panic!("listed the installed packages for a surface that reads nothing")
+                },
+            );
+        }
     }
 }
 

@@ -1760,147 +1760,151 @@ mod owner_commit_tests {
         prepare_owner_effect_as(f, caller, actor).map(|(_, _, prepared)| prepared)
     }
 
-    /// The MCP door hands a person's certified session to their agent, and
-    /// that agent's own effect terminal is accepted: the durable owner, the
-    /// receipt actor and the validation all name the agent the person's
-    /// device delegated to. A receipt naming anyone else is still refused.
-    #[test]
-    fn a_delegated_agents_effect_terminal_is_owned_and_receipted_as_that_agent() {
-        let root = canonical_tempdir();
-        let f = owner_fixture(root.path());
-        let caller = delegated_owner_caller(&f, "mcp-7");
-        assert_eq!(caller.admitted.broker_actor().id, "agent:mcp-7");
-        let (key, request, prepared) = prepare_owner_effect(&f, &caller);
-        assert_eq!(
-            key.owner,
-            InvocationOwner::AuthenticatedLocal {
-                root: f.owner.peer().owner(),
-                device: f.owner.device().device_public_key,
-                agent: Some("mcp-7".into()),
-            },
-            "the durable owner is the person's device delegated to its agent"
-        );
-        let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
-            serde_json::from_slice(match &request.operation {
-                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                    redacted, ..
-                } => redacted,
-                _ => unreachable!(),
-            })
-            .unwrap();
-        assert_eq!(receipt.actor, "agent:mcp-7", "the receipt names who acted");
-        assert_eq!(
-            prepared.update,
-            tilo_actions::InvocationUpdate::Succeeded {
-                invocation: key.invocation,
-                output: tilo_actions::ActionOutput::default(),
-            }
-        );
-        // The same journal accepts the finished terminal off the prepared one.
-        let mut guard = f.state.journal.lock().unwrap();
-        let journal = guard.as_mut().unwrap().as_ref().unwrap();
-        assert_eq!(journal.lookup(&key).unwrap().unwrap().key.owner, key.owner);
-    }
+    tilo_test_env::scenario! {
+        fn a_delegated_agent_owns_its_effect_terminal_and_keeps_it_on_reverification;
 
-    #[test]
-    fn a_delegated_agents_effect_terminal_naming_anyone_else_is_refused() {
-        for mistaken in [None, Some("agent:mcp-8"), Some("agent:")] {
+        phase a_delegated_agents_effect_terminal_is_owned_and_receipted_as_that_agent;
+        // The MCP door hands a person's certified session to their agent, and
+        // that agent's own effect terminal is accepted: the durable owner, the
+        // receipt actor and the validation all name the agent the person's
+        // device delegated to. A receipt naming anyone else is still refused.
+        {
             let root = canonical_tempdir();
             let f = owner_fixture(root.path());
             let caller = delegated_owner_caller(&f, "mcp-7");
-            // The person themselves, another agent, or a nameless agent: none
-            // of them acted, so none may be named.
-            let person = person_id_for_root(f.owner.peer().owner());
-            let actor = mistaken.unwrap_or(&person);
-            let refusal = prepare_owner_effect_claiming(&f, &caller, actor)
-                .expect_err("a mismatched actor is still refused");
+            assert_eq!(caller.admitted.broker_actor().id, "agent:mcp-7");
+            let (key, request, prepared) = prepare_owner_effect(&f, &caller);
             assert_eq!(
-                refusal, "prepared effect payload differs from admitted terminal",
-                "{actor}"
+                key.owner,
+                InvocationOwner::AuthenticatedLocal {
+                    root: f.owner.peer().owner(),
+                    device: f.owner.device().device_public_key,
+                    agent: Some("mcp-7".into()),
+                },
+                "the durable owner is the person's device delegated to its agent"
             );
+            let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+                serde_json::from_slice(match &request.operation {
+                    tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                        redacted, ..
+                    } => redacted,
+                    _ => unreachable!(),
+                })
+                .unwrap();
+            assert_eq!(receipt.actor, "agent:mcp-7", "the receipt names who acted");
+            assert_eq!(
+                prepared.update,
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: key.invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                }
+            );
+            // The same journal accepts the finished terminal off the prepared one.
+            let mut guard = f.state.journal.lock().unwrap();
+            let journal = guard.as_mut().unwrap().as_ref().unwrap();
+            assert_eq!(journal.lookup(&key).unwrap().unwrap().key.owner, key.owner);
         }
-    }
 
-    /// The certified door re-verifies a caller on every status, retry and
-    /// effect barrier. That recheck proves the same person and device and
-    /// keeps this caller's own delegation, so it cannot be satisfied by
-    /// another person's or another device's evidence, and a caller that
-    /// cannot back its delegation is refused rather than re-owned.
-    #[test]
-    fn a_delegated_callers_reverification_keeps_its_agent_owner() {
-        let root = canonical_tempdir();
-        let f = owner_fixture(root.path());
-        let caller = delegated_owner_caller(&f, "mcp-7");
-        let current = effect_owner_caller(&f);
-        let owner = caller.owner().unwrap();
-        assert_eq!(
-            owner,
-            InvocationOwner::AuthenticatedLocal {
-                root: f.owner.peer().owner(),
-                device: f.owner.device().device_public_key,
-                agent: Some("mcp-7".into()),
+        phase a_delegated_agents_effect_terminal_naming_anyone_else_is_refused;
+        {
+            for mistaken in [None, Some("agent:mcp-8"), Some("agent:")] {
+                let root = canonical_tempdir();
+                let f = owner_fixture(root.path());
+                let caller = delegated_owner_caller(&f, "mcp-7");
+                // The person themselves, another agent, or a nameless agent: none
+                // of them acted, so none may be named.
+                let person = person_id_for_root(f.owner.peer().owner());
+                let actor = mistaken.unwrap_or(&person);
+                let refusal = prepare_owner_effect_claiming(&f, &caller, actor)
+                    .expect_err("a mismatched actor is still refused");
+                assert_eq!(
+                    refusal, "prepared effect payload differs from admitted terminal",
+                    "{actor}"
+                );
             }
-        );
-        assert_eq!(
-            caller.reverified(&current),
-            Ok(()),
-            "fresh verification of the same person and device passes"
-        );
-        // Re-verification re-establishes only the person and device. The
-        // delegation re-applied is the caller's own, never whatever the
-        // re-verified identity happened to admit, so this caller cannot
-        // drift onto the other agent's owner.
-        let elsewhere = delegated_owner_caller(&f, "mcp-8");
-        assert_ne!(elsewhere.owner().unwrap(), owner);
-        assert_eq!(caller.reverified(&elsewhere), Ok(()));
-        assert_eq!(caller.owner().unwrap(), owner);
-        // Another person's broker verifies another root and device: refused.
-        let other_root = canonical_tempdir();
-        let other = owner_fixture(other_root.path());
-        let stranger = effect_owner_caller(&other);
-        assert_eq!(
-            caller.reverified(&stranger),
-            Err("certified caller changed".into())
-        );
-        // The same person from a second device is a different device, too.
-        let sibling = sibling_device_caller(&f);
-        assert_eq!(
-            caller.reverified(&sibling),
-            Err("certified caller changed".into())
-        );
-        // A caller that lost the certificate backing its delegation is
-        // refused: never downgraded to the person it also happens to be.
-        let mut keyless = caller.clone();
-        keyless.admitted.certificate = None;
-        assert_eq!(
-            keyless.owner().unwrap_err(),
-            "admitted caller certificate missing"
-        );
-        assert_eq!(
-            caller.reverified(&keyless),
-            Err("admitted caller certificate missing".into())
-        );
-        assert!(keyless.reverified(&current).is_err());
-        // A delegation and its admission must agree, in either direction.
-        for admission in [
-            current.admitted.clone().delegated_to(Some("mcp-8")),
-            current.admitted.clone().delegated_to(None),
-        ] {
-            let mut mismatched = caller.clone();
-            mismatched.admitted = admission;
+        }
+
+        phase a_delegated_callers_reverification_keeps_its_agent_owner;
+        // The certified door re-verifies a caller on every status, retry and
+        // effect barrier. That recheck proves the same person and device and
+        // keeps this caller's own delegation, so it cannot be satisfied by
+        // another person's or another device's evidence, and a caller that
+        // cannot back its delegation is refused rather than re-owned.
+        {
+            let root = canonical_tempdir();
+            let f = owner_fixture(root.path());
+            let caller = delegated_owner_caller(&f, "mcp-7");
+            let current = effect_owner_caller(&f);
+            let owner = caller.owner().unwrap();
             assert_eq!(
-                mismatched.owner().unwrap_err(),
-                "admitted caller does not carry its delegation"
+                owner,
+                InvocationOwner::AuthenticatedLocal {
+                    root: f.owner.peer().owner(),
+                    device: f.owner.device().device_public_key,
+                    agent: Some("mcp-7".into()),
+                }
+            );
+            assert_eq!(
+                caller.reverified(&current),
+                Ok(()),
+                "fresh verification of the same person and device passes"
+            );
+            // Re-verification re-establishes only the person and device. The
+            // delegation re-applied is the caller's own, never whatever the
+            // re-verified identity happened to admit, so this caller cannot
+            // drift onto the other agent's owner.
+            let elsewhere = delegated_owner_caller(&f, "mcp-8");
+            assert_ne!(elsewhere.owner().unwrap(), owner);
+            assert_eq!(caller.reverified(&elsewhere), Ok(()));
+            assert_eq!(caller.owner().unwrap(), owner);
+            // Another person's broker verifies another root and device: refused.
+            let other_root = canonical_tempdir();
+            let other = owner_fixture(other_root.path());
+            let stranger = effect_owner_caller(&other);
+            assert_eq!(
+                caller.reverified(&stranger),
+                Err("certified caller changed".into())
+            );
+            // The same person from a second device is a different device, too.
+            let sibling = sibling_device_caller(&f);
+            assert_eq!(
+                caller.reverified(&sibling),
+                Err("certified caller changed".into())
+            );
+            // A caller that lost the certificate backing its delegation is
+            // refused: never downgraded to the person it also happens to be.
+            let mut keyless = caller.clone();
+            keyless.admitted.certificate = None;
+            assert_eq!(
+                keyless.owner().unwrap_err(),
+                "admitted caller certificate missing"
+            );
+            assert_eq!(
+                caller.reverified(&keyless),
+                Err("admitted caller certificate missing".into())
+            );
+            assert!(keyless.reverified(&current).is_err());
+            // A delegation and its admission must agree, in either direction.
+            for admission in [
+                current.admitted.clone().delegated_to(Some("mcp-8")),
+                current.admitted.clone().delegated_to(None),
+            ] {
+                let mut mismatched = caller.clone();
+                mismatched.admitted = admission;
+                assert_eq!(
+                    mismatched.owner().unwrap_err(),
+                    "admitted caller does not carry its delegation"
+                );
+            }
+            // The person themselves is never owned as an agent's.
+            assert_eq!(
+                current.owner().unwrap(),
+                InvocationOwner::Certified {
+                    root: f.owner.peer().owner(),
+                    device: f.owner.device().device_public_key,
+                }
             );
         }
-        // The person themselves is never owned as an agent's.
-        assert_eq!(
-            current.owner().unwrap(),
-            InvocationOwner::Certified {
-                root: f.owner.peer().owner(),
-                device: f.owner.device().device_public_key,
-            }
-        );
     }
 
     fn prepare_owner_effect(

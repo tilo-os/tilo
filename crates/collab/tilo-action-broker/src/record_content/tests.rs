@@ -278,277 +278,287 @@ fn picture(len: usize) -> Vec<u8> {
         .collect()
 }
 
-#[test]
-fn content_one_host_was_offered_reaches_the_other_in_verified_pieces() {
-    let (a, b, wire_b) = pair(true);
-    let bytes = picture(PIECE_BYTES * 2 + 17);
-    let hash = hash_bytes(&bytes);
-    a.offer(&route(), &hash, &bytes).unwrap();
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
+    fn content_reaches_only_a_host_that_may_read_its_record_in_verified_pieces;
 
-    let mut arrivals = b.subscribe(&route());
-    b.want(&route(), &hash);
-    let arrived = arrival(&mut arrivals).expect("the content arrived");
-    assert_eq!(arrived.hash, hash);
-    assert_eq!(arrived.bytes, bytes);
-    assert_eq!(
-        b.shelf.read(&ContentScope::of(&route()), &hash),
-        Some(bytes),
-        "and is kept under the record's scope"
-    );
-    assert_eq!(
-        wire_b.sent.lock().unwrap().as_slice(),
-        [format!("want {hash}")]
-    );
+    phase content_one_host_was_offered_reaches_the_other_in_verified_pieces;
+    {
+        let (a, b, wire_b) = pair(true);
+        let bytes = picture(PIECE_BYTES * 2 + 17);
+        let hash = hash_bytes(&bytes);
+        a.offer(&route(), &hash, &bytes).unwrap();
 
-    // Kept now: asking again answers from this device.
-    b.want(&route(), &hash);
-    assert!(arrival(&mut arrivals).is_some());
-    assert_eq!(
-        wire_b.sent.lock().unwrap().len(),
-        1,
-        "nothing more was asked"
-    );
+        let mut arrivals = b.subscribe(&route());
+        b.want(&route(), &hash);
+        let arrived = arrival(&mut arrivals).expect("the content arrived");
+        assert_eq!(arrived.hash, hash);
+        assert_eq!(arrived.bytes, bytes);
+        assert_eq!(
+            b.shelf.read(&ContentScope::of(&route()), &hash),
+            Some(bytes),
+            "and is kept under the record's scope"
+        );
+        assert_eq!(
+            wire_b.sent.lock().unwrap().as_slice(),
+            [format!("want {hash}")]
+        );
+
+        // Kept now: asking again answers from this device.
+        b.want(&route(), &hash);
+        assert!(arrival(&mut arrivals).is_some());
+        assert_eq!(
+            wire_b.sent.lock().unwrap().len(),
+            1,
+            "nothing more was asked"
+        );
+    }
+
+    phase a_device_that_may_not_read_the_record_gets_nothing;
+    {
+        let (a, b, _) = pair(false);
+        let bytes = picture(100);
+        let hash = hash_bytes(&bytes);
+        a.offer(&route(), &hash, &bytes).unwrap();
+        let mut arrivals = b.subscribe(&route());
+        b.want(&route(), &hash);
+        assert!(arrival(&mut arrivals).is_none());
+    }
+
+    phase content_of_another_record_scope_is_not_served;
+    {
+        let (a, b, _) = pair(true);
+        let bytes = picture(100);
+        let hash = hash_bytes(&bytes);
+        a.offer(
+            &CrdtRoute::record("so.tilo.slides", "another-workspace", "deck-1"),
+            &hash,
+            &bytes,
+        )
+        .unwrap();
+        let mut arrivals = b.subscribe(&route());
+        b.want(&route(), &hash);
+        assert_eq!(
+            states(&mut arrivals),
+            [ContentState::Pending, ContentState::Unavailable],
+            "holding the hash elsewhere does not make it this record's"
+        );
+    }
+
+    phase bytes_that_are_not_the_content_are_refused;
+    {
+        let (a, b, _) = pair(true);
+        let bytes = picture(100);
+        let hash = hash_bytes(&bytes);
+        assert!(a.offer(&route(), &hash, b"other bytes").is_err());
+        let mut arrivals = b.subscribe(&route());
+        b.want(&route(), &hash);
+        // A forged answer for content asked for is dropped.
+        b.peer_piece(
+            &route(),
+            &ContentPiece {
+                hash: hash.clone(),
+                total: 3,
+                offset: 0,
+                bytes: b"bad".to_vec(),
+            },
+        );
+        assert!(arrival(&mut arrivals).is_none());
+        assert_eq!(b.shelf.read(&ContentScope::of(&route()), &hash), None);
+    }
+
+    phase pieces_nobody_asked_for_are_dropped;
+    {
+        let (_, b, _) = pair(true);
+        let bytes = picture(10);
+        let hash = hash_bytes(&bytes);
+        let mut arrivals = b.subscribe(&route());
+        b.peer_piece(
+            &route(),
+            &ContentPiece {
+                hash: hash.clone(),
+                total: 10,
+                offset: 0,
+                bytes,
+            },
+        );
+        assert!(arrival(&mut arrivals).is_none());
+        assert_eq!(b.shelf.read(&ContentScope::of(&route()), &hash), None);
+    }
+
+    phase a_person_record_s_content_lives_in_the_person_s_workspace;
+    // A person record's content follows the record into the person's workspace,
+    // whichever workspace the window that stored it shows: a record of the window's
+    // workspace does not reach it.
+    {
+        let (a, b, _) = pair(true);
+        let person = CrdtRoute::record("so.tilo.tube", "personal-cluster", "history");
+        let window = CrdtRoute::record("so.tilo.tube", "workspace-1", "");
+        let poster = picture(PIECE_BYTES + 3);
+        let hash = hash_bytes(&poster);
+        a.offer(&person, &hash, &poster).unwrap();
+
+        let mut in_window = b.subscribe(&window);
+        b.want(&window, &hash);
+        assert!(
+            arrival(&mut in_window).is_none(),
+            "the window's workspace keeps none of it"
+        );
+
+        let mut in_person = b.subscribe(&person);
+        b.want(&person, &hash);
+        assert_eq!(arrival(&mut in_person).unwrap().bytes, poster);
+    }
 }
 
-#[test]
-fn a_device_that_may_not_read_the_record_gets_nothing() {
-    let (a, b, _) = pair(false);
-    let bytes = picture(100);
-    let hash = hash_bytes(&bytes);
-    a.offer(&route(), &hash, &bytes).unwrap();
-    let mut arrivals = b.subscribe(&route());
-    b.want(&route(), &hash);
-    assert!(arrival(&mut arrivals).is_none());
-}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
+    fn a_want_follows_the_devices_that_could_answer_it;
 
-#[test]
-fn content_of_another_record_scope_is_not_served() {
-    let (a, b, _) = pair(true);
-    let bytes = picture(100);
-    let hash = hash_bytes(&bytes);
-    a.offer(
-        &CrdtRoute::record("so.tilo.slides", "another-workspace", "deck-1"),
-        &hash,
-        &bytes,
-    )
-    .unwrap();
-    let mut arrivals = b.subscribe(&route());
-    b.want(&route(), &hash);
-    assert_eq!(
-        states(&mut arrivals),
-        [ContentState::Pending, ContentState::Unavailable],
-        "holding the hash elsewhere does not make it this record's"
-    );
-}
+    phase a_want_waits_for_its_holder_and_is_fetched_when_it_connects;
+    // A want follows the devices that could answer it, never a timer: it
+    // waits while none is connected, is fetched the moment one connects, and
+    // is unavailable once every connected one said it keeps none.
+    {
+        let pair = hosts(false, true);
+        let bytes = picture(PIECE_BYTES + 9);
+        let hash = hash_bytes(&bytes);
+        pair.a.offer(&route(), &hash, &bytes).unwrap();
+        let mut news = pair.b.subscribe(&route());
 
-#[test]
-fn bytes_that_are_not_the_content_are_refused() {
-    let (a, b, _) = pair(true);
-    let bytes = picture(100);
-    let hash = hash_bytes(&bytes);
-    assert!(a.offer(&route(), &hash, b"other bytes").is_err());
-    let mut arrivals = b.subscribe(&route());
-    b.want(&route(), &hash);
-    // A forged answer for content asked for is dropped.
-    b.peer_piece(
-        &route(),
-        &ContentPiece {
-            hash: hash.clone(),
-            total: 3,
-            offset: 0,
-            bytes: b"bad".to_vec(),
-        },
-    );
-    assert!(arrival(&mut arrivals).is_none());
-    assert_eq!(b.shelf.read(&ContentScope::of(&route()), &hash), None);
-}
+        pair.b.want(&route(), &hash);
+        assert_eq!(
+            states(&mut news),
+            [ContentState::Waiting],
+            "its holder is offline"
+        );
 
-#[test]
-fn pieces_nobody_asked_for_are_dropped() {
-    let (_, b, _) = pair(true);
-    let bytes = picture(10);
-    let hash = hash_bytes(&bytes);
-    let mut arrivals = b.subscribe(&route());
-    b.peer_piece(
-        &route(),
-        &ContentPiece {
-            hash: hash.clone(),
-            total: 10,
-            offset: 0,
-            bytes,
-        },
-    );
-    assert!(arrival(&mut arrivals).is_none());
-    assert_eq!(b.shelf.read(&ContentScope::of(&route()), &hash), None);
-}
+        pair.connect(true);
+        let told: Vec<ContentNews> = std::iter::from_fn(|| news.try_recv().ok()).collect();
+        assert_eq!(
+            told.iter().map(|news| news.state).collect::<Vec<_>>(),
+            [ContentState::Pending, ContentState::Resolved],
+            "fetched from the holder as it connects, then here"
+        );
+        assert_eq!(told[1].bytes, bytes);
+    }
 
-/// A person record's content follows the record into the person's workspace,
-/// whichever workspace the window that stored it shows: a record of the window's
-/// workspace does not reach it.
-#[test]
-fn a_person_record_s_content_lives_in_the_person_s_workspace() {
-    let (a, b, _) = pair(true);
-    let person = CrdtRoute::record("so.tilo.tube", "personal-cluster", "history");
-    let window = CrdtRoute::record("so.tilo.tube", "workspace-1", "");
-    let poster = picture(PIECE_BYTES + 3);
-    let hash = hash_bytes(&poster);
-    a.offer(&person, &hash, &poster).unwrap();
+    phase a_want_nobody_connected_keeps_is_unavailable_until_one_that_might_connects;
+    {
+        let pair = hosts(true, true);
+        let hash = hash_bytes(b"kept nowhere");
+        let mut news = pair.b.subscribe(&route());
 
-    let mut in_window = b.subscribe(&window);
-    b.want(&window, &hash);
-    assert!(
-        arrival(&mut in_window).is_none(),
-        "the window's workspace keeps none of it"
-    );
+        pair.b.want(&route(), &hash);
+        assert_eq!(
+            states(&mut news),
+            [ContentState::Pending, ContentState::Unavailable],
+            "the one connected device said it keeps none"
+        );
 
-    let mut in_person = b.subscribe(&person);
-    b.want(&person, &hash);
-    assert_eq!(arrival(&mut in_person).unwrap().bytes, poster);
-}
+        pair.connect(false);
+        assert_eq!(
+            states(&mut news),
+            [ContentState::Waiting],
+            "what a device that left said no longer counts"
+        );
 
-/// A want follows the devices that could answer it, never a timer: it
-/// waits while none is connected, is fetched the moment one connects, and
-/// is unavailable once every connected one said it keeps none.
-#[test]
-fn a_want_waits_for_its_holder_and_is_fetched_when_it_connects() {
-    let pair = hosts(false, true);
-    let bytes = picture(PIECE_BYTES + 9);
-    let hash = hash_bytes(&bytes);
-    pair.a.offer(&route(), &hash, &bytes).unwrap();
-    let mut news = pair.b.subscribe(&route());
+        // The device came back with the content: asked again, it hands it over.
+        pair.a.offer(&route(), &hash, b"kept nowhere").unwrap();
+        pair.connect(true);
+        assert_eq!(
+            states(&mut news),
+            [ContentState::Pending, ContentState::Resolved]
+        );
+    }
 
-    pair.b.want(&route(), &hash);
-    assert_eq!(
-        states(&mut news),
-        [ContentState::Waiting],
-        "its holder is offline"
-    );
+    phase content_a_device_lacked_when_asked_follows_once_it_keeps_it;
+    // A record names content before the device that wrote it keeps the bytes
+    // where peers are served from. A peer that asked in between hears that the
+    // device lacks it, and asks no more while no device connects: the device
+    // hands the content over once it keeps it.
+    {
+        let (a, b, _) = pair(true);
+        let bytes = picture(PIECE_BYTES + 5);
+        let hash = hash_bytes(&bytes);
+        let mut arrivals = b.subscribe(&route());
+        b.want(&route(), &hash);
+        assert_eq!(
+            states(&mut arrivals),
+            [ContentState::Pending, ContentState::Unavailable]
+        );
 
-    pair.connect(true);
-    let told: Vec<ContentNews> = std::iter::from_fn(|| news.try_recv().ok()).collect();
-    assert_eq!(
-        told.iter().map(|news| news.state).collect::<Vec<_>>(),
-        [ContentState::Pending, ContentState::Resolved],
-        "fetched from the holder as it connects, then here"
-    );
-    assert_eq!(told[1].bytes, bytes);
-}
+        a.offer(&route(), &hash, &bytes).unwrap();
+        let arrived = arrival(&mut arrivals).expect("the content followed");
+        assert_eq!(arrived.bytes, bytes);
+        assert_eq!(
+            b.shelf.read(&ContentScope::of(&route()), &hash),
+            Some(bytes)
+        );
+    }
 
-#[test]
-fn a_want_nobody_connected_keeps_is_unavailable_until_one_that_might_connects() {
-    let pair = hosts(true, true);
-    let hash = hash_bytes(b"kept nowhere");
-    let mut news = pair.b.subscribe(&route());
+    phase content_is_not_owed_to_a_device_that_may_not_read;
+    // What a device lacked is owed only to peers that may read the record.
+    {
+        let (a, b, _) = pair(false);
+        let bytes = picture(100);
+        let hash = hash_bytes(&bytes);
+        let mut arrivals = b.subscribe(&route());
+        b.want(&route(), &hash);
+        a.offer(&route(), &hash, &bytes).unwrap();
+        assert!(arrival(&mut arrivals).is_none());
+    }
 
-    pair.b.want(&route(), &hash);
-    assert_eq!(
-        states(&mut news),
-        [ContentState::Pending, ContentState::Unavailable],
-        "the one connected device said it keeps none"
-    );
+    phase content_a_peer_may_no_longer_read_is_not_handed_over;
+    // A peer that asked while the device kept none of the content, and lost
+    // the record in the meantime, is not handed the bytes: the peer that may
+    // still read it is.
+    {
+        let fan = fan();
+        let bytes = picture(PIECE_BYTES + 5);
+        let hash = hash_bytes(&bytes);
+        let mut to_b = fan.b.subscribe(&route());
+        let mut to_c = fan.c.subscribe(&route());
+        fan.b.want(&route(), &hash);
+        fan.c.want(&route(), &hash);
+        assert_eq!(
+            states(&mut to_b),
+            [ContentState::Pending, ContentState::Unavailable],
+            "the device that keeps none of it said so"
+        );
+        assert_eq!(
+            states(&mut to_c),
+            [ContentState::Pending, ContentState::Unavailable]
+        );
+        fan.wire_a.sent.lock().unwrap().clear();
 
-    pair.connect(false);
-    assert_eq!(
-        states(&mut news),
-        [ContentState::Waiting],
-        "what a device that left said no longer counts"
-    );
+        // B loses the record while it waits; C keeps it.
+        fan.a_serves_b.store(false, Ordering::Release);
+        fan.a.offer(&route(), &hash, &bytes).unwrap();
 
-    // The device came back with the content: asked again, it hands it over.
-    pair.a.offer(&route(), &hash, b"kept nowhere").unwrap();
-    pair.connect(true);
-    assert_eq!(
-        states(&mut news),
-        [ContentState::Pending, ContentState::Resolved]
-    );
-}
-
-/// A record names content before the device that wrote it keeps the bytes
-/// where peers are served from. A peer that asked in between hears that the
-/// device lacks it, and asks no more while no device connects: the device
-/// hands the content over once it keeps it.
-#[test]
-fn content_a_device_lacked_when_asked_follows_once_it_keeps_it() {
-    let (a, b, _) = pair(true);
-    let bytes = picture(PIECE_BYTES + 5);
-    let hash = hash_bytes(&bytes);
-    let mut arrivals = b.subscribe(&route());
-    b.want(&route(), &hash);
-    assert_eq!(
-        states(&mut arrivals),
-        [ContentState::Pending, ContentState::Unavailable]
-    );
-
-    a.offer(&route(), &hash, &bytes).unwrap();
-    let arrived = arrival(&mut arrivals).expect("the content followed");
-    assert_eq!(arrived.bytes, bytes);
-    assert_eq!(
-        b.shelf.read(&ContentScope::of(&route()), &hash),
-        Some(bytes)
-    );
-}
-
-/// What a device lacked is owed only to peers that may read the record.
-#[test]
-fn content_is_not_owed_to_a_device_that_may_not_read() {
-    let (a, b, _) = pair(false);
-    let bytes = picture(100);
-    let hash = hash_bytes(&bytes);
-    let mut arrivals = b.subscribe(&route());
-    b.want(&route(), &hash);
-    a.offer(&route(), &hash, &bytes).unwrap();
-    assert!(arrival(&mut arrivals).is_none());
-}
-
-/// A peer that asked while the device kept none of the content, and lost
-/// the record in the meantime, is not handed the bytes: the peer that may
-/// still read it is.
-#[test]
-fn content_a_peer_may_no_longer_read_is_not_handed_over() {
-    let fan = fan();
-    let bytes = picture(PIECE_BYTES + 5);
-    let hash = hash_bytes(&bytes);
-    let mut to_b = fan.b.subscribe(&route());
-    let mut to_c = fan.c.subscribe(&route());
-    fan.b.want(&route(), &hash);
-    fan.c.want(&route(), &hash);
-    assert_eq!(
-        states(&mut to_b),
-        [ContentState::Pending, ContentState::Unavailable],
-        "the device that keeps none of it said so"
-    );
-    assert_eq!(
-        states(&mut to_c),
-        [ContentState::Pending, ContentState::Unavailable]
-    );
-    fan.wire_a.sent.lock().unwrap().clear();
-
-    // B loses the record while it waits; C keeps it.
-    fan.a_serves_b.store(false, Ordering::Release);
-    fan.a.offer(&route(), &hash, &bytes).unwrap();
-
-    assert!(
-        arrival(&mut to_b).is_none(),
-        "the device that may no longer read the record gets nothing"
-    );
-    assert_eq!(
-        fan.b.shelf.read(&ContentScope::of(&route()), &hash),
-        None,
-        "and keeps none of it"
-    );
-    assert_eq!(
-        arrival(&mut to_c)
-            .expect("the device that may still read it gets it")
-            .bytes,
-        bytes
-    );
-    assert!(
-        fan.wire_a
-            .sent
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|sent| sent.ends_with("to 3")),
-        "the bytes went to the device that may still read them"
-    );
+        assert!(
+            arrival(&mut to_b).is_none(),
+            "the device that may no longer read the record gets nothing"
+        );
+        assert_eq!(
+            fan.b.shelf.read(&ContentScope::of(&route()), &hash),
+            None,
+            "and keeps none of it"
+        );
+        assert_eq!(
+            arrival(&mut to_c)
+                .expect("the device that may still read it gets it")
+                .bytes,
+            bytes
+        );
+        assert!(
+            fan.wire_a
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|sent| sent.ends_with("to 3")),
+            "the bytes went to the device that may still read them"
+        );
+    }
 }

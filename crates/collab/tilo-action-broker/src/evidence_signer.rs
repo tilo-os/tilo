@@ -228,175 +228,180 @@ mod tests {
             .expect("settle");
     }
 
-    #[test]
-    fn unchanged_trust_loads_one_key_and_signs_each_payload() {
-        let fixture = Fixture::new();
-        let mut cache = SignerCache::default();
-        // Deterministic overhead budget: a bounded burst performs one private
-        // key load, not one load per invocation. Every payload still gets its
-        // own signature; no wall-clock performance threshold can flake here.
-        for position in 0..128 {
-            let payload = format!("semantic receipt {position}");
-            let (cert, signature) = cache
-                .sign_at(&fixture.workspace, payload.as_bytes(), Fixture::now())
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
+        fn the_signer_keeps_a_device_key_only_while_its_trust_stands;
+
+        phase unchanged_trust_loads_one_key_and_signs_each_payload;
+        {
+            let fixture = Fixture::new();
+            let mut cache = SignerCache::default();
+            // Deterministic overhead budget: a bounded burst performs one private
+            // key load, not one load per invocation. Every payload still gets its
+            // own signature; no wall-clock performance threshold can flake here.
+            for position in 0..128 {
+                let payload = format!("semantic receipt {position}");
+                let (cert, signature) = cache
+                    .sign_at(&fixture.workspace, payload.as_bytes(), Fixture::now())
+                    .expect("sign");
+                ed25519_dalek::VerifyingKey::from_bytes(&cert.device_public_key)
+                    .expect("key")
+                    .verify_strict(
+                        payload.as_bytes(),
+                        &ed25519_dalek::Signature::from_bytes(&signature),
+                    )
+                    .expect("signature binds the actual receipt bytes");
+            }
+            assert_eq!(cache.loads, 1);
+            assert_eq!(cache.entries.len(), 1);
+            assert!(sign(&fixture.workspace, b"host receipt").is_ok());
+        }
+
+        phase revocation_evicts_custody_and_fails_even_after_files_settle;
+        {
+            let fixture = Fixture::new();
+            let mut cache = SignerCache::default();
+            let (cert, _) = cache
+                .sign_at(&fixture.workspace, b"before", Fixture::now())
                 .expect("sign");
-            ed25519_dalek::VerifyingKey::from_bytes(&cert.device_public_key)
-                .expect("key")
-                .verify_strict(
-                    payload.as_bytes(),
-                    &ed25519_dalek::Signature::from_bytes(&signature),
+            DeviceFleetStore::at(&fixture.identity_dir, fixture.paths.clone())
+                .revoke(
+                    &fixture.profile.id,
+                    cert.device_public_key,
+                    RevocationReason::Lost,
+                    Fixture::now(),
                 )
-                .expect("signature binds the actual receipt bytes");
-        }
-        assert_eq!(cache.loads, 1);
-        assert_eq!(cache.entries.len(), 1);
-        assert!(sign(&fixture.workspace, b"host receipt").is_ok());
-    }
-
-    #[test]
-    fn revocation_evicts_custody_and_fails_even_after_files_settle() {
-        let fixture = Fixture::new();
-        let mut cache = SignerCache::default();
-        let (cert, _) = cache
-            .sign_at(&fixture.workspace, b"before", Fixture::now())
-            .expect("sign");
-        DeviceFleetStore::at(&fixture.identity_dir, fixture.paths.clone())
-            .revoke(
-                &fixture.profile.id,
-                cert.device_public_key,
-                RevocationReason::Lost,
-                Fixture::now(),
-            )
-            .expect("revoke");
-        assert!(
-            cache
-                .sign_at(&fixture.workspace, b"after", Fixture::now())
-                .is_err()
-        );
-        assert!(cache.entries.is_empty());
-        fixture.settle();
-        assert!(
-            cache
-                .sign_at(&fixture.workspace, b"settled", Fixture::now())
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn certificate_and_key_rewrites_reload_and_malformed_cert_fails() {
-        let fixture = Fixture::new();
-        let mut cache = SignerCache::default();
-        cache
-            .sign_at(&fixture.workspace, b"before", Fixture::now())
-            .expect("sign");
-        for path in [fixture.cert_file(), fixture.paths.device_privkey.clone()] {
-            let bytes = std::fs::read(&path).expect("read");
-            std::fs::write(&path, bytes).expect("rewrite");
-            let loads = cache.loads;
-            cache
-                .sign_at(&fixture.workspace, b"unsettled", Fixture::now())
-                .expect("reload");
-            cache
-                .sign_at(&fixture.workspace, b"still unsettled", Fixture::now())
-                .expect("reload");
-            assert_eq!(cache.loads, loads + 2, "recent writes are not cached");
+                .expect("revoke");
+            assert!(
+                cache
+                    .sign_at(&fixture.workspace, b"after", Fixture::now())
+                    .is_err()
+            );
+            assert!(cache.entries.is_empty());
             fixture.settle();
-            cache
-                .sign_at(&fixture.workspace, b"settled", Fixture::now())
-                .expect("cache");
+            assert!(
+                cache
+                    .sign_at(&fixture.workspace, b"settled", Fixture::now())
+                    .is_err()
+            );
         }
-        std::fs::write(fixture.cert_file(), b"malformed").expect("break certificate");
-        assert!(
-            cache
-                .sign_at(&fixture.workspace, b"refused", Fixture::now())
-                .is_err()
-        );
-        assert!(cache.entries.is_empty());
-    }
 
-    #[test]
-    fn removing_the_identity_record_invalidates_cached_key() {
-        let fixture = Fixture::new();
-        let mut cache = SignerCache::default();
-        cache
-            .sign_at(&fixture.workspace, b"before", Fixture::now())
-            .expect("sign");
-        let store = IdentityRegistryStore::at(&fixture.identity_dir);
-        let mut registry = store.load().expect("registry");
-        registry.default_identity = None;
-        registry.identities.clear();
-        // Reconciliation restores identities from records still on disk, so
-        // removing only the registry entry leaves a legitimate fallback.
-        std::fs::remove_file(&fixture.profile.record_path).expect("remove identity record");
-        store.save(&registry).expect("remove identity");
-        assert!(
-            tilo_identity_host::registry::identity_for_workspace(&fixture.workspace)
-                .expect("a read")
-                .is_none()
-        );
-        assert!(
+        phase certificate_and_key_rewrites_reload_and_malformed_cert_fails;
+        {
+            let fixture = Fixture::new();
+            let mut cache = SignerCache::default();
             cache
-                .sign_at(&fixture.workspace, b"after", Fixture::now())
-                .is_err()
-        );
-        assert!(cache.entries.is_empty());
-    }
+                .sign_at(&fixture.workspace, b"before", Fixture::now())
+                .expect("sign");
+            for path in [fixture.cert_file(), fixture.paths.device_privkey.clone()] {
+                let bytes = std::fs::read(&path).expect("read");
+                std::fs::write(&path, bytes).expect("rewrite");
+                let loads = cache.loads;
+                cache
+                    .sign_at(&fixture.workspace, b"unsettled", Fixture::now())
+                    .expect("reload");
+                cache
+                    .sign_at(&fixture.workspace, b"still unsettled", Fixture::now())
+                    .expect("reload");
+                assert_eq!(cache.loads, loads + 2, "recent writes are not cached");
+                fixture.settle();
+                cache
+                    .sign_at(&fixture.workspace, b"settled", Fixture::now())
+                    .expect("cache");
+            }
+            std::fs::write(fixture.cert_file(), b"malformed").expect("break certificate");
+            assert!(
+                cache
+                    .sign_at(&fixture.workspace, b"refused", Fixture::now())
+                    .is_err()
+            );
+            assert!(cache.entries.is_empty());
+        }
 
-    #[test]
-    fn clock_before_issuance_invalidates_cached_key() {
-        let fixture = Fixture::new();
-        let mut cache = SignerCache::default();
-        let (certificate, _) = cache
-            .sign_at(&fixture.workspace, b"valid", Fixture::now())
-            .expect("sign");
-        let before_issuance = certificate
-            .issued_at_ns
-            .checked_sub(1)
-            .expect("issued time");
-        assert!(
+        phase removing_the_identity_record_invalidates_cached_key;
+        {
+            let fixture = Fixture::new();
+            let mut cache = SignerCache::default();
             cache
-                .sign_at(
-                    &fixture.workspace,
-                    b"clock moved backwards",
-                    before_issuance
-                )
-                .is_err()
-        );
-        assert!(cache.entries.is_empty());
-    }
+                .sign_at(&fixture.workspace, b"before", Fixture::now())
+                .expect("sign");
+            let store = IdentityRegistryStore::at(&fixture.identity_dir);
+            let mut registry = store.load().expect("registry");
+            registry.default_identity = None;
+            registry.identities.clear();
+            // Reconciliation restores identities from records still on disk, so
+            // removing only the registry entry leaves a legitimate fallback.
+            std::fs::remove_file(&fixture.profile.record_path).expect("remove identity record");
+            store.save(&registry).expect("remove identity");
+            assert!(
+                tilo_identity_host::registry::identity_for_workspace(&fixture.workspace)
+                    .expect("a read")
+                    .is_none()
+            );
+            assert!(
+                cache
+                    .sign_at(&fixture.workspace, b"after", Fixture::now())
+                    .is_err()
+            );
+            assert!(cache.entries.is_empty());
+        }
 
-    #[test]
-    fn time_expiry_without_file_changes_evicts_the_key() {
-        let fixture = Fixture::new();
-        let (key, mut cert) =
-            tilo_identity_host::broker::trusted_current_device(&fixture.workspace).expect("device");
-        drop(key);
-        let expiry = cert.issued_at_ns.saturating_add(60_000_000_000);
-        cert.expires_at_ns = Some(expiry);
-        let root = runtime_identity_host::load_from_path(fixture.profile.record_path.clone())
-            .expect("file-backed test identity");
-        cert.signature = root
-            .sign(&tilo_user_identity::device_cert_signing_digest(&cert).expect("digest"))
-            .expect("certify");
-        tilo_user_identity::persist::write_device_cert(&fixture.cert_file(), &cert)
-            .expect("write certificate");
-        fixture.settle();
-        let mut cache = SignerCache::default();
-        cache
-            .sign_at(&fixture.workspace, b"valid", expiry - 1)
-            .expect("before expiry");
-        let stamp = current_device_stamp(&fixture.workspace);
-        assert!(
+        phase clock_before_issuance_invalidates_cached_key;
+        {
+            let fixture = Fixture::new();
+            let mut cache = SignerCache::default();
+            let (certificate, _) = cache
+                .sign_at(&fixture.workspace, b"valid", Fixture::now())
+                .expect("sign");
+            let before_issuance = certificate
+                .issued_at_ns
+                .checked_sub(1)
+                .expect("issued time");
+            assert!(
+                cache
+                    .sign_at(
+                        &fixture.workspace,
+                        b"clock moved backwards",
+                        before_issuance
+                    )
+                    .is_err()
+            );
+            assert!(cache.entries.is_empty());
+        }
+
+        phase time_expiry_without_file_changes_evicts_the_key;
+        {
+            let fixture = Fixture::new();
+            let (key, mut cert) =
+                tilo_identity_host::broker::trusted_current_device(&fixture.workspace).expect("device");
+            drop(key);
+            let expiry = cert.issued_at_ns.saturating_add(60_000_000_000);
+            cert.expires_at_ns = Some(expiry);
+            let root = runtime_identity_host::load_from_path(fixture.profile.record_path.clone())
+                .expect("file-backed test identity");
+            cert.signature = root
+                .sign(&tilo_user_identity::device_cert_signing_digest(&cert).expect("digest"))
+                .expect("certify");
+            tilo_user_identity::persist::write_device_cert(&fixture.cert_file(), &cert)
+                .expect("write certificate");
+            fixture.settle();
+            let mut cache = SignerCache::default();
             cache
-                .sign_at(&fixture.workspace, b"expired", expiry)
-                .is_err()
-        );
-        assert_eq!(current_device_stamp(&fixture.workspace), stamp);
-        assert!(cache.entries.is_empty());
-        assert!(
-            cache
-                .sign_at(&fixture.workspace, b"still expired", expiry + 1)
-                .is_err()
-        );
+                .sign_at(&fixture.workspace, b"valid", expiry - 1)
+                .expect("before expiry");
+            let stamp = current_device_stamp(&fixture.workspace);
+            assert!(
+                cache
+                    .sign_at(&fixture.workspace, b"expired", expiry)
+                    .is_err()
+            );
+            assert_eq!(current_device_stamp(&fixture.workspace), stamp);
+            assert!(cache.entries.is_empty());
+            assert!(
+                cache
+                    .sign_at(&fixture.workspace, b"still expired", expiry + 1)
+                    .is_err()
+            );
+        }
     }
 }

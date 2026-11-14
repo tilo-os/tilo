@@ -1273,47 +1273,155 @@ mod tests {
         serde_json::from_value(json).expect("shortcut JSON")
     }
 
-    #[test]
-    fn library_arguments_decode_into_operations() {
-        let slot = |value: Value| format!("{ARGUMENTS_JSON_PREFIX}{value}");
-        let saved = serde_json::json!({"id": "tidy", "name": "Tidy", "steps": []});
-        assert_eq!(
-            decode_library(
-                CREATE_ACTION,
-                Some(&slot(serde_json::json!({ "shortcut": saved })))
-            ),
-            Ok(LibraryOperation::Create(shortcut(saved)))
-        );
-        assert_eq!(
-            decode_library(
-                DELETE_ACTION,
-                Some(&slot(serde_json::json!({ "id": " tidy " })))
-            ),
-            Ok(LibraryOperation::Delete("tidy".into()))
-        );
-        assert_eq!(
-            decode_library(LIST_ACTION, None),
-            Ok(LibraryOperation::List)
-        );
-        assert!(decode_library(CREATE_ACTION, None).is_err());
-        assert!(decode_library(CREATE_ACTION, Some("plain words")).is_err());
-        assert!(
-            decode_library(
-                CREATE_ACTION,
-                Some(&slot(serde_json::json!({"shortcut": {"id": "x"}})))
-            )
-            .is_err()
-        );
-        assert_eq!(
-            decode_library(STOP_ACTION, Some(&slot(serde_json::json!({"id": "tidy"})))),
-            Ok(LibraryOperation::Stop("tidy".into()))
-        );
-        assert_eq!(
-            decode_library(STOP_ALL_ACTION, None),
-            Ok(LibraryOperation::StopAll)
-        );
-        assert!(decode_library(STOP_ACTION, None).is_err());
-        assert!(decode_library("rename", None).is_err());
+    tilo_test_env::scenario! {
+        fn a_workspaces_shortcut_library_is_published_typed_and_decoded;
+
+        phase library_arguments_decode_into_operations;
+        {
+            let slot = |value: Value| format!("{ARGUMENTS_JSON_PREFIX}{value}");
+            let saved = serde_json::json!({"id": "tidy", "name": "Tidy", "steps": []});
+            assert_eq!(
+                decode_library(
+                    CREATE_ACTION,
+                    Some(&slot(serde_json::json!({ "shortcut": saved })))
+                ),
+                Ok(LibraryOperation::Create(shortcut(saved)))
+            );
+            assert_eq!(
+                decode_library(
+                    DELETE_ACTION,
+                    Some(&slot(serde_json::json!({ "id": " tidy " })))
+                ),
+                Ok(LibraryOperation::Delete("tidy".into()))
+            );
+            assert_eq!(
+                decode_library(LIST_ACTION, None),
+                Ok(LibraryOperation::List)
+            );
+            assert!(decode_library(CREATE_ACTION, None).is_err());
+            assert!(decode_library(CREATE_ACTION, Some("plain words")).is_err());
+            assert!(
+                decode_library(
+                    CREATE_ACTION,
+                    Some(&slot(serde_json::json!({"shortcut": {"id": "x"}})))
+                )
+                .is_err()
+            );
+            assert_eq!(
+                decode_library(STOP_ACTION, Some(&slot(serde_json::json!({"id": "tidy"})))),
+                Ok(LibraryOperation::Stop("tidy".into()))
+            );
+            assert_eq!(
+                decode_library(STOP_ALL_ACTION, None),
+                Ok(LibraryOperation::StopAll)
+            );
+            assert!(decode_library(STOP_ACTION, None).is_err());
+            assert!(decode_library("rename", None).is_err());
+        }
+
+        phase a_workspace_publishes_its_library_and_one_run_per_shortcut;
+        {
+            let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Desk");
+            workspace.shortcuts.push(SavedShortcut::encode(&shortcut(serde_json::json!({
+                "id": "tidy",
+                "name": "Tidy",
+                "inputs": [{"name": "folder", "ty": "text", "required": true, "description": "Where"}],
+                "steps": [],
+                "output": {"input": "folder"}
+            }))));
+            let published = descriptors(&workspace);
+            let addresses: Vec<_> = published
+                .iter()
+                .map(|descriptor| {
+                    format!(
+                        "{}#{}",
+                        descriptor.address.resource, descriptor.address.action
+                    )
+                })
+                .collect();
+            assert_eq!(
+                addresses,
+                [
+                    "shortcuts#create",
+                    "shortcuts#update",
+                    "shortcuts#delete",
+                    "shortcuts#list",
+                    "shortcuts#stop",
+                    "shortcuts#stop-all",
+                    "shortcuts.shortcut:tidy#run",
+                ]
+            );
+            let run = published.last().expect("the shortcut's run");
+            assert_eq!(run.params, workspace.shortcuts[0].decode().unwrap().inputs);
+            assert!(matches!(run.contract.result, ResultSpec::Json { .. }));
+            assert_eq!(run_target(&run.address), Some("tidy"));
+        }
+
+        phase a_shortcut_reads_as_a_typed_tool_with_its_inputs_and_output;
+        // What a task chooses a tool by: the words its inputs and its name use,
+        // what it answers, and what it says it takes.
+        {
+            let folder = ActionParam::required("folder", ParamType::Text, "Where the receipts are");
+            let limit = ActionParam::optional("week", ParamType::Integer, "Which week, 0 for this one");
+            let tidy = shortcut(serde_json::json!({
+                "id": "file-receipts",
+                "name": "File receipts",
+                "inputs": [&folder, &limit],
+                "steps": [],
+                "output": {"literal": {"filed": 3}}
+            }));
+            let run = run_descriptor(&tidy);
+            assert_eq!(
+                run.params,
+                vec![folder.clone(), limit.clone()],
+                "its declared inputs, typed"
+            );
+            assert_eq!(run.keywords, vec!["folder".to_owned(), "week".to_owned()]);
+            assert_eq!(
+                run.contract.result,
+                ResultSpec::Json {
+                    schema: serde_json::json!({"type": "object"})
+                },
+                "a caller is promised the shape the shortcut answers"
+            );
+            let description = run.description.expect("a shortcut says what it offers");
+            assert!(description.contains("`folder` (text)"), "{description}");
+            assert!(
+                description.contains("Where the receipts are"),
+                "{description}"
+            );
+            assert!(
+                description.contains("`week` (integer, optional)"),
+                "{description}"
+            );
+
+            // An output that hands back one of its inputs answers with that
+            // input's own type.
+            let echo = shortcut(serde_json::json!({
+                "id": "echo",
+                "name": "Echo the week",
+                "inputs": [&folder, &limit],
+                "steps": [],
+                "output": {"input": "week"}
+            }));
+            assert_eq!(
+                run_descriptor(&echo).contract.result,
+                ResultSpec::Json {
+                    schema: serde_json::json!({"type": "integer"})
+                }
+            );
+
+            let silent = shortcut(serde_json::json!({
+                "id": "tidy",
+                "name": "Tidy",
+                "steps": []
+            }));
+            assert_eq!(
+                run_descriptor(&silent).contract.result,
+                ResultSpec::None,
+                "a shortcut that binds no output answers none"
+            );
+        }
     }
 
     fn going(workspace: &str, shortcut: &str, name: &str) -> RunningRun {
@@ -1327,255 +1435,159 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stopping_names_one_shortcuts_runs_or_every_run_going_in_the_workspace() {
-        let runs = RunningRuns::default();
-        let tidy = going("desk", "tidy", "Tidy");
-        let sweep = going("desk", "sweep", "Sweep");
-        let elsewhere = going("study", "tidy", "Tidy");
-        for run in [&tidy, &sweep, &elsewhere] {
-            runs.register(run.clone());
-        }
-        runs.moved(tidy.run, "1");
-        let stopped = runs.stop("desk", &StopRequest::Shortcut("tidy".into()), "asked");
-        assert_eq!(stopped.len(), 1);
-        assert_eq!(stopped[0].shortcut, "tidy");
-        assert_eq!(stopped[0].at.as_deref(), Some("1"));
-        // The other workspace's run of the same shortcut is somebody else's.
-        assert!(runs.stopped(elsewhere.run).is_none());
-        assert!(runs.stopped(sweep.run).is_none());
+    tilo_test_env::scenario! {
+        fn runs_going_are_named_told_and_stopped;
 
-        // Stopping everything names what is still going, not the run already
-        // told to stop.
-        let all = runs.stop("desk", &StopRequest::All, "asked");
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].shortcut, "sweep");
-        assert!(runs.stopped(sweep.run).is_some());
-        assert!(runs.stopped(tidy.run).is_some());
-        // Asking again stops nothing new: a run is told once.
-        assert!(
-            runs.stop("desk", &StopRequest::All, "asked again")
-                .is_empty()
-        );
-        assert_eq!(runs.going("desk").len(), 2);
-        runs.leave(tidy.run);
-        assert_eq!(runs.going("desk").len(), 1);
-    }
-
-    #[test]
-    fn a_run_is_told_the_shortcuts_going_above_it_and_the_ones_beside_it_are_not() {
-        let runs = RunningRuns::default();
-        // `outer` is going on its own group, as a run with nothing above it
-        // does; the run its step calls is stamped with that group.
-        let outer = going("desk", "outer", "Outer");
-        let group = outer.run.0.to_string();
-        runs.register(outer.clone());
-        // The call inside it: its own id is running, and so is `outer`'s.
-        assert_eq!(
-            runs.above("desk", Some(&group), "inner"),
-            ["outer", "inner"]
-        );
-        // Another workspace's outer run above the same group is somebody else's.
-        runs.register(going("study", "other", "Other"));
-        assert_eq!(
-            runs.above("desk", Some(&group), "inner"),
-            ["outer", "inner"]
-        );
-        // A run a person started has no parent naming another run, so it is
-        // told only of itself: two runs side by side do not block each other.
-        assert_eq!(runs.above("desk", None, "beside"), ["beside"]);
-        assert_eq!(runs.above("desk", Some("elsewhere"), "beside"), ["beside"]);
-        // Once the outer run is over, a run its group names has nothing
-        // above it.
-        runs.leave(outer.run);
-        assert_eq!(runs.above("desk", Some(&group), "inner"), ["inner"]);
-    }
-
-    #[test]
-    fn a_stop_says_which_runs_it_reached_and_where_each_had_got_to() {
-        let runs = RunningRuns::default();
-        let tidy = going("desk", "tidy", "Tidy");
-        runs.register(tidy.clone());
-        runs.moved(tidy.run, "then.2");
-        let output = stopped_output(&runs.stop("desk", &StopRequest::All, "asked"));
-        assert_eq!(
-            output.value,
-            Some(serde_json::json!([{
-                "shortcut": "tidy",
-                "name": "Tidy",
-                "reached": "then.2",
-            }]))
-        );
-        // Nothing running is not a failure: the run just finished.
-        assert_eq!(stopped_output(&[]).value, Some(serde_json::json!([])));
-    }
-
-    #[test]
-    fn a_workspace_publishes_its_library_and_one_run_per_shortcut() {
-        let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Desk");
-        workspace.shortcuts.push(SavedShortcut::encode(&shortcut(serde_json::json!({
-            "id": "tidy",
-            "name": "Tidy",
-            "inputs": [{"name": "folder", "ty": "text", "required": true, "description": "Where"}],
-            "steps": [],
-            "output": {"input": "folder"}
-        }))));
-        let published = descriptors(&workspace);
-        let addresses: Vec<_> = published
-            .iter()
-            .map(|descriptor| {
-                format!(
-                    "{}#{}",
-                    descriptor.address.resource, descriptor.address.action
-                )
-            })
-            .collect();
-        assert_eq!(
-            addresses,
-            [
-                "shortcuts#create",
-                "shortcuts#update",
-                "shortcuts#delete",
-                "shortcuts#list",
-                "shortcuts#stop",
-                "shortcuts#stop-all",
-                "shortcuts.shortcut:tidy#run",
-            ]
-        );
-        let run = published.last().expect("the shortcut's run");
-        assert_eq!(run.params, workspace.shortcuts[0].decode().unwrap().inputs);
-        assert!(matches!(run.contract.result, ResultSpec::Json { .. }));
-        assert_eq!(run_target(&run.address), Some("tidy"));
-    }
-
-    /// What a task chooses a tool by: the words its inputs and its name use,
-    /// what it answers, and what it says it takes.
-    #[test]
-    fn a_shortcut_reads_as_a_typed_tool_with_its_inputs_and_output() {
-        let folder = ActionParam::required("folder", ParamType::Text, "Where the receipts are");
-        let limit = ActionParam::optional("week", ParamType::Integer, "Which week, 0 for this one");
-        let tidy = shortcut(serde_json::json!({
-            "id": "file-receipts",
-            "name": "File receipts",
-            "inputs": [&folder, &limit],
-            "steps": [],
-            "output": {"literal": {"filed": 3}}
-        }));
-        let run = run_descriptor(&tidy);
-        assert_eq!(
-            run.params,
-            vec![folder.clone(), limit.clone()],
-            "its declared inputs, typed"
-        );
-        assert_eq!(run.keywords, vec!["folder".to_owned(), "week".to_owned()]);
-        assert_eq!(
-            run.contract.result,
-            ResultSpec::Json {
-                schema: serde_json::json!({"type": "object"})
-            },
-            "a caller is promised the shape the shortcut answers"
-        );
-        let description = run.description.expect("a shortcut says what it offers");
-        assert!(description.contains("`folder` (text)"), "{description}");
-        assert!(
-            description.contains("Where the receipts are"),
-            "{description}"
-        );
-        assert!(
-            description.contains("`week` (integer, optional)"),
-            "{description}"
-        );
-
-        // An output that hands back one of its inputs answers with that
-        // input's own type.
-        let echo = shortcut(serde_json::json!({
-            "id": "echo",
-            "name": "Echo the week",
-            "inputs": [&folder, &limit],
-            "steps": [],
-            "output": {"input": "week"}
-        }));
-        assert_eq!(
-            run_descriptor(&echo).contract.result,
-            ResultSpec::Json {
-                schema: serde_json::json!({"type": "integer"})
+        phase stopping_names_one_shortcuts_runs_or_every_run_going_in_the_workspace;
+        {
+            let runs = RunningRuns::default();
+            let tidy = going("desk", "tidy", "Tidy");
+            let sweep = going("desk", "sweep", "Sweep");
+            let elsewhere = going("study", "tidy", "Tidy");
+            for run in [&tidy, &sweep, &elsewhere] {
+                runs.register(run.clone());
             }
-        );
+            runs.moved(tidy.run, "1");
+            let stopped = runs.stop("desk", &StopRequest::Shortcut("tidy".into()), "asked");
+            assert_eq!(stopped.len(), 1);
+            assert_eq!(stopped[0].shortcut, "tidy");
+            assert_eq!(stopped[0].at.as_deref(), Some("1"));
+            // The other workspace's run of the same shortcut is somebody else's.
+            assert!(runs.stopped(elsewhere.run).is_none());
+            assert!(runs.stopped(sweep.run).is_none());
 
-        let silent = shortcut(serde_json::json!({
-            "id": "tidy",
-            "name": "Tidy",
-            "steps": []
-        }));
-        assert_eq!(
-            run_descriptor(&silent).contract.result,
-            ResultSpec::None,
-            "a shortcut that binds no output answers none"
-        );
+            // Stopping everything names what is still going, not the run already
+            // told to stop.
+            let all = runs.stop("desk", &StopRequest::All, "asked");
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].shortcut, "sweep");
+            assert!(runs.stopped(sweep.run).is_some());
+            assert!(runs.stopped(tidy.run).is_some());
+            // Asking again stops nothing new: a run is told once.
+            assert!(
+                runs.stop("desk", &StopRequest::All, "asked again")
+                    .is_empty()
+            );
+            assert_eq!(runs.going("desk").len(), 2);
+            runs.leave(tidy.run);
+            assert_eq!(runs.going("desk").len(), 1);
+        }
+
+        phase a_run_is_told_the_shortcuts_going_above_it_and_the_ones_beside_it_are_not;
+        {
+            let runs = RunningRuns::default();
+            // `outer` is going on its own group, as a run with nothing above it
+            // does; the run its step calls is stamped with that group.
+            let outer = going("desk", "outer", "Outer");
+            let group = outer.run.0.to_string();
+            runs.register(outer.clone());
+            // The call inside it: its own id is running, and so is `outer`'s.
+            assert_eq!(
+                runs.above("desk", Some(&group), "inner"),
+                ["outer", "inner"]
+            );
+            // Another workspace's outer run above the same group is somebody else's.
+            runs.register(going("study", "other", "Other"));
+            assert_eq!(
+                runs.above("desk", Some(&group), "inner"),
+                ["outer", "inner"]
+            );
+            // A run a person started has no parent naming another run, so it is
+            // told only of itself: two runs side by side do not block each other.
+            assert_eq!(runs.above("desk", None, "beside"), ["beside"]);
+            assert_eq!(runs.above("desk", Some("elsewhere"), "beside"), ["beside"]);
+            // Once the outer run is over, a run its group names has nothing
+            // above it.
+            runs.leave(outer.run);
+            assert_eq!(runs.above("desk", Some(&group), "inner"), ["inner"]);
+        }
+
+        phase a_stop_says_which_runs_it_reached_and_where_each_had_got_to;
+        {
+            let runs = RunningRuns::default();
+            let tidy = going("desk", "tidy", "Tidy");
+            runs.register(tidy.clone());
+            runs.moved(tidy.run, "then.2");
+            let output = stopped_output(&runs.stop("desk", &StopRequest::All, "asked"));
+            assert_eq!(
+                output.value,
+                Some(serde_json::json!([{
+                    "shortcut": "tidy",
+                    "name": "Tidy",
+                    "reached": "then.2",
+                }]))
+            );
+            // Nothing running is not a failure: the run just finished.
+            assert_eq!(stopped_output(&[]).value, Some(serde_json::json!([])));
+        }
     }
 
-    #[test]
-    fn an_app_event_trigger_names_the_app_and_the_event() {
-        assert!(
-            validate_trigger(&TriggerSpec::AppEvent {
-                app_id: "so.tilo.mail".into(),
-                kind: "mail.message".into(),
-            })
-            .is_ok()
-        );
-        assert!(
-            validate_trigger(&TriggerSpec::AppEvent {
-                app_id: " ".into(),
-                kind: "mail.message".into(),
-            })
-            .unwrap_err()
-            .contains("names the application")
-        );
-        assert!(
-            validate_trigger(&TriggerSpec::AppEvent {
-                app_id: "so.tilo.mail".into(),
-                kind: " ".into(),
-            })
-            .unwrap_err()
-            .contains("names the event")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_trigger_is_validated_by_what_it_watches;
 
-    #[test]
-    fn a_persons_shortcut_may_watch_records_and_messages_but_not_connectors() {
-        use tilo_automation::ActorFilter;
-        assert!(
-            validate_trigger(&TriggerSpec::RecordChanged {
-                kind: "chat.workspace".into(),
-                actions: vec![],
-                fields: vec![],
-                by: ActorFilter::Anyone,
+        phase an_app_event_trigger_names_the_app_and_the_event;
+        {
+            assert!(
+                validate_trigger(&TriggerSpec::AppEvent {
+                    app_id: "so.tilo.mail".into(),
+                    kind: "mail.message".into(),
+                })
+                .is_ok()
+            );
+            assert!(
+                validate_trigger(&TriggerSpec::AppEvent {
+                    app_id: " ".into(),
+                    kind: "mail.message".into(),
+                })
+                .unwrap_err()
+                .contains("names the application")
+            );
+            assert!(
+                validate_trigger(&TriggerSpec::AppEvent {
+                    app_id: "so.tilo.mail".into(),
+                    kind: " ".into(),
+                })
+                .unwrap_err()
+                .contains("names the event")
+            );
+        }
+
+        phase a_persons_shortcut_may_watch_records_and_messages_but_not_connectors;
+        {
+            use tilo_automation::ActorFilter;
+            assert!(
+                validate_trigger(&TriggerSpec::RecordChanged {
+                    kind: "chat.workspace".into(),
+                    actions: vec![],
+                    fields: vec![],
+                    by: ActorFilter::Anyone,
+                })
+                .is_ok()
+            );
+            assert!(
+                validate_trigger(&TriggerSpec::IncomingMessage {
+                    app_id: None,
+                    from: None
+                })
+                .is_ok()
+            );
+            assert!(
+                validate_trigger(&TriggerSpec::RecordChanged {
+                    kind: " ".into(),
+                    actions: vec![],
+                    fields: vec![],
+                    by: ActorFilter::Anyone,
+                })
+                .unwrap_err()
+                .contains("names the record kind")
+            );
+            let refused = validate_trigger(&TriggerSpec::Connector {
+                app_id: "so.tilo.discord".into(),
+                source: "message-created".into(),
+                filter: serde_json::Map::new(),
             })
-            .is_ok()
-        );
-        assert!(
-            validate_trigger(&TriggerSpec::IncomingMessage {
-                app_id: None,
-                from: None
-            })
-            .is_ok()
-        );
-        assert!(
-            validate_trigger(&TriggerSpec::RecordChanged {
-                kind: " ".into(),
-                actions: vec![],
-                fields: vec![],
-                by: ActorFilter::Anyone,
-            })
-            .unwrap_err()
-            .contains("names the record kind")
-        );
-        let refused = validate_trigger(&TriggerSpec::Connector {
-            app_id: "so.tilo.discord".into(),
-            source: "message-created".into(),
-            filter: serde_json::Map::new(),
-        })
-        .unwrap_err();
-        assert!(refused.contains("only bots"), "{refused}");
+            .unwrap_err();
+            assert!(refused.contains("only bots"), "{refused}");
+        }
     }
 }

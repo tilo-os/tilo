@@ -206,120 +206,130 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    #[test]
-    fn owner_policy_clock_retained_sampling_uses_same_controlled_clock() {
-        let (clock, control) = OwnerPolicyClock::for_test(200);
-        let origin = clock.new_origin();
-        let time = origin.capture().unwrap();
-        assert_eq!(time.now_ns(), Ok(200));
-        control.set_wall_ns(50);
-        control.advance_monotonic(Duration::from_nanos(5));
-        assert_eq!(time.now_ns(), Ok(205));
-        control.set_wall_ns(300);
-        assert_eq!(clock.now_ns(), Ok(300));
-        control.set_wall_ns(1);
-        control.advance_monotonic(Duration::from_nanos(2));
-        assert_eq!(time.now_ns(), Ok(302));
-    }
-    #[test]
-    fn owner_policy_clock_rollback_and_forward_preserve_elapsed() {
-        let start = tilo_clock::now();
-        let mut state = State {
-            observed: start,
-            unix_ns: 200,
-            failed: false,
-        };
-        assert_eq!(state.advance(start + Duration::from_nanos(5), 50), Ok(205));
-        assert_eq!(state.advance(start + Duration::from_nanos(9), 300), Ok(300));
-        assert_eq!(state.advance(start + Duration::from_nanos(12), 10), Ok(303));
-        assert_eq!(
-            state.advance(start + Duration::from_nanos(12), 301),
-            Ok(303)
-        );
-    }
-    #[test]
-    fn owner_policy_clock_arithmetic_failure_is_terminal() {
-        let start = tilo_clock::now();
-        let mut state = State {
-            observed: start,
-            unix_ns: u64::MAX,
-            failed: false,
-        };
-        assert!(state.advance(start + Duration::from_nanos(1), 0).is_err());
-        assert!(state.advance(start, 0).is_err());
-        let mut state = State {
-            observed: start,
-            unix_ns: 1,
-            failed: false,
-        };
-        assert!(
-            state
-                .advance(start.checked_sub(Duration::from_nanos(1)).unwrap(), 0)
-                .is_err()
-        );
-        assert!(state.advance(start + Duration::from_nanos(1), 2).is_err());
-    }
-    #[test]
-    fn owner_policy_clock_origin_drop_invalidation_and_identity() {
-        let clock = OwnerPolicyClock::new().unwrap();
-        let origin = clock.new_origin();
-        let time = origin.capture().unwrap();
-        let clone = time.clone();
-        assert!(clock.same_clock(&clock.clone()));
-        assert!(time.belongs_to(&clock));
-        assert!(origin.owns(&clone));
-        assert!(time.same_origin(&clone));
-        assert!(!clock.same_clock(&OwnerPolicyClock::new().unwrap()));
-        let other = clock.new_origin();
-        assert!(!other.owns(&time));
-        assert!(!other.capture().unwrap().same_origin(&time));
-        let before = time.now_ns().unwrap();
-        assert!(clone.now_ns().unwrap() >= before);
-        origin.invalidate();
-        assert!(time.now_ns().is_err());
-        assert!(origin.capture().is_err());
-        assert!(other.capture().is_ok());
-        let live = other.capture().unwrap();
-        drop(other);
-        assert!(live.now_ns().is_err());
-    }
-    #[test]
-    fn owner_policy_clock_origin_drop_wins_over_sampling_in_progress() {
-        let clock = OwnerPolicyClock::new().unwrap();
-        let origin = clock.new_origin();
-        let time = origin.capture().unwrap();
-        let held = clock.0.state.lock().unwrap();
-        let reader = std::thread::spawn(move || time.now_ns());
-        let deadline = tilo_test_env::hang_deadline();
-        while Arc::strong_count(&origin.0) != 2 {
-            assert!(
-                tilo_clock::now() < deadline,
-                "sampler did not retain origin"
-            );
-            std::thread::yield_now();
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
+        fn the_owner_policy_clock_never_runs_backwards_or_outlives_its_origin;
+
+        phase owner_policy_clock_retained_sampling_uses_same_controlled_clock;
+        {
+            let (clock, control) = OwnerPolicyClock::for_test(200);
+            let origin = clock.new_origin();
+            let time = origin.capture().unwrap();
+            assert_eq!(time.now_ns(), Ok(200));
+            control.set_wall_ns(50);
+            control.advance_monotonic(Duration::from_nanos(5));
+            assert_eq!(time.now_ns(), Ok(205));
+            control.set_wall_ns(300);
+            assert_eq!(clock.now_ns(), Ok(300));
+            control.set_wall_ns(1);
+            control.advance_monotonic(Duration::from_nanos(2));
+            assert_eq!(time.now_ns(), Ok(302));
         }
-        drop(origin);
-        drop(held);
-        assert!(
-            reader.join().unwrap().is_err(),
-            "source retirement must win before sample returns"
-        );
-    }
-    #[test]
-    fn owner_policy_clock_poison_never_falls_back_to_wall() {
-        let clock = OwnerPolicyClock::new().unwrap();
-        let origin = clock.new_origin();
-        let time = origin.capture().unwrap();
-        let held = clock.clone();
-        assert!(
-            std::panic::catch_unwind(move || {
-                let _guard = held.0.state.lock().unwrap();
-                panic!("test poison");
-            })
-            .is_err()
-        );
-        assert!(clock.now_ns().is_err());
-        assert!(time.now_ns().is_err());
-        assert!(origin.capture().is_err());
+
+        phase owner_policy_clock_rollback_and_forward_preserve_elapsed;
+        {
+            let start = tilo_clock::now();
+            let mut state = State {
+                observed: start,
+                unix_ns: 200,
+                failed: false,
+            };
+            assert_eq!(state.advance(start + Duration::from_nanos(5), 50), Ok(205));
+            assert_eq!(state.advance(start + Duration::from_nanos(9), 300), Ok(300));
+            assert_eq!(state.advance(start + Duration::from_nanos(12), 10), Ok(303));
+            assert_eq!(
+                state.advance(start + Duration::from_nanos(12), 301),
+                Ok(303)
+            );
+        }
+
+        phase owner_policy_clock_arithmetic_failure_is_terminal;
+        {
+            let start = tilo_clock::now();
+            let mut state = State {
+                observed: start,
+                unix_ns: u64::MAX,
+                failed: false,
+            };
+            assert!(state.advance(start + Duration::from_nanos(1), 0).is_err());
+            assert!(state.advance(start, 0).is_err());
+            let mut state = State {
+                observed: start,
+                unix_ns: 1,
+                failed: false,
+            };
+            assert!(
+                state
+                    .advance(start.checked_sub(Duration::from_nanos(1)).unwrap(), 0)
+                    .is_err()
+            );
+            assert!(state.advance(start + Duration::from_nanos(1), 2).is_err());
+        }
+
+        phase owner_policy_clock_origin_drop_invalidation_and_identity;
+        {
+            let clock = OwnerPolicyClock::new().unwrap();
+            let origin = clock.new_origin();
+            let time = origin.capture().unwrap();
+            let clone = time.clone();
+            assert!(clock.same_clock(&clock.clone()));
+            assert!(time.belongs_to(&clock));
+            assert!(origin.owns(&clone));
+            assert!(time.same_origin(&clone));
+            assert!(!clock.same_clock(&OwnerPolicyClock::new().unwrap()));
+            let other = clock.new_origin();
+            assert!(!other.owns(&time));
+            assert!(!other.capture().unwrap().same_origin(&time));
+            let before = time.now_ns().unwrap();
+            assert!(clone.now_ns().unwrap() >= before);
+            origin.invalidate();
+            assert!(time.now_ns().is_err());
+            assert!(origin.capture().is_err());
+            assert!(other.capture().is_ok());
+            let live = other.capture().unwrap();
+            drop(other);
+            assert!(live.now_ns().is_err());
+        }
+
+        phase owner_policy_clock_origin_drop_wins_over_sampling_in_progress;
+        {
+            let clock = OwnerPolicyClock::new().unwrap();
+            let origin = clock.new_origin();
+            let time = origin.capture().unwrap();
+            let held = clock.0.state.lock().unwrap();
+            let reader = std::thread::spawn(move || time.now_ns());
+            let deadline = tilo_test_env::hang_deadline();
+            while Arc::strong_count(&origin.0) != 2 {
+                assert!(
+                    tilo_clock::now() < deadline,
+                    "sampler did not retain origin"
+                );
+                std::thread::yield_now();
+            }
+            drop(origin);
+            drop(held);
+            assert!(
+                reader.join().unwrap().is_err(),
+                "source retirement must win before sample returns"
+            );
+        }
+
+        phase owner_policy_clock_poison_never_falls_back_to_wall;
+        {
+            let clock = OwnerPolicyClock::new().unwrap();
+            let origin = clock.new_origin();
+            let time = origin.capture().unwrap();
+            let held = clock.clone();
+            assert!(
+                std::panic::catch_unwind(move || {
+                    let _guard = held.0.state.lock().unwrap();
+                    panic!("test poison");
+                })
+                .is_err()
+            );
+            assert!(clock.now_ns().is_err());
+            assert!(time.now_ns().is_err());
+            assert!(origin.capture().is_err());
+        }
     }
 }

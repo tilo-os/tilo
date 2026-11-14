@@ -10357,135 +10357,139 @@ pub mod tests {
         directory.path().join(format!("{name}.sock"))
     }
 
-    #[test]
-    fn socket_parent_must_be_owner_only_before_any_artifact_is_created() {
-        let directory = tempfile::tempdir().expect("temporary socket directory");
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
-            .expect("make parent deliberately non-private");
-        let path = directory.path().join("rejected.sock");
+    tilo_test_env::scenario! {
+        fn a_broker_socket_is_bound_only_in_a_private_parent_over_stale_owned_inodes;
 
-        let error = bind_owned_socket(&path)
-            .err()
-            .expect("non-private parent must be rejected");
-        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-        assert!(
-            std::fs::read_dir(directory.path())
-                .expect("inspect rejected parent")
-                .next()
-                .is_none(),
-            "parent rejection must precede socket, lease, or staging artifacts"
-        );
-    }
-
-    #[test]
-    fn socket_custody_reclaims_only_stale_owned_inodes() {
-        let directory = tempfile::tempdir().expect("temporary socket directory");
-        let live_path = lifecycle_socket(&directory, "live");
-        let live = std::os::unix::net::UnixListener::bind(&live_path).expect("live socket");
-        let error = bind_owned_socket(&live_path)
-            .err()
-            .expect("live broker socket must not be reclaimed");
-        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
-        assert!(socket_identity(&live_path).is_ok());
-        drop(live);
-
-        let stale_path = lifecycle_socket(&directory, "stale");
-        let stale = std::os::unix::net::UnixListener::bind(&stale_path).expect("stale socket");
-        drop(stale);
-        let (replacement, custody) =
-            bind_owned_socket(&stale_path).expect("proven stale socket is reclaimed");
-        assert!(std::os::unix::net::UnixStream::connect(&stale_path).is_ok());
-        let contender_error = bind_owned_socket(&stale_path)
-            .err()
-            .expect("lifetime lease excludes a competing socket owner");
-        assert_eq!(contender_error.kind(), std::io::ErrorKind::AddrInUse);
-        drop(replacement);
-        drop(custody);
-        assert!(
-            !stale_path.exists(),
-            "owned socket inode is removed on final custody release"
-        );
-
-        let replaced_path = lifecycle_socket(&directory, "replacement");
-        let original =
-            std::os::unix::net::UnixListener::bind(&replaced_path).expect("original socket");
-        let original_identity = socket_identity(&replaced_path).expect("original identity");
-        // Retain the old inode while replacing its pathname: unlinking its last
-        // name would let the filesystem reuse that inode for the new socket.
-        let displaced_path = lifecycle_socket(&directory, "displaced");
-        std::fs::rename(&replaced_path, &displaced_path).expect("retain original socket inode");
-        assert_eq!(
-            socket_identity(&displaced_path).expect("retained original identity"),
-            original_identity
-        );
-        let replacement =
-            std::os::unix::net::UnixListener::bind(&replaced_path).expect("replacement socket");
-        assert_ne!(
-            socket_identity(&replaced_path).expect("replacement identity"),
-            original_identity,
-            "the replacement fixture must exercise a distinct live inode"
-        );
-        assert!(
-            !remove_socket_if_owned(&replaced_path, original_identity)
-                .expect("replacement identity check"),
-            "an old owner must not unlink a replacement socket"
-        );
-        assert!(std::os::unix::net::UnixStream::connect(&replaced_path).is_ok());
-        drop(replacement);
-        drop(original);
-        std::fs::remove_file(&displaced_path).expect("remove retained original pathname");
-
-        let racing_path = lifecycle_socket(&directory, "publish-race");
-        let (staged, stage) = bind_socket_stage(&racing_path).expect("private socket staging");
-        let racing =
-            std::os::unix::net::UnixListener::bind(&racing_path).expect("racing destination");
-        let racing_identity = socket_identity(&racing_path).expect("racing socket identity");
-        let error = rename_socket_noreplace(&stage.socket, &racing_path)
-            .expect_err("no-replace publication must preserve a racing destination");
-        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
-        assert_eq!(
-            socket_identity(&racing_path).expect("racing socket survives"),
-            racing_identity
-        );
-        assert!(std::os::unix::net::UnixStream::connect(&racing_path).is_ok());
-        drop(staged);
-        drop(stage);
-        assert_eq!(
-            socket_identity(&racing_path).expect("stage cleanup preserves destination"),
-            racing_identity
-        );
-        drop(racing);
-
-        let entries_before_failure = std::fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect::<std::collections::BTreeSet<_>>();
-        let identity_failure_path = lifecycle_socket(&directory, "identity-failure");
-        FAIL_STAGED_SOCKET_IDENTITY.with(|fail| fail.set(true));
-        assert!(bind_socket_stage(&identity_failure_path).is_err());
-        let entries_after_failure = std::fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            entries_after_failure, entries_before_failure,
-            "staged metadata failure leaves no socket artifact"
-        );
-
-        #[cfg(target_os = "macos")]
+        phase socket_parent_must_be_owner_only_before_any_artifact_is_created;
         {
-            let parent_len = directory.path().as_os_str().as_bytes().len();
-            let separator = usize::from(!directory.path().as_os_str().is_empty());
-            let leaf_len = 103usize
-                .checked_sub(parent_len + separator)
-                .expect("temporary path leaves room for a valid Unix socket");
-            let long_path = directory.path().join("x".repeat(leaf_len));
-            assert_eq!(long_path.as_os_str().as_bytes().len(), 103);
-            let (listener, custody) = bind_owned_socket(&long_path)
-                .expect("valid near-limit final path must stage without expansion");
-            assert!(std::os::unix::net::UnixStream::connect(&long_path).is_ok());
-            drop(listener);
+            let directory = tempfile::tempdir().expect("temporary socket directory");
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
+                .expect("make parent deliberately non-private");
+            let path = directory.path().join("rejected.sock");
+
+            let error = bind_owned_socket(&path)
+                .err()
+                .expect("non-private parent must be rejected");
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            assert!(
+                std::fs::read_dir(directory.path())
+                    .expect("inspect rejected parent")
+                    .next()
+                    .is_none(),
+                "parent rejection must precede socket, lease, or staging artifacts"
+            );
+        }
+
+        phase socket_custody_reclaims_only_stale_owned_inodes;
+        {
+            let directory = tempfile::tempdir().expect("temporary socket directory");
+            let live_path = lifecycle_socket(&directory, "live");
+            let live = std::os::unix::net::UnixListener::bind(&live_path).expect("live socket");
+            let error = bind_owned_socket(&live_path)
+                .err()
+                .expect("live broker socket must not be reclaimed");
+            assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+            assert!(socket_identity(&live_path).is_ok());
+            drop(live);
+
+            let stale_path = lifecycle_socket(&directory, "stale");
+            let stale = std::os::unix::net::UnixListener::bind(&stale_path).expect("stale socket");
+            drop(stale);
+            let (replacement, custody) =
+                bind_owned_socket(&stale_path).expect("proven stale socket is reclaimed");
+            assert!(std::os::unix::net::UnixStream::connect(&stale_path).is_ok());
+            let contender_error = bind_owned_socket(&stale_path)
+                .err()
+                .expect("lifetime lease excludes a competing socket owner");
+            assert_eq!(contender_error.kind(), std::io::ErrorKind::AddrInUse);
+            drop(replacement);
             drop(custody);
+            assert!(
+                !stale_path.exists(),
+                "owned socket inode is removed on final custody release"
+            );
+
+            let replaced_path = lifecycle_socket(&directory, "replacement");
+            let original =
+                std::os::unix::net::UnixListener::bind(&replaced_path).expect("original socket");
+            let original_identity = socket_identity(&replaced_path).expect("original identity");
+            // Retain the old inode while replacing its pathname: unlinking its last
+            // name would let the filesystem reuse that inode for the new socket.
+            let displaced_path = lifecycle_socket(&directory, "displaced");
+            std::fs::rename(&replaced_path, &displaced_path).expect("retain original socket inode");
+            assert_eq!(
+                socket_identity(&displaced_path).expect("retained original identity"),
+                original_identity
+            );
+            let replacement =
+                std::os::unix::net::UnixListener::bind(&replaced_path).expect("replacement socket");
+            assert_ne!(
+                socket_identity(&replaced_path).expect("replacement identity"),
+                original_identity,
+                "the replacement fixture must exercise a distinct live inode"
+            );
+            assert!(
+                !remove_socket_if_owned(&replaced_path, original_identity)
+                    .expect("replacement identity check"),
+                "an old owner must not unlink a replacement socket"
+            );
+            assert!(std::os::unix::net::UnixStream::connect(&replaced_path).is_ok());
+            drop(replacement);
+            drop(original);
+            std::fs::remove_file(&displaced_path).expect("remove retained original pathname");
+
+            let racing_path = lifecycle_socket(&directory, "publish-race");
+            let (staged, stage) = bind_socket_stage(&racing_path).expect("private socket staging");
+            let racing =
+                std::os::unix::net::UnixListener::bind(&racing_path).expect("racing destination");
+            let racing_identity = socket_identity(&racing_path).expect("racing socket identity");
+            let error = rename_socket_noreplace(&stage.socket, &racing_path)
+                .expect_err("no-replace publication must preserve a racing destination");
+            assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+            assert_eq!(
+                socket_identity(&racing_path).expect("racing socket survives"),
+                racing_identity
+            );
+            assert!(std::os::unix::net::UnixStream::connect(&racing_path).is_ok());
+            drop(staged);
+            drop(stage);
+            assert_eq!(
+                socket_identity(&racing_path).expect("stage cleanup preserves destination"),
+                racing_identity
+            );
+            drop(racing);
+
+            let entries_before_failure = std::fs::read_dir(directory.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<std::collections::BTreeSet<_>>();
+            let identity_failure_path = lifecycle_socket(&directory, "identity-failure");
+            FAIL_STAGED_SOCKET_IDENTITY.with(|fail| fail.set(true));
+            assert!(bind_socket_stage(&identity_failure_path).is_err());
+            let entries_after_failure = std::fs::read_dir(directory.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                entries_after_failure, entries_before_failure,
+                "staged metadata failure leaves no socket artifact"
+            );
+
+            #[cfg(target_os = "macos")]
+            {
+                let parent_len = directory.path().as_os_str().as_bytes().len();
+                let separator = usize::from(!directory.path().as_os_str().is_empty());
+                let leaf_len = 103usize
+                    .checked_sub(parent_len + separator)
+                    .expect("temporary path leaves room for a valid Unix socket");
+                let long_path = directory.path().join("x".repeat(leaf_len));
+                assert_eq!(long_path.as_os_str().as_bytes().len(), 103);
+                let (listener, custody) = bind_owned_socket(&long_path)
+                    .expect("valid near-limit final path must stage without expansion");
+                assert!(std::os::unix::net::UnixStream::connect(&long_path).is_ok());
+                drop(listener);
+                drop(custody);
+            }
         }
     }
 
@@ -10545,78 +10549,82 @@ pub mod tests {
         }
     }
 
-    #[test]
-    fn stopped_state_releases_journal_and_makes_surviving_facade_inert() {
-        let directory = tempfile::tempdir().expect("temporary journal directory");
-        let fanout = Arc::new(FanoutState::new());
-        let config = crate::NativePeerBrokerConfig {
-            journal_root: directory.path().join("invocations"),
-            certificate_authority: Arc::new(LifecycleAuthority),
-        };
-        let (state, _bridge_rx) = AppBrokerState::new_configured(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(HealthyOwner)),
-            Some(WorkspaceTree::default().shared().authority()),
-            None,
-            Some(&config),
-            HostServices::default(),
-        );
-        let facade = crate::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(&state));
-        assert!(
-            facade.invocation_host().is_ok(),
-            "live facade sees the opened invocation journal"
-        );
-        let state_for_poison = Arc::clone(&state);
-        assert!(
-            std::thread::spawn(move || {
-                let _journal = state_for_poison.journal.lock().expect("journal lock");
-                panic!("poison journal lock for shutdown recovery");
-            })
-            .join()
-            .is_err()
-        );
+    tilo_test_env::scenario! {
+        fn a_stopped_broker_state_is_inert_and_keeps_what_it_admitted;
 
-        state.stop();
+        phase stopped_state_releases_journal_and_makes_surviving_facade_inert;
+        {
+            let directory = tempfile::tempdir().expect("temporary journal directory");
+            let fanout = Arc::new(FanoutState::new());
+            let config = crate::NativePeerBrokerConfig {
+                journal_root: directory.path().join("invocations"),
+                certificate_authority: Arc::new(LifecycleAuthority),
+            };
+            let (state, _bridge_rx) = AppBrokerState::new_configured(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(HealthyOwner)),
+                Some(WorkspaceTree::default().shared().authority()),
+                None,
+                Some(&config),
+                HostServices::default(),
+            );
+            let facade = crate::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(&state));
+            assert!(
+                facade.invocation_host().is_ok(),
+                "live facade sees the opened invocation journal"
+            );
+            let state_for_poison = Arc::clone(&state);
+            assert!(
+                std::thread::spawn(move || {
+                    let _journal = state_for_poison.journal.lock().expect("journal lock");
+                    panic!("poison journal lock for shutdown recovery");
+                })
+                .join()
+                .is_err()
+            );
 
-        assert!(state.is_stopped());
-        assert!(facade.invocation_host().is_err());
-        assert!(facade.surfaces().is_empty());
-        assert!(facade.statuses("owner").is_empty());
-        let reopened = InvocationJournal::open(&config.journal_root)
-            .expect("stopped broker releases the invocation-journal writer");
-        drop(reopened);
-    }
+            state.stop();
 
-    #[test]
-    fn admitted_live_operation_keeps_its_identity_when_shutdown_races_after_effect() {
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        let state_for_operation = Arc::clone(&state);
-        let (effect_tx, effect_rx) = std::sync::mpsc::sync_channel(1);
-        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-        let operation = std::thread::spawn(move || {
-            state_for_operation.while_live(|_| {
-                effect_tx.send(()).expect("effect admitted");
-                release_rx.recv().expect("release admitted operation");
-                Ok(71_u64)
-            })
-        });
-        tilo_test_env::recv("operation reached its admitted effect", &effect_rx);
-        state.request_stop();
-        release_tx.send(()).expect("release operation");
-        assert_eq!(
-            operation.join().expect("operation thread"),
-            Ok(71),
-            "an operation admitted before shutdown keeps its non-retryable identity"
-        );
-        state.stop();
+            assert!(state.is_stopped());
+            assert!(facade.invocation_host().is_err());
+            assert!(facade.surfaces().is_empty());
+            assert!(facade.statuses("owner").is_empty());
+            let reopened = InvocationJournal::open(&config.journal_root)
+                .expect("stopped broker releases the invocation-journal writer");
+            drop(reopened);
+        }
+
+        phase admitted_live_operation_keeps_its_identity_when_shutdown_races_after_effect;
+        {
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = AppBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                None,
+                None,
+            );
+            let state_for_operation = Arc::clone(&state);
+            let (effect_tx, effect_rx) = std::sync::mpsc::sync_channel(1);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+            let operation = std::thread::spawn(move || {
+                state_for_operation.while_live(|_| {
+                    effect_tx.send(()).expect("effect admitted");
+                    release_rx.recv().expect("release admitted operation");
+                    Ok(71_u64)
+                })
+            });
+            tilo_test_env::recv("operation reached its admitted effect", &effect_rx);
+            state.request_stop();
+            release_tx.send(()).expect("release operation");
+            assert_eq!(
+                operation.join().expect("operation thread"),
+                Ok(71),
+                "an operation admitted before shutdown keeps its non-retryable identity"
+            );
+            state.stop();
+        }
     }
 
     /// An app whose launch the shell holds no record of (one started by hand
@@ -10892,149 +10900,356 @@ pub mod tests {
         );
     }
 
-    #[test]
-    fn public_sink_can_drop_its_broker_without_self_join_or_early_unlink() {
-        let directory = tempfile::tempdir().expect("temporary socket directory");
-        let socket = lifecycle_socket(&directory, "self-drop");
-        let fanout = Arc::new(FanoutState::new());
-        let config = crate::NativePeerBrokerConfig {
-            journal_root: directory.path().join("self-drop-invocations"),
-            certificate_authority: Arc::new(LifecycleAuthority),
-        };
-        let broker = crate::collab_broker::spawn_with_test_services(
-            socket.clone(),
-            None,
-            PeerPublisher::disabled(),
-            Some(&config),
-            HostServices::default(),
-            None,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            Arc::clone(&fanout),
-        )
-        .expect("test broker");
-        let surviving_facade = broker.app_action_broker().expect("live broker facade");
-        let state = fanout.app_broker().expect("attached broker state");
-        let holder = Arc::new(Mutex::new(Some(broker)));
-        let holder_for_sink = Arc::clone(&holder);
-        let socket_for_sink = socket.clone();
-        let (sink_done, sink_finished) = std::sync::mpsc::sync_channel(1);
-        let subscription = holder
-            .lock()
-            .expect("broker holder")
-            .as_ref()
-            .expect("broker")
-            .subscribe_workspaces(
-                vec!["self-drop-workspace".into()],
-                Box::new(move |_, _| {
-                    let broker = holder_for_sink
-                        .lock()
-                        .expect("broker holder in sink")
-                        .take()
-                        .expect("broker dropped once");
-                    drop(broker);
-                    assert!(
-                        std::os::unix::net::UnixListener::bind(&socket_for_sink).is_err(),
-                        "self-drop keeps the owned pathname until this callback returns"
-                    );
-                    sink_done.send(()).expect("signal sink completion");
-                }),
+    tilo_test_env::scenario! {
+        fn a_broker_dropped_from_its_own_callbacks_or_unwound_releases_what_it_held;
+
+        phase public_sink_can_drop_its_broker_without_self_join_or_early_unlink;
+        {
+            let directory = tempfile::tempdir().expect("temporary socket directory");
+            let socket = lifecycle_socket(&directory, "self-drop");
+            let fanout = Arc::new(FanoutState::new());
+            let config = crate::NativePeerBrokerConfig {
+                journal_root: directory.path().join("self-drop-invocations"),
+                certificate_authority: Arc::new(LifecycleAuthority),
+            };
+            let broker = crate::collab_broker::spawn_with_test_services(
+                socket.clone(),
+                None,
+                PeerPublisher::disabled(),
+                Some(&config),
+                HostServices::default(),
+                None,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                Arc::clone(&fanout),
+            )
+            .expect("test broker");
+            let surviving_facade = broker.app_action_broker().expect("live broker facade");
+            let state = fanout.app_broker().expect("attached broker state");
+            let holder = Arc::new(Mutex::new(Some(broker)));
+            let holder_for_sink = Arc::clone(&holder);
+            let socket_for_sink = socket.clone();
+            let (sink_done, sink_finished) = std::sync::mpsc::sync_channel(1);
+            let subscription = holder
+                .lock()
+                .expect("broker holder")
+                .as_ref()
+                .expect("broker")
+                .subscribe_workspaces(
+                    vec!["self-drop-workspace".into()],
+                    Box::new(move |_, _| {
+                        let broker = holder_for_sink
+                            .lock()
+                            .expect("broker holder in sink")
+                            .take()
+                            .expect("broker dropped once");
+                        drop(broker);
+                        assert!(
+                            std::os::unix::net::UnixListener::bind(&socket_for_sink).is_err(),
+                            "self-drop keeps the owned pathname until this callback returns"
+                        );
+                        sink_done.send(()).expect("signal sink completion");
+                    }),
+                );
+            let fanout_for_callback = Arc::clone(&fanout);
+            state.turn_work.hand(Box::new(move |_| {
+                fanout_for_callback.fanout_to_route(
+                    &CollabEvent::FollowChanged { peer_id: None },
+                    u64::MAX,
+                    &CrdtRoute::cluster("self-drop-workspace"),
+                );
+            }));
+            tilo_test_env::recv(
+                "broker-thread public sink completed without self-join",
+                &sink_finished,
             );
-        let fanout_for_callback = Arc::clone(&fanout);
-        state.turn_work.hand(Box::new(move |_| {
-            fanout_for_callback.fanout_to_route(
-                &CollabEvent::FollowChanged { peer_id: None },
+            drop(subscription);
+
+            tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
+            assert!(
+                surviving_facade.invocation_host().is_err(),
+                "facade retained across thread exit is inert"
+            );
+            let reopened_journal = InvocationJournal::open(&config.journal_root)
+                .expect("thread exit releases the journal before unlink");
+            drop(reopened_journal);
+            fanout.fanout_to_route(
+                &CollabEvent::FollowChanged {
+                    peer_id: Some("stale".into()),
+                },
                 u64::MAX,
                 &CrdtRoute::cluster("self-drop-workspace"),
             );
-        }));
-        tilo_test_env::recv(
-            "broker-thread public sink completed without self-join",
-            &sink_finished,
-        );
-        drop(subscription);
+            let replacement = crate::collab_broker::spawn_with_test_services(
+                socket,
+                None,
+                PeerPublisher::disabled(),
+                Some(&config),
+                HostServices::default(),
+                None,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                Arc::new(FanoutState::new()),
+            )
+            .expect("broker restarts after self-drop thread exits");
+            drop(replacement);
+        }
 
-        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
-        assert!(
-            surviving_facade.invocation_host().is_err(),
-            "facade retained across thread exit is inert"
-        );
-        let reopened_journal = InvocationJournal::open(&config.journal_root)
-            .expect("thread exit releases the journal before unlink");
-        drop(reopened_journal);
-        fanout.fanout_to_route(
-            &CollabEvent::FollowChanged {
-                peer_id: Some("stale".into()),
-            },
-            u64::MAX,
-            &CrdtRoute::cluster("self-drop-workspace"),
-        );
-        let replacement = crate::collab_broker::spawn_with_test_services(
-            socket,
-            None,
-            PeerPublisher::disabled(),
-            Some(&config),
-            HostServices::default(),
-            None,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            Arc::new(FanoutState::new()),
-        )
-        .expect("broker restarts after self-drop thread exits");
-        drop(replacement);
-    }
+        phase off_thread_public_sink_can_drop_broker_without_join_deadlock;
+        {
+            let directory = tempfile::tempdir().expect("temporary socket directory");
+            let socket = lifecycle_socket(&directory, "off-thread-drop");
+            let fanout = Arc::new(FanoutState::new());
+            let broker = crate::collab_broker::spawn_with_test_services(
+                socket.clone(),
+                None,
+                PeerPublisher::disabled(),
+                None,
+                HostServices::default(),
+                None,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                Arc::clone(&fanout),
+            )
+            .expect("test broker");
+            let holder = Arc::new(Mutex::new(Some(broker)));
+            let holder_for_sink = Arc::clone(&holder);
+            let (sink_done, sink_finished) = std::sync::mpsc::sync_channel(1);
+            let subscription = holder
+                .lock()
+                .expect("broker holder")
+                .as_ref()
+                .expect("broker")
+                .subscribe_workspaces(
+                    vec!["off-thread-workspace".into()],
+                    Box::new(move |_, _| {
+                        let broker = holder_for_sink
+                            .lock()
+                            .expect("broker holder in sink")
+                            .take()
+                            .expect("broker dropped once");
+                        drop(broker);
+                        sink_done.send(()).expect("signal sink completion");
+                    }),
+                );
+            let fanout_for_thread = Arc::clone(&fanout);
+            let caller = std::thread::spawn(move || {
+                fanout_for_thread.fanout_to_route(
+                    &CollabEvent::FollowChanged { peer_id: None },
+                    u64::MAX,
+                    &CrdtRoute::cluster("off-thread-workspace"),
+                );
+            });
+            tilo_test_env::recv(
+                "off-thread sink drop joined broker without deadlock",
+                &sink_finished,
+            );
+            caller.join().expect("off-thread fanout caller");
+            drop(subscription);
 
-    #[test]
-    fn off_thread_public_sink_can_drop_broker_without_join_deadlock() {
-        let directory = tempfile::tempdir().expect("temporary socket directory");
-        let socket = lifecycle_socket(&directory, "off-thread-drop");
-        let fanout = Arc::new(FanoutState::new());
-        let broker = crate::collab_broker::spawn_with_test_services(
-            socket.clone(),
-            None,
-            PeerPublisher::disabled(),
-            None,
-            HostServices::default(),
-            None,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            Arc::clone(&fanout),
-        )
-        .expect("test broker");
-        let holder = Arc::new(Mutex::new(Some(broker)));
-        let holder_for_sink = Arc::clone(&holder);
-        let (sink_done, sink_finished) = std::sync::mpsc::sync_channel(1);
-        let subscription = holder
-            .lock()
-            .expect("broker holder")
-            .as_ref()
-            .expect("broker")
-            .subscribe_workspaces(
-                vec!["off-thread-workspace".into()],
-                Box::new(move |_, _| {
-                    let broker = holder_for_sink
-                        .lock()
-                        .expect("broker holder in sink")
-                        .take()
-                        .expect("broker dropped once");
-                    drop(broker);
-                    sink_done.send(()).expect("signal sink completion");
+            tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
+            assert!(!socket.exists());
+        }
+
+        phase owner_health_callback_can_drop_broker_without_facade_join_deadlock;
+        {
+            let directory = tempfile::tempdir().expect("temporary broker directory");
+            let socket = lifecycle_socket(&directory, "owner-health-drop");
+            let journal_root = directory.path().join("owner-health-invocations");
+            let holder = Arc::new(Mutex::new(None));
+            let publisher = PeerPublisher::with_owner_commit(
+                Arc::new(LifecycleSink),
+                Arc::new(DropBrokerOnHealth {
+                    broker: Arc::clone(&holder),
                 }),
             );
-        let fanout_for_thread = Arc::clone(&fanout);
-        let caller = std::thread::spawn(move || {
-            fanout_for_thread.fanout_to_route(
-                &CollabEvent::FollowChanged { peer_id: None },
-                u64::MAX,
-                &CrdtRoute::cluster("off-thread-workspace"),
+            let membership = WorkspaceTree::default().shared();
+            let config = crate::NativePeerBrokerConfig {
+                journal_root: journal_root.clone(),
+                certificate_authority: Arc::new(LifecycleAuthority),
+            };
+            let broker = crate::collab_broker::spawn_with_test_services(
+                socket.clone(),
+                Some(membership.authority()),
+                publisher,
+                Some(&config),
+                HostServices::default(),
+                None,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                Arc::new(FanoutState::new()),
+            )
+            .expect("test broker");
+            let facade = broker.app_action_broker().expect("live broker facade");
+            *holder.lock().expect("broker holder") = Some(broker);
+            let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+            std::thread::spawn(move || {
+                result_tx
+                    .send(facade.invocation_host())
+                    .expect("send facade result");
+            });
+            let result = tilo_test_env::recv(
+                "owner health callback returned without join deadlock",
+                &result_rx,
             );
-        });
-        tilo_test_env::recv(
-            "off-thread sink drop joined broker without deadlock",
-            &sink_finished,
-        );
-        caller.join().expect("off-thread fanout caller");
-        drop(subscription);
+            assert!(
+                result.is_err(),
+                "shutdown requested by the health callback fences its facade result"
+            );
 
-        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
-        assert!(!socket.exists());
+            tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
+            assert!(!socket.exists());
+            let reopened = InvocationJournal::open(&journal_root)
+                .expect("health callback shutdown releases journal");
+            drop(reopened);
+        }
+
+        phase facade_guard_does_not_detach_an_unrelated_broker_drop;
+        {
+            let directory = tempfile::tempdir().expect("temporary broker directory");
+            let other_socket = lifecycle_socket(&directory, "other");
+            let other_journal = directory.path().join("other-invocations");
+            let other_config = crate::NativePeerBrokerConfig {
+                journal_root: other_journal.clone(),
+                certificate_authority: Arc::new(LifecycleAuthority),
+            };
+            let other = crate::collab_broker::spawn_with_test_services(
+                other_socket.clone(),
+                Some(WorkspaceTree::default().shared().authority()),
+                PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(HealthyOwner)),
+                Some(&other_config),
+                HostServices::default(),
+                None,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                Arc::new(FanoutState::new()),
+            )
+            .expect("other broker");
+            let other_holder = Arc::new(Mutex::new(Some(other)));
+            let proof = Arc::new(Mutex::new(None));
+
+            let broker_socket = lifecycle_socket(&directory, "guarded");
+            let broker_config = crate::NativePeerBrokerConfig {
+                journal_root: directory.path().join("guarded-invocations"),
+                certificate_authority: Arc::new(LifecycleAuthority),
+            };
+            let broker = crate::collab_broker::spawn_with_test_services(
+                broker_socket,
+                Some(WorkspaceTree::default().shared().authority()),
+                PeerPublisher::with_owner_commit(
+                    Arc::new(LifecycleSink),
+                    Arc::new(DropOtherBrokerOnHealth {
+                        broker: Arc::clone(&other_holder),
+                        socket: other_socket,
+                        journal_root: other_journal,
+                        proof: Arc::clone(&proof),
+                    }),
+                ),
+                Some(&broker_config),
+                HostServices::default(),
+                None,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                Arc::new(FanoutState::new()),
+            )
+            .expect("guarded broker");
+            let facade = broker.app_action_broker().expect("guarded broker facade");
+
+            facade
+                .invocation_host()
+                .expect("unrelated broker drop does not fence this broker");
+            proof
+                .lock()
+                .expect("other broker proof")
+                .take()
+                .expect("health callback recorded cleanup")
+                .expect("unrelated broker drop synchronously released resources");
+            drop(broker);
+        }
+
+        phase broker_thread_unwind_releases_journal_and_owned_socket;
+        {
+            let directory = tempfile::tempdir().expect("temporary broker directory");
+            let socket = lifecycle_socket(&directory, "unwind");
+            let config = crate::NativePeerBrokerConfig {
+                journal_root: directory.path().join("unwind-invocations"),
+                certificate_authority: Arc::new(LifecycleAuthority),
+            };
+            let fanout = Arc::new(FanoutState::new());
+            let broker = crate::collab_broker::spawn_with_test_services(
+                socket.clone(),
+                None,
+                PeerPublisher::disabled(),
+                Some(&config),
+                HostServices::default(),
+                None,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                Arc::clone(&fanout),
+            )
+            .expect("test broker");
+            let facade = broker.app_action_broker().expect("live broker facade");
+            let state = fanout.app_broker().expect("attached broker state");
+
+            // A failing broker thread is started again on the same socket, and
+            // the session's handles to it stay live.
+            state
+                .turn_work
+                .hand(Box::new(|_| panic!("broker-thread unwind fixture")));
+            tilo_test_env::wait_until("the broker thread to start again", || {
+                state.thread_restarts() == 1
+            });
+            let (reached, answered) = std::sync::mpsc::channel();
+            state.turn_work.hand(Box::new(move |_| {
+                let _ = reached.send(tilo_rt::panic_boundary::is_isolated());
+            }));
+            assert!(
+                tilo_test_env::recv("the restarted thread's turn", &answered),
+                "the restarted thread runs inside its panic boundary"
+            );
+            assert!(socket.exists(), "a restart keeps the socket");
+            assert!(
+                !state.stopped.load(Ordering::Acquire),
+                "a restart keeps the broker's state live"
+            );
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("client runtime");
+            tokio::task::LocalSet::new().block_on(&runtime, async {
+                tokio::net::UnixStream::connect(&socket)
+                    .await
+                    .expect("a client connects after the restart");
+            });
+
+            // One that keeps failing stays down and releases what it held.
+            for _ in 0..BROKER_THREAD_RESTARTS {
+                state
+                    .turn_work
+                    .hand(Box::new(|_| panic!("broker-thread unwind fixture")));
+                tilo_test_env::wait_until("the broker thread to fail", || {
+                    !socket.exists() || state.turn_work.handed.lock_recover().is_empty()
+                });
+            }
+            drop(state);
+
+            tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
+            assert!(!socket.exists(), "unwind releases owned socket custody");
+            assert!(
+                facade.invocation_host().is_err(),
+                "unwind makes surviving broker facades inert"
+            );
+            let reopened = InvocationJournal::open(&config.journal_root)
+                .expect("unwind releases the invocation journal");
+            drop(reopened);
+            drop(broker);
+
+            let replacement = crate::collab_broker::spawn_with_test_services(
+                socket,
+                None,
+                PeerPublisher::disabled(),
+                Some(&config),
+                HostServices::default(),
+                None,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                Arc::new(FanoutState::new()),
+            )
+            .expect("broker restarts after broker-thread unwind");
+            drop(replacement);
+        }
     }
 
     #[cfg(test)]
@@ -11060,58 +11275,6 @@ pub mod tests {
             );
             Ok(())
         }
-    }
-
-    #[test]
-    fn owner_health_callback_can_drop_broker_without_facade_join_deadlock() {
-        let directory = tempfile::tempdir().expect("temporary broker directory");
-        let socket = lifecycle_socket(&directory, "owner-health-drop");
-        let journal_root = directory.path().join("owner-health-invocations");
-        let holder = Arc::new(Mutex::new(None));
-        let publisher = PeerPublisher::with_owner_commit(
-            Arc::new(LifecycleSink),
-            Arc::new(DropBrokerOnHealth {
-                broker: Arc::clone(&holder),
-            }),
-        );
-        let membership = WorkspaceTree::default().shared();
-        let config = crate::NativePeerBrokerConfig {
-            journal_root: journal_root.clone(),
-            certificate_authority: Arc::new(LifecycleAuthority),
-        };
-        let broker = crate::collab_broker::spawn_with_test_services(
-            socket.clone(),
-            Some(membership.authority()),
-            publisher,
-            Some(&config),
-            HostServices::default(),
-            None,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            Arc::new(FanoutState::new()),
-        )
-        .expect("test broker");
-        let facade = broker.app_action_broker().expect("live broker facade");
-        *holder.lock().expect("broker holder") = Some(broker);
-        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
-        std::thread::spawn(move || {
-            result_tx
-                .send(facade.invocation_host())
-                .expect("send facade result");
-        });
-        let result = tilo_test_env::recv(
-            "owner health callback returned without join deadlock",
-            &result_rx,
-        );
-        assert!(
-            result.is_err(),
-            "shutdown requested by the health callback fences its facade result"
-        );
-
-        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
-        assert!(!socket.exists());
-        let reopened = InvocationJournal::open(&journal_root)
-            .expect("health callback shutdown releases journal");
-        drop(reopened);
     }
 
     #[cfg(test)]
@@ -11153,270 +11316,315 @@ pub mod tests {
         }
     }
 
-    #[test]
-    fn facade_guard_does_not_detach_an_unrelated_broker_drop() {
-        let directory = tempfile::tempdir().expect("temporary broker directory");
-        let other_socket = lifecycle_socket(&directory, "other");
-        let other_journal = directory.path().join("other-invocations");
-        let other_config = crate::NativePeerBrokerConfig {
-            journal_root: other_journal.clone(),
-            certificate_authority: Arc::new(LifecycleAuthority),
-        };
-        let other = crate::collab_broker::spawn_with_test_services(
-            other_socket.clone(),
-            Some(WorkspaceTree::default().shared().authority()),
-            PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(HealthyOwner)),
-            Some(&other_config),
-            HostServices::default(),
-            None,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            Arc::new(FanoutState::new()),
-        )
-        .expect("other broker");
-        let other_holder = Arc::new(Mutex::new(Some(other)));
-        let proof = Arc::new(Mutex::new(None));
+    tilo_test_env::scenario! {
+        fn the_local_directory_bounds_its_wire_and_cleans_up_after_a_connection;
 
-        let broker_socket = lifecycle_socket(&directory, "guarded");
-        let broker_config = crate::NativePeerBrokerConfig {
-            journal_root: directory.path().join("guarded-invocations"),
-            certificate_authority: Arc::new(LifecycleAuthority),
-        };
-        let broker = crate::collab_broker::spawn_with_test_services(
-            broker_socket,
-            Some(WorkspaceTree::default().shared().authority()),
-            PeerPublisher::with_owner_commit(
-                Arc::new(LifecycleSink),
-                Arc::new(DropOtherBrokerOnHealth {
-                    broker: Arc::clone(&other_holder),
-                    socket: other_socket,
-                    journal_root: other_journal,
-                    proof: Arc::clone(&proof),
-                }),
-            ),
-            Some(&broker_config),
-            HostServices::default(),
-            None,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            Arc::new(FanoutState::new()),
-        )
-        .expect("guarded broker");
-        let facade = broker.app_action_broker().expect("guarded broker facade");
-
-        facade
-            .invocation_host()
-            .expect("unrelated broker drop does not fence this broker");
-        proof
-            .lock()
-            .expect("other broker proof")
-            .take()
-            .expect("health callback recorded cleanup")
-            .expect("unrelated broker drop synchronously released resources");
-        drop(broker);
-    }
-
-    #[test]
-    fn broker_thread_unwind_releases_journal_and_owned_socket() {
-        let directory = tempfile::tempdir().expect("temporary broker directory");
-        let socket = lifecycle_socket(&directory, "unwind");
-        let config = crate::NativePeerBrokerConfig {
-            journal_root: directory.path().join("unwind-invocations"),
-            certificate_authority: Arc::new(LifecycleAuthority),
-        };
-        let fanout = Arc::new(FanoutState::new());
-        let broker = crate::collab_broker::spawn_with_test_services(
-            socket.clone(),
-            None,
-            PeerPublisher::disabled(),
-            Some(&config),
-            HostServices::default(),
-            None,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            Arc::clone(&fanout),
-        )
-        .expect("test broker");
-        let facade = broker.app_action_broker().expect("live broker facade");
-        let state = fanout.app_broker().expect("attached broker state");
-
-        // A failing broker thread is started again on the same socket, and
-        // the session's handles to it stay live.
-        state
-            .turn_work
-            .hand(Box::new(|_| panic!("broker-thread unwind fixture")));
-        tilo_test_env::wait_until("the broker thread to start again", || {
-            state.thread_restarts() == 1
-        });
-        let (reached, answered) = std::sync::mpsc::channel();
-        state.turn_work.hand(Box::new(move |_| {
-            let _ = reached.send(tilo_rt::panic_boundary::is_isolated());
-        }));
-        assert!(
-            tilo_test_env::recv("the restarted thread's turn", &answered),
-            "the restarted thread runs inside its panic boundary"
-        );
-        assert!(socket.exists(), "a restart keeps the socket");
-        assert!(
-            !state.stopped.load(Ordering::Acquire),
-            "a restart keeps the broker's state live"
-        );
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("client runtime");
-        tokio::task::LocalSet::new().block_on(&runtime, async {
-            tokio::net::UnixStream::connect(&socket)
-                .await
-                .expect("a client connects after the restart");
-        });
-
-        // One that keeps failing stays down and releases what it held.
-        for _ in 0..BROKER_THREAD_RESTARTS {
-            state
-                .turn_work
-                .hand(Box::new(|_| panic!("broker-thread unwind fixture")));
-            tilo_test_env::wait_until("the broker thread to fail", || {
-                !socket.exists() || state.turn_work.handed.lock_recover().is_empty()
-            });
-        }
-        drop(state);
-
-        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
-        assert!(!socket.exists(), "unwind releases owned socket custody");
-        assert!(
-            facade.invocation_host().is_err(),
-            "unwind makes surviving broker facades inert"
-        );
-        let reopened = InvocationJournal::open(&config.journal_root)
-            .expect("unwind releases the invocation journal");
-        drop(reopened);
-        drop(broker);
-
-        let replacement = crate::collab_broker::spawn_with_test_services(
-            socket,
-            None,
-            PeerPublisher::disabled(),
-            Some(&config),
-            HostServices::default(),
-            None,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            Arc::new(FanoutState::new()),
-        )
-        .expect("broker restarts after broker-thread unwind");
-        drop(replacement);
-    }
-
-    #[test]
-    fn connection_exit_cleanup_is_idempotent_and_preserves_survivors_and_replacements() {
-        let fixture = local_directory_fixture();
-        let survivor = fixture.peer_id + 1;
-        let replacement = survivor + 1;
-        let survivor_root = ActionDirectoryRoot {
-            peer_id: survivor,
-            app_id: fixture.route.app_id.clone(),
-            cluster_id: fixture.cluster_id.clone(),
-            record_id: "survivor".into(),
-        };
-        fixture
-            .state
-            .action_directory_roots
-            .lock()
-            .expect("directory roots")
-            .insert(survivor, survivor_root);
-        fixture.directories.directories.borrow_mut().insert(
-            survivor,
-            RegisteredActionDirectory {
-                registration: Rc::new(uuid::Uuid::new_v4()),
-                pagination: directory_pagination::DirectoryPagination::default(),
-                publishing_person: Some("fixture-owner".into()),
+        phase connection_exit_cleanup_is_idempotent_and_preserves_survivors_and_replacements;
+        {
+            let fixture = local_directory_fixture();
+            let survivor = fixture.peer_id + 1;
+            let replacement = survivor + 1;
+            let survivor_root = ActionDirectoryRoot {
+                peer_id: survivor,
                 app_id: fixture.route.app_id.clone(),
-                route: fixture.route.clone(),
-                directory: Rc::clone(&fixture.directory),
-            },
-        );
-        for peer_id in [fixture.peer_id, survivor] {
+                cluster_id: fixture.cluster_id.clone(),
+                record_id: "survivor".into(),
+            };
             fixture
                 .state
-                .surfaces
+                .action_directory_roots
                 .lock()
-                .expect("published surfaces")
-                .insert(
-                    peer_id,
-                    PublishedSurface {
-                        peer_id,
-                        app_id: fixture.route.app_id.clone(),
-                        route: fixture.route.clone(),
-                        actions: Vec::new(),
-                        live: true,
-                    },
-                );
-        }
-
-        drop(ConnectionExit {
-            state: Arc::clone(&fixture.state),
-            directories: Rc::clone(&fixture.directories),
-            peer_id: fixture.peer_id,
-        });
-        drop(ConnectionLease {
-            local_media: None,
-            state: Arc::clone(&fixture.state),
-            directories: Rc::clone(&fixture.directories),
-            peer_id: fixture.peer_id,
-        });
-
-        assert!(
-            !fixture
-                .state
-                .surfaces
-                .lock()
-                .expect("published surfaces")
-                .contains_key(&fixture.peer_id)
-        );
-        assert!(
-            !fixture
-                .directories
-                .directories
-                .borrow()
-                .contains_key(&fixture.peer_id)
-        );
-        assert!(
-            fixture
-                .state
-                .surfaces
-                .lock()
-                .expect("published surfaces")
-                .contains_key(&survivor)
-        );
-        assert!(
-            fixture
-                .directories
-                .directories
-                .borrow()
-                .contains_key(&survivor)
-        );
-
-        fixture
-            .state
-            .action_directory_roots
-            .lock()
-            .expect("directory roots")
-            .insert(
-                replacement,
-                ActionDirectoryRoot {
-                    peer_id: replacement,
+                .expect("directory roots")
+                .insert(survivor, survivor_root);
+            fixture.directories.directories.borrow_mut().insert(
+                survivor,
+                RegisteredActionDirectory {
+                    registration: Rc::new(uuid::Uuid::new_v4()),
+                    pagination: directory_pagination::DirectoryPagination::default(),
+                    publishing_person: Some("fixture-owner".into()),
                     app_id: fixture.route.app_id.clone(),
-                    cluster_id: fixture.cluster_id.clone(),
-                    record_id: "replacement".into(),
+                    route: fixture.route.clone(),
+                    directory: Rc::clone(&fixture.directory),
                 },
             );
-        fixture.state.refresh_action_directory_root_snapshot();
-        let peer_ids = fixture
-            .state
-            .action_directory_roots()
-            .into_iter()
-            .map(|root| root.peer_id)
-            .collect::<std::collections::HashSet<_>>();
-        assert!(!peer_ids.contains(&fixture.peer_id));
-        assert!(peer_ids.contains(&survivor));
-        assert!(peer_ids.contains(&replacement));
+            for peer_id in [fixture.peer_id, survivor] {
+                fixture
+                    .state
+                    .surfaces
+                    .lock()
+                    .expect("published surfaces")
+                    .insert(
+                        peer_id,
+                        PublishedSurface {
+                            peer_id,
+                            app_id: fixture.route.app_id.clone(),
+                            route: fixture.route.clone(),
+                            actions: Vec::new(),
+                            live: true,
+                        },
+                    );
+            }
+
+            drop(ConnectionExit {
+                state: Arc::clone(&fixture.state),
+                directories: Rc::clone(&fixture.directories),
+                peer_id: fixture.peer_id,
+            });
+            drop(ConnectionLease {
+                local_media: None,
+                state: Arc::clone(&fixture.state),
+                directories: Rc::clone(&fixture.directories),
+                peer_id: fixture.peer_id,
+            });
+
+            assert!(
+                !fixture
+                    .state
+                    .surfaces
+                    .lock()
+                    .expect("published surfaces")
+                    .contains_key(&fixture.peer_id)
+            );
+            assert!(
+                !fixture
+                    .directories
+                    .directories
+                    .borrow()
+                    .contains_key(&fixture.peer_id)
+            );
+            assert!(
+                fixture
+                    .state
+                    .surfaces
+                    .lock()
+                    .expect("published surfaces")
+                    .contains_key(&survivor)
+            );
+            assert!(
+                fixture
+                    .directories
+                    .directories
+                    .borrow()
+                    .contains_key(&survivor)
+            );
+
+            fixture
+                .state
+                .action_directory_roots
+                .lock()
+                .expect("directory roots")
+                .insert(
+                    replacement,
+                    ActionDirectoryRoot {
+                        peer_id: replacement,
+                        app_id: fixture.route.app_id.clone(),
+                        cluster_id: fixture.cluster_id.clone(),
+                        record_id: "replacement".into(),
+                    },
+                );
+            fixture.state.refresh_action_directory_root_snapshot();
+            let peer_ids = fixture
+                .state
+                .action_directory_roots()
+                .into_iter()
+                .map(|root| root.peer_id)
+                .collect::<std::collections::HashSet<_>>();
+            assert!(!peer_ids.contains(&fixture.peer_id));
+            assert!(peer_ids.contains(&survivor));
+            assert!(peer_ids.contains(&replacement));
+        }
+
+        phase directory_queue_refuses_oversized_query_text_and_cursor_before_contacting_the_app;
+        {
+            let fixture = local_directory_fixture();
+            let queue = fixture.broker.action_directory_request_queue();
+            let mut oversized_text = runtime_collab::ActionDirectoryQuery {
+                peer_id: fixture.peer_id,
+                revision: String::new(),
+                cursor: Vec::new(),
+                needle: "x".repeat(DIRECTORY_MAX_QUERY_NEEDLE_BYTES.saturating_add(1)),
+                parent_resource: String::new(),
+                max_results: 1,
+                max_bytes: 1,
+                max_work: 1,
+                max_depth: 1,
+                resource_name: String::new(),
+            };
+            assert!(matches!(
+                queue.try_query(
+                    BrokerActor::person("actor-a"),
+                    &fixture.cluster_id,
+                    oversized_text.clone()
+                ),
+                Err(ActionDirectoryBridgeError::InvalidRequest)
+            ));
+            oversized_text.needle.clear();
+            oversized_text.cursor = vec![0; DIRECTORY_MAX_CURSOR_BYTES.saturating_add(1)];
+            assert!(matches!(
+                queue.try_query(
+                    BrokerActor::person("actor-a"),
+                    &fixture.cluster_id,
+                    oversized_text
+                ),
+                Err(ActionDirectoryBridgeError::InvalidRequest)
+            ));
+            assert!(matches!(
+                queue.try_resolve(
+                    BrokerActor::person("actor-a"),
+                    "x".repeat(DIRECTORY_MAX_IDENTIFIER_BYTES.saturating_add(1)),
+                    fixture.peer_id,
+                    "directory-r1",
+                    "workspace:atlas",
+                    "open",
+                ),
+                Err(ActionDirectoryBridgeError::InvalidRequest)
+            ));
+            let target = DirectoryActionTarget {
+                cluster_id: fixture.cluster_id.clone(),
+                peer_id: fixture.peer_id,
+                revision: "directory-r1".into(),
+                address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+            };
+            assert!(matches!(
+                queue.try_start_resolved(
+                    BrokerActor::person("actor-a"),
+                    target.clone(),
+                    Some("x".repeat(DIRECTORY_MAX_PARAMS_BYTES.saturating_add(1))),
+                    None,
+                ),
+                Err(ActionDirectoryBridgeError::InvalidRequest)
+            ));
+            assert!(matches!(
+                queue.try_start_resolved(
+                    BrokerActor::person("actor-a"),
+                    target,
+                    None,
+                    Some(DirectoryActionConfirmation::Phrase(
+                        "x".repeat(DIRECTORY_MAX_CONFIRMATION_BYTES.saturating_add(1)),
+                    )),
+                ),
+                Err(ActionDirectoryBridgeError::InvalidRequest)
+            ));
+            assert_eq!(
+                fixture.directory_state.borrow().query_count,
+                0,
+                "invalid local requests are rejected before a directory capability is contacted"
+            );
+        }
+
+        phase published_semantic_identity_retains_exact_directory_address_and_refuses_bad_wire;
+        {
+            let fixture = local_directory_fixture();
+            let mut row = fixture.directory_state.borrow().row();
+            let identity = runtime_collab::ExportedResourceSemanticIdentity {
+                kind: "workspace".into(),
+                key: "source-workspace:atlas".into(),
+            };
+            row.descriptor.as_mut().unwrap().semantic_identity = Some(identity);
+            let action = published_directory_action(&row).unwrap();
+            assert_eq!(action.resource, row.resource);
+            assert_eq!(action.action, row.action.as_deref().unwrap());
+            assert_eq!(
+                action.semantic_identity,
+                tilo_actions::ResourceSemanticIdentity::new("workspace", "source-workspace:atlas")
+            );
+
+            let decode = |kind: &str, key: &str| {
+                let mut descriptor = row.descriptor.clone().unwrap();
+                descriptor.resource_kind = "chat.agent".into();
+                descriptor.semantic_identity = Some(runtime_collab::ExportedResourceSemanticIdentity {
+                    kind: kind.into(),
+                    key: key.into(),
+                });
+                descriptor.check()
+            };
+            assert_eq!(decode("chat.agent", "chat.person:scribe"), Ok(()));
+            assert!(decode("chat.person", "chat.person:scribe").is_err());
+            assert!(decode("chat.agent", "key\nsecret").is_err());
+            assert!(decode("chat.agent", &"x".repeat(4097)).is_err());
+            row.descriptor
+                .as_mut()
+                .unwrap()
+                .semantic_identity
+                .as_mut()
+                .unwrap()
+                .kind = "person".into();
+            assert!(published_directory_action(&row).is_err());
+        }
+
+        phase directory_wire_rows_refuse_control_framing_in_identifiers_before_policy_or_invocation;
+        {
+            let fixture = local_directory_fixture();
+            let mut row = fixture.directory_state.borrow().row();
+            row.resource = "workspace:atlas\u{1f}admin".into();
+            assert!(
+                permits_directory_row(
+                    &fixture.state,
+                    &fixture.cluster_id,
+                    &BrokerActor::person("actor-a"),
+                    &fixture.route.app_id,
+                    None,
+                    &row,
+                )
+                .is_err(),
+                "a resource cannot inject the shell result-id separator"
+            );
+            let mut row = fixture.directory_state.borrow().row();
+            row.action = Some("open\nadmin".into());
+            assert!(
+                permits_directory_row(
+                    &fixture.state,
+                    &fixture.cluster_id,
+                    &BrokerActor::person("actor-a"),
+                    &fixture.route.app_id,
+                    None,
+                    &row,
+                )
+                .is_err(),
+                "control characters cannot turn one wire action into several shell fields"
+            );
+        }
+
+        phase retained_directory_root_pages_reach_exact_bound_and_tail_without_query_sorting;
+        {
+            let fixture = local_directory_fixture();
+            {
+                let mut roots = fixture
+                    .state
+                    .action_directory_roots
+                    .lock()
+                    .expect("directory roots");
+                for peer_id in 1..=129_u64 {
+                    roots.insert(
+                        peer_id,
+                        ActionDirectoryRoot {
+                            peer_id,
+                            app_id: "so.tilo.test".into(),
+                            cluster_id: fixture.cluster_id.clone(),
+                            record_id: format!("root-{peer_id}"),
+                        },
+                    );
+                }
+                drop(roots);
+            }
+            fixture.state.refresh_action_directory_root_snapshot();
+            let first = fixture.state.action_directory_root_page(None, 128);
+            assert_eq!(first.roots.len(), 128);
+            assert_eq!(first.next_after_peer, Some(128));
+            let second = fixture
+                .state
+                .action_directory_root_page(first.next_after_peer, 128);
+            assert_eq!(second.roots.len(), 1);
+            assert_eq!(second.roots[0].peer_id, 129);
+            assert_eq!(second.next_after_peer, None);
+            let repeat = fixture.state.action_directory_root_page(None, 1);
+            assert_eq!(repeat.roots[0].peer_id, 1);
+            assert_eq!(repeat.generation, second.generation);
+            fixture.state.remove_connection(129);
+            let after_disconnect = fixture.state.action_directory_root_page(Some(128), 1);
+            assert!(after_disconnect.roots.is_empty());
+            assert!(after_disconnect.generation > second.generation);
+        }
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12056,124 +12264,6 @@ pub mod tests {
         tokio::task::yield_now().await;
     }
 
-    #[test]
-    fn directory_queue_refuses_oversized_query_text_and_cursor_before_contacting_the_app() {
-        let fixture = local_directory_fixture();
-        let queue = fixture.broker.action_directory_request_queue();
-        let mut oversized_text = runtime_collab::ActionDirectoryQuery {
-            peer_id: fixture.peer_id,
-            revision: String::new(),
-            cursor: Vec::new(),
-            needle: "x".repeat(DIRECTORY_MAX_QUERY_NEEDLE_BYTES.saturating_add(1)),
-            parent_resource: String::new(),
-            max_results: 1,
-            max_bytes: 1,
-            max_work: 1,
-            max_depth: 1,
-            resource_name: String::new(),
-        };
-        assert!(matches!(
-            queue.try_query(
-                BrokerActor::person("actor-a"),
-                &fixture.cluster_id,
-                oversized_text.clone()
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
-        oversized_text.needle.clear();
-        oversized_text.cursor = vec![0; DIRECTORY_MAX_CURSOR_BYTES.saturating_add(1)];
-        assert!(matches!(
-            queue.try_query(
-                BrokerActor::person("actor-a"),
-                &fixture.cluster_id,
-                oversized_text
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
-        assert!(matches!(
-            queue.try_resolve(
-                BrokerActor::person("actor-a"),
-                "x".repeat(DIRECTORY_MAX_IDENTIFIER_BYTES.saturating_add(1)),
-                fixture.peer_id,
-                "directory-r1",
-                "workspace:atlas",
-                "open",
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
-        let target = DirectoryActionTarget {
-            cluster_id: fixture.cluster_id.clone(),
-            peer_id: fixture.peer_id,
-            revision: "directory-r1".into(),
-            address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
-        };
-        assert!(matches!(
-            queue.try_start_resolved(
-                BrokerActor::person("actor-a"),
-                target.clone(),
-                Some("x".repeat(DIRECTORY_MAX_PARAMS_BYTES.saturating_add(1))),
-                None,
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
-        assert!(matches!(
-            queue.try_start_resolved(
-                BrokerActor::person("actor-a"),
-                target,
-                None,
-                Some(DirectoryActionConfirmation::Phrase(
-                    "x".repeat(DIRECTORY_MAX_CONFIRMATION_BYTES.saturating_add(1)),
-                )),
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
-        assert_eq!(
-            fixture.directory_state.borrow().query_count,
-            0,
-            "invalid local requests are rejected before a directory capability is contacted"
-        );
-    }
-
-    #[test]
-    fn published_semantic_identity_retains_exact_directory_address_and_refuses_bad_wire() {
-        let fixture = local_directory_fixture();
-        let mut row = fixture.directory_state.borrow().row();
-        let identity = runtime_collab::ExportedResourceSemanticIdentity {
-            kind: "workspace".into(),
-            key: "source-workspace:atlas".into(),
-        };
-        row.descriptor.as_mut().unwrap().semantic_identity = Some(identity);
-        let action = published_directory_action(&row).unwrap();
-        assert_eq!(action.resource, row.resource);
-        assert_eq!(action.action, row.action.as_deref().unwrap());
-        assert_eq!(
-            action.semantic_identity,
-            tilo_actions::ResourceSemanticIdentity::new("workspace", "source-workspace:atlas")
-        );
-
-        let decode = |kind: &str, key: &str| {
-            let mut descriptor = row.descriptor.clone().unwrap();
-            descriptor.resource_kind = "chat.agent".into();
-            descriptor.semantic_identity = Some(runtime_collab::ExportedResourceSemanticIdentity {
-                kind: kind.into(),
-                key: key.into(),
-            });
-            descriptor.check()
-        };
-        assert_eq!(decode("chat.agent", "chat.person:scribe"), Ok(()));
-        assert!(decode("chat.person", "chat.person:scribe").is_err());
-        assert!(decode("chat.agent", "key\nsecret").is_err());
-        assert!(decode("chat.agent", &"x".repeat(4097)).is_err());
-        row.descriptor
-            .as_mut()
-            .unwrap()
-            .semantic_identity
-            .as_mut()
-            .unwrap()
-            .kind = "person".into();
-        assert!(published_directory_action(&row).is_err());
-    }
-
     /// A directory whose container row carries a visibility contract the
     /// broker cannot read, beside a well-formed action row.
     #[cfg(test)]
@@ -12272,80 +12362,6 @@ pub mod tests {
                 assert!(refused.is_err(), "{refused:?}");
             })
             .await;
-    }
-
-    #[test]
-    fn directory_wire_rows_refuse_control_framing_in_identifiers_before_policy_or_invocation() {
-        let fixture = local_directory_fixture();
-        let mut row = fixture.directory_state.borrow().row();
-        row.resource = "workspace:atlas\u{1f}admin".into();
-        assert!(
-            permits_directory_row(
-                &fixture.state,
-                &fixture.cluster_id,
-                &BrokerActor::person("actor-a"),
-                &fixture.route.app_id,
-                None,
-                &row,
-            )
-            .is_err(),
-            "a resource cannot inject the shell result-id separator"
-        );
-        let mut row = fixture.directory_state.borrow().row();
-        row.action = Some("open\nadmin".into());
-        assert!(
-            permits_directory_row(
-                &fixture.state,
-                &fixture.cluster_id,
-                &BrokerActor::person("actor-a"),
-                &fixture.route.app_id,
-                None,
-                &row,
-            )
-            .is_err(),
-            "control characters cannot turn one wire action into several shell fields"
-        );
-    }
-
-    #[test]
-    fn retained_directory_root_pages_reach_exact_bound_and_tail_without_query_sorting() {
-        let fixture = local_directory_fixture();
-        {
-            let mut roots = fixture
-                .state
-                .action_directory_roots
-                .lock()
-                .expect("directory roots");
-            for peer_id in 1..=129_u64 {
-                roots.insert(
-                    peer_id,
-                    ActionDirectoryRoot {
-                        peer_id,
-                        app_id: "so.tilo.test".into(),
-                        cluster_id: fixture.cluster_id.clone(),
-                        record_id: format!("root-{peer_id}"),
-                    },
-                );
-            }
-            drop(roots);
-        }
-        fixture.state.refresh_action_directory_root_snapshot();
-        let first = fixture.state.action_directory_root_page(None, 128);
-        assert_eq!(first.roots.len(), 128);
-        assert_eq!(first.next_after_peer, Some(128));
-        let second = fixture
-            .state
-            .action_directory_root_page(first.next_after_peer, 128);
-        assert_eq!(second.roots.len(), 1);
-        assert_eq!(second.roots[0].peer_id, 129);
-        assert_eq!(second.next_after_peer, None);
-        let repeat = fixture.state.action_directory_root_page(None, 1);
-        assert_eq!(repeat.roots[0].peer_id, 1);
-        assert_eq!(repeat.generation, second.generation);
-        fixture.state.remove_connection(129);
-        let after_disconnect = fixture.state.action_directory_root_page(Some(128), 1);
-        assert!(after_disconnect.roots.is_empty());
-        assert!(after_disconnect.generation > second.generation);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -12527,113 +12543,214 @@ pub mod tests {
         }
     }
 
-    #[test]
-    fn certified_join_verifies_root_device_and_workspace_chain() {
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let device = SigningKey::from_bytes(&[2; 32]);
-        let route = CrdtRoute::cluster("workspace-a");
-        let presentation = certified_join("workspace-a", &root, &device);
-        let verified = verify_join_presentation(
-            &route,
-            &presentation,
-            &root.verifying_key().to_bytes(),
-            2,
-            false,
-            true,
-        )
-        .expect("valid certified join");
-        assert_eq!(verified.user_public_key, root.verifying_key().to_bytes());
-        assert_eq!(
-            verified.device_public_key,
-            device.verifying_key().to_bytes()
-        );
+    tilo_test_env::scenario! {
+        fn a_certified_join_is_verified_and_admitted_by_its_workspace;
+
+        phase certified_join_verifies_root_device_and_workspace_chain;
+        {
+            let root = SigningKey::from_bytes(&[1; 32]);
+            let device = SigningKey::from_bytes(&[2; 32]);
+            let route = CrdtRoute::cluster("workspace-a");
+            let presentation = certified_join("workspace-a", &root, &device);
+            let verified = verify_join_presentation(
+                &route,
+                &presentation,
+                &root.verifying_key().to_bytes(),
+                2,
+                false,
+                true,
+            )
+            .expect("valid certified join");
+            assert_eq!(verified.user_public_key, root.verifying_key().to_bytes());
+            assert_eq!(
+                verified.device_public_key,
+                device.verifying_key().to_bytes()
+            );
+        }
+
+        phase certified_join_rejects_unknown_proof_signer_and_tampered_cert;
+        {
+            let root = SigningKey::from_bytes(&[3; 32]);
+            let device = SigningKey::from_bytes(&[4; 32]);
+            let stranger = SigningKey::from_bytes(&[5; 32]);
+            let route = CrdtRoute::cluster("workspace-a");
+            let mut presentation = certified_join("workspace-a", &root, &device);
+            presentation.proof = stranger
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    "workspace-a",
+                ))
+                .to_bytes()
+                .to_vec();
+            assert!(
+                verify_join_presentation(
+                    &route,
+                    &presentation,
+                    &root.verifying_key().to_bytes(),
+                    2,
+                    false,
+                    true,
+                )
+                .is_err()
+            );
+
+            let mut presentation = certified_join("workspace-a", &root, &device);
+            let mut cert: tilo_user_identity::DeviceCert =
+                serde_json::from_slice(&presentation.device_certificate).expect("certificate");
+            cert.device_label.push_str(" (tampered)");
+            presentation.device_certificate = serde_json::to_vec(&cert).expect("certificate JSON");
+            assert!(
+                verify_join_presentation(
+                    &route,
+                    &presentation,
+                    &root.verifying_key().to_bytes(),
+                    2,
+                    false,
+                    true,
+                )
+                .is_err()
+            );
+        }
+
+        phase certified_join_rejects_other_workspace_revoked_and_unenrolled_device;
+        {
+            let root = SigningKey::from_bytes(&[6; 32]);
+            let device = SigningKey::from_bytes(&[7; 32]);
+            let presentation = certified_join("workspace-b", &root, &device);
+            let expected_root = root.verifying_key().to_bytes();
+            assert!(
+                verify_join_presentation(
+                    &CrdtRoute::cluster("workspace-a"),
+                    &presentation,
+                    &expected_root,
+                    2,
+                    false,
+                    true,
+                )
+                .is_err()
+            );
+            let route = CrdtRoute::cluster("workspace-b");
+            let other_root = SigningKey::from_bytes(&[8; 32]);
+            assert!(
+                verify_join_presentation(
+                    &route,
+                    &presentation,
+                    &other_root.verifying_key().to_bytes(),
+                    2,
+                    false,
+                    true,
+                )
+                .is_err(),
+                "a certificate selected for another workspace identity is rejected"
+            );
+            assert!(
+                verify_join_presentation(&route, &presentation, &expected_root, 2, true, true).is_err()
+            );
+            assert!(
+                verify_join_presentation(&route, &presentation, &expected_root, 2, false, false)
+                    .is_err()
+            );
+        }
+
+        phase certified_join_admission_uses_workspace_membership_and_role;
+        {
+            let root = SigningKey::from_bytes(&[20; 32]);
+            let principal = person_id_for_root(root.verifying_key().to_bytes());
+            let mut workspace = crate::test_support::Workspace::new(
+                crate::test_support::WorkspaceSlot(1),
+                "Member workspace",
+            );
+            let route = CrdtRoute::cluster(workspace.id().to_string());
+            workspace.admit(principal.clone(), crate::test_support::Role::Editor);
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+
+            let admitted = admit_verified_join(&tree, &route, verified_device(&root))
+                .expect("a certified editor is admitted");
+            assert_eq!(admitted.principal_id, principal);
+            assert_eq!(admitted.role, CapRole::Editor);
+            assert!(
+                verify_session_author(
+                    &admitted,
+                    collab_types::Ed25519PublicKey::from_bytes([42; 32]),
+                )
+                .is_ok(),
+                "signed ops are device-authored under the certificate's device key"
+            );
+            assert!(
+                verify_session_author(
+                    &admitted,
+                    collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+                )
+                .is_err(),
+                "the user root certifies the device but does not author this device's ops"
+            );
+            assert!(
+                verify_session_author(
+                    &admitted,
+                    collab_types::Ed25519PublicKey::from_bytes([43; 32]),
+                )
+                .is_err(),
+                "a member cannot submit another device's envelope through this session"
+            );
+        }
+
+        phase certified_join_admission_rejects_wrong_or_removed_root;
+        {
+            let member = SigningKey::from_bytes(&[21; 32]);
+            let stranger = SigningKey::from_bytes(&[22; 32]);
+            let member_id = person_id_for_root(member.verifying_key().to_bytes());
+            let mut workspace = crate::test_support::Workspace::new(
+                crate::test_support::WorkspaceSlot(2),
+                "Revocation workspace",
+            );
+            let route = CrdtRoute::cluster(workspace.id().to_string());
+            workspace.admit(member_id.clone(), crate::test_support::Role::Viewer);
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+
+            assert!(admit_verified_join(&tree, &route, verified_device(&stranger)).is_err());
+            let admitted = admit_verified_join(&tree, &route, verified_device(&member))
+                .expect("member starts admitted");
+            let membership_tree = tree.shared();
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = AppBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(membership_tree.clone()),
+                None,
+            );
+            assert!(membership_tree.write().workspaces[0].dismiss(&member_id));
+            assert!(
+                state.revalidate_admission(&route, &admitted).is_err(),
+                "removing membership rejects the certified session's next operation"
+            );
+        }
+
+        phase certified_join_admission_rejects_cross_workspace_replay;
+        {
+            let root = SigningKey::from_bytes(&[23; 32]);
+            let principal = person_id_for_root(root.verifying_key().to_bytes());
+            let mut member_workspace = crate::test_support::Workspace::new(
+                crate::test_support::WorkspaceSlot(3),
+                "Member workspace",
+            );
+            member_workspace.set_owner(&principal);
+            let other_workspace = crate::test_support::Workspace::new(
+                crate::test_support::WorkspaceSlot(4),
+                "Other workspace",
+            );
+            let replay_route = CrdtRoute::cluster(other_workspace.id().to_string());
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(member_workspace);
+            tree.workspaces.push(other_workspace);
+
+            assert!(admit_verified_join(&tree, &replay_route, verified_device(&root)).is_err());
+        }
     }
 
     #[cfg(test)]
     mod participant_join;
-
-    #[test]
-    fn certified_join_rejects_unknown_proof_signer_and_tampered_cert() {
-        let root = SigningKey::from_bytes(&[3; 32]);
-        let device = SigningKey::from_bytes(&[4; 32]);
-        let stranger = SigningKey::from_bytes(&[5; 32]);
-        let route = CrdtRoute::cluster("workspace-a");
-        let mut presentation = certified_join("workspace-a", &root, &device);
-        presentation.proof = stranger
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                "workspace-a",
-            ))
-            .to_bytes()
-            .to_vec();
-        assert!(
-            verify_join_presentation(
-                &route,
-                &presentation,
-                &root.verifying_key().to_bytes(),
-                2,
-                false,
-                true,
-            )
-            .is_err()
-        );
-
-        let mut presentation = certified_join("workspace-a", &root, &device);
-        let mut cert: tilo_user_identity::DeviceCert =
-            serde_json::from_slice(&presentation.device_certificate).expect("certificate");
-        cert.device_label.push_str(" (tampered)");
-        presentation.device_certificate = serde_json::to_vec(&cert).expect("certificate JSON");
-        assert!(
-            verify_join_presentation(
-                &route,
-                &presentation,
-                &root.verifying_key().to_bytes(),
-                2,
-                false,
-                true,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn certified_join_rejects_other_workspace_revoked_and_unenrolled_device() {
-        let root = SigningKey::from_bytes(&[6; 32]);
-        let device = SigningKey::from_bytes(&[7; 32]);
-        let presentation = certified_join("workspace-b", &root, &device);
-        let expected_root = root.verifying_key().to_bytes();
-        assert!(
-            verify_join_presentation(
-                &CrdtRoute::cluster("workspace-a"),
-                &presentation,
-                &expected_root,
-                2,
-                false,
-                true,
-            )
-            .is_err()
-        );
-        let route = CrdtRoute::cluster("workspace-b");
-        let other_root = SigningKey::from_bytes(&[8; 32]);
-        assert!(
-            verify_join_presentation(
-                &route,
-                &presentation,
-                &other_root.verifying_key().to_bytes(),
-                2,
-                false,
-                true,
-            )
-            .is_err(),
-            "a certificate selected for another workspace identity is rejected"
-        );
-        assert!(
-            verify_join_presentation(&route, &presentation, &expected_root, 2, true, true).is_err()
-        );
-        assert!(
-            verify_join_presentation(&route, &presentation, &expected_root, 2, false, false)
-                .is_err()
-        );
-    }
 
     #[test]
     fn workspace_control_requires_editor_authority() {
@@ -12665,96 +12782,168 @@ pub mod tests {
         drop(tree);
     }
 
-    #[test]
-    fn certified_join_admission_uses_workspace_membership_and_role() {
-        let root = SigningKey::from_bytes(&[20; 32]);
-        let principal = person_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceSlot(1),
-            "Member workspace",
-        );
-        let route = CrdtRoute::cluster(workspace.id().to_string());
-        workspace.admit(principal.clone(), crate::test_support::Role::Editor);
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+    tilo_test_env::scenario! {
+        fn a_foreign_device_is_held_to_the_workspace_cap;
 
-        let admitted = admit_verified_join(&tree, &route, verified_device(&root))
-            .expect("a certified editor is admitted");
-        assert_eq!(admitted.principal_id, principal);
-        assert_eq!(admitted.role, CapRole::Editor);
-        assert!(
-            verify_session_author(
-                &admitted,
-                collab_types::Ed25519PublicKey::from_bytes([42; 32]),
-            )
-            .is_ok(),
-            "signed ops are device-authored under the certificate's device key"
-        );
-        assert!(
-            verify_session_author(
-                &admitted,
-                collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-            )
-            .is_err(),
-            "the user root certifies the device but does not author this device's ops"
-        );
-        assert!(
-            verify_session_author(
-                &admitted,
-                collab_types::Ed25519PublicKey::from_bytes([43; 32]),
-            )
-            .is_err(),
-            "a member cannot submit another device's envelope through this session"
-        );
-    }
+        phase a_foreign_device_is_refused_actions_above_the_workspace_cap;
+        {
+            use tilo_actions::ActionKind::{Outside, Undoable};
+            let root = SigningKey::from_bytes(&[24; 32]);
+            let mut workspace =
+                crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(4), "Actions");
+            workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
+            let workspace_id = workspace.id().to_string();
+            let route = CrdtRoute::cluster(&workspace_id);
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let native = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
+            let foreign = VerifiedJoinIdentity {
+                capped: true,
+                ..verified_device(&root)
+            };
+            let foreign = admit_verified_join(&tree, &route, foreign).unwrap();
+            let (state, _bridge_rx) = AppBrokerState::new(
+                &Arc::new(FanoutState::new()),
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(tree.shared()),
+                None,
+            );
+            let authorize = |admitted: &AdmittedJoinIdentity, kind| {
+                state.authorize_invocation_permission(
+                    &workspace_id,
+                    (
+                        "so.tilo.settings",
+                        "settings.workspace",
+                        "settings.workspace",
+                        "workspace.rename",
+                    ),
+                    &tilo_actions::ActionNeed::of(kind),
+                    &admitted.broker_actor(),
+                    0,
+                )
+            };
 
-    #[test]
-    fn a_foreign_device_is_refused_actions_above_the_workspace_cap() {
-        use tilo_actions::ActionKind::{Outside, Undoable};
-        let root = SigningKey::from_bytes(&[24; 32]);
-        let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(4), "Actions");
-        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
-        let workspace_id = workspace.id().to_string();
-        let route = CrdtRoute::cluster(&workspace_id);
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let native = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
-        let foreign = VerifiedJoinIdentity {
-            capped: true,
-            ..verified_device(&root)
-        };
-        let foreign = admit_verified_join(&tree, &route, foreign).unwrap();
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(tree.shared()),
-            None,
-        );
-        let authorize = |admitted: &AdmittedJoinIdentity, kind| {
-            state.authorize_invocation_permission(
-                &workspace_id,
-                (
-                    "so.tilo.settings",
-                    "settings.workspace",
-                    "settings.workspace",
-                    "workspace.rename",
-                ),
-                &tilo_actions::ActionNeed::of(kind),
-                &admitted.broker_actor(),
-                0,
-            )
-        };
-
-        for kind in [Outside, Undoable] {
-            authorize(&native, kind).unwrap();
+            for kind in [Outside, Undoable] {
+                authorize(&native, kind).unwrap();
+            }
+            assert!(
+                authorize(&foreign, Outside).is_err(),
+                "reaching outside asks first on a device not theirs, and nobody answered"
+            );
+            authorize(&foreign, Undoable).unwrap();
         }
-        assert!(
-            authorize(&foreign, Outside).is_err(),
-            "reaching outside asks first on a device not theirs, and nobody answered"
-        );
-        authorize(&foreign, Undoable).unwrap();
+
+        phase a_foreign_device_is_capped_only_in_workspaces_it_does_not_govern;
+        {
+            let root = SigningKey::from_bytes(&[25; 32]);
+            let mut workspace =
+                crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(5), "Own");
+            workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
+            let workspace_id = workspace.id().to_string();
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let (state, _bridge_rx) = AppBrokerState::new(
+                &Arc::new(FanoutState::new()),
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(tree.clone().shared()),
+                None,
+            );
+            let governor = [7; 32];
+            let authority: Arc<dyn crate::certificate_authority::CertificateAuthority> =
+                Arc::new(GovernedBy(governor));
+            assert!(state.certificate_authority.set(authority).is_ok());
+            let foreign_cert = |device| tilo_user_identity::DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device,
+                device_label: "mac".into(),
+                capabilities: tilo_user_identity::DeviceCapabilities {
+                    foreign: true,
+                    ..tilo_user_identity::DeviceCapabilities::primary()
+                },
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            let admin = |cert: &tilo_user_identity::DeviceCert| {
+                let identity = VerifiedJoinIdentity::of(cert, state.capped_in(&workspace_id, cert));
+                let admitted =
+                    admit_verified_join(&tree, &CrdtRoute::cluster(&workspace_id), identity).unwrap();
+                let actor = state.certified_person(&workspace_id, cert);
+                let admin = state.authorize_invocation_permission(
+                    &workspace_id,
+                    (
+                        "so.tilo.settings",
+                        "settings.workspace",
+                        "settings.workspace",
+                        "workspace.rename",
+                    ),
+                    &tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Outside),
+                    &actor,
+                    0,
+                );
+                (admitted.role, admin.is_ok())
+            };
+
+            assert_eq!(admin(&foreign_cert(governor)), (CapRole::Owner, true));
+            assert_eq!(admin(&foreign_cert([8; 32])), (CapRole::Owner, false));
+        }
+
+        phase a_foreign_device_joins_with_at_most_the_workspace_cap;
+        {
+            let root = SigningKey::from_bytes(&[23; 32]);
+            let mut workspace =
+                crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(3), "Foreign");
+            workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
+            workspace.allow_agent("scribe", crate::test_support::KindSet::READ);
+            let route = CrdtRoute::cluster(workspace.id().to_string());
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let foreign = VerifiedJoinIdentity {
+                capped: true,
+                ..verified_device(&root)
+            };
+
+            let workspace_id = tree.workspaces[0].id().to_string();
+            let kept = crate::test_support::KeptAgents::default().keeping(
+                &workspace_id,
+                "scribe",
+                &person_id_for_root(root.verifying_key().to_bytes()),
+            );
+
+            let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
+            assert_eq!(admitted.role, CapRole::Owner);
+            admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe").unwrap();
+
+            let mut admitted = admit_verified_join(&tree, &route, foreign.clone()).unwrap();
+            assert!(
+                admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe").is_err(),
+                "an agent joins on its keeper's session, not on a device the workspace caps"
+            );
+            let changes = |admitted: &AdmittedJoinIdentity, tree: &WorkspaceTree| {
+                admitted
+                    .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
+                        authority
+                            .decide(
+                                &tree.workspaces[0].node().app("so.tilo.notes"),
+                                ActionKind::Undoable,
+                                &tilo_desktop_model::context_at(0),
+                            )
+                            .answer
+                    })
+                    .unwrap()
+            };
+            assert_eq!(changes(&admitted, &tree), Answer::Allow);
+
+            let admitted = admit_verified_join(&tree, &route, foreign).unwrap();
+            assert_eq!(
+                changes(&admitted, &tree),
+                Answer::Allow,
+                "a device that is not the person's still changes the workspace's content"
+            );
+        }
     }
 
     /// Governs every workspace for one device; admits every certificate.
@@ -12775,348 +12964,269 @@ pub mod tests {
         }
     }
 
-    #[test]
-    fn a_foreign_device_is_capped_only_in_workspaces_it_does_not_govern() {
-        let root = SigningKey::from_bytes(&[25; 32]);
-        let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(5), "Own");
-        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
-        let workspace_id = workspace.id().to_string();
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(tree.clone().shared()),
-            None,
-        );
-        let governor = [7; 32];
-        let authority: Arc<dyn crate::certificate_authority::CertificateAuthority> =
-            Arc::new(GovernedBy(governor));
-        assert!(state.certificate_authority.set(authority).is_ok());
-        let foreign_cert = |device| tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device,
-            device_label: "mac".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities {
-                foreign: true,
-                ..tilo_user_identity::DeviceCapabilities::primary()
-            },
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        let admin = |cert: &tilo_user_identity::DeviceCert| {
-            let identity = VerifiedJoinIdentity::of(cert, state.capped_in(&workspace_id, cert));
-            let admitted =
-                admit_verified_join(&tree, &CrdtRoute::cluster(&workspace_id), identity).unwrap();
-            let actor = state.certified_person(&workspace_id, cert);
-            let admin = state.authorize_invocation_permission(
-                &workspace_id,
-                (
-                    "so.tilo.settings",
-                    "settings.workspace",
-                    "settings.workspace",
-                    "workspace.rename",
-                ),
-                &tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Outside),
-                &actor,
-                0,
+    tilo_test_env::scenario! {
+        fn an_agent_acts_only_with_the_authority_its_person_holds;
+
+        phase a_delegated_agent_acts_with_its_persons_authority_and_ends_with_them;
+        {
+            let root = SigningKey::from_bytes(&[44; 32]);
+            let principal = person_id_for_root(root.verifying_key().to_bytes());
+            let mut workspace = crate::test_support::Workspace::new(
+                crate::test_support::WorkspaceSlot(44),
+                "Agent workspace",
             );
-            (admitted.role, admin.is_ok())
-        };
+            let owner =
+                person_id_for_root(SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes());
+            workspace.set_owner(owner.clone());
+            workspace.admit(principal.clone(), Role::Moderator);
+            workspace.grant(tilo_action_policy::Grant::new(
+                "fixture:launches-agents",
+                crate::test_support::Grantee::person(principal.clone()),
+                tilo_action_policy::roles::governance_action(
+                    &workspace.id().to_string(),
+                    tilo_action_policy::roles::governance::GRANT,
+                ),
+                crate::test_support::KindSet::OUTSIDE,
+                Answer::Allow,
+                crate::test_support::Grantee::person(owner),
+            ));
+            let route = CrdtRoute::cluster(workspace.id().to_string());
+            workspace.allow_agent("scribe", crate::test_support::KindSet::READ);
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
 
-        assert_eq!(admin(&foreign_cert(governor)), (CapRole::Owner, true));
-        assert_eq!(admin(&foreign_cert([8; 32])), (CapRole::Owner, false));
-    }
-
-    #[test]
-    fn a_foreign_device_joins_with_at_most_the_workspace_cap() {
-        let root = SigningKey::from_bytes(&[23; 32]);
-        let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(3), "Foreign");
-        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
-        workspace.allow_agent("scribe", crate::test_support::KindSet::READ);
-        let route = CrdtRoute::cluster(workspace.id().to_string());
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let foreign = VerifiedJoinIdentity {
-            capped: true,
-            ..verified_device(&root)
-        };
-
-        let workspace_id = tree.workspaces[0].id().to_string();
-        let kept = crate::test_support::KeptAgents::default().keeping(
-            &workspace_id,
-            "scribe",
-            &person_id_for_root(root.verifying_key().to_bytes()),
-        );
-
-        let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
-        assert_eq!(admitted.role, CapRole::Owner);
-        admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe").unwrap();
-
-        let mut admitted = admit_verified_join(&tree, &route, foreign.clone()).unwrap();
-        assert!(
-            admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe").is_err(),
-            "an agent joins on its keeper's session, not on a device the workspace caps"
-        );
-        let changes = |admitted: &AdmittedJoinIdentity, tree: &WorkspaceTree| {
-            admitted
-                .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
-                    authority
-                        .decide(
-                            &tree.workspaces[0].node().app("so.tilo.notes"),
-                            ActionKind::Undoable,
-                            &tilo_desktop_model::context_at(0),
-                        )
-                        .answer
-                })
-                .unwrap()
-        };
-        assert_eq!(changes(&admitted, &tree), Answer::Allow);
-
-        let admitted = admit_verified_join(&tree, &route, foreign).unwrap();
-        assert_eq!(
-            changes(&admitted, &tree),
-            Answer::Allow,
-            "a device that is not the person's still changes the workspace's content"
-        );
-    }
-
-    #[test]
-    fn a_delegated_agent_acts_with_its_persons_authority_and_ends_with_them() {
-        let root = SigningKey::from_bytes(&[44; 32]);
-        let principal = person_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceSlot(44),
-            "Agent workspace",
-        );
-        let owner =
-            person_id_for_root(SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes());
-        workspace.set_owner(owner.clone());
-        workspace.admit(principal.clone(), Role::Moderator);
-        workspace.grant(tilo_action_policy::Grant::new(
-            "fixture:launches-agents",
-            crate::test_support::Grantee::person(principal.clone()),
-            tilo_action_policy::roles::governance_action(
-                &workspace.id().to_string(),
-                tilo_action_policy::roles::governance::GRANT,
-            ),
-            crate::test_support::KindSet::OUTSIDE,
-            Answer::Allow,
-            crate::test_support::Grantee::person(owner),
-        ));
-        let route = CrdtRoute::cluster(workspace.id().to_string());
-        workspace.allow_agent("scribe", crate::test_support::KindSet::READ);
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-
-        let workspace_id = tree.workspaces[0].id().to_string();
-        let kept = crate::test_support::KeptAgents::default().keeping(
-            &workspace_id,
-            "scribe",
-            &person_id_for_root(root.verifying_key().to_bytes()),
-        );
-        let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
-            .expect("the keeper is admitted before their agent is");
-        admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe")
-            .expect("the record names the keeper of the agent it runs");
-        assert_eq!(admitted.broker_actor().id, "agent:scribe");
-        assert!(admitted.broker_actor().is_agent);
-        let answer = |kind| {
-            admitted
-                .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
-                    authority
-                        .decide(
-                            &tree.workspaces[0].node().app("so.tilo.notes"),
-                            kind,
-                            &tilo_desktop_model::context_at(0),
-                        )
-                        .answer
-                })
-                .unwrap()
-        };
-        assert_eq!(answer(ActionKind::Read), Answer::Allow, "the agent reads");
-        assert_eq!(
-            answer(ActionKind::Undoable),
-            Answer::Allow,
-            "and changes what its person's turn allows it"
-        );
-        assert_ne!(
-            answer(roles::GOVERNANCE_KIND),
-            Answer::Allow,
-            "never the workspace's governance"
-        );
-
-        let membership = tree.shared();
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = AppBrokerState::new_configured(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(membership.authority()),
-            None,
-            None,
-            crate::services::HostServices {
-                agents: Some(Arc::new(kept.clone())),
-                ..membership.services()
-            },
-        );
-        assert!(
-            state.revalidate_admission(&route, &admitted).is_ok(),
-            "a going agent session is admitted while its person is"
-        );
-        assert!(membership.write().workspaces[0].dismiss(&principal));
-        assert!(
-            state.revalidate_admission(&route, &admitted).is_err(),
-            "removing the person invalidates an already-open agent channel"
-        );
-    }
-
-    /// In a workspace this desktop hosts itself, a delegated agent takes part
-    /// with its person's role, capped at the editor preset, and removing the
-    /// person cuts an open session off.
-    #[test]
-    fn a_hosted_agent_takes_its_persons_role_capped_and_ends_with_them() {
-        use tilo_action_policy::roles::governance;
-        let owner_root = SigningKey::from_bytes(&[45; 32]);
-        let owner = person_id_for_root(owner_root.verifying_key().to_bytes());
-        let bob_root = SigningKey::from_bytes(&[46; 32]);
-        let bob = person_id_for_root(bob_root.verifying_key().to_bytes());
-        let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(45), "Hosted");
-        workspace.set_owner(owner.clone());
-        let workspace_id = workspace.policy.workspace.clone();
-        // Bob comments, and may launch the workspace's agents.
-        workspace.admit(bob.clone(), Role::Commenter);
-        workspace.grant(tilo_action_policy::Grant::new(
-            "fixture:bob-launches-agents",
-            crate::test_support::Grantee::person(bob.clone()),
-            roles::governance_action(&workspace_id, governance::GRANT),
-            crate::test_support::KindSet::OUTSIDE,
-            Answer::Allow,
-            crate::test_support::Grantee::person(owner),
-        ));
-        // The bounds the agents' own records keep: scribe may change what is
-        // there, reader may only read.
-        use crate::test_support::{Grants as _, KindSet, TreePath};
-        workspace.allow(
-            Grantee::agent("scribe"),
-            &TreePath::root(),
-            KindSet::READ_UNDOABLE,
-        );
-        workspace.allow(Grantee::agent("reader"), &TreePath::root(), KindSet::READ);
-        let route = CrdtRoute::cluster(workspace.id().to_string());
-        let notes = workspace.node().app("so.tilo.notes");
-        let set_role = roles::governance_action(&workspace_id, governance::SET_ROLE);
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-
-        let workspace_id = tree.workspaces[0].id().to_string();
-        let kept = crate::test_support::KeptAgents::default()
-            .keeping(
+            let workspace_id = tree.workspaces[0].id().to_string();
+            let kept = crate::test_support::KeptAgents::default().keeping(
                 &workspace_id,
                 "scribe",
-                &person_id_for_root(owner_root.verifying_key().to_bytes()),
-            )
-            .keeping(
-                &workspace_id,
-                "reader",
-                &person_id_for_root(bob_root.verifying_key().to_bytes()),
-            )
-            .keeping(
-                &workspace_id,
-                "bobs-scribe",
-                &person_id_for_root(bob_root.verifying_key().to_bytes()),
+                &person_id_for_root(root.verifying_key().to_bytes()),
             );
-        let delegate = |root: &SigningKey, agent: &str, tree: &WorkspaceTree| {
-            let mut admitted = admit_verified_join(tree, &route, verified_device(root)).unwrap();
-            admit_kept_agent(&kept, &workspace_id, &mut admitted, agent).map(|()| admitted)
-        };
-        let answer = |admitted: &AdmittedJoinIdentity,
-                      tree: &WorkspaceTree,
-                      node: &TreePath,
-                      kind: ActionKind| {
-            admitted
-                .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
-                    authority
-                        .decide(node, kind, &tilo_desktop_model::context_at(0))
-                        .answer
-                })
-                .unwrap()
-        };
+            let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
+                .expect("the keeper is admitted before their agent is");
+            admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe")
+                .expect("the record names the keeper of the agent it runs");
+            assert_eq!(admitted.broker_actor().id, "agent:scribe");
+            assert!(admitted.broker_actor().is_agent);
+            let answer = |kind| {
+                admitted
+                    .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
+                        authority
+                            .decide(
+                                &tree.workspaces[0].node().app("so.tilo.notes"),
+                                kind,
+                                &tilo_desktop_model::context_at(0),
+                            )
+                            .answer
+                    })
+                    .unwrap()
+            };
+            assert_eq!(answer(ActionKind::Read), Answer::Allow, "the agent reads");
+            assert_eq!(
+                answer(ActionKind::Undoable),
+                Answer::Allow,
+                "and changes what its person's turn allows it"
+            );
+            assert_ne!(
+                answer(roles::GOVERNANCE_KIND),
+                Answer::Allow,
+                "never the workspace's governance"
+            );
 
-        // The owner's agent edits as their owner may, held to an Editor, and
-        // never governs.
-        let scribe = delegate(&owner_root, "scribe", &tree).unwrap();
-        assert_eq!(scribe.role, Role::Editor, "its owner's role, capped");
-        assert!(workspace_control_role_allowed(scribe.role));
-        assert_eq!(
-            answer(&scribe, &tree, &notes, ActionKind::Undoable),
-            Answer::Allow
-        );
-        assert_eq!(
-            answer(&scribe, &tree, &set_role, roles::GOVERNANCE_KIND),
-            Answer::Deny,
-            "the owner's agent does not govern the workspace"
-        );
-        // Bob's session holds Bob's role, whatever it is called.
-        let reader = delegate(&bob_root, "reader", &tree).unwrap();
-        assert_eq!(reader.role, Role::Commenter, "its person's role, capped");
-        assert!(!workspace_control_role_allowed(reader.role));
-        assert_eq!(
-            answer(&reader, &tree, &notes, ActionKind::Read),
-            Answer::Allow
-        );
-        assert_eq!(
-            answer(&reader, &tree, &notes, ActionKind::Undoable),
-            Answer::Deny,
-            "a commenter's agent changes nothing"
-        );
-        let bobs = delegate(&bob_root, "bobs-scribe", &tree).unwrap();
-        assert_eq!(bobs.role, Role::Commenter, "capped by its person's role");
-        assert!(!workspace_control_role_allowed(bobs.role));
-        assert_eq!(
-            answer(&bobs, &tree, &notes, ActionKind::Undoable),
-            Answer::Deny,
-            "the agent changes nothing its person may not"
-        );
+            let membership = tree.shared();
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = AppBrokerState::new_configured(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(membership.authority()),
+                None,
+                None,
+                crate::services::HostServices {
+                    agents: Some(Arc::new(kept.clone())),
+                    ..membership.services()
+                },
+            );
+            assert!(
+                state.revalidate_admission(&route, &admitted).is_ok(),
+                "a going agent session is admitted while its person is"
+            );
+            assert!(membership.write().workspaces[0].dismiss(&principal));
+            assert!(
+                state.revalidate_admission(&route, &admitted).is_err(),
+                "removing the person invalidates an already-open agent channel"
+            );
+        }
 
-        let membership = tree.shared();
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = AppBrokerState::new_configured(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(membership.authority()),
-            None,
-            None,
-            crate::services::HostServices {
-                agents: Some(Arc::new(kept.clone())),
-                ..membership.services()
-            },
-        );
-        assert_eq!(
-            state.revalidate_admission(&route, &bobs).unwrap().role,
-            Role::Commenter,
-            "revalidation resolves the same role"
-        );
-        assert!(state.revalidate_admission(&route, &scribe).is_ok());
+        phase a_hosted_agent_takes_its_persons_role_capped_and_ends_with_them;
+        // In a workspace this desktop hosts itself, a delegated agent takes part
+        // with its person's role, capped at the editor preset, and removing the
+        // person cuts an open session off.
+        {
+            use tilo_action_policy::roles::governance;
+            let owner_root = SigningKey::from_bytes(&[45; 32]);
+            let owner = person_id_for_root(owner_root.verifying_key().to_bytes());
+            let bob_root = SigningKey::from_bytes(&[46; 32]);
+            let bob = person_id_for_root(bob_root.verifying_key().to_bytes());
+            let mut workspace =
+                crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(45), "Hosted");
+            workspace.set_owner(owner.clone());
+            let workspace_id = workspace.policy.workspace.clone();
+            // Bob comments, and may launch the workspace's agents.
+            workspace.admit(bob.clone(), Role::Commenter);
+            workspace.grant(tilo_action_policy::Grant::new(
+                "fixture:bob-launches-agents",
+                crate::test_support::Grantee::person(bob.clone()),
+                roles::governance_action(&workspace_id, governance::GRANT),
+                crate::test_support::KindSet::OUTSIDE,
+                Answer::Allow,
+                crate::test_support::Grantee::person(owner),
+            ));
+            // The bounds the agents' own records keep: scribe may change what is
+            // there, reader may only read.
+            use crate::test_support::{Grants as _, KindSet, TreePath};
+            workspace.allow(
+                Grantee::agent("scribe"),
+                &TreePath::root(),
+                KindSet::READ_UNDOABLE,
+            );
+            workspace.allow(Grantee::agent("reader"), &TreePath::root(), KindSet::READ);
+            let route = CrdtRoute::cluster(workspace.id().to_string());
+            let notes = workspace.node().app("so.tilo.notes");
+            let set_role = roles::governance_action(&workspace_id, governance::SET_ROLE);
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
 
-        // Removing the person ends their agent's session at once.
-        assert!(membership.write().workspaces[0].dismiss(&bob));
-        assert!(
-            state.revalidate_admission(&route, &bobs).is_err(),
-            "revoking the person cuts their agent off"
-        );
-        assert!(
-            state.revalidate_admission(&route, &reader).is_err(),
-            "removing the person ends every agent of theirs at once"
-        );
-        assert!(state.revalidate_admission(&route, &scribe).is_ok());
+            let workspace_id = tree.workspaces[0].id().to_string();
+            let kept = crate::test_support::KeptAgents::default()
+                .keeping(
+                    &workspace_id,
+                    "scribe",
+                    &person_id_for_root(owner_root.verifying_key().to_bytes()),
+                )
+                .keeping(
+                    &workspace_id,
+                    "reader",
+                    &person_id_for_root(bob_root.verifying_key().to_bytes()),
+                )
+                .keeping(
+                    &workspace_id,
+                    "bobs-scribe",
+                    &person_id_for_root(bob_root.verifying_key().to_bytes()),
+                );
+            let delegate = |root: &SigningKey, agent: &str, tree: &WorkspaceTree| {
+                let mut admitted = admit_verified_join(tree, &route, verified_device(root)).unwrap();
+                admit_kept_agent(&kept, &workspace_id, &mut admitted, agent).map(|()| admitted)
+            };
+            let answer = |admitted: &AdmittedJoinIdentity,
+                          tree: &WorkspaceTree,
+                          node: &TreePath,
+                          kind: ActionKind| {
+                admitted
+                    .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
+                        authority
+                            .decide(node, kind, &tilo_desktop_model::context_at(0))
+                            .answer
+                    })
+                    .unwrap()
+            };
+
+            // The owner's agent edits as their owner may, held to an Editor, and
+            // never governs.
+            let scribe = delegate(&owner_root, "scribe", &tree).unwrap();
+            assert_eq!(scribe.role, Role::Editor, "its owner's role, capped");
+            assert!(workspace_control_role_allowed(scribe.role));
+            assert_eq!(
+                answer(&scribe, &tree, &notes, ActionKind::Undoable),
+                Answer::Allow
+            );
+            assert_eq!(
+                answer(&scribe, &tree, &set_role, roles::GOVERNANCE_KIND),
+                Answer::Deny,
+                "the owner's agent does not govern the workspace"
+            );
+            // Bob's session holds Bob's role, whatever it is called.
+            let reader = delegate(&bob_root, "reader", &tree).unwrap();
+            assert_eq!(reader.role, Role::Commenter, "its person's role, capped");
+            assert!(!workspace_control_role_allowed(reader.role));
+            assert_eq!(
+                answer(&reader, &tree, &notes, ActionKind::Read),
+                Answer::Allow
+            );
+            assert_eq!(
+                answer(&reader, &tree, &notes, ActionKind::Undoable),
+                Answer::Deny,
+                "a commenter's agent changes nothing"
+            );
+            let bobs = delegate(&bob_root, "bobs-scribe", &tree).unwrap();
+            assert_eq!(bobs.role, Role::Commenter, "capped by its person's role");
+            assert!(!workspace_control_role_allowed(bobs.role));
+            assert_eq!(
+                answer(&bobs, &tree, &notes, ActionKind::Undoable),
+                Answer::Deny,
+                "the agent changes nothing its person may not"
+            );
+
+            let membership = tree.shared();
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = AppBrokerState::new_configured(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(membership.authority()),
+                None,
+                None,
+                crate::services::HostServices {
+                    agents: Some(Arc::new(kept.clone())),
+                    ..membership.services()
+                },
+            );
+            assert_eq!(
+                state.revalidate_admission(&route, &bobs).unwrap().role,
+                Role::Commenter,
+                "revalidation resolves the same role"
+            );
+            assert!(state.revalidate_admission(&route, &scribe).is_ok());
+
+            // Removing the person ends their agent's session at once.
+            assert!(membership.write().workspaces[0].dismiss(&bob));
+            assert!(
+                state.revalidate_admission(&route, &bobs).is_err(),
+                "revoking the person cuts their agent off"
+            );
+            assert!(
+                state.revalidate_admission(&route, &reader).is_err(),
+                "removing the person ends every agent of theirs at once"
+            );
+            assert!(state.revalidate_admission(&route, &scribe).is_ok());
+        }
+
+        phase non_owner_cannot_claim_an_agent_principal;
+        {
+            let member = SigningKey::from_bytes(&[45; 32]);
+            let member_id = person_id_for_root(member.verifying_key().to_bytes());
+            let mut workspace = crate::test_support::Workspace::new(
+                crate::test_support::WorkspaceSlot(45),
+                "Delegation workspace",
+            );
+            let route = CrdtRoute::cluster(workspace.id().to_string());
+            workspace.admit(member_id, crate::test_support::Role::Editor);
+            workspace.allow_agent("operator", crate::test_support::KindSet::READ);
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let workspace_id = tree.workspaces[0].id().to_string();
+            let mut admitted = admit_verified_join(&tree, &route, verified_device(&member))
+                .expect("the person is a member");
+            assert!(
+                admit_kept_agent(
+                    &crate::test_support::KeptAgents::default(),
+                    &workspace_id,
+                    &mut admitted,
+                    "operator"
+                )
+                .is_err(),
+                "the workspace keeps no agent of that id"
+            );
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -13401,88 +13511,6 @@ pub mod tests {
                 .certified_agent_identity(&workspace_id, "agent:forged")
                 .is_none()
         );
-    }
-
-    #[test]
-    fn non_owner_cannot_claim_an_agent_principal() {
-        let member = SigningKey::from_bytes(&[45; 32]);
-        let member_id = person_id_for_root(member.verifying_key().to_bytes());
-        let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceSlot(45),
-            "Delegation workspace",
-        );
-        let route = CrdtRoute::cluster(workspace.id().to_string());
-        workspace.admit(member_id, crate::test_support::Role::Editor);
-        workspace.allow_agent("operator", crate::test_support::KindSet::READ);
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let workspace_id = tree.workspaces[0].id().to_string();
-        let mut admitted = admit_verified_join(&tree, &route, verified_device(&member))
-            .expect("the person is a member");
-        assert!(
-            admit_kept_agent(
-                &crate::test_support::KeptAgents::default(),
-                &workspace_id,
-                &mut admitted,
-                "operator"
-            )
-            .is_err(),
-            "the workspace keeps no agent of that id"
-        );
-    }
-
-    #[test]
-    fn certified_join_admission_rejects_wrong_or_removed_root() {
-        let member = SigningKey::from_bytes(&[21; 32]);
-        let stranger = SigningKey::from_bytes(&[22; 32]);
-        let member_id = person_id_for_root(member.verifying_key().to_bytes());
-        let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceSlot(2),
-            "Revocation workspace",
-        );
-        let route = CrdtRoute::cluster(workspace.id().to_string());
-        workspace.admit(member_id.clone(), crate::test_support::Role::Viewer);
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-
-        assert!(admit_verified_join(&tree, &route, verified_device(&stranger)).is_err());
-        let admitted = admit_verified_join(&tree, &route, verified_device(&member))
-            .expect("member starts admitted");
-        let membership_tree = tree.shared();
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(membership_tree.clone()),
-            None,
-        );
-        assert!(membership_tree.write().workspaces[0].dismiss(&member_id));
-        assert!(
-            state.revalidate_admission(&route, &admitted).is_err(),
-            "removing membership rejects the certified session's next operation"
-        );
-    }
-
-    #[test]
-    fn certified_join_admission_rejects_cross_workspace_replay() {
-        let root = SigningKey::from_bytes(&[23; 32]);
-        let principal = person_id_for_root(root.verifying_key().to_bytes());
-        let mut member_workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceSlot(3),
-            "Member workspace",
-        );
-        member_workspace.set_owner(&principal);
-        let other_workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceSlot(4),
-            "Other workspace",
-        );
-        let replay_route = CrdtRoute::cluster(other_workspace.id().to_string());
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(member_workspace);
-        tree.workspaces.push(other_workspace);
-
-        assert!(admit_verified_join(&tree, &replay_route, verified_device(&root)).is_err());
     }
 
     #[cfg(test)]
@@ -13891,31 +13919,80 @@ pub mod tests {
         }
     }
 
-    /// A window mounting a component anew publishes its resource under a new
-    /// alias: an action named on the old one is found on the one it is on now,
-    /// unless it is withdrawn or two aliases of the resource carry it.
-    #[test]
-    fn a_task_action_is_found_under_the_alias_its_window_publishes_now() {
-        let alias = |component: &str| {
-            format!(
-                "{}host:{component}:{}",
-                tilo_actions::BOUND_RESOURCE_PREFIX,
-                hex::encode("composer")
-            )
-        };
-        let (before, now) = (alias("1"), alias("2"));
-        let mut surface = catalogue_surface(4, "workspace", &now);
-        assert_eq!(surface.current_resource(&now, "open"), Some(now.as_str()));
-        assert_eq!(
-            surface.current_resource(&before, "open"),
-            Some(now.as_str())
-        );
-        assert_eq!(surface.current_resource(&before, "close"), None);
-        assert_eq!(surface.current_resource("composer", "open"), None);
-        let mut twice = surface.actions[0].clone();
-        twice.resource = alias("3");
-        surface.actions.push(twice);
-        assert_eq!(surface.current_resource(&before, "open"), None);
+    tilo_test_env::scenario! {
+        fn a_published_action_is_found_on_the_route_that_carries_it_now;
+
+        phase a_task_action_is_found_under_the_alias_its_window_publishes_now;
+        // A window mounting a component anew publishes its resource under a new
+        // alias: an action named on the old one is found on the one it is on now,
+        // unless it is withdrawn or two aliases of the resource carry it.
+        {
+            let alias = |component: &str| {
+                format!(
+                    "{}host:{component}:{}",
+                    tilo_actions::BOUND_RESOURCE_PREFIX,
+                    hex::encode("composer")
+                )
+            };
+            let (before, now) = (alias("1"), alias("2"));
+            let mut surface = catalogue_surface(4, "workspace", &now);
+            assert_eq!(surface.current_resource(&now, "open"), Some(now.as_str()));
+            assert_eq!(
+                surface.current_resource(&before, "open"),
+                Some(now.as_str())
+            );
+            assert_eq!(surface.current_resource(&before, "close"), None);
+            assert_eq!(surface.current_resource("composer", "open"), None);
+            let mut twice = surface.actions[0].clone();
+            twice.resource = alias("3");
+            surface.actions.push(twice);
+            assert_eq!(surface.current_resource(&before, "open"), None);
+        }
+
+        phase exact_published_action_uses_current_live_routes_before_archived_descriptors;
+        {
+            let broker = AppBrokerState::test_broker_with_idle_directory_queue();
+            let state = broker.state();
+            let retained = catalogue_surface(7, "workspace", "notebook");
+            state.launchable.retain(&retained);
+            let route = retained.route.clone();
+            let (archived, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
+            assert!(!archived.live);
+            assert!(
+                archived.actions.is_empty(),
+                "lookup must not clone the source inventory"
+            );
+            assert_eq!(descriptor.resource, "notebook");
+
+            let mut empty = retained.clone();
+            empty.actions.clear();
+            state.replace_published_surfaces_for_test(vec![empty.clone()]);
+            assert!(state.published_action(&route, "notebook", "open").is_none());
+
+            let mut other_peer = retained;
+            other_peer.peer_id = 8;
+            other_peer.actions[0].action_label = "Current live action".into();
+            state.replace_published_surfaces_for_test(vec![empty, other_peer]);
+            let (live, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
+            assert!(live.live);
+            assert_eq!(live.peer_id, 8);
+            assert!(live.actions.is_empty());
+            assert_eq!(descriptor.action_label, "Current live action");
+            let foreign = CrdtRoute::record(&route.app_id, "another-workspace", &route.record_id);
+            assert!(
+                state
+                    .published_action(&foreign, "notebook", "open")
+                    .is_none()
+            );
+            state.replace_published_surfaces_for_test(Vec::new());
+            assert!(
+                !state
+                    .published_action(&route, "notebook", "open")
+                    .unwrap()
+                    .0
+                    .live
+            );
+        }
     }
 
     #[cfg(test)]
@@ -14023,167 +14100,248 @@ pub mod tests {
             .any(|action| action.resource == resource)
     }
 
-    #[test]
-    fn catalogue_publication_computes_once_per_audience_and_sends_only_what_changed() {
-        let CountingCatalogueFixture {
-            state,
-            calls,
-            cluster,
-            ..
-        } = counting_catalogue_state("owner");
-        let actor = BrokerActor::person("owner");
-        let (reading, slow) = (catalogue_test_follower(), catalogue_test_follower());
-        state.action_catalogue_subscribers.lock().unwrap().extend([
-            (
-                1,
-                (cluster.clone(), actor.clone(), Arc::downgrade(&reading)),
-            ),
-            (2, (cluster.clone(), actor, Arc::downgrade(&slow))),
-        ]);
-        let publish = |peer: u64, resource: Option<&str>| {
-            let mut surfaces = state.surfaces.lock().unwrap();
-            match resource {
-                Some(resource) => {
-                    surfaces.insert(peer, catalogue_surface(peer, &cluster, resource))
-                }
-                None => surfaces.remove(&peer),
-            };
-            drop(surfaces);
-            state.publish_action_catalogue();
-        };
-        publish(11, Some("files.entry:first"));
-        publish(12, Some("files.entry:second"));
-        let mut held = runtime_collab::ActionCatalogue::default();
-        assert!(read_catalogue(&reading, &mut held));
-        assert_eq!(held.surfaces().len(), 2);
+    tilo_test_env::scenario! {
+        fn catalogue_publication_follows_each_audiences_authority;
 
-        publish(12, Some("files.entry:renamed"));
-        publish(11, None);
-        let change = reading.following.lock().unwrap().pending.clone().unwrap();
-        assert!(!change.reset);
-        assert_eq!(change.surfaces.len(), 1, "only the changed surface travels");
-        assert_eq!(change.surfaces[0].surface.peer_id, 12);
-        assert_eq!(change.removed.len(), 1);
-        assert!(read_catalogue(&reading, &mut held));
-        assert!(offers(&held, "files.entry:renamed"));
-        assert!(!offers(&held, "files.entry:first") && !offers(&held, "files.entry:second"));
-
-        let mut slow_held = runtime_collab::ActionCatalogue::default();
-        assert!(read_catalogue(&slow, &mut slow_held));
-        assert_eq!(
-            slow_held.surfaces(),
-            held.surfaces(),
-            "a slow reader is sent one change for everything it missed"
-        );
-        state.publish_action_catalogue();
-        assert!(
-            !read_catalogue(&reading, &mut held),
-            "an unchanged catalogue sends nothing"
-        );
-        assert_eq!(
-            calls.load(std::sync::atomic::Ordering::Relaxed),
-            5,
-            "each publication computes one catalogue for a shared exact audience"
-        );
-    }
-
-    #[test]
-    fn catalogue_publication_separates_person_and_agent_with_the_same_textual_id() {
-        let CountingCatalogueFixture {
-            state,
-            tree,
-            calls,
-            cluster,
-            ..
-        } = counting_catalogue_state("same");
-        state
-            .surfaces
-            .lock()
-            .unwrap()
-            .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
-        let mut other = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceSlot(30),
-            "Other catalogue workspace",
-        );
-        other.set_owner("same");
-        let other_cluster = other.id().to_string();
-        tree.lock().unwrap().workspaces.push(other);
-        let person = catalogue_test_follower();
-        let agent = catalogue_test_follower();
-        let other = catalogue_test_follower();
-        state.action_catalogue_subscribers.lock().unwrap().extend([
-            (
-                1,
-                (
-                    cluster.clone(),
-                    BrokerActor::person("same"),
-                    Arc::downgrade(&person),
-                ),
-            ),
-            (
-                2,
-                (cluster, BrokerActor::agent("same"), Arc::downgrade(&agent)),
-            ),
-            (
-                3,
-                (
-                    other_cluster,
-                    BrokerActor::person("same"),
-                    Arc::downgrade(&other),
-                ),
-            ),
-        ]);
-
-        state.publish_action_catalogue();
-
-        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
-        let catalogue = |follower: &CatalogueFollower| {
-            let mut held = runtime_collab::ActionCatalogue::default();
-            read_catalogue(follower, &mut held);
-            offers(&held, "files.entry:owner")
-        };
-        assert!(catalogue(&person));
-        assert!(!catalogue(&agent));
-        assert!(!catalogue(&other));
-    }
-
-    #[test]
-    fn catalogue_publication_rechecks_changed_authority_on_the_next_turn() {
-        let CountingCatalogueFixture {
-            state,
-            tree,
-            calls,
-            cluster,
-            ..
-        } = counting_catalogue_state("owner");
-        state
-            .surfaces
-            .lock()
-            .unwrap()
-            .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
-        let follower = catalogue_test_follower();
-        state.action_catalogue_subscribers.lock().unwrap().insert(
-            1,
-            (
-                cluster,
-                BrokerActor::person("owner"),
-                Arc::downgrade(&follower),
-            ),
-        );
-        state.publish_action_catalogue();
-        let mut held = runtime_collab::ActionCatalogue::default();
-        assert!(read_catalogue(&follower, &mut held));
-        assert!(offers(&held, "files.entry:owner"));
-
+        phase catalogue_publication_computes_once_per_audience_and_sends_only_what_changed;
         {
-            let mut tree = tree.lock().unwrap();
-            tree.workspaces[0].set_owner("replacement");
-            tree.workspaces[0].dismiss("owner");
+            let CountingCatalogueFixture {
+                state,
+                calls,
+                cluster,
+                ..
+            } = counting_catalogue_state("owner");
+            let actor = BrokerActor::person("owner");
+            let (reading, slow) = (catalogue_test_follower(), catalogue_test_follower());
+            state.action_catalogue_subscribers.lock().unwrap().extend([
+                (
+                    1,
+                    (cluster.clone(), actor.clone(), Arc::downgrade(&reading)),
+                ),
+                (2, (cluster.clone(), actor, Arc::downgrade(&slow))),
+            ]);
+            let publish = |peer: u64, resource: Option<&str>| {
+                let mut surfaces = state.surfaces.lock().unwrap();
+                match resource {
+                    Some(resource) => {
+                        surfaces.insert(peer, catalogue_surface(peer, &cluster, resource))
+                    }
+                    None => surfaces.remove(&peer),
+                };
+                drop(surfaces);
+                state.publish_action_catalogue();
+            };
+            publish(11, Some("files.entry:first"));
+            publish(12, Some("files.entry:second"));
+            let mut held = runtime_collab::ActionCatalogue::default();
+            assert!(read_catalogue(&reading, &mut held));
+            assert_eq!(held.surfaces().len(), 2);
+
+            publish(12, Some("files.entry:renamed"));
+            publish(11, None);
+            let change = reading.following.lock().unwrap().pending.clone().unwrap();
+            assert!(!change.reset);
+            assert_eq!(change.surfaces.len(), 1, "only the changed surface travels");
+            assert_eq!(change.surfaces[0].surface.peer_id, 12);
+            assert_eq!(change.removed.len(), 1);
+            assert!(read_catalogue(&reading, &mut held));
+            assert!(offers(&held, "files.entry:renamed"));
+            assert!(!offers(&held, "files.entry:first") && !offers(&held, "files.entry:second"));
+
+            let mut slow_held = runtime_collab::ActionCatalogue::default();
+            assert!(read_catalogue(&slow, &mut slow_held));
+            assert_eq!(
+                slow_held.surfaces(),
+                held.surfaces(),
+                "a slow reader is sent one change for everything it missed"
+            );
+            state.publish_action_catalogue();
+            assert!(
+                !read_catalogue(&reading, &mut held),
+                "an unchanged catalogue sends nothing"
+            );
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::Relaxed),
+                5,
+                "each publication computes one catalogue for a shared exact audience"
+            );
         }
-        state.publish_action_catalogue();
-        assert!(read_catalogue(&follower, &mut held));
-        assert!(!offers(&held, "files.entry:owner"));
-        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+
+        phase catalogue_publication_separates_person_and_agent_with_the_same_textual_id;
+        {
+            let CountingCatalogueFixture {
+                state,
+                tree,
+                calls,
+                cluster,
+                ..
+            } = counting_catalogue_state("same");
+            state
+                .surfaces
+                .lock()
+                .unwrap()
+                .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
+            let mut other = crate::test_support::Workspace::new(
+                crate::test_support::WorkspaceSlot(30),
+                "Other catalogue workspace",
+            );
+            other.set_owner("same");
+            let other_cluster = other.id().to_string();
+            tree.lock().unwrap().workspaces.push(other);
+            let person = catalogue_test_follower();
+            let agent = catalogue_test_follower();
+            let other = catalogue_test_follower();
+            state.action_catalogue_subscribers.lock().unwrap().extend([
+                (
+                    1,
+                    (
+                        cluster.clone(),
+                        BrokerActor::person("same"),
+                        Arc::downgrade(&person),
+                    ),
+                ),
+                (
+                    2,
+                    (cluster, BrokerActor::agent("same"), Arc::downgrade(&agent)),
+                ),
+                (
+                    3,
+                    (
+                        other_cluster,
+                        BrokerActor::person("same"),
+                        Arc::downgrade(&other),
+                    ),
+                ),
+            ]);
+
+            state.publish_action_catalogue();
+
+            assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+            let catalogue = |follower: &CatalogueFollower| {
+                let mut held = runtime_collab::ActionCatalogue::default();
+                read_catalogue(follower, &mut held);
+                offers(&held, "files.entry:owner")
+            };
+            assert!(catalogue(&person));
+            assert!(!catalogue(&agent));
+            assert!(!catalogue(&other));
+        }
+
+        phase catalogue_publication_rechecks_changed_authority_on_the_next_turn;
+        {
+            let CountingCatalogueFixture {
+                state,
+                tree,
+                calls,
+                cluster,
+                ..
+            } = counting_catalogue_state("owner");
+            state
+                .surfaces
+                .lock()
+                .unwrap()
+                .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
+            let follower = catalogue_test_follower();
+            state.action_catalogue_subscribers.lock().unwrap().insert(
+                1,
+                (
+                    cluster,
+                    BrokerActor::person("owner"),
+                    Arc::downgrade(&follower),
+                ),
+            );
+            state.publish_action_catalogue();
+            let mut held = runtime_collab::ActionCatalogue::default();
+            assert!(read_catalogue(&follower, &mut held));
+            assert!(offers(&held, "files.entry:owner"));
+
+            {
+                let mut tree = tree.lock().unwrap();
+                tree.workspaces[0].set_owner("replacement");
+                tree.workspaces[0].dismiss("owner");
+            }
+            state.publish_action_catalogue();
+            assert!(read_catalogue(&follower, &mut held));
+            assert!(!offers(&held, "files.entry:owner"));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        }
+
+        phase catalogue_projection_failure_ends_and_removes_its_audience;
+        {
+            let CountingCatalogueFixture {
+                state,
+                calls,
+                failed,
+                cluster,
+                ..
+            } = counting_catalogue_state("owner");
+            state
+                .surfaces
+                .lock()
+                .unwrap()
+                .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
+            let first = catalogue_test_follower();
+            let second = catalogue_test_follower();
+            let closed = catalogue_test_follower();
+            state.action_catalogue_subscribers.lock().unwrap().extend([
+                (
+                    1,
+                    (
+                        cluster.clone(),
+                        BrokerActor::person("owner"),
+                        Arc::downgrade(&first),
+                    ),
+                ),
+                (
+                    2,
+                    (
+                        cluster.clone(),
+                        BrokerActor::person("owner"),
+                        Arc::downgrade(&second),
+                    ),
+                ),
+                (
+                    3,
+                    (
+                        cluster,
+                        BrokerActor::person("owner"),
+                        Arc::downgrade(&closed),
+                    ),
+                ),
+            ]);
+            drop(closed);
+            state.publish_action_catalogue();
+            for follower in [&first, &second] {
+                let mut held = runtime_collab::ActionCatalogue::default();
+                assert!(read_catalogue(follower, &mut held));
+                assert!(
+                    offers(&held, "files.entry:owner"),
+                    "the current authorized catalogue is initially available"
+                );
+            }
+            assert!(
+                !state
+                    .action_catalogue_subscribers
+                    .lock()
+                    .unwrap()
+                    .contains_key(&3),
+                "closed catalogue subscribers are removed"
+            );
+
+            failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            state.publish_action_catalogue();
+            for follower in [&first, &second] {
+                let following = follower.following.lock().unwrap();
+                assert!(following.ended);
+                assert!(following.pending.is_none());
+            }
+            let subscribers = state.action_catalogue_subscribers.lock().unwrap();
+            assert!(!subscribers.contains_key(&1));
+            assert!(!subscribers.contains_key(&2));
+            assert!(!subscribers.contains_key(&3));
+            drop(subscribers);
+            assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        }
     }
 
     #[tokio::test]
@@ -14198,128 +14356,6 @@ pub mod tests {
         assert!(
             unread.next().await.is_err(),
             "an ended follower is sent no unread change"
-        );
-    }
-
-    #[test]
-    fn catalogue_projection_failure_ends_and_removes_its_audience() {
-        let CountingCatalogueFixture {
-            state,
-            calls,
-            failed,
-            cluster,
-            ..
-        } = counting_catalogue_state("owner");
-        state
-            .surfaces
-            .lock()
-            .unwrap()
-            .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
-        let first = catalogue_test_follower();
-        let second = catalogue_test_follower();
-        let closed = catalogue_test_follower();
-        state.action_catalogue_subscribers.lock().unwrap().extend([
-            (
-                1,
-                (
-                    cluster.clone(),
-                    BrokerActor::person("owner"),
-                    Arc::downgrade(&first),
-                ),
-            ),
-            (
-                2,
-                (
-                    cluster.clone(),
-                    BrokerActor::person("owner"),
-                    Arc::downgrade(&second),
-                ),
-            ),
-            (
-                3,
-                (
-                    cluster,
-                    BrokerActor::person("owner"),
-                    Arc::downgrade(&closed),
-                ),
-            ),
-        ]);
-        drop(closed);
-        state.publish_action_catalogue();
-        for follower in [&first, &second] {
-            let mut held = runtime_collab::ActionCatalogue::default();
-            assert!(read_catalogue(follower, &mut held));
-            assert!(
-                offers(&held, "files.entry:owner"),
-                "the current authorized catalogue is initially available"
-            );
-        }
-        assert!(
-            !state
-                .action_catalogue_subscribers
-                .lock()
-                .unwrap()
-                .contains_key(&3),
-            "closed catalogue subscribers are removed"
-        );
-
-        failed.store(true, std::sync::atomic::Ordering::Relaxed);
-        state.publish_action_catalogue();
-        for follower in [&first, &second] {
-            let following = follower.following.lock().unwrap();
-            assert!(following.ended);
-            assert!(following.pending.is_none());
-        }
-        let subscribers = state.action_catalogue_subscribers.lock().unwrap();
-        assert!(!subscribers.contains_key(&1));
-        assert!(!subscribers.contains_key(&2));
-        assert!(!subscribers.contains_key(&3));
-        drop(subscribers);
-        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn exact_published_action_uses_current_live_routes_before_archived_descriptors() {
-        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
-        let state = broker.state();
-        let retained = catalogue_surface(7, "workspace", "notebook");
-        state.launchable.retain(&retained);
-        let route = retained.route.clone();
-        let (archived, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
-        assert!(!archived.live);
-        assert!(
-            archived.actions.is_empty(),
-            "lookup must not clone the source inventory"
-        );
-        assert_eq!(descriptor.resource, "notebook");
-
-        let mut empty = retained.clone();
-        empty.actions.clear();
-        state.replace_published_surfaces_for_test(vec![empty.clone()]);
-        assert!(state.published_action(&route, "notebook", "open").is_none());
-
-        let mut other_peer = retained;
-        other_peer.peer_id = 8;
-        other_peer.actions[0].action_label = "Current live action".into();
-        state.replace_published_surfaces_for_test(vec![empty, other_peer]);
-        let (live, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
-        assert!(live.live);
-        assert_eq!(live.peer_id, 8);
-        assert!(live.actions.is_empty());
-        assert_eq!(descriptor.action_label, "Current live action");
-        let foreign = CrdtRoute::record(&route.app_id, "another-workspace", &route.record_id);
-        assert!(
-            state
-                .published_action(&foreign, "notebook", "open")
-                .is_none()
-        );
-        state.replace_published_surfaces_for_test(Vec::new());
-        assert!(
-            !state
-                .published_action(&route, "notebook", "open")
-                .unwrap()
-                .0
-                .live
         );
     }
 
@@ -14648,124 +14684,128 @@ pub mod tests {
         );
     }
 
-    #[test]
-    fn a_handoff_request_reaches_exactly_the_addressed_instance() {
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        let workspace = uuid::Uuid::new_v4().to_string();
-        let key = |app: &str, record: &str| {
-            CrdtRoute::record(app, workspace.clone(), record).channel_key()
-        };
-        let mut addressed =
-            state.subscribe_context(&key("dev.tilo.notes", "continuation:5"), 7, None);
-        let mut sibling =
-            state.subscribe_context(&key("dev.tilo.notes", "continuation:6"), 8, None);
-        let mut other_app =
-            state.subscribe_context(&key("dev.tilo.sheets", "continuation:5"), 9, None);
-        let request = collab_types::handoff::HandoffRequest::Checkpoint { token: 3 };
-        // The route SessionFollowDispatcher::request_handoff addresses.
-        state.fanout_to_route(
-            &CollabEvent::Handoff {
-                request: request.clone(),
-            },
-            u64::MAX,
-            &CrdtRoute::record("dev.tilo.notes", workspace.clone(), "continuation:5"),
-        );
-        assert!(matches!(
-            addressed.try_recv(),
-            Ok(ContextUpdate::Handoff(message))
-                if collab_types::handoff::HandoffRequest::decode(&message) == Some(request)
-        ));
-        assert!(
-            sibling.try_recv().is_err(),
-            "another window of the app is not asked"
-        );
-        assert!(other_app.try_recv().is_err());
-    }
+    tilo_test_env::scenario! {
+        fn a_directed_delivery_reaches_exactly_its_addressee;
 
-    #[test]
-    fn private_context_alias_uses_latest_exact_subscriber_without_duplicate_delivery() {
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        let workspace = uuid::Uuid::new_v4().to_string();
-        let document = CrdtRoute::record("so.tilo.code-editor", &workspace, "native-project");
-        let private = CrdtRoute::record("so.tilo.code-editor", &workspace, "continuation:42");
-        let mut old = state.subscribe_context(&document.channel_key(), 7, None);
-        let mut sibling = state.subscribe_context(&document.channel_key(), 8, None);
-        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
-        let mut current = state.subscribe_context(&document.channel_key(), 7, None);
-        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
-        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
-        state.alias_private_context(&document.channel_key(), &private.channel_key(), 99);
-        let request = collab_types::handoff::HandoffRequest::Checkpoint { token: 3 };
-        state.fanout_to_route(
-            &CollabEvent::Handoff {
-                request: request.clone(),
-            },
-            u64::MAX,
-            &private,
-        );
-        assert!(
-            matches!(current.try_recv(), Ok(ContextUpdate::Handoff(message))
-            if collab_types::handoff::HandoffRequest::decode(&message) == Some(request))
-        );
-        assert!(
-            current.try_recv().is_err(),
-            "a renewed stream must receive each private view once"
-        );
-        assert!(
-            old.try_recv().is_err(),
-            "superseded context receiver cannot receive private views"
-        );
-        assert!(
-            sibling.try_recv().is_err(),
-            "sharing the document does not grant another window's private stream"
-        );
-    }
+        phase a_handoff_request_reaches_exactly_the_addressed_instance;
+        {
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = AppBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                None,
+                None,
+            );
+            let workspace = uuid::Uuid::new_v4().to_string();
+            let key = |app: &str, record: &str| {
+                CrdtRoute::record(app, workspace.clone(), record).channel_key()
+            };
+            let mut addressed =
+                state.subscribe_context(&key("dev.tilo.notes", "continuation:5"), 7, None);
+            let mut sibling =
+                state.subscribe_context(&key("dev.tilo.notes", "continuation:6"), 8, None);
+            let mut other_app =
+                state.subscribe_context(&key("dev.tilo.sheets", "continuation:5"), 9, None);
+            let request = collab_types::handoff::HandoffRequest::Checkpoint { token: 3 };
+            // The route SessionFollowDispatcher::request_handoff addresses.
+            state.fanout_to_route(
+                &CollabEvent::Handoff {
+                    request: request.clone(),
+                },
+                u64::MAX,
+                &CrdtRoute::record("dev.tilo.notes", workspace.clone(), "continuation:5"),
+            );
+            assert!(matches!(
+                addressed.try_recv(),
+                Ok(ContextUpdate::Handoff(message))
+                    if collab_types::handoff::HandoffRequest::decode(&message) == Some(request)
+            ));
+            assert!(
+                sibling.try_recv().is_err(),
+                "another window of the app is not asked"
+            );
+            assert!(other_app.try_recv().is_err());
+        }
 
-    #[test]
-    fn late_join_snapshot_request_selects_exactly_one_existing_holder() {
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        let channel = "dev.tilo.notes#workspace:test#record:daily";
-        let mut first = state.subscribe_context(channel, 7, None);
-        let mut second = state.subscribe_context(channel, 9, None);
-        let _requester = state.subscribe_context(channel, 12, None);
+        phase private_context_alias_uses_latest_exact_subscriber_without_duplicate_delivery;
+        {
+            let (state, _bridge_rx) = AppBrokerState::new(
+                &Arc::new(FanoutState::new()),
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                None,
+                None,
+            );
+            let workspace = uuid::Uuid::new_v4().to_string();
+            let document = CrdtRoute::record("so.tilo.code-editor", &workspace, "native-project");
+            let private = CrdtRoute::record("so.tilo.code-editor", &workspace, "continuation:42");
+            let mut old = state.subscribe_context(&document.channel_key(), 7, None);
+            let mut sibling = state.subscribe_context(&document.channel_key(), 8, None);
+            state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
+            let mut current = state.subscribe_context(&document.channel_key(), 7, None);
+            state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
+            state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
+            state.alias_private_context(&document.channel_key(), &private.channel_key(), 99);
+            let request = collab_types::handoff::HandoffRequest::Checkpoint { token: 3 };
+            state.fanout_to_route(
+                &CollabEvent::Handoff {
+                    request: request.clone(),
+                },
+                u64::MAX,
+                &private,
+            );
+            assert!(
+                matches!(current.try_recv(), Ok(ContextUpdate::Handoff(message))
+                if collab_types::handoff::HandoffRequest::decode(&message) == Some(request))
+            );
+            assert!(
+                current.try_recv().is_err(),
+                "a renewed stream must receive each private view once"
+            );
+            assert!(
+                old.try_recv().is_err(),
+                "superseded context receiver cannot receive private views"
+            );
+            assert!(
+                sibling.try_recv().is_err(),
+                "sharing the document does not grant another window's private stream"
+            );
+        }
 
-        assert!(state.request_document_snapshot(channel, 12));
-        assert!(matches!(
-            first.try_recv(),
-            Ok(ContextUpdate::SnapshotRequested)
-        ));
-        assert!(second.try_recv().is_err(), "only one holder may respond");
-        let requester_only_channel = "dev.tilo.notes#workspace:test#record:empty";
-        let mut requester_only = state.subscribe_context(requester_only_channel, 12, None);
-        assert!(
-            !state.request_document_snapshot(requester_only_channel, 12),
-            "the requester cannot answer from its own empty state"
-        );
-        assert!(requester_only.try_recv().is_err());
-        assert!(
-            !state.request_document_snapshot("missing", 12),
-            "a route without a holder is retryable, not falsely acknowledged"
-        );
+        phase late_join_snapshot_request_selects_exactly_one_existing_holder;
+        {
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = AppBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                None,
+                None,
+            );
+            let channel = "dev.tilo.notes#workspace:test#record:daily";
+            let mut first = state.subscribe_context(channel, 7, None);
+            let mut second = state.subscribe_context(channel, 9, None);
+            let _requester = state.subscribe_context(channel, 12, None);
+
+            assert!(state.request_document_snapshot(channel, 12));
+            assert!(matches!(
+                first.try_recv(),
+                Ok(ContextUpdate::SnapshotRequested)
+            ));
+            assert!(second.try_recv().is_err(), "only one holder may respond");
+            let requester_only_channel = "dev.tilo.notes#workspace:test#record:empty";
+            let mut requester_only = state.subscribe_context(requester_only_channel, 12, None);
+            assert!(
+                !state.request_document_snapshot(requester_only_channel, 12),
+                "the requester cannot answer from its own empty state"
+            );
+            assert!(requester_only.try_recv().is_err());
+            assert!(
+                !state.request_document_snapshot("missing", 12),
+                "a route without a holder is retryable, not falsely acknowledged"
+            );
+        }
     }
 
     #[allow(
@@ -15177,45 +15217,50 @@ mod host_worker_capacity_tests {
         state.retain_host_worker(peer, &route, &worker)
     }
 
-    /// Repeated worker mounts (connect, then drop every connection) never
-    /// grow the provenance registry: each disconnect withdraws its entry.
-    #[test]
-    fn host_worker_connect_disconnect_cycles_do_not_grow_the_registry() {
-        let state = state();
-        let mut peer = 0u64;
-        for _cycle in 0..20 {
-            let first = peer;
-            for record in 0..40 {
-                peer += 1;
-                retain(&state, peer, record).unwrap();
-            }
-            assert_eq!(retained(&state), 40);
-            for connection in first + 1..=peer {
-                state.remove_connection(connection);
-            }
-            assert_eq!(retained(&state), 0);
-        }
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
+        fn host_workers_are_kept_per_connection_and_withdrawn_with_it;
 
-    /// Workers are counted per connection, never across them: a Cloud host
-    /// mounting a worker per record for every app and agent, far past any
-    /// former global bound, keeps every one, and closing one withdraws only
-    /// its own.
-    #[test]
-    fn host_workers_are_owned_by_their_connections_not_a_global_count() {
-        let state = state();
-        let agents = 16;
-        let records = 8 * 64; // eight hosted apps with 64 records each
-        for peer in 0..(agents + records) {
-            retain(&state, peer as u64 + 1, peer).unwrap();
+        phase host_worker_connect_disconnect_cycles_do_not_grow_the_registry;
+        // Repeated worker mounts (connect, then drop every connection) never
+        // grow the provenance registry: each disconnect withdraws its entry.
+        {
+            let state = state();
+            let mut peer = 0u64;
+            for _cycle in 0..20 {
+                let first = peer;
+                for record in 0..40 {
+                    peer += 1;
+                    retain(&state, peer, record).unwrap();
+                }
+                assert_eq!(retained(&state), 40);
+                for connection in first + 1..=peer {
+                    state.remove_connection(connection);
+                }
+                assert_eq!(retained(&state), 0);
+            }
         }
-        assert_eq!(retained(&state), agents + records);
-        // A reconnect of an already admitted peer with the same scope is idempotent.
-        assert!(retain(&state, 1, 0).is_ok());
-        assert_eq!(retained(&state), agents + records);
-        state.remove_connection(1);
-        assert_eq!(retained(&state), agents + records - 1);
-        assert!(retain(&state, (agents + records) as u64 + 1, agents + records).is_ok());
+
+        phase host_workers_are_owned_by_their_connections_not_a_global_count;
+        // Workers are counted per connection, never across them: a Cloud host
+        // mounting a worker per record for every app and agent, far past any
+        // former global bound, keeps every one, and closing one withdraws only
+        // its own.
+        {
+            let state = state();
+            let agents = 16;
+            let records = 8 * 64; // eight hosted apps with 64 records each
+            for peer in 0..(agents + records) {
+                retain(&state, peer as u64 + 1, peer).unwrap();
+            }
+            assert_eq!(retained(&state), agents + records);
+            // A reconnect of an already admitted peer with the same scope is idempotent.
+            assert!(retain(&state, 1, 0).is_ok());
+            assert_eq!(retained(&state), agents + records);
+            state.remove_connection(1);
+            assert_eq!(retained(&state), agents + records - 1);
+            assert!(retain(&state, (agents + records) as u64 + 1, agents + records).is_ok());
+        }
     }
 }
 

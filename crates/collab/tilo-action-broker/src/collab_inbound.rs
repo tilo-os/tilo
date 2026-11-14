@@ -320,115 +320,120 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_host_replay_of_old_history_is_admitted_where_a_live_op_that_old_is_not() {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let an_hour_ago = tilo_clock::wall() - Duration::from_secs(3600);
-        let (mutation, _) = collab_types::field_edit_mutation("note", "title", "old").unwrap();
-        let mut op = SignedOp::new_unsigned(
-            mutation.encode().unwrap(),
-            document_artifact_id("notes", "workspace", "record"),
-            collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-            document_attestation_id("notes", "workspace", "record"),
-            OpKind::Change,
-            an_hour_ago,
-            1,
-        );
-        collab_types::sign_op(&mut op, &key).unwrap();
-        let now = tilo_clock::wall();
-        let channel = || {
-            let mut state = InboundState {
-                workspace: "workspace".into(),
-                ..InboundState::default()
-            };
-            state.artifacts.insert(op.artifact, ArtifactKind::Note);
-            state
-        };
-        assert_eq!(
-            validate_document(&op, &editor(), false, &mut channel(), now),
-            Err(ValidationError::OutsideValidityWindow),
-        );
-        let mut state = channel();
-        assert_eq!(
-            validate_document(&op, &editor(), true, &mut state, now),
-            Ok(())
-        );
-        assert!(matches!(
-            validate_document(&op, &editor(), true, &mut state, now),
-            Err(ValidationError::ReplaySeq { .. })
-        ));
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
+        fn a_host_replay_is_admitted_as_history_and_redelivered;
 
-    /// An op the broker admitted before a local app held its record reaches
-    /// that app when the host replays it; a different op under the same
-    /// sequence is still refused.
-    #[test]
-    fn a_host_replay_redelivers_an_op_the_broker_already_admitted() {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-        let op = |title: &str| {
-            let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
+        phase a_host_replay_of_old_history_is_admitted_where_a_live_op_that_old_is_not;
+        {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+            let an_hour_ago = tilo_clock::wall() - Duration::from_secs(3600);
+            let (mutation, _) = collab_types::field_edit_mutation("note", "title", "old").unwrap();
             let mut op = SignedOp::new_unsigned(
                 mutation.encode().unwrap(),
                 document_artifact_id("notes", "workspace", "record"),
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
                 document_attestation_id("notes", "workspace", "record"),
                 OpKind::Change,
-                tilo_clock::wall(),
+                an_hour_ago,
                 1,
             );
             collab_types::sign_op(&mut op, &key).unwrap();
-            op
-        };
-        let document = |envelope: SignedOp, replayed: bool| RemoteDocument {
-            app_id: "notes".into(),
-            cluster_id: "workspace".into(),
-            record_id: "record".into(),
-            author: editor(),
-            replayed,
-            envelope,
-        };
-        let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        let fanout = FanoutState::new();
-        let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let seen = Arc::clone(&delivered);
-        let _app = fanout.subscribe_workspaces(
-            vec!["workspace".into()],
-            Box::new(move |event, _| {
-                if matches!(event, CollabEvent::Document { .. }) {
-                    seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                }
-            }),
-        );
-        let count = || delivered.load(std::sync::atomic::Ordering::SeqCst);
-        let first = op("first");
-        assert_eq!(
-            deliver(&channels, &fanout, document(first.clone(), false), |_| {
-                "peer".into()
-            }),
-            Delivery::Done
-        );
-        assert_eq!(count(), 1);
-        assert_eq!(
-            deliver(&channels, &fanout, document(first.clone(), false), |_| {
-                "peer".into()
-            }),
-            Delivery::Done
-        );
-        assert_eq!(count(), 1, "a live repeat is not delivered again");
-        assert_eq!(
-            deliver(&channels, &fanout, document(first, true), |_| {
-                "peer".into()
-            }),
-            Delivery::Done
-        );
-        assert_eq!(count(), 2, "the host's replay reaches the late app");
-        assert_eq!(
-            deliver(&channels, &fanout, document(op("second"), true), |_| "peer"
-                .into()),
-            Delivery::Done
-        );
-        drop(fanout);
-        assert_eq!(count(), 2, "another op under a used sequence is refused");
+            let now = tilo_clock::wall();
+            let channel = || {
+                let mut state = InboundState {
+                    workspace: "workspace".into(),
+                    ..InboundState::default()
+                };
+                state.artifacts.insert(op.artifact, ArtifactKind::Note);
+                state
+            };
+            assert_eq!(
+                validate_document(&op, &editor(), false, &mut channel(), now),
+                Err(ValidationError::OutsideValidityWindow),
+            );
+            let mut state = channel();
+            assert_eq!(
+                validate_document(&op, &editor(), true, &mut state, now),
+                Ok(())
+            );
+            assert!(matches!(
+                validate_document(&op, &editor(), true, &mut state, now),
+                Err(ValidationError::ReplaySeq { .. })
+            ));
+        }
+
+        phase a_host_replay_redelivers_an_op_the_broker_already_admitted;
+        // An op the broker admitted before a local app held its record reaches
+        // that app when the host replays it; a different op under the same
+        // sequence is still refused.
+        {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+            let op = |title: &str| {
+                let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
+                let mut op = SignedOp::new_unsigned(
+                    mutation.encode().unwrap(),
+                    document_artifact_id("notes", "workspace", "record"),
+                    collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+                    document_attestation_id("notes", "workspace", "record"),
+                    OpKind::Change,
+                    tilo_clock::wall(),
+                    1,
+                );
+                collab_types::sign_op(&mut op, &key).unwrap();
+                op
+            };
+            let document = |envelope: SignedOp, replayed: bool| RemoteDocument {
+                app_id: "notes".into(),
+                cluster_id: "workspace".into(),
+                record_id: "record".into(),
+                author: editor(),
+                replayed,
+                envelope,
+            };
+            let channels = Arc::new(Mutex::new(BrokerChannels::default()));
+            let fanout = FanoutState::new();
+            let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seen = Arc::clone(&delivered);
+            let _app = fanout.subscribe_workspaces(
+                vec!["workspace".into()],
+                Box::new(move |event, _| {
+                    if matches!(event, CollabEvent::Document { .. }) {
+                        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }),
+            );
+            let count = || delivered.load(std::sync::atomic::Ordering::SeqCst);
+            let first = op("first");
+            assert_eq!(
+                deliver(&channels, &fanout, document(first.clone(), false), |_| {
+                    "peer".into()
+                }),
+                Delivery::Done
+            );
+            assert_eq!(count(), 1);
+            assert_eq!(
+                deliver(&channels, &fanout, document(first.clone(), false), |_| {
+                    "peer".into()
+                }),
+                Delivery::Done
+            );
+            assert_eq!(count(), 1, "a live repeat is not delivered again");
+            assert_eq!(
+                deliver(&channels, &fanout, document(first, true), |_| {
+                    "peer".into()
+                }),
+                Delivery::Done
+            );
+            assert_eq!(count(), 2, "the host's replay reaches the late app");
+            assert_eq!(
+                deliver(&channels, &fanout, document(op("second"), true), |_| "peer"
+                    .into()),
+                Delivery::Done
+            );
+            drop(fanout);
+            assert_eq!(count(), 2, "another op under a used sequence is refused");
+        }
     }
 
     /// A writer's two edits to a sealed note: the first sealed under the

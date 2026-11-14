@@ -348,85 +348,90 @@ mod tests {
         cert
     }
 
-    /// The store's path is the host's state, its own documents beside it.
-    #[test]
-    fn the_store_lives_beside_the_hosts_state() {
-        assert_eq!(
-            store_path(Path::new("/state")),
-            Path::new("/state/tilo/personal/documents")
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
+        fn a_persons_store_is_keyed_by_their_root_and_opened_per_device;
 
-    /// Two devices of one person agree on the cluster their own records route
-    /// on, without either naming the other: the store's key is the root's.
-    #[test]
-    fn two_devices_of_one_person_agree_on_the_cluster() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let root_key = root.verifying_key().to_bytes();
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let first = certificate(&root, 1, now);
-        let second = certificate(&root, 2, now);
-        let one = PersonalStore::open(root_key, first, now).unwrap();
-        let two = PersonalStore::open(root_key, second, now).unwrap();
-        assert_eq!(one.store_key(), two.store_key());
-        assert_eq!(
-            one.store_key(),
-            collab_types::personal_cluster(&root_key).to_string()
-        );
-        assert_eq!(
-            Person::of(hex::encode(root_key), root_key).principal,
-            person_id_for_root(root_key)
-        );
-    }
+        phase the_store_lives_beside_the_hosts_state;
+        // The store's path is the host's state, its own documents beside it.
+        {
+            assert_eq!(
+                store_path(Path::new("/state")),
+                Path::new("/state/tilo/personal/documents")
+            );
+        }
 
-    /// A store written out comes back whole, on the device that wrote it: the
-    /// person's records outlive the host that held them.
-    #[test]
-    fn a_written_store_comes_back() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-        let root_key = root.verifying_key().to_bytes();
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let device = certificate(&root, 1, now);
-        let store = PersonalStore::open(root_key, device.clone(), now).unwrap();
-        let bytes = store.durable().unwrap();
-        let back = PersonalStore::restore(&bytes, &device, now).unwrap();
-        assert_eq!(back.root(), root_key);
-        assert_eq!(back.store_key(), store.store_key());
-    }
+        phase two_devices_of_one_person_agree_on_the_cluster;
+        // Two devices of one person agree on the cluster their own records route
+        // on, without either naming the other: the store's key is the root's.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+            let root_key = root.verifying_key().to_bytes();
+            let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+            let first = certificate(&root, 1, now);
+            let second = certificate(&root, 2, now);
+            let one = PersonalStore::open(root_key, first, now).unwrap();
+            let two = PersonalStore::open(root_key, second, now).unwrap();
+            assert_eq!(one.store_key(), two.store_key());
+            assert_eq!(
+                one.store_key(),
+                collab_types::personal_cluster(&root_key).to_string()
+            );
+            assert_eq!(
+                Person::of(hex::encode(root_key), root_key).principal,
+                person_id_for_root(root_key)
+            );
+        }
 
-    /// A machine copied from another opens the person's store as its own new
-    /// device: the store the source kept is set aside, never opened as this
-    /// device's, and is still there for the source's records.
-    #[test]
-    fn a_copied_machine_opens_the_store_as_its_own_device() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-        let root_key = root.verifying_key().to_bytes();
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let source = certificate(&root, 1, now);
-        let branch = certificate(&root, 2, now);
-        let state = tempfile::tempdir().unwrap();
-        let path = store_path(state.path());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let kept = PersonalStore::open(root_key, source.clone(), now)
-            .unwrap()
-            .durable()
-            .unwrap();
-        std::fs::write(&path, &kept).unwrap();
-        assert_eq!(
-            PersonalStore::kept_by(&kept),
-            Some(source.device_public_key)
-        );
+        phase a_written_store_comes_back;
+        // A store written out comes back whole, on the device that wrote it: the
+        // person's records outlive the host that held them.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+            let root_key = root.verifying_key().to_bytes();
+            let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+            let device = certificate(&root, 1, now);
+            let store = PersonalStore::open(root_key, device.clone(), now).unwrap();
+            let bytes = store.durable().unwrap();
+            let back = PersonalStore::restore(&bytes, &device, now).unwrap();
+            assert_eq!(back.root(), root_key);
+            assert_eq!(back.store_key(), store.store_key());
+        }
 
-        let opened = open(state.path(), root_key, branch.clone(), now).unwrap();
-        assert_eq!(opened.root(), root_key);
-        assert!(!path.exists(), "the source's store is not this device's");
-        let aside = path.with_extension(format!(
-            "of-{}",
-            hex::encode(&source.device_public_key[..4])
-        ));
-        assert_eq!(std::fs::read(aside).unwrap(), kept);
-        // The source's own store still opens on the source.
-        assert!(PersonalStore::restore(&kept, &source, now).is_ok());
-        assert!(PersonalStore::restore(&kept, &branch, now).is_err());
+        phase a_copied_machine_opens_the_store_as_its_own_device;
+        // A machine copied from another opens the person's store as its own new
+        // device: the store the source kept is set aside, never opened as this
+        // device's, and is still there for the source's records.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+            let root_key = root.verifying_key().to_bytes();
+            let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+            let source = certificate(&root, 1, now);
+            let branch = certificate(&root, 2, now);
+            let state = tempfile::tempdir().unwrap();
+            let path = store_path(state.path());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let kept = PersonalStore::open(root_key, source.clone(), now)
+                .unwrap()
+                .durable()
+                .unwrap();
+            std::fs::write(&path, &kept).unwrap();
+            assert_eq!(
+                PersonalStore::kept_by(&kept),
+                Some(source.device_public_key)
+            );
+
+            let opened = open(state.path(), root_key, branch.clone(), now).unwrap();
+            assert_eq!(opened.root(), root_key);
+            assert!(!path.exists(), "the source's store is not this device's");
+            let aside = path.with_extension(format!(
+                "of-{}",
+                hex::encode(&source.device_public_key[..4])
+            ));
+            assert_eq!(std::fs::read(aside).unwrap(), kept);
+            // The source's own store still opens on the source.
+            assert!(PersonalStore::restore(&kept, &source, now).is_ok());
+            assert!(PersonalStore::restore(&kept, &branch, now).is_err());
+        }
     }
 }

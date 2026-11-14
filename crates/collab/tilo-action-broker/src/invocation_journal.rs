@@ -1481,140 +1481,319 @@ mod tests {
 
     const PRIVATE_RECORD: &str = r#"{"version":7,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Enrolled":{"root":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"task":"00000000-0000-0000-0000-000000000005","run":"00000000-0000-0000-0000-000000000006","channel":"00000000-0000-0000-0000-000000000007"}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"private result"}},"uncertain":false,"cancellation_requested":false}]}"#;
 
-    /// A first open cut short after the directory and its lock exist, but
-    /// before the first snapshot is written (the process was killed), left a
-    /// store that was never initialized. Opening it again initializes it;
-    /// refusing it left the desktop without collaboration on every start.
-    #[test]
-    fn a_store_whose_first_open_was_cut_short_is_initialized() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("journal");
-        drop(InvocationJournal::open(&root).unwrap());
-        std::fs::remove_file(root.join("records.json")).unwrap();
-        let mut journal = InvocationJournal::open(&root).expect("an uninitialized store opens");
-        assert!(journal.snapshot.records.is_empty());
-        let mut local = key();
-        local.host = journal.host();
-        local.owner = InvocationOwner::Local {
-            actor: "person".into(),
-        };
-        journal.admit(local, serde_json::json!({}), 1).unwrap();
-        drop(journal);
-        assert!(
-            root.join("records.json").exists(),
-            "the store keeps its snapshot"
-        );
-        assert_eq!(
-            InvocationJournal::open(&root)
-                .unwrap()
-                .snapshot
-                .records
-                .len(),
-            1,
-            "and reads it back"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_journal_store_opens_only_for_its_owner_in_a_shape_it_knows;
 
-    #[test]
-    fn a_private_store_reopens_with_its_owner() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("journal");
-        drop(InvocationJournal::open(&root).unwrap());
-        std::fs::write(root.join("records.json"), PRIVATE_RECORD).unwrap();
-        let mut journal = InvocationJournal::open(&root).expect("private ownership reads");
-        let before: serde_json::Value = serde_json::from_str(PRIVATE_RECORD).unwrap();
-        assert_eq!(serde_json::to_value(&journal.snapshot).unwrap(), before);
-        let mut local = key();
-        local.host = journal.host();
-        local.owner = InvocationOwner::Local {
-            actor: "person".into(),
-        };
-        journal.admit(local, serde_json::json!({}), 2).unwrap();
-        assert_eq!(
-            journal.snapshot.version, VERSION,
-            "the store keeps its version"
-        );
-        drop(journal);
-        let recovered = InvocationJournal::open(&root).unwrap();
-        assert_eq!(
-            serde_json::to_value(&recovered.snapshot.records[0]).unwrap(),
-            before["records"][0]
-        );
-        let mut foreign = recovered.snapshot.records[0].key.clone();
-        for owner in [
-            InvocationOwner::Local {
-                actor: "person".into(),
-            },
-            InvocationOwner::Certified {
-                root: [1; 32],
-                device: [2; 32],
-            },
-            InvocationOwner::Certified {
-                root: [1; 32],
-                device: [3; 32],
-            },
-        ] {
-            foreign.owner = owner;
-            assert!(
-                recovered.lookup(&foreign).unwrap().is_none(),
-                "private recovered result cannot alias a public owner"
-            );
-        }
-    }
-
-    #[test]
-    fn enrolled_journal_upgrade_barrier_never_returns_effect_permission_on_failure() {
-        let private: Snapshot = serde_json::from_str(PRIVATE_RECORD).expect("private owner data");
-        for failure in [BarrierFailure::File, BarrierFailure::Directory] {
-            let dir = tempfile::tempdir().unwrap();
-            let root = dir.path().join("journal");
-            let mut journal = InvocationJournal::open(&root).unwrap();
-            let mut key = private.records[0].key.clone();
-            key.host = journal.host();
-            journal.fail_at = Some(failure);
-            assert!(
-                journal
-                    .admit(key.clone(), serde_json::json!({}), 1)
-                    .is_err()
-            );
-            assert!(
-                journal
-                    .admit(key.clone(), serde_json::json!({}), 2)
-                    .is_err()
-            );
-            drop(journal);
-            let reopened = InvocationJournal::open(&root).unwrap();
-            if failure == BarrierFailure::Directory {
-                assert_eq!(reopened.snapshot.version, VERSION);
-                let retained = reopened.lookup(&key).unwrap().unwrap();
-                assert!(retained.uncertain);
-                assert_eq!(retained.key.owner, key.owner);
-            } else {
-                assert_eq!(reopened.snapshot.version, VERSION);
-                assert!(reopened.lookup(&key).unwrap().is_none());
-            }
-        }
-    }
-
-    #[test]
-    fn enrolled_journal_rejects_private_downgrade_and_noncanonical_ownership() {
-        for literal in [
-            PRIVATE_RECORD.replace("\"version\":7", "\"version\":6"),
-            PRIVATE_RECORD.replace(
-                "00000000-0000-0000-0000-000000000005",
-                "00000000000000000000000000000005",
-            ),
-            PRIVATE_RECORD.replace(
-                "00000000-0000-0000-0000-000000000006",
-                "00000000-0000-0000-0000-000000000000",
-            ),
-            PRIVATE_RECORD.replace("00000000-0000-0000-0000-000000000007", &"x".repeat(200)),
-        ] {
+        phase a_store_whose_first_open_was_cut_short_is_initialized;
+        // A first open cut short after the directory and its lock exist, but
+        // before the first snapshot is written (the process was killed), left a
+        // store that was never initialized. Opening it again initializes it;
+        // refusing it left the desktop without collaboration on every start.
+        {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().join("journal");
             drop(InvocationJournal::open(&root).unwrap());
-            std::fs::write(root.join("records.json"), literal).unwrap();
+            std::fs::remove_file(root.join("records.json")).unwrap();
+            let mut journal = InvocationJournal::open(&root).expect("an uninitialized store opens");
+            assert!(journal.snapshot.records.is_empty());
+            let mut local = key();
+            local.host = journal.host();
+            local.owner = InvocationOwner::Local {
+                actor: "person".into(),
+            };
+            journal.admit(local, serde_json::json!({}), 1).unwrap();
+            drop(journal);
+            assert!(
+                root.join("records.json").exists(),
+                "the store keeps its snapshot"
+            );
+            assert_eq!(
+                InvocationJournal::open(&root)
+                    .unwrap()
+                    .snapshot
+                    .records
+                    .len(),
+                1,
+                "and reads it back"
+            );
+        }
+
+        phase a_private_store_reopens_with_its_owner;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("journal");
+            drop(InvocationJournal::open(&root).unwrap());
+            std::fs::write(root.join("records.json"), PRIVATE_RECORD).unwrap();
+            let mut journal = InvocationJournal::open(&root).expect("private ownership reads");
+            let before: serde_json::Value = serde_json::from_str(PRIVATE_RECORD).unwrap();
+            assert_eq!(serde_json::to_value(&journal.snapshot).unwrap(), before);
+            let mut local = key();
+            local.host = journal.host();
+            local.owner = InvocationOwner::Local {
+                actor: "person".into(),
+            };
+            journal.admit(local, serde_json::json!({}), 2).unwrap();
+            assert_eq!(
+                journal.snapshot.version, VERSION,
+                "the store keeps its version"
+            );
+            drop(journal);
+            let recovered = InvocationJournal::open(&root).unwrap();
+            assert_eq!(
+                serde_json::to_value(&recovered.snapshot.records[0]).unwrap(),
+                before["records"][0]
+            );
+            let mut foreign = recovered.snapshot.records[0].key.clone();
+            for owner in [
+                InvocationOwner::Local {
+                    actor: "person".into(),
+                },
+                InvocationOwner::Certified {
+                    root: [1; 32],
+                    device: [2; 32],
+                },
+                InvocationOwner::Certified {
+                    root: [1; 32],
+                    device: [3; 32],
+                },
+            ] {
+                foreign.owner = owner;
+                assert!(
+                    recovered.lookup(&foreign).unwrap().is_none(),
+                    "private recovered result cannot alias a public owner"
+                );
+            }
+        }
+
+        phase enrolled_journal_rejects_private_downgrade_and_noncanonical_ownership;
+        {
+            for literal in [
+                PRIVATE_RECORD.replace("\"version\":7", "\"version\":6"),
+                PRIVATE_RECORD.replace(
+                    "00000000-0000-0000-0000-000000000005",
+                    "00000000000000000000000000000005",
+                ),
+                PRIVATE_RECORD.replace(
+                    "00000000-0000-0000-0000-000000000006",
+                    "00000000-0000-0000-0000-000000000000",
+                ),
+                PRIVATE_RECORD.replace("00000000-0000-0000-0000-000000000007", &"x".repeat(200)),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let root = dir.path().join("journal");
+                drop(InvocationJournal::open(&root).unwrap());
+                std::fs::write(root.join("records.json"), literal).unwrap();
+                assert!(InvocationJournal::open(&root).is_err());
+            }
+        }
+
+        phase invocation_journal_rejects_preexisting_cross_owner_uuid_conflicts;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("journal");
+            let mut journal = InvocationJournal::open(&root).unwrap();
+            let mut k = key();
+            k.host = journal.host();
+            journal.admit(k, serde_json::json!({}), 1).unwrap();
+            let mut conflicting = journal.snapshot.records[0].clone();
+            conflicting.key.owner = InvocationOwner::Local {
+                actor: "other".into(),
+            };
+            conflicting.wire_id = 2;
+            journal.snapshot.records.push(conflicting);
+            journal.compact().unwrap();
+            drop(journal);
+            assert!(
+                InvocationJournal::open(&root).is_err(),
+                "an older ambiguous store cannot authorize either application UUID owner"
+            );
+        }
+
+        phase invocation_journal_lock_and_invalid_stores_fail_closed;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("journal");
+            let journal = InvocationJournal::open(&root).unwrap();
+            assert!(
+                InvocationJournal::open(&root).is_err(),
+                "second process/file owner must be excluded"
+            );
+            drop(journal);
+            std::fs::write(root.join("records.json"), b"{broken").unwrap();
             assert!(InvocationJournal::open(&root).is_err());
+            std::fs::write(
+                root.join("records.json"),
+                br#"{"version":999,"host":"00000000-0000-0000-0000-000000000063","records":[]}"#,
+            )
+            .unwrap();
+            assert!(InvocationJournal::open(&root).is_err());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
+        fn a_journal_restart_or_failed_barrier_never_reissues_an_admission;
+
+        phase enrolled_journal_upgrade_barrier_never_returns_effect_permission_on_failure;
+        {
+            let private: Snapshot = serde_json::from_str(PRIVATE_RECORD).expect("private owner data");
+            for failure in [BarrierFailure::File, BarrierFailure::Directory] {
+                let dir = tempfile::tempdir().unwrap();
+                let root = dir.path().join("journal");
+                let mut journal = InvocationJournal::open(&root).unwrap();
+                let mut key = private.records[0].key.clone();
+                key.host = journal.host();
+                journal.fail_at = Some(failure);
+                assert!(
+                    journal
+                        .admit(key.clone(), serde_json::json!({}), 1)
+                        .is_err()
+                );
+                assert!(
+                    journal
+                        .admit(key.clone(), serde_json::json!({}), 2)
+                        .is_err()
+                );
+                drop(journal);
+                let reopened = InvocationJournal::open(&root).unwrap();
+                if failure == BarrierFailure::Directory {
+                    assert_eq!(reopened.snapshot.version, VERSION);
+                    let retained = reopened.lookup(&key).unwrap().unwrap();
+                    assert!(retained.uncertain);
+                    assert_eq!(retained.key.owner, key.owner);
+                } else {
+                    assert_eq!(reopened.snapshot.version, VERSION);
+                    assert!(reopened.lookup(&key).unwrap().is_none());
+                }
+            }
+        }
+
+        phase invocation_journal_initialization_parent_barrier_must_succeed_on_reopen;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("journal");
+            let attempts = std::cell::Cell::new(0);
+            for expected in 1..=2 {
+                let opened = InvocationJournal::open_with_parent_barrier(&root, |parent| {
+                    assert_eq!(parent, dir.path());
+                    attempts.set(attempts.get() + 1);
+                    Err(std::io::Error::other("injected parent sync failure"))
+                });
+                assert!(
+                    opened.is_err(),
+                    "no writer or dispatch permit before parent sync"
+                );
+                assert_eq!(
+                    attempts.get(),
+                    expected,
+                    "reopen retries the failed barrier"
+                );
+                assert!(
+                    root.join("records.json").is_file(),
+                    "failure leaves a valid store"
+                );
+            }
+            let mut journal = InvocationJournal::open_with_parent_barrier(&root, |parent| {
+                attempts.set(attempts.get() + 1);
+                File::open(parent)?.sync_all()
+            })
+            .unwrap();
+            assert_eq!(attempts.get(), 3);
+            let mut k = key();
+            k.host = journal.host();
+            assert!(journal.admit(k, serde_json::json!({}), 1).unwrap());
+        }
+
+        phase invocation_journal_restart_retains_terminal_and_never_reissues_admission;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("journal");
+            let mut journal = InvocationJournal::open(&root).unwrap();
+            let mut k = key();
+            k.host = journal.host();
+            let intent = serde_json::json!({"argument": null, "action": "write"});
+            let update = tilo_actions::InvocationUpdate::Succeeded {
+                invocation: k.invocation,
+                output: tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({"private": "result"})),
+                    resources: vec![],
+                },
+            };
+            assert!(journal.admit(k.clone(), intent.clone(), 1).unwrap());
+            assert!(!journal.admit(k.clone(), intent.clone(), 1).unwrap());
+            assert!(
+                journal
+                    .admit(
+                        k.clone(),
+                        serde_json::json!({"argument":"", "action":"write"}),
+                        2
+                    )
+                    .is_err()
+            );
+            journal.update(&k, update.clone(), false).unwrap();
+            drop(journal);
+            let mut journal = InvocationJournal::open(&root).unwrap();
+            assert!(!journal.admit(k.clone(), intent, 2).unwrap());
+            assert_eq!(journal.lookup(&k).unwrap().unwrap().update, update);
+        }
+
+        phase invocation_journal_recovery_of_admission_is_uncertain_and_private;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("journal");
+            let mut journal = InvocationJournal::open(&root).unwrap();
+            let mut k = key();
+            k.host = journal.host();
+            journal
+                .admit(k.clone(), serde_json::json!({"argument": "secret"}), 1)
+                .unwrap();
+            drop(journal);
+            let journal = InvocationJournal::open(&root).unwrap();
+            let record = journal.lookup(&k).unwrap().unwrap();
+            assert!(record.uncertain);
+            assert!(
+                matches!(record.update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown" && !error.retryable)
+            );
+            assert_eq!(
+                std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                std::fs::metadata(root.join("records.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        phase invocation_journal_directory_barrier_failure_never_reopens_identity;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("journal");
+            let mut journal = InvocationJournal::open(&root).unwrap();
+            journal.fail_at = Some(BarrierFailure::Directory);
+            let mut k = key();
+            k.host = journal.host();
+            assert!(
+                journal
+                    .admit(k.clone(), serde_json::json!({"argument": "secret"}), 1)
+                    .is_err()
+            );
+            assert!(
+                journal
+                    .admit(k.clone(), serde_json::json!({"argument": "secret"}), 2)
+                    .is_err(),
+                "poisoned writer cannot retry"
+            );
+            drop(journal);
+            let journal = InvocationJournal::open(&root).unwrap();
+            assert!(
+                journal.lookup(&k).unwrap().unwrap().uncertain,
+                "renamed admission survives but never creates another permit"
+            );
         }
     }
 
@@ -1630,149 +1809,6 @@ mod tests {
                 0xa5a5_a5a5_0000_0000_0000_0000_0000_0001,
             )),
         }
-    }
-
-    #[test]
-    fn invocation_journal_initialization_parent_barrier_must_succeed_on_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("journal");
-        let attempts = std::cell::Cell::new(0);
-        for expected in 1..=2 {
-            let opened = InvocationJournal::open_with_parent_barrier(&root, |parent| {
-                assert_eq!(parent, dir.path());
-                attempts.set(attempts.get() + 1);
-                Err(std::io::Error::other("injected parent sync failure"))
-            });
-            assert!(
-                opened.is_err(),
-                "no writer or dispatch permit before parent sync"
-            );
-            assert_eq!(
-                attempts.get(),
-                expected,
-                "reopen retries the failed barrier"
-            );
-            assert!(
-                root.join("records.json").is_file(),
-                "failure leaves a valid store"
-            );
-        }
-        let mut journal = InvocationJournal::open_with_parent_barrier(&root, |parent| {
-            attempts.set(attempts.get() + 1);
-            File::open(parent)?.sync_all()
-        })
-        .unwrap();
-        assert_eq!(attempts.get(), 3);
-        let mut k = key();
-        k.host = journal.host();
-        assert!(journal.admit(k, serde_json::json!({}), 1).unwrap());
-    }
-
-    #[test]
-    fn invocation_journal_rejects_preexisting_cross_owner_uuid_conflicts() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("journal");
-        let mut journal = InvocationJournal::open(&root).unwrap();
-        let mut k = key();
-        k.host = journal.host();
-        journal.admit(k, serde_json::json!({}), 1).unwrap();
-        let mut conflicting = journal.snapshot.records[0].clone();
-        conflicting.key.owner = InvocationOwner::Local {
-            actor: "other".into(),
-        };
-        conflicting.wire_id = 2;
-        journal.snapshot.records.push(conflicting);
-        journal.compact().unwrap();
-        drop(journal);
-        assert!(
-            InvocationJournal::open(&root).is_err(),
-            "an older ambiguous store cannot authorize either application UUID owner"
-        );
-    }
-
-    #[test]
-    fn invocation_journal_restart_retains_terminal_and_never_reissues_admission() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("journal");
-        let mut journal = InvocationJournal::open(&root).unwrap();
-        let mut k = key();
-        k.host = journal.host();
-        let intent = serde_json::json!({"argument": null, "action": "write"});
-        let update = tilo_actions::InvocationUpdate::Succeeded {
-            invocation: k.invocation,
-            output: tilo_actions::ActionOutput {
-                value: Some(serde_json::json!({"private": "result"})),
-                resources: vec![],
-            },
-        };
-        assert!(journal.admit(k.clone(), intent.clone(), 1).unwrap());
-        assert!(!journal.admit(k.clone(), intent.clone(), 1).unwrap());
-        assert!(
-            journal
-                .admit(
-                    k.clone(),
-                    serde_json::json!({"argument":"", "action":"write"}),
-                    2
-                )
-                .is_err()
-        );
-        journal.update(&k, update.clone(), false).unwrap();
-        drop(journal);
-        let mut journal = InvocationJournal::open(&root).unwrap();
-        assert!(!journal.admit(k.clone(), intent, 2).unwrap());
-        assert_eq!(journal.lookup(&k).unwrap().unwrap().update, update);
-    }
-
-    #[test]
-    fn invocation_journal_recovery_of_admission_is_uncertain_and_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("journal");
-        let mut journal = InvocationJournal::open(&root).unwrap();
-        let mut k = key();
-        k.host = journal.host();
-        journal
-            .admit(k.clone(), serde_json::json!({"argument": "secret"}), 1)
-            .unwrap();
-        drop(journal);
-        let journal = InvocationJournal::open(&root).unwrap();
-        let record = journal.lookup(&k).unwrap().unwrap();
-        assert!(record.uncertain);
-        assert!(
-            matches!(record.update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown" && !error.retryable)
-        );
-        assert_eq!(
-            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        assert_eq!(
-            std::fs::metadata(root.join("records.json"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn invocation_journal_lock_and_invalid_stores_fail_closed() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("journal");
-        let journal = InvocationJournal::open(&root).unwrap();
-        assert!(
-            InvocationJournal::open(&root).is_err(),
-            "second process/file owner must be excluded"
-        );
-        drop(journal);
-        std::fs::write(root.join("records.json"), b"{broken").unwrap();
-        assert!(InvocationJournal::open(&root).is_err());
-        std::fs::write(
-            root.join("records.json"),
-            br#"{"version":999,"host":"00000000-0000-0000-0000-000000000063","records":[]}"#,
-        )
-        .unwrap();
-        assert!(InvocationJournal::open(&root).is_err());
     }
 
     #[test]
@@ -1794,33 +1830,6 @@ mod tests {
             String::from_utf8_lossy(&child.stdout)
         );
         assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"));
-    }
-
-    #[test]
-    fn invocation_journal_directory_barrier_failure_never_reopens_identity() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("journal");
-        let mut journal = InvocationJournal::open(&root).unwrap();
-        journal.fail_at = Some(BarrierFailure::Directory);
-        let mut k = key();
-        k.host = journal.host();
-        assert!(
-            journal
-                .admit(k.clone(), serde_json::json!({"argument": "secret"}), 1)
-                .is_err()
-        );
-        assert!(
-            journal
-                .admit(k.clone(), serde_json::json!({"argument": "secret"}), 2)
-                .is_err(),
-            "poisoned writer cannot retry"
-        );
-        drop(journal);
-        let journal = InvocationJournal::open(&root).unwrap();
-        assert!(
-            journal.lookup(&k).unwrap().unwrap().uncertain,
-            "renamed admission survives but never creates another permit"
-        );
     }
 }
 

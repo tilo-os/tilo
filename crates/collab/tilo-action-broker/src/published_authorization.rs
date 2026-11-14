@@ -61,255 +61,259 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_capped_device_holds_the_person_to_the_foreign_device_bound() {
-        let w = workspace();
-        let mut send = action("send");
-        send.contract.kind = tilo_actions::ActionKind::Outside;
-        let typing = action("type-text");
-        let s = surface("rec-1", vec![send.clone(), typing.clone()]);
-        assert_eq!(
-            authorize_person_published(&w, 10, OWNER, false, &s, &send),
-            Ok(false)
-        );
-        assert_eq!(
-            authorize_person_published(&w, 10, OWNER, true, &s, &send),
-            Ok(true),
-            "reaching outside asks first on a device that is not theirs"
-        );
-        assert_eq!(
-            authorize_person_published(&w, 10, OWNER, true, &s, &typing),
-            Ok(false)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_published_action_is_admitted_by_role_cap_grant_and_route_record;
 
-    /// One workspace policy, one action: the broker admitting a member's
-    /// invocation and a window checking its own person's admit it the same
-    /// way, for every role and every kind of action, a person's own clicks
-    /// on their own device and those reaching outside alike.
-    #[test]
-    fn a_window_admits_its_person_exactly_as_the_broker_does() {
-        use tilo_actions::{ActionKind, DoorError};
-
-        // What a broker admission answers, as a window's door answers it.
-        #[derive(Debug, PartialEq)]
-        enum Answered {
-            Runs,
-            AsksFirst,
-            Refused,
-        }
-        let contracts = {
-            let of = |kind: ActionKind, tag: Option<&str>| {
-                let mut contract = tilo_actions::ActionContract {
-                    kind,
-                    ..tilo_actions::ActionContract::default()
-                };
-                contract.tags.extend(tag.map(str::to_owned));
-                contract
-            };
-            [
-                ("read", of(ActionKind::Read, None)),
-                ("edit", of(ActionKind::Undoable, None)),
-                ("outside", of(ActionKind::Outside, None)),
-                (
-                    "own-device",
-                    of(ActionKind::Outside, Some(tilo_actions::OWN_DEVICE_SCOPE)),
-                ),
-                (
-                    "attended",
-                    of(ActionKind::Outside, Some(tilo_actions::ATTENDED_TAG)),
-                ),
-            ]
-        };
-        let member = "member-person";
-        for role in Role::ALL {
-            let mut w = workspace();
-            if role != Role::Owner {
-                w.admit(member, role);
-            }
-            let person = if role == Role::Owner { OWNER } else { member };
-            let window = ui::permissions::PermissionContext::from_standing(
-                tilo_action_policy::Standing::person(w.policy.clone(), person),
-            )
-            .at_unix_time(10);
-            for (id, contract) in &contracts {
-                let mut published = action(id);
-                published.contract = contract.clone();
-                let s = surface("rec-1", vec![published.clone()]);
-                let broker = match authorize_person_published(&w, 10, person, false, &s, &published)
-                {
-                    Ok(false) => Answered::Runs,
-                    Ok(true) => Answered::AsksFirst,
-                    Err(_) => Answered::Refused,
-                };
-                let resource = tilo_actions::ResourceSpec::new(
-                    published.resource.as_str(),
-                    published.resource_kind.as_str(),
-                    "Document",
-                );
-                let spec = tilo_actions::ActionSpec::operation(
-                    *id,
-                    *id,
-                    tilo_actions::OperationKind::Effect,
-                    "parity.run",
-                    &(),
-                )
-                .unwrap()
-                .with_contract(contract.clone());
-                let answer = window.invocation_answer(WRITER, &resource, &spec, None, None);
-                let windowed =
-                    match ui::permissions::admit_in_window(answer, &spec, window.asker(), false) {
-                        Ok(()) => Answered::Runs,
-                        Err(DoorError::ConfirmationRequired) => Answered::AsksFirst,
-                        Err(_) => Answered::Refused,
-                    };
-                assert_eq!(windowed, broker, "{role:?} {id}");
-            }
-        }
-    }
-
-    #[test]
-    fn an_editor_reaching_outside_is_asked_and_the_owner_is_not() {
-        let mut w = workspace();
-        let member = "member-person";
-        w.admit(member, Role::Editor);
-        let mut send = action("send");
-        send.contract.kind = tilo_actions::ActionKind::Outside;
-        let typing = action("type-text");
-        let s = surface("rec-1", vec![send.clone(), typing.clone()]);
-        assert_eq!(
-            authorize_person_published(&w, 10, member, false, &s, &send),
-            Ok(true),
-            "an editor's outside effect runs only on their confirmation"
-        );
-        assert_eq!(
-            authorize_person_published(&w, 10, member, false, &s, &typing),
-            Ok(false)
-        );
-        assert_eq!(
-            authorize_person_published(&w, 10, OWNER, false, &s, &send),
-            Ok(false)
-        );
-    }
-
-    /// An agent the owner's device handed the session reads where reading
-    /// is allowed and is asked before an outside effect; an attended action
-    /// asks it every time, even where the owner allowed the agent
-    /// everything, while the owner pressing it is not asked.
-    #[test]
-    fn an_agent_is_asked_before_an_attended_action_whatever_it_is_allowed() {
-        let mut w = workspace();
-        let agent = || {
-            BrokerActor::agent("agent:scribe")
-                .for_person(OWNER)
-                .session_delegated()
-        };
-        let mut read = action("read-text");
-        read.contract.kind = tilo_actions::ActionKind::Read;
-        let mut save = action("save");
-        save.contract.kind = tilo_actions::ActionKind::Outside;
-        let mut choose = read.clone();
-        choose.action = "open-file".into();
-        choose
-            .contract
-            .tags
-            .push(tilo_actions::ATTENDED_TAG.to_owned());
-        let s = surface("rec-1", vec![read.clone(), save.clone(), choose.clone()]);
-        let asks = |w: &Workspace, action: &PublishedAction| {
-            agent()
-                .admit_published_in(w, 10, None, (&s, action))
-                .map(|(asks, _)| asks)
-        };
-        assert_eq!(asks(&w, &read), Ok(false));
-        assert_eq!(asks(&w, &save), Ok(true), "an outside effect asks first");
-        assert_eq!(asks(&w, &choose), Ok(true));
-        w.grant(Grant::new(
-            "scribe-everything",
-            Grantee::agent("scribe"),
-            w.node().app(WRITER),
-            KindSet::ALL,
-            tilo_action_policy::Answer::Allow,
-            Grantee::person(OWNER),
-        ));
-        assert_eq!(asks(&w, &choose), Ok(true), "no grant lifts it");
-        assert_eq!(
-            authorize_person_published(&w, 10, OWNER, false, &s, &choose),
-            Ok(false)
-        );
-    }
-
-    #[test]
-    fn a_person_is_checked_on_the_route_record_too() {
-        let mut w = workspace();
-        let member = "member-person";
-        w.admit(member, Role::Editor);
-        let typing = action("type-text");
-        let s = surface("rec-1", vec![typing.clone()]);
-        assert!(authorize_person_published(&w, 10, member, false, &s, &typing).is_ok());
-        w.grant(Grant::new(
-            "rec-1-read-only",
-            Grantee::person(member),
-            collab_types::validator::document_node(&w.policy.workspace, WRITER, "rec-1"),
-            KindSet::UNDOABLE,
-            tilo_action_policy::Answer::Deny,
-            Grantee::person(OWNER),
-        ));
-        assert!(authorize_person_published(&w, 10, member, false, &s, &typing).is_err());
-        let s2 = surface("rec-2", vec![typing.clone()]);
-        assert!(authorize_person_published(&w, 10, member, false, &s2, &typing).is_ok());
-    }
-
-    #[test]
-    fn a_grant_lapses_at_the_policy_time_it_is_decided_at() {
-        let mut w = workspace();
-        let member = "member-person";
-        w.admit(member, Role::Viewer);
-        w.grant(
-            Grant::new(
-                "app-for-a-while",
-                Grantee::person(member),
-                w.node().app(WRITER),
-                KindSet::UNDOABLE,
-                tilo_action_policy::Answer::Allow,
-                Grantee::person(OWNER),
-            )
-            .with_lifetime(Lifetime::Until(100_000)),
-        );
-        let typing = action("type-text");
-        let s = surface("rec-1", vec![typing.clone()]);
-        assert!(authorize_person_published(&w, 50, member, false, &s, &typing).is_ok());
-        assert!(authorize_person_published(&w, 100, member, false, &s, &typing).is_err());
-    }
-
-    #[test]
-    fn a_reserved_or_malformed_route_record_is_refused() {
-        let w = workspace();
-        let typing = action("type-text");
-        assert!(
-            authorize_person_published(&w, 10, OWNER, false, &surface("", vec![]), &typing).is_ok()
-        );
-        for record in [
-            "@tilo:package-primary",
-            "*",
-            " padded",
-            "é",
-            &"x".repeat(129),
-        ] {
+        phase a_capped_device_holds_the_person_to_the_foreign_device_bound;
+        {
+            let w = workspace();
+            let mut send = action("send");
+            send.contract.kind = tilo_actions::ActionKind::Outside;
+            let typing = action("type-text");
+            let s = surface("rec-1", vec![send.clone(), typing.clone()]);
             assert_eq!(
-                authorize_person_published(&w, 10, OWNER, false, &surface(record, vec![]), &typing),
-                Err("reserved or invalid route record".into()),
-                "{record:?}"
+                authorize_person_published(&w, 10, OWNER, false, &s, &send),
+                Ok(false)
+            );
+            assert_eq!(
+                authorize_person_published(&w, 10, OWNER, true, &s, &send),
+                Ok(true),
+                "reaching outside asks first on a device that is not theirs"
+            );
+            assert_eq!(
+                authorize_person_published(&w, 10, OWNER, true, &s, &typing),
+                Ok(false)
             );
         }
-    }
 
-    #[test]
-    fn a_stranger_is_refused() {
-        let w = workspace();
-        let s = surface("rec-1", vec![]);
-        assert!(
-            authorize_person_published(&w, 10, "stranger", false, &s, &action("type-text"))
-                .is_err()
-        );
+        phase a_window_admits_its_person_exactly_as_the_broker_does;
+        // One workspace policy, one action: the broker admitting a member's
+        // invocation and a window checking its own person's admit it the same
+        // way, for every role and every kind of action, a person's own clicks
+        // on their own device and those reaching outside alike.
+        {
+            use tilo_actions::{ActionKind, DoorError};
+
+            // What a broker admission answers, as a window's door answers it.
+            #[derive(Debug, PartialEq)]
+            enum Answered {
+                Runs,
+                AsksFirst,
+                Refused,
+            }
+            let contracts = {
+                let of = |kind: ActionKind, tag: Option<&str>| {
+                    let mut contract = tilo_actions::ActionContract {
+                        kind,
+                        ..tilo_actions::ActionContract::default()
+                    };
+                    contract.tags.extend(tag.map(str::to_owned));
+                    contract
+                };
+                [
+                    ("read", of(ActionKind::Read, None)),
+                    ("edit", of(ActionKind::Undoable, None)),
+                    ("outside", of(ActionKind::Outside, None)),
+                    (
+                        "own-device",
+                        of(ActionKind::Outside, Some(tilo_actions::OWN_DEVICE_SCOPE)),
+                    ),
+                    (
+                        "attended",
+                        of(ActionKind::Outside, Some(tilo_actions::ATTENDED_TAG)),
+                    ),
+                ]
+            };
+            let member = "member-person";
+            for role in Role::ALL {
+                let mut w = workspace();
+                if role != Role::Owner {
+                    w.admit(member, role);
+                }
+                let person = if role == Role::Owner { OWNER } else { member };
+                let window = ui::permissions::PermissionContext::from_standing(
+                    tilo_action_policy::Standing::person(w.policy.clone(), person),
+                )
+                .at_unix_time(10);
+                for (id, contract) in &contracts {
+                    let mut published = action(id);
+                    published.contract = contract.clone();
+                    let s = surface("rec-1", vec![published.clone()]);
+                    let broker = match authorize_person_published(&w, 10, person, false, &s, &published)
+                    {
+                        Ok(false) => Answered::Runs,
+                        Ok(true) => Answered::AsksFirst,
+                        Err(_) => Answered::Refused,
+                    };
+                    let resource = tilo_actions::ResourceSpec::new(
+                        published.resource.as_str(),
+                        published.resource_kind.as_str(),
+                        "Document",
+                    );
+                    let spec = tilo_actions::ActionSpec::operation(
+                        *id,
+                        *id,
+                        tilo_actions::OperationKind::Effect,
+                        "parity.run",
+                        &(),
+                    )
+                    .unwrap()
+                    .with_contract(contract.clone());
+                    let answer = window.invocation_answer(WRITER, &resource, &spec, None, None);
+                    let windowed =
+                        match ui::permissions::admit_in_window(answer, &spec, window.asker(), false) {
+                            Ok(()) => Answered::Runs,
+                            Err(DoorError::ConfirmationRequired) => Answered::AsksFirst,
+                            Err(_) => Answered::Refused,
+                        };
+                    assert_eq!(windowed, broker, "{role:?} {id}");
+                }
+            }
+        }
+
+        phase an_editor_reaching_outside_is_asked_and_the_owner_is_not;
+        {
+            let mut w = workspace();
+            let member = "member-person";
+            w.admit(member, Role::Editor);
+            let mut send = action("send");
+            send.contract.kind = tilo_actions::ActionKind::Outside;
+            let typing = action("type-text");
+            let s = surface("rec-1", vec![send.clone(), typing.clone()]);
+            assert_eq!(
+                authorize_person_published(&w, 10, member, false, &s, &send),
+                Ok(true),
+                "an editor's outside effect runs only on their confirmation"
+            );
+            assert_eq!(
+                authorize_person_published(&w, 10, member, false, &s, &typing),
+                Ok(false)
+            );
+            assert_eq!(
+                authorize_person_published(&w, 10, OWNER, false, &s, &send),
+                Ok(false)
+            );
+        }
+
+        phase an_agent_is_asked_before_an_attended_action_whatever_it_is_allowed;
+        // An agent the owner's device handed the session reads where reading
+        // is allowed and is asked before an outside effect; an attended action
+        // asks it every time, even where the owner allowed the agent
+        // everything, while the owner pressing it is not asked.
+        {
+            let mut w = workspace();
+            let agent = || {
+                BrokerActor::agent("agent:scribe")
+                    .for_person(OWNER)
+                    .session_delegated()
+            };
+            let mut read = action("read-text");
+            read.contract.kind = tilo_actions::ActionKind::Read;
+            let mut save = action("save");
+            save.contract.kind = tilo_actions::ActionKind::Outside;
+            let mut choose = read.clone();
+            choose.action = "open-file".into();
+            choose
+                .contract
+                .tags
+                .push(tilo_actions::ATTENDED_TAG.to_owned());
+            let s = surface("rec-1", vec![read.clone(), save.clone(), choose.clone()]);
+            let asks = |w: &Workspace, action: &PublishedAction| {
+                agent()
+                    .admit_published_in(w, 10, None, (&s, action))
+                    .map(|(asks, _)| asks)
+            };
+            assert_eq!(asks(&w, &read), Ok(false));
+            assert_eq!(asks(&w, &save), Ok(true), "an outside effect asks first");
+            assert_eq!(asks(&w, &choose), Ok(true));
+            w.grant(Grant::new(
+                "scribe-everything",
+                Grantee::agent("scribe"),
+                w.node().app(WRITER),
+                KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                Grantee::person(OWNER),
+            ));
+            assert_eq!(asks(&w, &choose), Ok(true), "no grant lifts it");
+            assert_eq!(
+                authorize_person_published(&w, 10, OWNER, false, &s, &choose),
+                Ok(false)
+            );
+        }
+
+        phase a_person_is_checked_on_the_route_record_too;
+        {
+            let mut w = workspace();
+            let member = "member-person";
+            w.admit(member, Role::Editor);
+            let typing = action("type-text");
+            let s = surface("rec-1", vec![typing.clone()]);
+            assert!(authorize_person_published(&w, 10, member, false, &s, &typing).is_ok());
+            w.grant(Grant::new(
+                "rec-1-read-only",
+                Grantee::person(member),
+                collab_types::validator::document_node(&w.policy.workspace, WRITER, "rec-1"),
+                KindSet::UNDOABLE,
+                tilo_action_policy::Answer::Deny,
+                Grantee::person(OWNER),
+            ));
+            assert!(authorize_person_published(&w, 10, member, false, &s, &typing).is_err());
+            let s2 = surface("rec-2", vec![typing.clone()]);
+            assert!(authorize_person_published(&w, 10, member, false, &s2, &typing).is_ok());
+        }
+
+        phase a_grant_lapses_at_the_policy_time_it_is_decided_at;
+        {
+            let mut w = workspace();
+            let member = "member-person";
+            w.admit(member, Role::Viewer);
+            w.grant(
+                Grant::new(
+                    "app-for-a-while",
+                    Grantee::person(member),
+                    w.node().app(WRITER),
+                    KindSet::UNDOABLE,
+                    tilo_action_policy::Answer::Allow,
+                    Grantee::person(OWNER),
+                )
+                .with_lifetime(Lifetime::Until(100_000)),
+            );
+            let typing = action("type-text");
+            let s = surface("rec-1", vec![typing.clone()]);
+            assert!(authorize_person_published(&w, 50, member, false, &s, &typing).is_ok());
+            assert!(authorize_person_published(&w, 100, member, false, &s, &typing).is_err());
+        }
+
+        phase a_reserved_or_malformed_route_record_is_refused;
+        {
+            let w = workspace();
+            let typing = action("type-text");
+            assert!(
+                authorize_person_published(&w, 10, OWNER, false, &surface("", vec![]), &typing).is_ok()
+            );
+            for record in [
+                "@tilo:package-primary",
+                "*",
+                " padded",
+                "é",
+                &"x".repeat(129),
+            ] {
+                assert_eq!(
+                    authorize_person_published(&w, 10, OWNER, false, &surface(record, vec![]), &typing),
+                    Err("reserved or invalid route record".into()),
+                    "{record:?}"
+                );
+            }
+        }
+
+        phase a_stranger_is_refused;
+        {
+            let w = workspace();
+            let s = surface("rec-1", vec![]);
+            assert!(
+                authorize_person_published(&w, 10, "stranger", false, &s, &action("type-text"))
+                    .is_err()
+            );
+        }
     }
 }
