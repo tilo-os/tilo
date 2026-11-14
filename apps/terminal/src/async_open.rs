@@ -163,7 +163,7 @@ mod tests {
             }
         }
 
-        phase deferred_host_constructs_without_a_socket_and_reports_missing_ush_after_open;
+        phase deferred_host_constructs_without_a_socket_and_says_no_environment_can_start;
         {
             let runtime = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -174,12 +174,10 @@ mod tests {
             let doc = automerge::AutoCommit::new();
             widget.sync(&doc, &automerge::ROOT);
             finish(&mut widget, &doc);
-            assert_eq!(widget.inspect_session()["lifecycle"], "no_runtime");
-            assert!(
-                widget.inspect_session()["startup_reason"]
-                    .as_str()
-                    .unwrap()
-                    .contains("ush")
+            assert_eq!(widget.inspect_session()["lifecycle"], "failed");
+            assert_eq!(
+                widget.inspect_session()["startup_reason"],
+                "No environment can start here"
             );
             assert_eq!(widget.inspect_session()["input_available"], false);
         }
@@ -259,6 +257,9 @@ mod tests {
 
     #[test]
     fn hosted_open_is_pending_until_reply_and_refuses_input() {
+        let runtime = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
         let (client, server) = UnixStream::pair().unwrap();
         let (received, request) = mpsc::channel();
         let (release, delayed) = mpsc::channel();
@@ -285,10 +286,10 @@ mod tests {
         );
         release.send(()).unwrap();
         finish(&mut widget, &doc);
-        assert_eq!(widget.inspect_session()["lifecycle"], "no_runtime");
+        assert_eq!(widget.inspect_session()["lifecycle"], "failed");
         assert_eq!(
             widget.inspect_session()["startup_reason"],
-            "delayed runtime check"
+            "No environment can start here"
         );
         worker.join().unwrap();
     }

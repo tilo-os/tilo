@@ -695,7 +695,7 @@ impl ResourceApp for TerminalShell {
                 .map_err(|error| anyhow::anyhow!(error.to_string()))
                 .or_else(|error| {
                     if cx.mode().is_live() {
-                        Ok(TerminalWidget::without_hosted_runtime(error.to_string()))
+                        Ok(TerminalWidget::without_hosted_runtime(&error.to_string()))
                     } else {
                         TerminalWidget::spawn_headless()
                     }

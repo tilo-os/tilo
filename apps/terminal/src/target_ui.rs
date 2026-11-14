@@ -196,13 +196,6 @@ impl TerminalWidget {
     }
 
     fn ensure_session(&mut self) {
-        if matches!(self.sessions.state, OpenState::NoRuntime(_))
-            && std::mem::take(&mut self.sessions.host_requested)
-        {
-            let _ = self.switch_target(&SessionTarget::Host, Requester::Person);
-            return;
-        }
-
         if self.sessions.state != OpenState::Unopened {
             self.poll_allow();
             return;
@@ -289,12 +282,16 @@ impl TerminalWidget {
                     %reason,
                     "terminal: the environment cannot be built on this device"
                 );
-                self.explain_no_runtime(&reason, requested_by);
-                self.sessions.state = if requested_by == Requester::Person {
-                    OpenState::NoRuntime(reason)
-                } else {
-                    OpenState::Failed(reason)
-                };
+                // No environment can start here, but the device's own shell
+                // can. A person's session runs there, behind the same allow
+                // every host shell asks for; the bar names the target, so
+                // nothing needs saying in the pane.
+                if requested_by == Requester::Person && !target.is_host() {
+                    self.open_session(&SessionTarget::Host, Requester::Person);
+                    return;
+                }
+                self.show_status(&t("terminal-no-runtime"));
+                self.sessions.state = OpenState::Failed(t("terminal-no-runtime"));
             }
             Err(error) => {
                 let reason = error.to_string();
@@ -308,48 +305,6 @@ impl TerminalWidget {
                 .refresh_environments_in_background(Arc::clone(&self.waker));
         }
         request_terminal_wake(&self.waker);
-    }
-
-    fn explain_no_runtime(&mut self, reason: &str, requested_by: Requester) {
-        let mut lines = vec![
-            t("terminal-no-runtime-title"),
-            reason.to_owned(),
-            String::new(),
-        ];
-        if requested_by == Requester::Person {
-            lines.push(t("terminal-no-runtime-host"));
-            lines.push(t("terminal-no-runtime-picker"));
-        }
-        lines.push(t("terminal-no-runtime-install"));
-        let mut text = String::from("\x1b[2J\x1b[H");
-        for line in lines {
-            text.push_str(&line.replace(['\r', '\n'], " "));
-            text.push_str("\r\n");
-        }
-        self.feed(text.as_bytes());
-        self.show_status(&if requested_by == Requester::Person {
-            t("terminal-no-runtime-status")
-        } else {
-            reason.to_owned()
-        });
-    }
-
-    fn take_no_runtime_offer(
-        &mut self,
-        key: &Key,
-        modifiers: winit::keyboard::ModifiersState,
-    ) -> bool {
-        if !matches!(self.sessions.state, OpenState::NoRuntime(_))
-            || !matches!(key, Key::Named(NamedKey::Enter))
-            || modifiers.control_key()
-            || modifiers.alt_key()
-            || modifiers.super_key()
-        {
-            return false;
-        }
-        self.sessions.host_requested = true;
-        request_terminal_wake(&self.waker);
-        true
     }
 
     fn poll_allow(&mut self) {
@@ -398,7 +353,7 @@ impl TerminalWidget {
         self.record_target(target);
         self.open_session(target, requested_by);
         match &self.sessions.state {
-            OpenState::Failed(reason) | OpenState::NoRuntime(reason) => Err(reason.clone()),
+            OpenState::Failed(reason) => Err(reason.clone()),
             _ => Ok(()),
         }
     }

@@ -361,8 +361,7 @@ impl TerminalWidget {
         match &self.sessions.state {
             crate::sessions::OpenState::Open => self.life.reconnect = None,
             crate::sessions::OpenState::Opening | crate::sessions::OpenState::Unopened => {}
-            crate::sessions::OpenState::Failed(reason)
-            | crate::sessions::OpenState::NoRuntime(reason) => {
+            crate::sessions::OpenState::Failed(reason) => {
                 reconnect.reason.clone_from(reason);
                 if !reconnect.superseded {
                     reconnect.attempt = reconnect.attempt.saturating_add(1);
@@ -555,10 +554,12 @@ impl TerminalWidget {
         }
         let title = t("terminal-start-failed-title");
         let retry = t("terminal-start-retry");
+        // Only a session with a target can be tried again.
+        let retry = self.sessions.target.is_some().then_some(retry.as_str());
         let content = ui::widget::EmptyStateContent {
             icon: Some(Icon::Terminal),
             message: Some(reason),
-            action_label: Some(&retry),
+            action_label: retry,
             error: true,
             ..ui::widget::EmptyStateContent::new(&title)
         };
@@ -613,18 +614,19 @@ impl TerminalWidget {
                 Politeness::Assertive,
             )
         };
-        let retry = AccessNode::new(Role::Button)
-            .with_name(t("terminal-start-retry"))
-            .with_action_target(format!("terminal.retry:{}", self.pane_id))
-            .with_bounds(bounds)
-            .with_state(AccessState::new().focusable(true));
-        Some(
-            AccessNode::new(Role::Group)
-                .with_hashed_key(key)
-                .with_name(name)
-                .with_description(reason)
-                .with_live(politeness)
-                .with_children(vec![retry]),
-        )
+        let mut group = AccessNode::new(Role::Group)
+            .with_hashed_key(key)
+            .with_name(name)
+            .with_description(reason)
+            .with_live(politeness);
+        if !bounds.is_zero_area() {
+            let retry = AccessNode::new(Role::Button)
+                .with_name(t("terminal-start-retry"))
+                .with_action_target(format!("terminal.retry:{}", self.pane_id))
+                .with_bounds(bounds)
+                .with_state(AccessState::new().focusable(true));
+            group = group.with_children(vec![retry]);
+        }
+        Some(group)
     }
 }

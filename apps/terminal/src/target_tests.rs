@@ -104,26 +104,31 @@ tilo_test_env::scenario! {
 
     phase an_agent_is_told_why_and_never_offered_the_device_shell;
     {
-        let (mut widget, opened) = tab(RecentTarget::none(), |_| {
-            Err(OpenError::NoRuntime(
-                "no env-runtime image is installed".into(),
-            ))
+        let (mut widget, opened) = tab(RecentTarget::none(), |target| {
+            if target.is_host() {
+                Ok(())
+            } else {
+                Err(OpenError::NoRuntime(
+                    "no env-runtime image is installed".into(),
+                ))
+            }
         });
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         widget.sync(&doc, &ROOT);
         let err = widget
             .switch_target(&SessionTarget::default_environment(), Requester::Agent)
             .unwrap_err();
-        assert!(err.contains("env-runtime"), "{err}");
+        assert_eq!(err, "No environment can start here", "no internals: {err}");
         assert!(
             matches!(widget.session_state(), OpenState::Failed(_)),
             "an agent's open offers nothing: {:?}",
             widget.session_state()
         );
-        press_enter(&mut widget, &mut doc);
-        widget.sync(&doc, &ROOT);
         assert!(
-            opened.borrow().iter().all(|(target, _)| !target.is_host()),
+            opened
+                .borrow()
+                .iter()
+                .all(|(target, by)| !(target.is_host() && *by == Requester::Agent)),
             "{:?}",
             opened.borrow()
         );
@@ -144,7 +149,7 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-fn inspect_session_reports_production_open_failed_and_no_runtime_without_output() {
+fn inspect_session_reports_a_production_open_and_its_failures_without_output() {
     use crate::resource::TerminalEffect;
     struct Reader(std::sync::mpsc::Receiver<()>);
     impl std::io::Read for Reader {
@@ -162,8 +167,8 @@ fn inspect_session_reports_production_open_failed_and_no_runtime_without_output(
         ),
         (
             Err(OpenError::NoRuntime("test runtime absent".into())),
-            "no_runtime",
-            Some("test runtime absent"),
+            "failed",
+            Some("No environment can start here"),
         ),
     ] {
         let mut app = App::new().expect("terminal");
@@ -630,16 +635,8 @@ tilo_test_env::scenario! {
     }
 }
 
-fn press_enter(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-    crate::tests::send_key_without_text(
-        widget,
-        doc,
-        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
-    );
-}
-
 #[test]
-fn without_a_runtime_the_tab_says_why_and_offers_the_device_shell() {
+fn without_a_runtime_the_tab_opens_the_device_shell_and_says_nothing() {
     let mut app = App::new().unwrap();
     let opened = host_tab(&mut app, RecentTarget::none(), |target| {
         if target.is_host() {
@@ -651,38 +648,24 @@ fn without_a_runtime_the_tab_says_why_and_offers_the_device_shell() {
             ))
         }
     });
-    let state = on_tab(&mut app, |widget| widget.session_state().clone());
-    assert!(matches!(state, OpenState::NoRuntime(_)), "{state:?}");
-    let screen = on_tab(&mut app, |widget| widget.grid_text());
-    assert!(
-        screen.contains("env-runtime"),
-        "the tab says why:\n{screen}"
-    );
-    assert!(
-        screen.contains("Enter"),
-        "the tab says what to do about it:\n{screen}"
-    );
-    assert!(
-        on_tab(&mut app, |widget| widget.is_disconnected()),
-        "the tab is not taken for a live shell"
-    );
     assert_eq!(
-        recorded(&app),
-        Some(SessionTarget::default_environment()),
-        "nothing moves to the device's shell unasked"
+        opened.borrow().as_slice(),
+        &[
+            (SessionTarget::default_environment(), Requester::Person),
+            (SessionTarget::Host, Requester::Person),
+        ],
+        "the device's own shell takes over without a keypress"
     );
-
-    app.harness().key("Enter");
-    app.settle();
     assert_eq!(
         on_tab(&mut app, |widget| widget.session_state().clone()),
         OpenState::Open
     );
     assert_eq!(
-        opened.borrow().last(),
-        Some(&(SessionTarget::Host, Requester::Person))
+        on_tab(&mut app, |widget| widget.grid_text()).trim(),
+        "",
+        "no error chain and no package names in the pane"
     );
-    assert_eq!(recorded(&app), Some(SessionTarget::Host));
+    assert_eq!(recorded(&app), Some(SessionTarget::default_environment()));
 }
 
 fn attach_with(
@@ -943,13 +926,12 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
     let gate = allowed.clone();
     let sessions = owner_fixture_sessions(gate);
     let mut app = App::new().unwrap();
-    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
+    app.with_surface(|t: &mut crate::TerminalView| t.set_sessions(sessions))
         .unwrap();
     app.settle();
     let mounted = mounted_device_shell_operation(&mut app, &O::Inspect);
-    assert_eq!(mounted["target"]["kind"], "environment");
-    let selected = app.harness().device_shell_operation(&O::Select).unwrap();
-    assert_eq!(selected["lifecycle"], "awaiting_allow");
+    assert_eq!(mounted["target"]["kind"], "host");
+    assert_eq!(mounted["lifecycle"], "awaiting_allow");
     let ui::widget::AppHostIntent::AllowHostShell { reply } =
         app.harness().take_host_intent().unwrap()
     else {
@@ -960,6 +942,8 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
     app.settle();
     let state = app.harness().device_shell_operation(&O::Inspect).unwrap();
     assert_eq!(state["lifecycle"], "open");
+    let select = app.harness().device_shell_operation(&O::Select).unwrap();
+    assert_eq!(select["lifecycle"], "open");
     let session = state["session"].as_str().unwrap().to_owned();
     assert!(
         app.harness()

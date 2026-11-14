@@ -237,7 +237,9 @@ The Host target is a pty running the user's login shell, unconfined, served by
 the same supervisor (`ServeRequest::OpenSession { target: Host }`). It is only
 reachable by the Terminal app, only on a device whose owner is the signed-in
 person, and only after the person allowed it once (a `CapOverride` on
-`Scope::Device`). Agents and other apps can never open it.
+`Scope::Device`). Agents and other apps can never open it. A device with no
+`env-runtime` image has no environment to start: a Terminal asks for one, is
+refused, and opens the Host target instead, with the same allow.
 
 ## Coding agents
 

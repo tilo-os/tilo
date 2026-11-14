@@ -950,7 +950,6 @@ impl TerminalWidget {
             OpenState::Joined => ("joined", None),
             OpenState::AwaitingAllow => ("awaiting_allow", None),
             OpenState::Failed(reason) => ("failed", Some(reason.as_str())),
-            OpenState::NoRuntime(reason) => ("no_runtime", Some(reason.as_str())),
         };
         serde_json::json!({
             "lifecycle": lifecycle,
@@ -3612,10 +3611,6 @@ impl TerminalWidget {
         ) {
             return;
         }
-        if self.take_no_runtime_offer(logical_key, mods) {
-            *handled = true;
-            return;
-        }
         if !mods.control_key()
             && !mods.alt_key()
             && !mods.super_key()
@@ -5914,12 +5909,14 @@ impl TerminalWidget {
 
     /// A live hosted tab whose supervisor is unavailable: the cause stays visible and input refused,
     /// rather than a capture-only terminal.
-    pub(crate) fn without_hosted_runtime(reason: String) -> Self {
+    pub(crate) fn without_hosted_runtime(reason: &str) -> Self {
+        tracing::warn!(%reason, "terminal: the process service did not reach this surface");
         let mut widget = Self::without_process(ContentStore::memory());
         widget.sessions =
             crate::sessions::Sessions::hosted(crate::HostedProcessServices::unavailable());
-        widget.show_status(&reason);
-        widget.sessions.state = crate::sessions::OpenState::NoRuntime(reason);
+        let message = crate::i18n::t("terminal-no-runtime");
+        widget.show_status(&message);
+        widget.sessions.state = crate::sessions::OpenState::Failed(message);
         widget
     }
 

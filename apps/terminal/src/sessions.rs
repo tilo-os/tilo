@@ -19,7 +19,6 @@ pub enum OpenState {
     Joined,
     AwaitingAllow,
     Failed(String),
-    NoRuntime(String),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,7 +73,6 @@ pub struct Sessions {
     pub legacy_vms: Vec<String>,
     allow: Option<Rc<RefCell<ui::widget::HostShellAllow>>>,
     intent: Option<ui::widget::AppHostIntent>,
-    pub host_requested: bool,
     listing: Option<std::sync::mpsc::Receiver<Listing>>,
     window: Option<ui::hosted_window::HostedWindow>,
 }
@@ -113,7 +111,6 @@ impl Sessions {
             legacy_vms: Vec::new(),
             allow: None,
             intent: None,
-            host_requested: false,
             listing: None,
             window: None,
         }
