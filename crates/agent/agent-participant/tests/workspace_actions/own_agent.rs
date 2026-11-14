@@ -715,3 +715,143 @@ async fn a_logged_in_computers_agents_act_with_no_tab_open() {
         );
     }
 }
+
+/// Who made each change to Notes the tab holds, and in which run.
+fn notes_authors(tab: &mut Browser) -> Vec<(Option<tilo_actions::ActionInvoker>, Option<String>)> {
+    tab.pump();
+    let mut doc = automerge::AutoCommit::new();
+    for (route, changes) in &tab.documents {
+        if route.app_id != NOTES {
+            continue;
+        }
+        for (_, bytes) in changes {
+            let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+        }
+    }
+    doc.get_changes(&[])
+        .iter()
+        .filter_map(|change| change.message())
+        .filter_map(tilo_actions::ActionContext::from_change_message)
+        .filter(|context| context.invoker.is_some())
+        .map(|context| (context.invoker, context.group.map(|group| group.id)))
+        .collect()
+}
+
+/// How many of the changes to Notes the tab holds are the agent's, for
+/// `person`, in a run of its own.
+fn agents_changes(tab: &mut Browser, person: &str) -> usize {
+    notes_authors(tab)
+        .iter()
+        .filter(|(invoker, run)| {
+            invoker.as_ref().is_some_and(|invoker| {
+                invoker.acting.is_agent()
+                    && invoker.acting.agent_id() == Some("Claude Code")
+                    && invoker.acting.acted_for_person() == Some(person)
+            }) && run
+                .as_ref()
+                .is_some_and(|run| run.starts_with("agent-run:"))
+        })
+        .count()
+}
+
+/// The agent makes a note titled `title` on `server`, and the person's tab
+/// sees it arrive as the agent's, in its run, for the person; no change it
+/// makes is the person's own.
+async fn agents_note_reaches(
+    tab: &mut Browser,
+    server: &McpServer<SessionActions>,
+    person: &str,
+    title: &str,
+) {
+    let before = agents_changes(tab, person);
+    let (made, failed) = tool(
+        server,
+        "tilo_do",
+        json!({"path": "notes#new-note", "args": {"title": title}}),
+    )
+    .await;
+    assert!(!failed, "notes#new-note: {made}");
+    let deadline = tilo_test_env::hang_deadline();
+    while agents_changes(tab, person) <= before {
+        assert!(
+            Instant::now() < deadline,
+            "{title:?} never arrived as the agent's run: {:?}",
+            notes_authors(tab)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let persons = notes_authors(tab)
+        .into_iter()
+        .filter(|(invoker, _)| {
+            invoker
+                .as_ref()
+                .is_some_and(|invoker| !invoker.acting.is_agent())
+        })
+        .count();
+    assert_eq!(
+        persons,
+        0,
+        "a change of the agent's was the person's: {:?}",
+        notes_authors(tab)
+    );
+}
+
+/// `tilo login` checks the tools it added by starting `tilo mcp`, which
+/// starts the peer: its session enters the workspace first. The login then
+/// enters as the same device to show the person's tab the computer is in,
+/// which cuts the peer's session off until it comes back, and closes. The
+/// agent's first call after the login, on the peer's session, is the
+/// agent's, in a run, for the person.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_first_call_after_tilo_login_is_the_agents() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
+    let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let relay = crate::harness::hosted::serving_records(
+        &root,
+        &host,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    let mut tab = Browser::open_at(&relay, &tab_device, &host, WORKSPACE).await;
+    // The peer, as the login's check of its tools starts it.
+    let peer = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
+    let _ = tilo_session_client::device::run_as_agent(&peer.peer, "Claude Code").await;
+    // The login's own entry as the same device, closed once the tab saw it.
+    let login = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
+    let _ = tilo_session_client::device::run_as_agent(&login.peer, "Claude Code").await;
+    login.peer.close();
+    drop(login);
+    let person = person_of(&root);
+    let runs = agent_runs(&peer, &host, &person, &["run-a"]);
+    // The agent's first call, once the peer is back in the workspace.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let (opened, failed) = tool(&runs[0], "tilo_do", json!({"path": "notes#open"})).await;
+        if !failed {
+            break;
+        }
+        assert!(Instant::now() < deadline, "notes#open: {opened}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    agents_note_reaches(&mut tab, &runs[0], &person, "The first note").await;
+
+    // Whatever else drops the peer's connection, it comes back as the agent's run.
+    peer.peer.send(tilo_session_client::Cmd::Reconnect).unwrap();
+    while peer.peer.status().phase != tilo_session_client::TransportPhase::Connected
+        || !peer.peer.status().workspaces.values().all(|ready| *ready)
+    {
+        assert!(Instant::now() < deadline, "the peer never came back");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    agents_note_reaches(
+        &mut tab,
+        &runs[0],
+        &person,
+        "After the connection came back",
+    )
+    .await;
+}

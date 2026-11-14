@@ -297,6 +297,7 @@ fn session_task(
         rooms_next: 0,
         agent_runs_pending: BTreeMap::new(),
         agent_runs_next: 0,
+        agent_run: None,
         held_actions: Vec::new(),
         begun: BTreeSet::new(),
         unadmitted: BTreeMap::new(),
@@ -485,6 +486,10 @@ struct Task {
     agent_runs_pending: BTreeMap<u64, AgentRunCompletion>,
     /// The id the next agent run is declared with.
     agent_runs_next: u64,
+    /// The agent whose run this session said it is, declared again on every
+    /// connection: the host keeps it per connection, and a session that came
+    /// back without it would act as the person.
+    agent_run: Option<String>,
     /// Action frames owed to workspaces the host has not admitted this session
     /// to yet, oldest first, with the workspace each is for: sent before the
     /// admission, they are refused by the host and the request they carry is
@@ -1696,6 +1701,8 @@ impl Task {
         for workspace_id in placing {
             sent_ok &= self.place(workspace_id, client);
         }
+        // The agent this session runs, said after the workspaces it enters, as it was said first.
+        sent_ok &= self.declare_agent_run_again(client);
         sent_ok &= self.reopen_records(client);
         // What this page recorded while it was away is owed again, oldest
         // first: as much as the transport takes now, the rest as the host's
