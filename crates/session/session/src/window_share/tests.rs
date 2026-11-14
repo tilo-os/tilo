@@ -1871,6 +1871,9 @@ mod governed;
 /// Two members showing the one shared window at the same time, each a viewer of its own.
 mod viewers;
 
+/// A window whose app draws its own page, drawn from that page on the device showing it.
+mod page;
+
 /// A window one device shares shows on another device's desk because the workspace's governance
 /// says it is shared there: nobody names the tab on the other device.
 #[test]
