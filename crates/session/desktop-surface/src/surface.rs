@@ -1823,7 +1823,10 @@ impl DesktopSurface {
             // band and ring included, so the card stands beside the window it
             // opened next to, clear of it, not over it.
             if float {
-                row.share_with_floating_neighbour(group, FLOAT_CARD_SIZE.0 + 2.0 * FLOAT_CARD_MARGIN);
+                row.share_with_floating_neighbour(
+                    group,
+                    FLOAT_CARD_SIZE.0 + 2.0 * FLOAT_CARD_MARGIN,
+                );
             } else if !floats::holds(&shared, strip, group) {
                 row.share_with_neighbour(group);
             }
