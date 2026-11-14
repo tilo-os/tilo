@@ -17,8 +17,7 @@ use tilo_session_client::TransportPhase;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    HostSettings, enrol, free_loopback_port, restart_host_relaying, start_host_serving, start_peer,
-    wait_for,
+    HostSettings, enrol, restart_host_relayed, start_host_serving, start_peer, wait_for,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -28,9 +27,6 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
     let (guest_root, _) = UserIdentity::generate("Guest", 1);
     let guest = enrol(&guest_root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    // The relay the guest finds the host at after it restarts: the same
-    // address, the host's identity the one it already dials.
-    let relay_port = free_loopback_port();
     let host = start_host_serving(
         &root,
         &host_device,
@@ -38,7 +34,7 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
         "127.0.0.1:0".parse().unwrap(),
         HostSettings {
             guests: &[guest.cert.user_public_key],
-            packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, relay_port).into()),
+            relayed: true,
             ..HostSettings::default()
         },
     )
@@ -65,7 +61,7 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
         reset.path().join("web-dev-identity"),
     )
     .unwrap();
-    let host = restart_host_relaying(&root, &host_device, reset.path(), relay_port).await;
+    let host = restart_host_relayed(&root, &host_device, reset.path()).await;
     let failed = wait_for("the reset host to refuse the guest", || {
         let snapshot = peer.snapshot();
         async move { (snapshot.phase == "failed").then_some(snapshot) }

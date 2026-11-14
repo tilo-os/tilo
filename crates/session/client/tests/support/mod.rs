@@ -234,39 +234,20 @@ pub async fn restart_host(root: &SigningKey, host: &Device, state: &Path) -> Tes
     start_host(root, host, state, "127.0.0.1:0".parse().unwrap()).await
 }
 
-/// [`restart_host`] on the packet relay `relay_port`, which the host it
-/// replaces ran too: a page finds a restarted host by its identity at the
-/// relay it knows, so that relay keeps its address.
-pub async fn restart_host_relaying(
-    root: &SigningKey,
-    host: &Device,
-    state: &Path,
-    relay_port: u16,
-) -> TestHost {
+/// [`restart_host`] through this machine's loopback relay, which outlives it:
+/// its pages find it there by its identity, at the address they knew.
+pub async fn restart_host_relayed(root: &SigningKey, host: &Device, state: &Path) -> TestHost {
     start_host_serving(
         root,
         host,
         state,
         "127.0.0.1:0".parse().unwrap(),
         HostSettings {
-            packet_relay: Some(SocketAddr::from((
-                std::net::Ipv4Addr::LOCALHOST,
-                relay_port,
-            ))),
+            relayed: true,
             ..HostSettings::default()
         },
     )
     .await
-}
-
-/// A free loopback port for a test host's own packet relay, which a test
-/// whose host restarts keeps across the restart.
-pub fn free_loopback_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 /// What a test host serves beyond its secure listener.
@@ -280,10 +261,12 @@ pub struct HostSettings<'a> {
     pub limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
     /// The fetch proxy it serves its pages.
     pub fetch_proxy: Option<tilo_relay::web::FetchProxySetup>,
-    /// Where it runs its own packet relay, as a host serving pages does: a
-    /// page holds no UDP socket and reaches it only through one. `None` leaves
-    /// the host on the public relays, which a sandboxed runner refuses.
-    pub packet_relay: Option<SocketAddr>,
+    /// Reached through this machine's loopback packet relay, as a host
+    /// serving pages is: a page holds no UDP socket and reaches it only
+    /// through one, which outlives the host so a restarted one is found at
+    /// the same address. Without it the host looks up no relay and is reached
+    /// on this machine's loopback alone.
+    pub relayed: bool,
 }
 
 /// A host serving what `settings` names.
@@ -299,7 +282,7 @@ pub async fn start_host_serving(
         guests,
         limits,
         fetch_proxy,
-        packet_relay,
+        relayed,
     } = settings;
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
@@ -307,31 +290,30 @@ pub async fn start_host_serving(
         member_limits: limits,
         ..Default::default()
     };
-    if let Some(addr) = packet_relay {
-        cfg.packet_relay = Some(addr);
-    }
     if !guests.is_empty() {
         cfg.trust_policy = tilo_relay::TrustPolicy::AllowList {
             users: guests.iter().map(hex::encode).collect(),
         };
     }
-    // A host running its own packet relay is reached through it, and a page
-    // finds it there after a restart, by its identity. One that runs none is
-    // reached on the loopback the test runs in and looks up no public relay:
-    // the sandboxed runner refuses that network, so a restarted host would
-    // never be found at its new port.
+    // The loopback relay outlives the host, as a relay a host is deployed
+    // with does: a page finds a restarted host there by its identity. A host
+    // without one is dialled directly and looks up no relay: the sandboxed
+    // runner refuses the public relay network, so a restarted host would never
+    // be found at its new port.
     let identity = RelayIdentity {
         user_public_key: user,
         device_signing_key: host.key.clone(),
         device_cert: host.cert.clone(),
         revocations: RevocationList::new(),
     };
-    let relay = if cfg.packet_relay.is_some() {
-        Relay::start(cfg, identity).await
+    let mode = if relayed {
+        test_relay::relay_mode()
     } else {
-        Relay::start_with_relay_mode(cfg, identity, iroh::RelayMode::Disabled).await
-    }
-    .unwrap();
+        iroh::RelayMode::Disabled
+    };
+    let relay = Relay::start_with_relay_mode(cfg, identity, mode)
+        .await
+        .unwrap();
     let web = relay
         .serve_web(WebConfig {
             listen: web_listen,
@@ -348,16 +330,16 @@ pub async fn start_host_serving(
         })
         .await
         .unwrap();
-    if packet_relay.is_some() {
-        relayed(&relay);
+    if relayed {
+        names_its_relay(&relay);
     }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
     TestHost { relay, web }
 }
 
-/// A host that serves its own packet relay names it in its address from the start: what
+/// A host reached through a packet relay names it in its address from the start: what
 /// `Relay::start` waits for before it answers anything.
-fn relayed(relay: &Relay) {
+fn names_its_relay(relay: &Relay) {
     assert!(
         relay.node_addr().relay_urls().next().is_some(),
         "the host names its packet relay"
@@ -425,7 +407,7 @@ pub async fn start_workspace_host_relaying(
         .await
         .unwrap();
     if packet_relay {
-        relayed(&relay);
+        names_its_relay(&relay);
     }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
     TestHost { relay, web }

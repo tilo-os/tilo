@@ -101,7 +101,7 @@ impl Ada {
             state.path(),
             "127.0.0.1:0".parse().unwrap(),
             HostSettings {
-                packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+                relayed: true,
                 ..HostSettings::default()
             },
         )
