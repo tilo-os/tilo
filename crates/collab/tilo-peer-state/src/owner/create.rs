@@ -94,7 +94,7 @@ impl NativeWorkspaceOwner {
             let mut view = NativeCommittedView::new(
                 peer.clone(),
                 StoredWorkspace {
-                    version: 2,
+                    version: crate::owner::record::WORKSPACE_VERSION,
                     workspace: id,
                     workspace_host: device.clone(),
                     device: device.clone(),

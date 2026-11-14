@@ -275,9 +275,9 @@ async fn listed_as_it_was(plain: std::net::SocketAddr, seed: &Seed) {
 /// wait list: an address left before the upgrade, and one left now.
 async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
     let owner = back_in(plain, seed, &seed.declared_owner).await;
-    let WorkspacesReply::Workspaces(workspaces) = administer(&owner, WorkspacesRequest::List).await
-    else {
-        panic!("no workspaces listed");
+    let reply = administer(&owner, WorkspacesRequest::List).await;
+    let WorkspacesReply::Workspaces(workspaces) = reply else {
+        panic!("no workspaces listed: {reply:?}");
     };
     let governed = workspaces
         .iter()
@@ -306,15 +306,15 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
         assert_eq!(role_of(member), Role::Editor, "{}", member.name);
     }
 
-    let WorkspacesReply::Pending(pending) = administer(
+    let reply = administer(
         &owner,
         WorkspacesRequest::Pending {
             workspace: seed.workspace.clone(),
         },
     )
-    .await
-    else {
-        panic!("no invitations listed");
+    .await;
+    let WorkspacesReply::Pending(pending) = reply else {
+        panic!("no invitations listed: {reply:?}");
     };
     assert!(
         pending
@@ -342,15 +342,15 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
     );
 
     leave_address(plain, &seed.workspace, "grace@example.org").await;
-    let WorkspacesReply::WaitList(waiting) = administer(
+    let reply = administer(
         &owner,
         WorkspacesRequest::WaitList {
             workspace: seed.workspace.clone(),
         },
     )
-    .await
-    else {
-        panic!("no wait list");
+    .await;
+    let WorkspacesReply::WaitList(waiting) = reply else {
+        panic!("no wait list: {reply:?}");
     };
     for contact in seed
         .wait_list
@@ -370,9 +370,9 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
 /// The member who made a workspace of their own still has it.
 async fn the_member_keeps_their_own(plain: std::net::SocketAddr, seed: &Seed) {
     let maker = back_in(plain, seed, &seed.own_workspace.owner).await;
-    let WorkspacesReply::Workspaces(theirs) = administer(&maker, WorkspacesRequest::List).await
-    else {
-        panic!("no workspaces listed");
+    let reply = administer(&maker, WorkspacesRequest::List).await;
+    let WorkspacesReply::Workspaces(theirs) = reply else {
+        panic!("no workspaces listed: {reply:?}");
     };
     assert!(
         theirs.iter().any(

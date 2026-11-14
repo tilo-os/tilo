@@ -124,7 +124,7 @@ impl NativeWorkspaceOwner {
             now,
         )?;
         let record = StoredWorkspace {
-            version: 2,
+            version: crate::owner::record::WORKSPACE_VERSION,
             workspace,
             workspace_host: answer.host,
             device: device.clone(),
@@ -217,7 +217,7 @@ impl NativeWorkspaceOwner {
         ))
         .map_err(|error| error.to_string())?;
         let record = StoredWorkspace {
-            version: 2,
+            version: crate::owner::record::WORKSPACE_VERSION,
             workspace,
             workspace_host: bootstrap.host.clone(),
             device: device.clone(),

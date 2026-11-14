@@ -739,15 +739,20 @@ impl GovernedWorkspace {
     /// earlier stored layout as it opened: its document starts over from a
     /// base newer than any a member's device brought up for itself, and what
     /// the relay retains of the earlier layout is archived as it settles.
-    /// Whether it was: the workspace's records were written under that layout
-    /// too.
+    /// Whether a membership a 0.1 release kept was carried into this layout:
+    /// that workspace's records were written by such a release too.
     fn publish_brought_up(&mut self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
-        if !self.peer().governance_brought_up() {
-            return Ok(false);
-        }
+        let brought_up = self.peer().governance_brought_up();
         let shared = self.peer.shared();
         let mut replica = shared.lock();
-        let candidate = replica.clone();
+        let mut candidate = replica.clone();
+        // A membership log a 0.1 release kept is written anew in this
+        // layout's by this host, the device that governs the workspace, before
+        // the governance is published.
+        let carried = candidate.carry_earlier_membership(key, now)?;
+        if !brought_up && !carried {
+            return Ok(false);
+        }
         let committed = self.commit_held(
             &mut replica,
             candidate,
@@ -756,7 +761,7 @@ impl GovernedWorkspace {
             |record, _| Ok(record.collaboration.clone()),
         );
         drop(replica);
-        committed.map(|_| true)
+        committed.map(|_| carried)
     }
 
     /// The people the workspace's governance admits, without the person whose
@@ -1076,6 +1081,25 @@ impl WorkspaceAuthority {
 /// workspace was made with, and every comparison a host makes for its
 /// workspace is exact. A record of another device — or one too old to read —
 /// leaves the host's own, and opening refuses it as before.
+/// The workspaces whose records are in `dir`, by the name of each record.
+fn governed_here(dir: &Path) -> Vec<WorkspaceId> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "room")
+        })
+        .filter_map(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(WorkspaceId::parse)
+        })
+        .collect()
+}
+
 fn host_serving(mut host: WorkspaceServices, dir: &Path) -> WorkspaceServices {
     let names = std::fs::read_dir(dir).ok().into_iter().flatten().flatten();
     for entry in names {
@@ -1184,6 +1208,10 @@ impl Workspaces {
         let workspaces = Arc::new(device_plane::WorkspacesMap::default());
         let (plane, jobs) =
             device_plane::plane(Arc::clone(&workspaces), host.key.clone(), host.work.clone());
+        // The frames a 0.1 release kept for the workspaces governed here are
+        // under the numbers it named them by: they move to their ids first.
+        tilo_peer_state::store::bring_up_released(&store, governed_here(&dir))
+            .map_err(|error| error.to_string())?;
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         let this = Self {
@@ -1257,6 +1285,7 @@ impl Workspaces {
         // workspace learns an address this host must rename.
         await_relay(&this.inner.host.endpoint).await;
         this.serve_kept(workspaces).await?;
+        this.adopt_listings_file().await?;
         this.start_following().await;
         Ok(this)
     }

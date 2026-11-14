@@ -65,7 +65,10 @@ impl Delegate {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegateScope {
     /// Workspaces it may act in, 1..=[`MAX_DELEGATED_ROOMS`]; exactly one
-    /// for a bot.
+    /// for a bot. Carried as their UUID text under the name `rooms`, the
+    /// layout the 0.1 releases signed and stored: a delegation its person's
+    /// root signed then still decodes and verifies.
+    #[serde(rename = "rooms", with = "crate::workspace_text::list")]
     pub workspaces: Vec<WorkspaceId>,
     /// App ids; empty means every app in those workspaces.
     pub apps: Vec<String>,
@@ -490,6 +493,131 @@ mod tests {
             signature: root.sign(&old).to_bytes(),
         };
         assert_eq!(forged.verify(&user, 15), Err(DelegationError::Signature));
+    }
+
+    /// A bot's delegation as the 0.1 releases (v0.1.5) signed and stored
+    /// it: the scope named its workspaces `rooms`, as UUID text.
+    #[derive(Serialize)]
+    struct ReleasedScope {
+        rooms: Vec<String>,
+        apps: Vec<String>,
+    }
+
+    #[derive(Serialize)]
+    struct ReleasedUnsigned<'a> {
+        user_public_key: &'a [u8; 32],
+        device_public_key: &'a [u8; 32],
+        delegate: &'a Delegate,
+        label: &'a str,
+        color: &'a [u8; 3],
+        scope: &'a ReleasedScope,
+        issued_at_ns: u64,
+        expires_at_ns: u64,
+    }
+
+    #[derive(Serialize)]
+    struct ReleasedDelegation {
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+        delegate: Delegate,
+        label: String,
+        color: [u8; 3],
+        scope: ReleasedScope,
+        issued_at_ns: u64,
+        expires_at_ns: u64,
+        #[serde(with = "serde_bytes")]
+        signature: [u8; 64],
+    }
+
+    /// The released delegation, signed by [`root`] the way v0.1.5 signed it.
+    fn released_delegation() -> ReleasedDelegation {
+        let delegate = Delegate::Bot {
+            installation: INSTALLATION.into(),
+        };
+        let scope = ReleasedScope {
+            rooms: vec![WORKSPACE.into()],
+            apps: vec!["chat".into()],
+        };
+        let user_public_key = root().verifying_key().to_bytes();
+        let mut signed = b"tilo-delegation-v2\0".to_vec();
+        signed.extend(
+            postcard::to_allocvec(&ReleasedUnsigned {
+                user_public_key: &user_public_key,
+                device_public_key: &[9; 32],
+                delegate: &delegate,
+                label: "Discord Bridge",
+                color: &[88, 101, 242],
+                scope: &scope,
+                issued_at_ns: DAY_NS,
+                expires_at_ns: 2 * DAY_NS,
+            })
+            .unwrap(),
+        );
+        ReleasedDelegation {
+            user_public_key,
+            device_public_key: [9; 32],
+            delegate,
+            label: "Discord Bridge".into(),
+            color: [88, 101, 242],
+            scope,
+            issued_at_ns: DAY_NS,
+            expires_at_ns: 2 * DAY_NS,
+            signature: root().sign(&signed).to_bytes(),
+        }
+    }
+
+    /// The released delegation's bytes, as v0.1.5 encoded them.
+    const RELEASED_DELEGATION_HEX: &str = concat!(
+        "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c0909090909090909",
+        "090909090909090909090909090909090909090909090909012436663163326138652d336234642d",
+        "346335652d396636302d3731383239336134623563360e446973636f7264204272696467655865f2",
+        "012461616161616161612d616161612d346161612d386161612d6161616161616161616161610104",
+        "636861748080bc8ac9d2138080f89492a52740a35e70928067f9209babbd416dae367d2fb73c753e",
+        "77dfbbddbe03ba96edef2814c5aae5f182328ff063327daa7796d3b017f1ced9793274d39a3b17f9",
+        "52e006",
+    );
+
+    #[test]
+    fn a_delegation_the_release_stored_reads_and_verifies() {
+        let user = root().verifying_key().to_bytes();
+        let released = released_delegation();
+        let bytes = postcard::to_allocvec(&released).unwrap();
+        assert_eq!(
+            bytes
+                .iter()
+                .flat_map(|byte| [byte >> 4, byte & 0x0f])
+                .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
+                .collect::<String>(),
+            RELEASED_DELEGATION_HEX
+        );
+        let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
+        // Carried as postcard, to a browser or in an agent's state.
+        let decoded = Delegation::decode(&bytes).unwrap();
+        decoded.verify(&user, DAY_NS + 1).unwrap();
+        assert_eq!(decoded.scope.workspaces, vec![workspace]);
+        assert!(decoded.permits_workspace(workspace));
+        assert_eq!(decoded.encode(), bytes, "this build writes the same bytes");
+        // Stored as JSON, in a workspace's governance.
+        let json = serde_json::to_string(&released).unwrap();
+        let read: Delegation = serde_json::from_str(&json).unwrap();
+        assert_eq!(read, decoded);
+        assert_eq!(serde_json::to_string(&read).unwrap(), json);
+        // Signed today, a delegation is the one the release signed.
+        let today = Delegation::sign(
+            &root(),
+            [9; 32],
+            released.delegate,
+            "Discord Bridge",
+            [88, 101, 242],
+            DelegateScope {
+                workspaces: vec![workspace],
+                apps: vec!["chat".into()],
+            },
+            DAY_NS,
+            2 * DAY_NS,
+        )
+        .unwrap();
+        assert_eq!(today, decoded);
     }
 
     #[test]

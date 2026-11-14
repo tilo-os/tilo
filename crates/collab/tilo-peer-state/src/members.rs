@@ -8,6 +8,7 @@
 //! keeps it, a device whose author had lost the grant it needed keeps it with
 //! no effect, and two devices holding the same operations hold the same
 //! membership.
+pub mod earlier;
 pub mod op;
 pub(crate) mod replay;
 

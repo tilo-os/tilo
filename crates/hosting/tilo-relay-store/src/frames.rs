@@ -28,6 +28,51 @@ pub fn framed_envelope(bytes: &[u8]) -> Option<(Envelope, &[u8])> {
     postcard::take_from_bytes(bytes.get(4..)?).ok()
 }
 
+/// The variant tag an `Envelope::Delta` is encoded under.
+fn delta_tag() -> Option<u32> {
+    let delta = postcard::to_stdvec(&Envelope::Delta {
+        workspace_id: WorkspaceId::nil(),
+        author_device_public_key: [0; 32],
+        authored_at_ns: 0,
+        delta: Vec::new(),
+        signature: [0; 64],
+    })
+    .ok()?;
+    postcard::take_from_bytes::<u32>(&delta)
+        .ok()
+        .map(|(tag, _)| tag)
+}
+
+/// A frame the 0.1 releases retained for `workspace`, as this build writes
+/// it. Their `Envelope::Delta` named the workspace by
+/// [`WorkspaceId::released_number`], this build's by the id itself; every
+/// other byte of the frame is as it was, and nothing in a frame signs the
+/// envelope around its payload. `None` when `bytes` is not such a frame.
+#[must_use]
+pub fn released_frame(bytes: &[u8], workspace: WorkspaceId) -> Option<Vec<u8>> {
+    let prefix: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
+    if usize::try_from(u32::from_le_bytes(prefix)).ok()? != bytes.len().checked_sub(4)? {
+        return None;
+    }
+    let (tag, rest) = postcard::take_from_bytes::<u32>(bytes.get(4..)?).ok()?;
+    if tag != delta_tag()? {
+        return None;
+    }
+    let (number, rest) = postcard::take_from_bytes::<u64>(rest).ok()?;
+    if number != workspace.released_number() {
+        return None;
+    }
+    let mut envelope = postcard::to_stdvec(&tag).ok()?;
+    envelope.extend(postcard::to_stdvec(&workspace).ok()?);
+    envelope.extend_from_slice(rest);
+    let mut frame = u32::try_from(envelope.len()).ok()?.to_le_bytes().to_vec();
+    frame.extend(envelope);
+    match framed_envelope(&frame)? {
+        (Envelope::Delta { workspace_id, .. }, _) if workspace_id == workspace => Some(frame),
+        _ => None,
+    }
+}
+
 /// Validate EVERY enclosing representation before granting proof authority.
 /// Authentication happens at ingress, not in this disk decoder.
 #[must_use]

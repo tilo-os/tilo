@@ -47,7 +47,10 @@ pub struct TaskDelegation {
     pub agent_id: String,
     /// The task's work group: its issue's address.
     pub work_group: String,
-    /// The workspace's id.
+    /// The workspace's id, carried as its UUID text under the name `room`:
+    /// the layout the 0.1 releases signed, so one signed then still decodes
+    /// and verifies.
+    #[serde(rename = "room", with = "crate::workspace_text")]
     pub workspace_id: WorkspaceId,
     /// Issue time, ns since the epoch.
     pub issued_at_ns: u64,
@@ -65,6 +68,7 @@ struct Unsigned<'a> {
     agent_public_key: &'a [u8; 32],
     agent_id: &'a str,
     work_group: &'a str,
+    #[serde(with = "crate::workspace_text")]
     workspace_id: WorkspaceId,
     issued_at_ns: u64,
     expires_at_ns: u64,
@@ -340,6 +344,63 @@ mod tests {
         assert!(is_task_agent(&delegation.agent_id));
         let decoded = TaskDelegation::from_hex(&delegation.to_hex()).unwrap();
         assert_eq!(decoded, delegation);
+    }
+
+    /// A task delegation as the 0.1 releases (v0.1.5) signed and encoded
+    /// it: the workspace as UUID text, named `room`.
+    #[derive(Serialize)]
+    struct Released<'a> {
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+        agent_public_key: [u8; 32],
+        agent_id: String,
+        work_group: &'a str,
+        room: &'a str,
+        issued_at_ns: u64,
+        expires_at_ns: u64,
+        #[serde(with = "serde_bytes")]
+        signature: [u8; 64],
+    }
+
+    /// The released task delegation's bytes, as v0.1.5 encoded them.
+    const RELEASED_TASK_DELEGATION_HEX: &str = concat!(
+        "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c8139770ea87d175f",
+        "56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ed4928c628d1c2c6eae9033890599561",
+        "2959273a5c63f93636c14614ac8737d1117461736b2d656434393238633632386431197461736b73",
+        "2e747261636b65722f6973737565732f376433632461616161616161612d616161612d346161612d",
+        "386161612d6161616161616161616161618080d09de9ceb8fd1880c0b2a3ccb7b9fd1840d0f1e8e5",
+        "2f2c4a8f6968056e6334a941ed56cfe3f755521117c30222e61ff6c102e88ec0d4c0588985c848d5",
+        "1ef16bbea5278006f7dc4127b1884bbd63e4ca0d",
+    );
+
+    #[test]
+    fn a_task_delegation_the_release_signed_reads_and_verifies() {
+        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut released = Released {
+            user_public_key: root().verifying_key().to_bytes(),
+            device_public_key: device().verifying_key().to_bytes(),
+            agent_public_key: agent(),
+            agent_id: task_agent_id(&agent()),
+            work_group: TASK,
+            room,
+            issued_at_ns: NOW,
+            expires_at_ns: NOW + HOUR_NS,
+            signature: [0; 64],
+        };
+        // The release signed every field but the signature, in order.
+        let mut unsigned = postcard::to_allocvec(&released).unwrap();
+        unsigned.truncate(unsigned.len() - 65);
+        let mut signed = b"tilo-task-delegation-v1\0".to_vec();
+        signed.extend(unsigned);
+        released.signature = device().sign(&signed).to_bytes();
+        let bytes = postcard::to_allocvec(&released).unwrap();
+        assert_eq!(hex_of(&bytes), RELEASED_TASK_DELEGATION_HEX);
+
+        let decoded = TaskDelegation::decode(&bytes).unwrap();
+        let cert = certificate(&root(), &device());
+        assert_eq!(decoded.verify(&cert, workspace(room), NOW + 1), Ok(()));
+        assert_eq!(decoded.encode(), bytes, "this build writes the same bytes");
+        assert_eq!(decoded, delegation(NOW + HOUR_NS));
     }
 
     #[test]

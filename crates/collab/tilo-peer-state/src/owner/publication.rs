@@ -514,8 +514,7 @@ pub fn validate_file_layout(
 ) -> Result<(), String> {
     for workspace in storage.workspaces.values() {
         match (version, workspace.version, workspace.publication.is_some()) {
-            (4.., 2, true) if workspace.effect_history_root.is_none() => {}
-            (4.., 3, true) if workspace.effect_history_root.is_some() => {}
+            (4.., record::WORKSPACE_VERSION, true) => {}
             _ => return Err("native publication record/file layout mismatch".into()),
         }
         if let Some(publication) = &workspace.publication {

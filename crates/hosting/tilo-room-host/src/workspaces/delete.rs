@@ -197,6 +197,10 @@ pub(super) fn remove_files(dir: &Path, workspace: &str) {
         tilo_relay_protocol::WorkspaceId::parse(workspace),
     ) {
         paths.push(state.join("workspaces").join(workspace_id.to_string()));
+        paths.push(crate::store::released::kept(
+            &state.join("workspaces"),
+            workspace_id,
+        ));
         paths.push(
             state
                 .join("store")

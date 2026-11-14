@@ -11,13 +11,23 @@
 //! [`delegation`] holds the root-signed agent and bot delegations; it is
 //! re-exported by `tilo-relay-protocol`.
 //!
-//! A workspace is named by its [`WorkspaceId`] everywhere here.
+//! A workspace is named by its [`WorkspaceId`] everywhere here. Signed bytes
+//! the 0.1 releases wrote, which named it by a number and by its UUID as text,
+//! are read in the layout their version names ([`previous`] and
+//! `room_layout`), never written.
 
 pub mod delegation;
 pub mod invitations;
+/// The invitation and join layouts a build wrote before the grants stopped
+/// naming the workspace's authority: read, never written. A stored record
+/// keeps the bytes its device signed, so a build that reads a record written
+/// then needs the layout that record is in.
+pub mod previous;
+mod room_layout;
 /// A link that carries an invitation's place and key, not its kilobytes.
 pub mod sealed;
 pub mod task_delegation;
+mod workspace_text;
 
 use base64::Engine as _;
 pub use collab_types::WorkspaceId;
@@ -28,16 +38,24 @@ use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 /// What a member may do in a workspace.
 pub use collab_types::Role;
 
-/// The invitation whose grant no longer names the workspace's authority: an
-/// invitation is issued by a device of a member, and nothing above it.
-const INVITATION_VERSION: u32 = 3;
+/// The invitation whose grant names its workspace by its [`WorkspaceId`]
+/// alone and no authority: an invitation is issued by a device of a member,
+/// and nothing above it. Versions 1 to 4 are the layouts before it, still
+/// read: 1 and 2 named an authority ([`previous`]), 3 and 4 named the
+/// workspace by a number and its UUID as text (`room_layout`).
+const INVITATION_VERSION: u32 = 5;
 /// An invitation that also names who sent it.
-const INVITATION_WITH_INVITER_VERSION: u32 = 4;
+const INVITATION_WITH_INVITER_VERSION: u32 = 6;
 /// Longest inviter name an invitation carries, in characters.
 pub const MAX_INVITER_NAME_CHARS: usize = 80;
-/// Challenges carry no authority device: the device that answers is the one
-/// the invitation names.
-const JOIN_VERSION: u32 = 2;
+/// Challenges carry no authority device, and name the workspace by its
+/// [`WorkspaceId`] alone. Version 1 named an authority ([`previous`]) and
+/// version 2 the workspace by text and number (`room_layout`): a stored
+/// Complete in either still verifies.
+const JOIN_VERSION: u32 = 3;
+/// The variant index of [`JoinTransportRequest::Complete`] in every join
+/// layout: what a stored Complete's bytes start with.
+const COMPLETE_VARIANT: u32 = 2;
 const INVITATION_DOMAIN: &[u8] = b"tilo/workspace-invitation/v1\0";
 const JOIN_PROOF_DOMAIN: &[u8] = b"tilo/workspace-join-proof/v1\0";
 const MEMBERSHIP_PROOF_DOMAIN: &[u8] = b"tilo/workspace-membership-proof/v1\0";
@@ -169,6 +187,20 @@ pub struct VerifiedJoin {
     grant: InviteGrant,
     inviter: Option<Inviter>,
     signed_invitation: Vec<u8>,
+    /// The authority an invitation issued before grants stopped naming one
+    /// was delegated from, where it was not its issuer.
+    authority: Option<DeviceCert>,
+    /// The number a grant of the layouts that named their workspace twice
+    /// carried beside its UUID, which their join challenges repeat.
+    workspace_number: Option<u64>,
+}
+
+/// A signed invitation of any layout, decoded and its signature checked.
+struct Decoded {
+    grant: InviteGrant,
+    inviter: Option<Inviter>,
+    authority: Option<DeviceCert>,
+    workspace_number: Option<u64>,
 }
 
 impl VerifiedJoin {
@@ -181,9 +213,10 @@ impl VerifiedJoin {
     }
 
     /// The device that issued the invitation: the device of a member the
-    /// workspace's policy let invite.
+    /// workspace's policy let invite, or, for an invitation issued before
+    /// grants named no authority, the authority its issuer was delegated from.
     pub fn workspace_authority(&self) -> &DeviceCert {
-        &self.grant.issuer
+        self.authority.as_ref().unwrap_or(&self.grant.issuer)
     }
 
     /// Who sent the invitation, when its issuer recorded them.
@@ -563,21 +596,26 @@ pub fn verify_transport_hint_at(
 /// over one host share: the issuer's certificate and the signed transport
 /// details, each as it is encoded there. Read, not verified: a keeper of
 /// many invitations names these runs once, and checks each invitation whole
-/// when it puts it back together. An invitation of an earlier layout, or
+/// when it puts it back together. The layouts that named their workspace by
+/// text carry both the same way. An invitation that named an authority, or
 /// one that does not decode, shares nothing.
 #[must_use]
 pub fn invitation_shared_runs(signed_invitation: &[u8]) -> Vec<Vec<u8>> {
     let grant = match postcard::take_from_bytes::<u32>(signed_invitation) {
-        Ok((INVITATION_VERSION, _)) => {
-            postcard::from_bytes::<SignedInvitation>(signed_invitation).map(|signed| signed.grant)
-        }
+        Ok((INVITATION_VERSION, _)) => postcard::from_bytes::<SignedInvitation>(signed_invitation)
+            .map(|signed| signed.grant)
+            .ok(),
         Ok((INVITATION_WITH_INVITER_VERSION, _)) => {
             postcard::from_bytes::<SignedInvitationWithInviter>(signed_invitation)
                 .map(|signed| signed.grant)
+                .ok()
         }
-        _ => return Vec::new(),
+        Ok((version, _)) if room_layout::is_invitation_version(version) => {
+            room_layout::unchecked_grant(signed_invitation, version)
+        }
+        _ => None,
     };
-    let Ok(grant) = grant else {
+    let Some(grant) = grant else {
         return Vec::new();
     };
     [
@@ -619,23 +657,52 @@ pub fn decode_and_verify_invitation(
     revocations: &RevocationList,
     now_ns: u64,
 ) -> Result<VerifiedJoin, String> {
-    let malformed = |_| "invalid signed invitation".to_string();
-    let (version, _) = postcard::take_from_bytes::<u32>(signed_invitation).map_err(malformed)?;
-    let (grant, inviter, signature) = match version {
-        INVITATION_VERSION => {
-            let signed: SignedInvitation =
-                postcard::from_bytes(signed_invitation).map_err(malformed)?;
-            (signed.grant, None, signed.signature)
+    let (version, _) = postcard::take_from_bytes::<u32>(signed_invitation)
+        .map_err(|_| "invalid signed invitation".to_string())?;
+    // The version names the layout the issuer signed: each is read and its
+    // signature checked over that layout alone.
+    let decoded = match version {
+        INVITATION_VERSION | INVITATION_WITH_INVITER_VERSION => {
+            decode_invitation(signed_invitation, version)?
         }
-        INVITATION_WITH_INVITER_VERSION => {
-            let signed: SignedInvitationWithInviter =
-                postcard::from_bytes(signed_invitation).map_err(malformed)?;
-            validate_inviter(&signed.inviter)?;
-            (signed.grant, Some(signed.inviter), signed.signature)
+        _ if room_layout::is_invitation_version(version) => {
+            room_layout::decode_invitation(signed_invitation, version)?
+        }
+        _ if previous::is_invitation_version(version) => {
+            previous::decode_invitation(signed_invitation, version)?
         }
         _ => return Err("unsupported invitation version".into()),
     };
-    validate_decoded(&grant, recipient_user_public_key, revocations, now_ns)?;
+    validate_decoded(
+        &decoded.grant,
+        recipient_user_public_key,
+        revocations,
+        now_ns,
+    )?;
+    Ok(VerifiedJoin {
+        invite_id: *blake3::hash(signed_invitation).as_bytes(),
+        grant: decoded.grant,
+        inviter: decoded.inviter,
+        signed_invitation: signed_invitation.to_vec(),
+        authority: decoded.authority,
+        workspace_number: decoded.workspace_number,
+    })
+}
+
+/// Decode and check the issuer's signature of an invitation in this build's
+/// layout.
+fn decode_invitation(signed_invitation: &[u8], version: u32) -> Result<Decoded, String> {
+    let malformed = |_| "invalid signed invitation".to_string();
+    let (grant, inviter, signature) = if version == INVITATION_WITH_INVITER_VERSION {
+        let signed: SignedInvitationWithInviter =
+            postcard::from_bytes(signed_invitation).map_err(malformed)?;
+        validate_inviter(&signed.inviter)?;
+        (signed.grant, Some(signed.inviter), signed.signature)
+    } else {
+        let signed: SignedInvitation =
+            postcard::from_bytes(signed_invitation).map_err(malformed)?;
+        (signed.grant, None, signed.signature)
+    };
     let digest = match &inviter {
         None => tagged_digest(
             INVITATION_DOMAIN,
@@ -653,28 +720,44 @@ pub fn decode_and_verify_invitation(
             },
         )?,
     };
-    // A workspace re-reads every invitation its members redeemed whenever its
-    // governance changes: one that verified before is remembered.
-    tilo_user_identity::verify_remembered(
-        &grant.issuer.device_public_key,
-        &digest,
-        &signature,
-        false,
-    )
-    .map_err(|refused| match refused {
-        tilo_user_identity::RememberedRefusal::Key => {
-            "invalid invitation issuer device key".to_string()
-        }
-        tilo_user_identity::RememberedRefusal::Signature => {
-            "invitation signature did not verify".to_string()
-        }
-    })?;
-    Ok(VerifiedJoin {
-        invite_id: *blake3::hash(signed_invitation).as_bytes(),
+    verify_issuer_signature(&grant.issuer, &digest, &signature)?;
+    Ok(Decoded {
         grant,
         inviter,
-        signed_invitation: signed_invitation.to_vec(),
+        authority: None,
+        workspace_number: None,
     })
+}
+
+/// Check `issuer` signed `digest`.
+fn verify_issuer_signature(
+    issuer: &DeviceCert,
+    digest: &[u8; 32],
+    signature: &[u8; 64],
+) -> Result<(), String> {
+    // A workspace re-reads every invitation its members redeemed whenever its
+    // governance changes: one that verified before is remembered.
+    tilo_user_identity::verify_remembered(&issuer.device_public_key, digest, signature, false)
+        .map_err(|refused| match refused {
+            tilo_user_identity::RememberedRefusal::Key => {
+                "invalid invitation issuer device key".to_string()
+            }
+            tilo_user_identity::RememberedRefusal::Signature => {
+                "invitation signature did not verify".to_string()
+            }
+        })
+}
+
+/// Check the device `device_cert` certifies signed the join proof `digest`.
+fn verify_device_proof(
+    device_cert: &DeviceCert,
+    digest: &[u8; 32],
+    signature: &[u8; 64],
+) -> Result<(), String> {
+    ed25519_dalek::VerifyingKey::from_bytes(&device_cert.device_public_key)
+        .map_err(|_| "invalid join device public key".to_string())?
+        .verify(digest, &ed25519_dalek::Signature::from_bytes(signature))
+        .map_err(|_| "join proof signature did not verify".to_string())
 }
 
 /// What every invitation is checked for however it was laid out: a canonical
@@ -750,14 +833,11 @@ pub fn verify_join_proof(
     if join.grant.workspace_id != proof.challenge.workspace_id {
         return Err("join challenge does not match signed invitation".into());
     }
-    let key = ed25519_dalek::VerifyingKey::from_bytes(&device_cert.device_public_key)
-        .map_err(|_| "invalid join device public key".to_string())?;
-    let digest = tagged_digest(JOIN_PROOF_DOMAIN, &proof.challenge)?;
-    key.verify(
-        &digest,
-        &ed25519_dalek::Signature::from_bytes(&proof.signature),
-    )
-    .map_err(|_| "join proof signature did not verify".to_string())?;
+    verify_device_proof(
+        device_cert,
+        &tagged_digest(JOIN_PROOF_DOMAIN, &proof.challenge)?,
+        &proof.signature,
+    )?;
     Ok(VerifiedRedemption {
         join,
         certificate: device_cert.clone(),
@@ -801,45 +881,63 @@ pub fn verify_connection_redemption(
 /// Verify a stored `JoinTransportRequest::Complete`, in whichever challenge
 /// layout its bytes hold.
 ///
-/// A record written before the join version bump keeps its Complete bytes:
+/// A record written before a join version bump keeps its Complete bytes:
 /// they are what the device signed, and nothing here could sign for it
-/// again. Its challenge is therefore checked against the layout its version
+/// again. Its challenge is therefore checked in the layout its version
 /// names, and everything else - the scope the invitation pins, the device
 /// the challenge names - the same way. `now_ns` is when the proof was made:
 /// a stored proof is not fresh, and the caller says when it was.
 ///
 /// # Errors
-/// The bytes are not a Complete of either layout, or its proof does not
-/// check.
+/// The bytes are not a Complete of a layout this reads, or its proof does
+/// not check.
 pub fn verify_stored_complete(
     bytes: &[u8],
     device_cert: &DeviceCert,
     revocations: &RevocationList,
     now_ns: u64,
 ) -> Result<VerifiedRedemption, String> {
-    match postcard::from_bytes::<JoinTransportRequest>(bytes) {
-        Ok(request) if postcard::to_stdvec(&request).is_ok_and(|encoded| encoded == bytes) => {
-            let JoinTransportRequest::Complete(complete) = request else {
-                return Err("stored join proof is not Complete".into());
-            };
-            let proof = complete.proof;
-            let redemption =
-                verify_join_proof(&proof, &proof.challenge, device_cert, revocations, now_ns)?;
-            let expected = JoinChallenge::new(
-                &redemption.join,
-                device_cert,
-                proof.challenge.request_id,
-                proof.challenge.nonce,
-                proof.challenge.expires_at_ns,
-                now_ns,
-            )?;
-            if expected != proof.challenge {
-                return Err("join challenge scope mismatch".into());
-            }
-            Ok(redemption)
-        }
-        _ => Err("stored join proof is not Complete".into()),
+    let not_complete = || "stored join proof is not Complete".to_string();
+    // Every layout starts with the request's variant, then the challenge's
+    // version.
+    let (variant, challenge) =
+        postcard::take_from_bytes::<u32>(bytes).map_err(|_| not_complete())?;
+    if variant != COMPLETE_VARIANT {
+        return Err(not_complete());
     }
+    let (version, _) = postcard::take_from_bytes::<u32>(challenge).map_err(|_| not_complete())?;
+    match version {
+        JOIN_VERSION => {}
+        room_layout::JOIN_VERSION => {
+            return room_layout::verify_complete(bytes, device_cert, revocations, now_ns);
+        }
+        previous::JOIN_VERSION => {
+            return previous::verify_complete(bytes, device_cert, revocations, now_ns);
+        }
+        _ => return Err("join challenge is expired or unsupported".into()),
+    }
+    let request =
+        postcard::from_bytes::<JoinTransportRequest>(bytes).map_err(|_| not_complete())?;
+    if postcard::to_stdvec(&request).map_err(|error| error.to_string())? != bytes {
+        return Err("noncanonical stored Complete".into());
+    }
+    let JoinTransportRequest::Complete(complete) = request else {
+        return Err(not_complete());
+    };
+    let proof = complete.proof;
+    let redemption = verify_join_proof(&proof, &proof.challenge, device_cert, revocations, now_ns)?;
+    let expected = JoinChallenge::new(
+        &redemption.join,
+        device_cert,
+        proof.challenge.request_id,
+        proof.challenge.nonce,
+        proof.challenge.expires_at_ns,
+        now_ns,
+    )?;
+    if expected != proof.challenge {
+        return Err("join challenge scope mismatch".into());
+    }
+    Ok(redemption)
 }
 
 /// Sign the answer to a membership challenge.
@@ -943,3 +1041,62 @@ fn tagged_digest(value: &[u8], body: &impl Serialize) -> Result<[u8; 32], String
 
 #[cfg(test)]
 mod tests;
+
+/// Sign `grant` in the invitation layout issued before grants stopped naming
+/// the workspace's authority (versions 1 and 2): the bytes a record written
+/// then holds, so a decoder for them is tested against what a build wrote,
+/// not against itself.
+///
+/// # Errors
+/// Returns an error if the grant cannot be encoded for signing.
+#[cfg(any(test, feature = "test-support"))]
+pub fn issue_previous_invitation(
+    grant: &InviteGrant,
+    inviter: Option<&Inviter>,
+    authority: &DeviceCert,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<Vec<u8>, String> {
+    previous::encode_invitation(grant, inviter, authority, key)
+}
+
+/// A `JoinTransportRequest::Complete` whose challenge is in the layout
+/// issued before grants stopped naming an authority (join version 1), signed
+/// by `key`: the stored proof a record written then holds.
+///
+/// # Errors
+/// Returns an error if the proof cannot be encoded.
+#[cfg(any(test, feature = "test-support"))]
+pub fn complete_previous_layout(
+    challenge: &JoinChallenge,
+    authority: &DeviceCert,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<Vec<u8>, String> {
+    previous::encode_complete(challenge, authority, key)
+}
+
+/// Sign `grant` in the invitation layout of the 0.1 releases (versions 3
+/// and 4), which named the workspace by a number and its UUID as text.
+///
+/// # Errors
+/// Returns an error if the grant cannot be encoded for signing.
+#[cfg(any(test, feature = "test-support"))]
+pub fn issue_room_layout_invitation(
+    grant: &InviteGrant,
+    inviter: Option<&Inviter>,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<Vec<u8>, String> {
+    room_layout::encode_invitation(grant, inviter, key)
+}
+
+/// A `JoinTransportRequest::Complete` whose challenge is in the layout of
+/// the 0.1 releases (join version 2), signed by `key`.
+///
+/// # Errors
+/// Returns an error if the proof cannot be encoded.
+#[cfg(any(test, feature = "test-support"))]
+pub fn complete_room_layout(
+    challenge: &JoinChallenge,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<Vec<u8>, String> {
+    room_layout::encode_complete(challenge, key)
+}
