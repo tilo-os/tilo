@@ -2285,7 +2285,8 @@ fn strip_id(session: &Session, name: &str) -> String {
     })
 }
 
-/// The names of the workspaces, in order, and the strips of each.
+/// The names of the workspaces, in order, and the strips of each, as a person reads them: a strip
+/// nobody named reads as the desk's own word for its place ("Strip 1").
 fn workspaces(session: &Session) -> Vec<(String, Vec<String>)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -2296,7 +2297,10 @@ fn workspaces(session: &Session) -> Vec<(String, Vec<String>)> {
                     workspace
                         .strips
                         .iter()
-                        .map(|strip| strip.name.clone())
+                        .enumerate()
+                        .map(|(at, strip)| {
+                            tilo_desktop_surface::names::strip_named(&strip.name, at)
+                        })
                         .collect(),
                 )
             })
@@ -2323,14 +2327,20 @@ fn strips_holding(session: &Session, tab: u64) -> Vec<String> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .filter(|strip| {
+            .flat_map(|workspace| workspace.strips.iter().enumerate())
+            .filter(|(_, strip)| {
                 strip
                     .window_groups
                     .iter()
                     .any(|group| group.tabs.iter().any(|held| held.id == tab))
             })
-            .map(|strip| format!("{}/{}", strip.name, strip.id.0))
+            .map(|(at, strip)| {
+                format!(
+                    "{}/{}",
+                    tilo_desktop_surface::names::strip_named(&strip.name, at),
+                    strip.id.0
+                )
+            })
             .collect()
     })
 }
@@ -2423,7 +2433,7 @@ fn the_next_session_comes_up_where_this_one_was() {
         assert_eq!(kept.len(), 2, "two workspaces are set up: {kept:?}");
         assert_eq!(
             kept[0].1,
-            vec!["Main".to_string(), "Second".to_string()],
+            vec!["Strip 1".to_string(), "Second".to_string()],
             "the first workspace has the strip that was made"
         );
         let open = active_workspace(&session).expect("a workspace is open");
@@ -2507,7 +2517,7 @@ fn the_desktop_sends_a_window_where_the_overview_offers_to() {
         "the person stays where they were"
     );
     assert!(
-        strips_holding(&session, tab)[0].starts_with("Main/"),
+        strips_holding(&session, tab)[0].starts_with("Strip 1/"),
         "the window went to a strip of the workspace it moved to"
     );
     invoke_with(
@@ -2546,16 +2556,24 @@ fn the_desktop_names_and_moves_the_strips_the_overview_offers() {
         &serde_json::json!({"strip": second, "name": "Later"}),
     );
     let (_, strips) = workspaces(&session).remove(0);
-    assert_eq!(strips, ["Main", "Later"], "the strip was renamed");
+    assert_eq!(
+        strips,
+        ["Strip 1", "Later"],
+        "the strip was renamed, and the one nobody named reads by its place"
+    );
 
     invoke_with(
         &mut session,
         CHROME_RESOURCE,
         "move-strip",
-        &serde_json::json!({"strip": "Later", "before": "Main"}),
+        &serde_json::json!({"strip": "Later", "before": "Strip 1"}),
     );
     let (_, strips) = workspaces(&session).remove(0);
-    assert_eq!(strips, ["Later", "Main"], "the strip moved above the first");
+    assert_eq!(
+        strips,
+        ["Later", "Strip 2"],
+        "the strip moved above the first, which nobody named now reads by where it stands"
+    );
 
     invoke_with(
         &mut session,
@@ -2564,7 +2582,7 @@ fn the_desktop_names_and_moves_the_strips_the_overview_offers() {
         &serde_json::json!({"strip": "Later"}),
     );
     let (_, strips) = workspaces(&session).remove(0);
-    assert_eq!(strips, ["Main", "Later"], "and to the bottom");
+    assert_eq!(strips, ["Strip 1", "Later"], "and to the bottom");
 }
 
 /// The picture the person chose is the desk's, kept beside the desk for this device.

@@ -1229,7 +1229,8 @@ impl DesktopChrome {
             .ok_or_else(|| crate::i18n::t_args("desktop-no-workspace", &[("name", key.into())]))
     }
 
-    /// The strip `key` names in the workspace the person is in: its id, or its name.
+    /// The strip `key` names in the workspace the person is in: its id, or the name a person
+    /// reads, which is a strip nobody named by where it stands ("Strip 1").
     fn strip_named(&self, key: &str) -> Result<StripId, String> {
         let key = key.trim();
         let missing = || crate::i18n::t_args("desktop-no-strip", &[("name", key.into())]);
@@ -1239,7 +1240,13 @@ impl DesktopChrome {
                 workspace
                     .strips
                     .iter()
-                    .find(|strip| strip.name.eq_ignore_ascii_case(key))
+                    .enumerate()
+                    .find(|(at, strip)| {
+                        // The name a person reads: the strip's own, or the desk's word for a
+                        // strip nobody named ("Strip 1", where it stands).
+                        names::strip_named(&strip.name, *at).eq_ignore_ascii_case(key)
+                    })
+                    .map(|(_, strip)| strip)
                     .or_else(|| {
                         key.parse::<u64>()
                             .ok()

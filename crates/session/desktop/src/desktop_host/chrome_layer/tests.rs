@@ -98,13 +98,17 @@ fn chrome_with_an_agent() -> DesktopChrome {
 
 /// The chrome over a desk whose person is in its one workspace, and the desk's handle.
 fn chrome_over_a_desk() -> (DesktopChrome, DesktopHandle) {
-    let tree = desk_tree();
+    chrome_over(&desk_tree())
+}
+
+/// [`chrome_over_a_desk`] over `tree` as the test hands it.
+fn chrome_over(tree: &Layout) -> (DesktopChrome, DesktopHandle) {
     let (_, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
         Rc::new(PermissiveRules::new(handle.clone())),
-        TopBarChrome::from_tree(&tree),
+        TopBarChrome::from_tree(tree),
         AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
@@ -254,4 +258,34 @@ fn the_overview_the_host_opens_shows_the_workspace_in_front() {
     chrome.toggle_overview();
     assert!(!chrome.follow_overview(), "the panel moved itself");
     assert!(open.get(), "and says so");
+}
+
+/// A strip nobody named is named by where it stands, as the bar's switch and the overview name
+/// it: the desk reaches it by that word, and by its id, and by no name it was never given.
+#[test]
+fn a_strip_nobody_named_is_reached_by_the_word_the_desk_reads() {
+    en();
+    let mut tree = desk_tree();
+    tree.workspaces[0].strips[0].name = String::new();
+    let (chrome, _handle) = chrome_over(&tree);
+
+    assert_eq!(
+        chrome.strip_named("Strip 1"),
+        Ok(StripId(2)),
+        "the first strip nobody named is Strip 1"
+    );
+    assert_eq!(
+        chrome.strip_named("strip 1"),
+        Ok(StripId(2)),
+        "in any case the person types it"
+    );
+    assert_eq!(
+        chrome.strip_named("2"),
+        Ok(StripId(2)),
+        "and its decimal id reaches it"
+    );
+    assert!(
+        chrome.strip_named("Main").is_err(),
+        "the name it kept before the person named it is not its name"
+    );
 }
