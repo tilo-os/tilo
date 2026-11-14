@@ -1,16 +1,16 @@
-//! Outline, Linear and mail accounts as sources of the migration, beside an old computer.
+//! Outline, Linear, Forgejo and mail accounts as sources of the migration, beside an old computer.
 //!
 //! A service source is reached with a key or password the person types once. [`connect`] checks
 //! it against the service and keeps it in the account vault, never in a record, a journal or an
 //! action. [`review`] lists what the source holds, grouped the way the service groups it
-//! (Outline's collections, Linear's teams, the mail account itself), and the person chooses the
-//! groups that come over. [`run`] brings exactly the reviewed items of the chosen groups over,
+//! (Outline's collections, Linear's teams, Forgejo's repositories, the mail account itself), and
+//! the person chooses the groups that come over. [`run`] brings exactly the reviewed items of the chosen groups over,
 //! recording each one in the operation's [`ServiceJournal`] the moment its app has it, so an
 //! interrupted run resumes where it stopped and a second run lands nothing twice.
 //!
 //! What comes over lands in the app that owns it, as the Thunderbird address books and
-//! calendars do: Outline documents become Notes pages and issues from Linear become Tasks issues
-//! through each app's import inbox, which the app folds in through its own actions when it
+//! calendars do: Outline documents become Notes pages and issues from Linear and Forgejo become
+//! Tasks issues through each app's import inbox, which the app folds in through its own actions when it
 //! opens. A mail account is published into the account store Mail reads, with its password in
 //! the vault.
 
@@ -31,6 +31,7 @@
     reason = "the result field is named for the thing it holds: pages, issues"
 )]
 
+pub mod forgejo;
 mod http;
 mod journal;
 pub mod landing;
@@ -55,6 +56,8 @@ pub use landing::{
 pub const OUTLINE_TYPE: &str = "outline";
 /// The account type a reviewed Linear key is kept under.
 pub const LINEAR_TYPE: &str = "linear";
+/// The account type a reviewed Forgejo token is kept under.
+pub const FORGEJO_TYPE: &str = "forgejo";
 /// Linear's own API, used when the person names no other address.
 pub const LINEAR_API: &str = "https://api.linear.app";
 
@@ -67,6 +70,7 @@ pub enum ServiceKind {
     Outline,
     Linear,
     Mail,
+    Forgejo,
 }
 
 impl ServiceKind {
@@ -75,6 +79,7 @@ impl ServiceKind {
         match self {
             Self::Outline => "outline",
             Self::Linear => "linear",
+            Self::Forgejo => "forgejo",
             Self::Mail => "mail",
         }
     }
@@ -84,6 +89,7 @@ impl ServiceKind {
         match key {
             "outline" => Some(Self::Outline),
             "linear" => Some(Self::Linear),
+            "forgejo" => Some(Self::Forgejo),
             "mail" => Some(Self::Mail),
             _ => None,
         }
@@ -94,6 +100,7 @@ impl ServiceKind {
         match account.type_id.as_str() {
             OUTLINE_TYPE => Some(Self::Outline),
             LINEAR_TYPE => Some(Self::Linear),
+            FORGEJO_TYPE => Some(Self::Forgejo),
             accounts::email::TYPE_ID if account.config.get("service_source").is_some() => {
                 Some(Self::Mail)
             }
@@ -154,12 +161,14 @@ impl From<crate::vault::VaultError> for ServiceError {
 /// it is sealed into the vault.
 pub struct ServiceAddress {
     pub kind: ServiceKind,
-    /// Outline's address; Linear's API address (its own when empty); a mail account's IMAP
-    /// host (guessed from the address when empty).
+    /// Outline's address; Linear's API address (its own when empty); the Forgejo repository,
+    /// owner or forge whose issues are reviewed; a mail account's IMAP host (guessed from the
+    /// address when empty).
     pub server: String,
-    /// The mail address; empty for Outline and Linear.
+    /// The mail address; empty for the other sources.
     pub login: String,
-    /// Outline's API key, Linear's API key, or the mail account's password.
+    /// Outline's API key, Linear's API key, a Forgejo access token, or the mail account's
+    /// password.
     pub secret: Zeroizing<String>,
 }
 
@@ -175,7 +184,8 @@ pub struct ReviewItem {
     pub facts: Vec<String>,
 }
 
-/// A group the person chooses as a whole: an Outline collection, a Linear team, a mail account.
+/// A group the person chooses as a whole: an Outline collection, a Linear team, a Forgejo
+/// repository, a mail account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewGroup {
@@ -286,7 +296,32 @@ pub fn connect(config_root: &Path, address: ServiceAddress) -> Result<AccountId,
                 &address.secret,
             )
         }
+        ServiceKind::Forgejo => {
+            let scope = forgejo::scope(&address.server)?;
+            let title = forgejo::check(&scope, &address.secret)?;
+            persist(
+                config_root,
+                FORGEJO_TYPE,
+                &format!("{}/{}", scope.server, scope.path),
+                &title,
+                serde_json::json!({ "server_url": scope.server, "scope": scope.path }),
+                &address.secret,
+            )
+        }
         ServiceKind::Mail => mail::connect(config_root, &address),
+    }
+}
+
+/// The repositories a connected Forgejo account reviews, as its config keeps them.
+fn forgejo_scope(account: &Account, server: String) -> forgejo::Scope {
+    forgejo::Scope {
+        server,
+        path: account
+            .config
+            .get("scope")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
     }
 }
 
@@ -381,6 +416,10 @@ pub fn review(config_root: &Path, account: &str) -> Result<ServiceReview, Servic
     let (title, groups) = match kind {
         ServiceKind::Outline => (stored.display_name, outline::review(&server, &key)?),
         ServiceKind::Linear => (stored.display_name, linear::review(&server, &key)?),
+        ServiceKind::Forgejo => {
+            let scope = forgejo_scope(&stored, server);
+            (stored.display_name, forgejo::review(&scope, &key)?)
+        }
         ServiceKind::Mail => mail::review(&stored),
     };
     let review = ServiceReview {
@@ -469,6 +508,16 @@ fn land(
         ServiceKind::Linear => {
             let (_, server, key) = reach(config_root, &journal.review.account)?;
             let issues = linear::issues(&server, &key, &chosen, cancel)?;
+            for issue in issues.issues {
+                landed_one(&issue.key.clone(), journal, &mut || landing.issue(&issue))?;
+            }
+            report.not_reviewed = issues.not_reviewed;
+            report.gone = issues.gone;
+        }
+        ServiceKind::Forgejo => {
+            let (account, server, key) = reach(config_root, &journal.review.account)?;
+            let scope = forgejo_scope(&account, server);
+            let issues = forgejo::issues(&scope, &key, &chosen, cancel)?;
             for issue in issues.issues {
                 landed_one(&issue.key.clone(), journal, &mut || landing.issue(&issue))?;
             }

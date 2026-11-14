@@ -11,6 +11,7 @@ use migration_sources::service::*;
 
 const OUTLINE_KEY: &str = "ol_api_secretkey";
 const LINEAR_KEY: &str = "lin_api_secretkey";
+const FORGEJO_KEY: &str = "forgejo_token_secret";
 const PASSWORD: &str = "mail-password-typed-once";
 
 /// A one-pixel PNG, as an Outline attachment answers.
@@ -442,6 +443,156 @@ fn linear_issues_land_with_state_labels_assignee_comments_links_and_source() {
     assert_eq!(issues[2]["status"], "done");
     assert_no_secret(&fixture.home, LINEAR_KEY);
     assert_no_secret(fixture.store.root(), LINEAR_KEY);
+}
+
+/// Forgejo as its API answers: `GET /api/v1/…`, `Authorization: token …`, lists paged by `page`
+/// and `limit`, a repository's issues with its pull requests left out by `type=issues`.
+fn forgejo() -> Responder {
+    Responder::handle(|request| {
+        if request.header("authorization") != Some(format!("token {FORGEJO_KEY}").as_str()) {
+            return Some(Reply::status(401));
+        }
+        let (path, query) = request
+            .target
+            .split_once('?')
+            .unwrap_or((request.target.as_str(), ""));
+        let first_page = query.contains("page=1") || !query.contains("page=");
+        let user = |login: &str, full: &str| json!({"id": 7, "login": login, "full_name": full});
+        let issue = |id: u64, number: u64, title: &str, state: &str, body: &str, extra: Value| {
+            let mut issue = json!({
+                "id": id, "number": number, "title": title, "state": state, "body": body,
+                "html_url": format!("https://forge.example/acme/app/issues/{number}"),
+                "user": user("ada", "Ada Lovelace"), "original_author": "",
+                "created_at": "2026-05-01T10:00:00Z", "updated_at": "2026-05-02T10:00:00Z",
+                "labels": [{"name": "bug"}], "assignees": [user("grace", "")],
+                "milestone": null, "comments": 0, "due_date": null,
+            });
+            for (key, value) in extra.as_object().unwrap() {
+                issue[key] = value.clone();
+            }
+            issue
+        };
+        let answer = match path {
+            "/api/v1/user" => user("ada", "Ada Lovelace"),
+            "/api/v1/repos/acme/app" => {
+                json!({"id": 40, "full_name": "acme/app", "has_issues": true})
+            }
+            "/api/v1/repos/acme/app/issues" => {
+                assert!(query.contains("type=issues") && query.contains("state=all"));
+                if first_page {
+                    json!([
+                        issue(
+                            101,
+                            1,
+                            "Crash on start",
+                            "open",
+                            "Same as #2.",
+                            json!({
+                                "comments": 1,
+                                "milestone": {"id": 5, "title": "Launch"},
+                                "due_date": "2026-12-01T00:00:00Z",
+                            })
+                        ),
+                        issue(
+                            102,
+                            2,
+                            "Old crash",
+                            "closed",
+                            "",
+                            json!({
+                                "original_author": "someone-from-github",
+                            })
+                        ),
+                    ])
+                } else {
+                    json!([])
+                }
+            }
+            "/api/v1/repos/acme/app/issues/1/comments" if first_page => json!([{
+                "id": 900, "body": "I see it too", "user": user("grace", "Grace Hopper"),
+                "original_author": "", "created_at": "2026-05-03T10:00:00Z",
+                "updated_at": "2026-05-03T10:00:00Z",
+                "html_url": "https://forge.example/acme/app/issues/1#issuecomment-900",
+            }]),
+            "/api/v1/repos/acme/app/issues/2/blocks" if first_page => json!([{
+                "id": 101, "number": 1, "repository": {"full_name": "acme/app"},
+            }]),
+            path if path.ends_with("/blocks")
+                || path.ends_with("/dependencies")
+                || path.ends_with("/comments") =>
+            {
+                json!([])
+            }
+            _ => return Some(Reply::status(404)),
+        };
+        json_reply(&answer)
+    })
+}
+
+#[test]
+fn forgejo_issues_land_with_their_authors_comments_labels_milestone_and_links() {
+    let server = forgejo();
+    let fixture = fixture();
+    let account = connect(
+        &fixture.config,
+        ServiceAddress {
+            kind: ServiceKind::Forgejo,
+            server: format!("{}/acme/app", server.url()),
+            login: String::new(),
+            secret: Zeroizing::new(FORGEJO_KEY.into()),
+        },
+    )
+    .unwrap();
+    let reviewed = review(&fixture.config, account.as_str()).unwrap();
+    assert_eq!(reviewed.groups.len(), 1);
+    assert_eq!(reviewed.groups[0].title, "acme/app");
+    assert_eq!(reviewed.groups[0].items[0].facts, ["app#1", "open"]);
+
+    let mut journal = ServiceJournal::new(reviewed);
+    let report = run_saved(&fixture, &mut journal, &AtomicBool::new(false)).unwrap();
+    assert_eq!((report.landed, report.already_there), (2, 0));
+    let again = run_saved(&fixture, &mut journal, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        (again.landed, again.already_there),
+        (0, 2),
+        "nothing lands twice"
+    );
+
+    let inbox = InboxLanding::new(&fixture.home).inbox("so.tilo.tasks", "issues");
+    let issues = read_inbox(&inbox);
+    let first = issues
+        .iter()
+        .find(|issue| issue["identifier"] == "app#1")
+        .unwrap();
+    assert_eq!(first["source"], "forgejo");
+    assert_eq!(first["status"], "todo");
+    assert_eq!(first["author"]["name"], "Ada Lovelace");
+    assert_eq!(first["author"]["handle"], "ada");
+    assert_eq!(first["created_at"], "2026-05-01T10:00:00Z");
+    assert_eq!(first["assignee"], "outside:grace");
+    assert_eq!(first["labels"], json!(["bug"]));
+    assert_eq!(first["project"]["name"], "Launch");
+    assert_eq!(first["team"]["name"], "acme/app");
+    assert_eq!(first["due"], "2026-12-01");
+    assert_eq!(first["comments"][0]["author"], "Grace Hopper");
+    assert_eq!(first["comments"][0]["handle"], "grace");
+    assert_eq!(
+        first["links"],
+        json!(["https://forge.example/acme/app/issues/2"]),
+        "#2 in its body names the other issue"
+    );
+    let second = issues
+        .iter()
+        .find(|issue| issue["identifier"] == "app#2")
+        .unwrap();
+    assert_eq!(second["status"], "done");
+    assert_eq!(second["author"]["name"], "someone-from-github");
+    assert_eq!(
+        second["relations"],
+        json!([{"kind": "blocks", "page": "https://forge.example/acme/app/issues/1"}])
+    );
+    assert_no_secret(&fixture.home, FORGEJO_KEY);
+    assert_no_secret(fixture.store.root(), FORGEJO_KEY);
 }
 
 #[test]

@@ -3,7 +3,7 @@
 //!
 //! The sources, and what each one reads, are the Tilo OS installer's migration assistant's
 //! ([`migration_sources`]): each Thunderbird account's mail, the address books and calendars,
-//! and Outline and Linear. Each step is a command of its own, so an agent can show the person what a
+//! and Outline, Linear and Forgejo. Each step is a command of its own, so an agent can show the person what a
 //! source holds before anything moves:
 //!
 //! ```text
@@ -43,15 +43,16 @@ use workspace::{Run, Workspace};
 
 #[derive(Subcommand)]
 pub enum MigrateCmd {
-    /// What can come over: Thunderbird on this computer, Outline, Linear and a mail account on
-    /// its server.
+    /// What can come over: Thunderbird on this computer, Outline, Linear, Forgejo and a mail
+    /// account on its server.
     Sources,
-    /// Connect Outline, Linear or a mail account (IMAP). Its key or password is typed at a hidden
+    /// Connect Outline, Linear, Forgejo or a mail account (IMAP). Its key or password is typed at a hidden
     /// prompt (or read from --key-file) and kept in this computer's vault; it is never printed.
     Connect {
-        /// outline, linear or mail.
+        /// outline, linear, forgejo or mail.
         service: String,
-        /// The service's address (Outline's site; Linear's API when not its own).
+        /// The service's address (Outline's site; Linear's API when not its own; the Forgejo
+        /// repository or owner whose issues come over).
         #[arg(long)]
         url: Option<String>,
         /// A mail account's address (`tilo migrate connect mail --login you@example.com`).
@@ -63,7 +64,7 @@ pub enum MigrateCmd {
     },
     /// List what a source holds, with counts, and keep the review for `choose` and `start`.
     Review {
-        /// thunderbird, outline, linear or mail.
+        /// thunderbird, outline, linear, forgejo or mail.
         source: String,
         /// The Thunderbird profile, when this computer has several.
         #[arg(long)]
@@ -71,10 +72,10 @@ pub enum MigrateCmd {
     },
     /// Choose what of a reviewed source comes over (or, with --leave-out, what stays).
     Choose {
-        /// thunderbird, outline, linear or mail.
+        /// thunderbird, outline, linear, forgejo or mail.
         source: String,
         /// Items by the key the review lists: an account's address, a folder, `contacts/…`,
-        /// `calendar/…`, an Outline collection, a Linear team.
+        /// `calendar/…`, an Outline collection, a Linear team, a Forgejo repository.
         #[arg(required = true)]
         items: Vec<String>,
         /// Leave these out instead.
@@ -86,7 +87,7 @@ pub enum MigrateCmd {
     },
     /// Bring the chosen things over, as one run in the workspace; resumes a stopped run.
     Start {
-        /// thunderbird, outline, linear or mail.
+        /// thunderbird, outline, linear, forgejo or mail.
         source: String,
     },
     /// How each source's migration stands.
@@ -96,7 +97,7 @@ pub enum MigrateCmd {
     },
     /// Stop a running migration after the item it is on; `start` resumes it.
     Stop {
-        /// thunderbird, outline, linear or mail.
+        /// thunderbird, outline, linear, forgejo or mail.
         source: String,
     },
     /// Take a run back: everything it brought leaves the workspace, as undoing its History
@@ -194,9 +195,13 @@ fn home() -> Result<PathBuf> {
 fn source_name(source: &str) -> Result<String> {
     let source = source.trim().to_ascii_lowercase();
     match source.as_str() {
-        thunderbird::SOURCE | services::OUTLINE | services::LINEAR | services::MAIL => Ok(source),
+        thunderbird::SOURCE
+        | services::OUTLINE
+        | services::LINEAR
+        | services::FORGEJO
+        | services::MAIL => Ok(source),
         other => bail!(
-            "{other:?} is not a source; the sources are thunderbird, outline, linear and mail (`tilo migrate sources`)"
+            "{other:?} is not a source; the sources are thunderbird, outline, linear, forgejo and mail (`tilo migrate sources`)"
         ),
     }
 }
@@ -363,7 +368,7 @@ fn records_of(source: &str) -> &'static [&'static str] {
             "calendar/calendar.calendar",
         ],
         services::OUTLINE => &["notes/notes.notebook"],
-        services::LINEAR => &["tasks/tasks.tracker"],
+        services::LINEAR | services::FORGEJO => &["tasks/tasks.tracker"],
         _ => &[],
     }
 }

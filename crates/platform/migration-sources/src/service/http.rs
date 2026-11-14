@@ -17,6 +17,8 @@ pub enum Key {
     Bearer,
     /// `Authorization: <key>`: Linear's personal API keys.
     Raw,
+    /// `Authorization: token <key>`: Forgejo's access tokens.
+    Token,
 }
 
 /// `server` as a base address: http(s), no credentials, query or fragment, no trailing slash.
@@ -50,7 +52,37 @@ fn authorized(
     match how {
         Key::Bearer => request.bearer_auth(key),
         Key::Raw => request.header("authorization", key),
+        Key::Token => request.header("authorization", format!("token {key}")),
     }
+}
+
+/// `GET url`, the answer as JSON; `None` when the service has no such thing (404).
+pub fn get_json(url: &str, key: &str, how: Key) -> Result<Option<serde_json::Value>, ServiceError> {
+    let request = client()?.get(url).header("accept", "application/json");
+    let response = authorized(request, key, how)
+        .send()
+        .map_err(|error| ServiceError::Unavailable(without_url(&error)))?;
+    let status = response.status().as_u16();
+    if matches!(status, 401 | 403) {
+        return Err(ServiceError::Refused);
+    }
+    if status == 404 {
+        return Ok(None);
+    }
+    if !(200..300).contains(&status) {
+        return Err(ServiceError::Unavailable(format!(
+            "{} answered {status}",
+            without_query(url)
+        )));
+    }
+    let bytes = bounded(response, MAX_ANSWER_BYTES)?;
+    serde_json::from_slice(&bytes).map(Some).map_err(|_| {
+        ServiceError::Unavailable(format!("{} answered something else", without_query(url)))
+    })
+}
+
+fn without_query(url: &str) -> &str {
+    url.split_once('?').map_or(url, |(path, _)| path)
 }
 
 /// `POST url` with `body` as JSON, the answer as JSON.

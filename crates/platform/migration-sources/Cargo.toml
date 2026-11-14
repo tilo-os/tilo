@@ -1,7 +1,7 @@
 [package]
 name = "migration-sources"
 version = "0.1.0"
-description = "Reading another computer's Outline, Linear and mail accounts and its Thunderbird profiles, for the installer and for a laptop CLI"
+description = "Reading another computer's Outline, Linear, Forgejo and mail accounts and its Thunderbird profiles, for the installer and for a laptop CLI"
 edition = "2024"
 publish = false
 license.workspace = true

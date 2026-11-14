@@ -269,6 +269,7 @@ fn origin(
     let created_ms = millis(created);
     let source = match text(entry, "source") {
         "linear" => "Linear",
+        "forgejo" => "Forgejo",
         other => other,
     };
     let kept = |text: &str| (!text.trim().is_empty()).then(|| text.trim().to_owned());

@@ -419,6 +419,11 @@ impl Services {
                         Command::Open(ServiceKind::Linear),
                     )))
                     .push(Box::new(self.button(
+                        "import.services.forgejo",
+                        &t("imager-services-forgejo"),
+                        Command::Open(ServiceKind::Forgejo),
+                    )))
+                    .push(Box::new(self.button(
                         "import.services.mail",
                         &t("imager-services-mail"),
                         Command::Open(ServiceKind::Mail),
@@ -473,19 +478,27 @@ impl Services {
         };
         let mut form = Column::new().with_rhythm(ui::tokens::Rhythm::Related);
         match kind {
-            ServiceKind::Outline => {
+            ServiceKind::Outline | ServiceKind::Forgejo => {
+                let (address, key) = if kind == ServiceKind::Forgejo {
+                    (
+                        "imager-services-forgejo-address",
+                        "imager-services-access-token",
+                    )
+                } else {
+                    ("imager-services-outline-address", "imager-services-api-key")
+                };
                 form = form
                     .push(Box::new(field(
                         0,
                         "server",
-                        "imager-services-outline-address",
+                        address,
                         TextInputKind::Url,
                         false,
                     )))
                     .push(Box::new(field(
                         2,
                         "secret",
-                        "imager-services-api-key",
+                        key,
                         TextInputKind::Secret,
                         true,
                     )));
@@ -675,7 +688,7 @@ pub(super) enum Step {
 fn icon(kind: ServiceKind) -> Icon {
     match kind {
         ServiceKind::Outline => Icon::FileText,
-        ServiceKind::Linear => Icon::ListChecks,
+        ServiceKind::Linear | ServiceKind::Forgejo => Icon::ListChecks,
         ServiceKind::Mail => Icon::Mail,
     }
 }

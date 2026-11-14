@@ -1,12 +1,12 @@
-//! Outline and Linear as migration sources, through the installer's own service sources
+//! Outline, Linear and Forgejo as migration sources, through the installer's own service sources
 //! ([`migration_sources::service`]): the same connection check, review, journal and resume.
 //!
 //! Their keys are typed by the person and kept in this computer's account vault; the review,
 //! the journal and every request to the service happen here. What comes over lands as the
 //! agent's run: an Outline document becomes a Notes page (`import-markdown`, under the id its
-//! source decides, then `move-note` under its parent), an issue from Linear one in Tasks (`create`
-//! in the project or area its project or team in Linear became, then `comment`, `move-under` and
-//! `link` for the issues it relates to). Each keeps its origin: who wrote it on the service, when,
+//! source decides, then `move-note` under its parent), an issue from Linear or Forgejo one in
+//! Tasks (`create` in the project or area its project or team, milestone or repository there
+//! became, then `comment`, `move-under` and `link` for the issues it relates to). Each keeps its origin: who wrote it on the service, when,
 //! its page there and the name the service gave it (`ENG-12`), so a person sees the original
 //! author and date while History says who moved it.
 
@@ -27,6 +27,7 @@ use super::state::{Item, Place, Review};
 
 pub const OUTLINE: &str = "outline";
 pub const LINEAR: &str = "linear";
+pub const FORGEJO: &str = "forgejo";
 /// A mail account on its server (IMAP), which joins the person's accounts with its password;
 /// Mail then fetches its mail itself.
 pub const MAIL: &str = "mail";
@@ -92,6 +93,11 @@ pub fn connect(
     if kind == ServiceKind::Outline && server.is_empty() {
         bail!("Outline is reached at its own address: --url https://your-team.getoutline.com");
     }
+    if kind == ServiceKind::Forgejo && server.is_empty() {
+        bail!(
+            "Forgejo is reached at the repository (or owner) whose issues come over: --url https://forge.example/owner/repo"
+        );
+    }
     let login = login.unwrap_or_default().trim().to_owned();
     if kind == ServiceKind::Mail && login.is_empty() {
         bail!("a mail account is named by its address: --login you@example.com");
@@ -99,6 +105,7 @@ pub fn connect(
     let what = match kind {
         ServiceKind::Outline => "Outline API key".to_owned(),
         ServiceKind::Linear => "Linear API key".to_owned(),
+        ServiceKind::Forgejo => "Forgejo access token".to_owned(),
         ServiceKind::Mail => format!("Password of {login}"),
     };
     let secret = super::secret(&format!("{what} (it is not shown): "), key_file)?;
@@ -144,6 +151,7 @@ pub fn sources() -> Vec<Value> {
     for (kind, url) in [
         (OUTLINE, " --url https://…"),
         (LINEAR, ""),
+        (FORGEJO, " --url https://…/owner/repo"),
         (MAIL, " --login you@example.com"),
     ] {
         if !found.iter().any(|source| source["source"] == kind) {
@@ -239,6 +247,7 @@ fn of(source: &str, review: &ServiceReview) -> Review {
     let (kind, counts) = match review.kind {
         ServiceKind::Outline => ("collection", "documents"),
         ServiceKind::Linear => ("team", "issues"),
+        ServiceKind::Forgejo => ("repository", "issues"),
         ServiceKind::Mail => ("mail-account", "accounts"),
     };
     Review {
@@ -287,6 +296,7 @@ pub fn summary(review: &Review) -> String {
     let source = match review.source.as_str() {
         OUTLINE => "Outline",
         MAIL => "mail",
+        FORGEJO => "Forgejo",
         _ => "Linear",
     };
     let titles = chosen
@@ -397,7 +407,8 @@ pub struct Kept {
     /// The run that brought each issue, by its page.
     #[serde(default)]
     pub issue_runs: BTreeMap<String, String>,
-    /// The project or area each project and team in Linear became, by its key.
+    /// The project or area each project and team (or milestone and repository) became, by its
+    /// key.
     #[serde(default)]
     pub areas: BTreeMap<String, KeptArea>,
     /// Links made, as `from-page\u{0}to-page`.
@@ -409,7 +420,7 @@ pub struct Kept {
     pub waiting: BTreeMap<String, Vec<(String, String)>>,
 }
 
-/// A project or area a run made for a Linear team or project.
+/// A project or area a run made for a team, project, repository or milestone.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct KeptArea {
     pub id: String,
@@ -466,14 +477,15 @@ impl Landing<'_, '_> {
     }
 
     /// The project or area `group` became, made now if no run made it yet: a project in Linear
-    /// becomes a project, a team an area, each named as Linear names it.
-    fn area(&mut self, group: &IncomingGroup, kind: &str) -> Result<String> {
+    /// (a milestone in Forgejo) becomes a project, a team (a repository) an area, each named as
+    /// the service names it.
+    fn area(&mut self, group: &IncomingGroup, kind: &str, service: &str) -> Result<String> {
         let key = format!("{kind}:{}", group.key);
         if let Some(area) = self.kept.areas.get(&key) {
             return Ok(area.id.clone());
         }
         let name = if group.name.trim().is_empty() {
-            "Linear"
+            service
         } else {
             group.name.trim()
         };
@@ -607,7 +619,7 @@ impl Landing<'_, '_> {
             };
             let origin = origin_of(
                 author.as_ref(),
-                "Linear",
+                service_name(&issue.source),
                 url,
                 None,
                 &comment.at,
@@ -624,9 +636,10 @@ impl Landing<'_, '_> {
 
     fn land_issue(&mut self, issue: &IncomingIssue) -> Result<()> {
         // A project in Linear stays a project; an issue in none works towards its team's area.
+        let service = service_name(&issue.source);
         let project = match (&issue.project, &issue.team) {
-            (Some(project), _) => Some(self.area(project, "project")?),
-            (None, Some(team)) => Some(self.area(team, "area")?),
+            (Some(project), _) => Some(self.area(project, "project", service)?),
+            (None, Some(team)) => Some(self.area(team, "area", service)?),
             (None, None) => None,
         };
         if let Some(id) = self.kept.issues.get(&issue.url).cloned() {
@@ -639,7 +652,7 @@ impl Landing<'_, '_> {
         }
         let origin = origin_of(
             issue.author.as_ref(),
-            "Linear",
+            service,
             &issue.url,
             Some(&issue.identifier),
             &issue.created_at,
@@ -714,6 +727,14 @@ impl Landing<'_, '_> {
     }
 }
 
+/// How the service an issue came from names itself to people.
+fn service_name(source: &str) -> &'static str {
+    match source {
+        FORGEJO => "Forgejo",
+        _ => "Linear",
+    }
+}
+
 /// How a relation reads before the other issue's name.
 fn relation_words(kind: &str) -> &'static str {
     match kind {
@@ -725,10 +746,17 @@ fn relation_words(kind: &str) -> &'static str {
     }
 }
 
-/// The name an issue's page on Linear gives it: `ENG-12` of `…/issue/ENG-12/slug`.
+/// The name an issue's page gives it: `ENG-12` of Linear's `…/issue/ENG-12/slug`, `app#12` of
+/// Forgejo's `…/acme/app/issues/12`.
 fn reference_of(page: &str) -> String {
     let mut parts = page.trim_end_matches('/').rsplit('/');
     let last = parts.next().unwrap_or_default();
+    if !last.is_empty() && last.chars().all(|c| c.is_ascii_digit()) {
+        let mut before = page.trim_end_matches('/').rsplit('/').skip(1);
+        if let (Some("issues"), Some(repository)) = (before.next(), before.next()) {
+            return format!("{repository}#{last}");
+        }
+    }
     let named = |part: &str| {
         part.split_once('-').is_some_and(|(team, number)| {
             !team.is_empty()
@@ -875,6 +903,11 @@ mod tests {
             reference_of("https://linear.example/acme/issue/ENG-12"),
             "ENG-12"
         );
+        assert_eq!(
+            reference_of("https://forge.example/acme/app/issues/12"),
+            "app#12"
+        );
+        assert_eq!(service_name(FORGEJO), "Forgejo");
     }
 
     #[test]
