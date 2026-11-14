@@ -1483,7 +1483,7 @@ mod tests {
             delegation: Some(Ok(vec![1, 2, 3])),
             ..runs.runs("w1").unwrap().remove(0)
         };
-        let going = runs.doors().open("w1", door.clone());
+        let going = runs.doors().open("w1", door.clone(), false);
         let listed = runs.runs("w1").unwrap();
         assert_eq!(listed.len(), 2, "the turn and the door's run: {listed:?}");
         assert!(listed.contains(&door));

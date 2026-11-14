@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@7656a83c6a7e67b1";
+export const SURFACE = "so.tilo.settings@432b4ab0ef8cfa2c";
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
@@ -898,7 +898,11 @@ export function networkUsage(ws: tilo.Workspace, path: string): NetworkUsage {
 /** Agents from your other devices — `settings.agent-door`. */
 export interface AgentDoor extends tilo.Resource {
   readonly accept_own_devices: boolean;
+  readonly act_without_asking: boolean;
   setAcceptOwnDevices(args: {
+    on: boolean;
+  }): Promise<tilo.Run | void>;
+  setActWithoutAsking(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
 }

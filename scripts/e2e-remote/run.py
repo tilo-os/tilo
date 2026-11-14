@@ -16,10 +16,13 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
 3. A's own door lists B as reachable (`tilo_devices`).
 4. With B's "Accept agents from my other devices" off and nobody at B, the agent is not
    admitted; the person approving B's sheet admits it; their Stop on B ends A's connection.
-5. With the setting on (turned on through its own action), the agent works on B without a
+5. With the setting on (turned on through its own action), the agent is let in on B without a
    question: it lists B's apps, opens Notes and makes a note there, attributed on B to
-   `claude-code@<A>-<id>`.
-6. C, another person's device, is refused at B's door.
+   `claude-code@<A>-<id>`. Its step `notes#open` is still put to B's person on the run's sheet,
+   who allows it once.
+6. With B's second setting "Let them act without asking" on as well, the same work goes through
+   with no sheet ever up on B.
+7. C, another person's device, is refused at B's door.
 
 Every step is a result in report.json / report.md under --out; any failure fails the run.
 """
@@ -351,11 +354,32 @@ class Run:
             time.sleep(0.5)
 
     def set_accept(self, box: Box, on: bool) -> dict:
-        row = self.find_row(box, "set-accept-own-devices", "agents") \
-            or self.find_row(box, "set-accept-own-devices")
+        return self.set_agent_door(box, "set-accept-own-devices", on)
+
+    def set_unasked(self, box: Box, on: bool) -> dict:
+        """B's second agent door setting, "Let them act without asking"."""
+        return self.set_agent_door(box, "set-act-without-asking", on)
+
+    def set_agent_door(self, box: Box, verb: str, on: bool) -> dict:
+        row = self.find_row(box, verb, "agents") or self.find_row(box, verb)
         if row is None:
-            raise Failed(f"{box.name} lists no set-accept-own-devices action")
+            raise Failed(f"{box.name} lists no {verb} action")
         return box.vm.invoke(row["provider"], row["id"], {"on": on})
+
+    def allow_step_once(self, box: Box, res: Result) -> None:
+        """The person at `box` allows the step a run asks about once: the run's sheet has its
+        "Allow once" as a button of its own (crates/session/session/src/questions.rs,
+        `run_question`)."""
+        targets = self.targets(box)
+        self.write(f"targets-{box.letter}-step-{int(time.time())}.json", targets)
+        res.facts.setdefault("step_sheets", []).append(
+            [t.get("name") for t in targets if "llow" in str(t.get("name"))])
+        try:
+            box.vm.raw({"op": "click_named", "name": ALLOW_ONCE})
+        except VmError as exc:
+            # The sheet went down between seeing it and the click: nothing is left to allow.
+            res.facts.setdefault("step_sheet_gone", []).append(str(exc)[:200])
+        time.sleep(0.5)
 
     def stop_agent(self, box: Box, agent: str) -> dict:
         row = self.find_row(box, "stop-agent", "stop")
@@ -394,8 +418,11 @@ class Run:
                       lambda res: self.unanswered(a, b, res, facts), "E05")
             self.step("E07", "Approving B's sheet admits it; B's Stop ends A's connection",
                       lambda res: self.approve_and_stop(a, b, res, facts), "E05")
-            self.step("E08", "With B's setting on, the agent works on B unasked, attributed to A",
+            self.step("E08", "With B's setting on, the agent is let in unasked, attributed to A; "
+                      "its notes#open is asked about",
                       lambda res: self.work(a, b, res, facts), "E05")
+            self.step("E08b", "With B's second setting on too, the agent's steps go unasked",
+                      lambda res: self.work_unasked(a, b, res, facts), "E05")
             self.step("E09", "A device of another person is refused at B's door",
                       lambda res: self.stranger(b, c, res), "E03")
         finally:
@@ -613,12 +640,11 @@ class Run:
             raise Failed(f"B still seats the agent after its Stop: {self.seated(b)}")
 
     def work(self, a: Box, b: Box, res: Result, facts: dict) -> None:
-        # What E07's agent asked after B's Stop is withdrawn once it is gone: no sheet stands on B
-        # before this agent comes, so a sheet afterwards is this agent's.
-        if wait_until(lambda: not self.sheet_targets(b), 60, 1.0) is None:
-            names = [t.get("name") for t in self.targets(b)]
-            raise Failed(f"a question about an agent that left still stands on B's desk: {names}")
+        """Only the first setting on: the agent is let in unasked, but its `notes#open` is put to
+        B's person, who allows it once; every later step it asks about is allowed once too."""
+        self.no_sheet_before(b)
         res.facts["setting"] = self.set_accept(b, True)
+        res.facts["unasked"] = self.set_unasked(b, False)
         ready, go = f"$HOME/{GUEST_DIR}/work-ready", f"$HOME/{GUEST_DIR}/work-go"
         a.vm.exec(f'rm -f "{ready}" "{go}"')
         title = f"From A {int(time.time())}"
@@ -626,17 +652,83 @@ class Run:
                                            E2E_TITLE=title, E2E_WAIT_S="60")
         seated = wait_until(lambda: [s for s in self.seated(b) if s.get("seat")], 90, 1.0)
         res.facts["seated"] = seated
-        if self.sheet_targets(b):
+        if not seated:
             names = [t.get("name") for t in self.targets(b)]
-            raise Failed("B asked its person although its setting lets the person's devices in; "
+            raise Failed("B seats no agent although its setting lets the person's devices in; "
                          f"its screen names {names}")
-        wait_until(lambda: "yes" in a.vm.exec(f'test -e "{ready}" && echo yes || echo no'), 120, 1.0)
+        # Its first step that asks is `notes#open`: the sheet goes up while the agent waits on it,
+        # before it got as far as saying it is ready.
+        asked = wait_until(lambda: self.sheet_targets(b), 50, 0.5)
+        res.facts["asked"] = bool(asked)
+        if not asked:
+            raise Failed("B never asked its person about the agent's notes#open")
+        if "yes" in a.vm.exec(f'test -e "{ready}" && echo yes || echo no'):
+            raise Failed("the agent went on past notes#open while B's person was being asked")
+        self.allow_step_once(b, res)
+        if not wait_until(lambda: "yes" in a.vm.exec(f'test -e "{ready}" && echo yes || echo no'),
+                          120, 1.0):
+            raise Failed("the agent never got past notes#open after B's person allowed it")
         a.vm.exec(f'touch "{go}"')
+        # Whatever else it asks about (making the note) the person allows once, until it is done.
+        while thread.is_alive():
+            if self.sheet_targets(b):
+                self.allow_step_once(b, res)
+            thread.join(1.0)
         t = self.finish(thread, holder)
+        self.check_work(a, b, res, t, seated, title)
+
+    def work_unasked(self, a: Box, b: Box, res: Result, facts: dict) -> None:
+        """Both settings on: the agent's whole work goes through with no sheet ever up on B."""
+        self.no_sheet_before(b)
+        if wait_until(lambda: not [s for s in self.seated(b) if s.get("seat")], 60, 1.0) is None:
+            raise Failed(f"E08's agent is still seated on B: {self.seated(b)}")
+        res.facts["setting"] = self.set_accept(b, True)
+        res.facts["unasked"] = self.set_unasked(b, True)
+        ready, go = f"$HOME/{GUEST_DIR}/work-ready", f"$HOME/{GUEST_DIR}/work-go"
+        a.vm.exec(f'rm -f "{ready}" "{go}"')
+        title = f"From A unasked {int(time.time())}"
+        thread, holder = self.agent_beside(a, "work", facts["command"], E2E_READY=ready, E2E_GO=go,
+                                           E2E_TITLE=title, E2E_WAIT_S="60")
+        seated = wait_until(lambda: [s for s in self.seated(b) if s.get("seat")], 90, 1.0)
+        res.facts["seated"] = seated
+        sheets: list = []
+
+        def watch() -> None:
+            if self.sheet_targets(b):
+                sheets.append([t.get("name") for t in self.targets(b)])
+
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and \
+                "yes" not in a.vm.exec(f'test -e "{ready}" && echo yes || echo no'):
+            watch()
+            if not thread.is_alive():
+                break
+            time.sleep(0.5)
+        a.vm.exec(f'touch "{go}"')
+        while thread.is_alive():
+            watch()
+            thread.join(0.5)
+        res.facts["sheets"] = sheets
+        if sheets:
+            raise Failed(f"B asked its person although both its settings are on; its screen named {sheets[0]}")
+        t = self.finish(thread, holder)
+        self.check_work(a, b, res, t, seated, title)
+
+    def no_sheet_before(self, b: Box) -> None:
+        # What an earlier agent asked is withdrawn once it is gone: no sheet stands on B before
+        # this agent comes, so a sheet afterwards is this agent's.
+        if wait_until(lambda: not self.sheet_targets(b), 60, 1.0) is None:
+            names = [t.get("name") for t in self.targets(b)]
+            raise Failed(f"a question about an agent that left still stands on B's desk: {names}")
+
+    def check_work(self, a: Box, b: Box, res: Result, t: dict, seated: list, title: str) -> None:
         for key in ("initialize", "devices", "apps", "open_notes", "new_note", "found_note"):
             res.facts[key] = t.get(key) if key == "initialize" else text_of(t.get(key)) or t.get(key)
         if not (isinstance(t.get("initialize"), dict) and "result" in t["initialize"]):
             raise Failed(f"the agent was not admitted on B: {t.get('initialize')}")
+        opened = t.get("open_notes")
+        if not (isinstance(opened, dict) and (opened.get("result") or {}).get("isError") is False):
+            raise Failed(f"the agent's notes#open did not go through on B: {opened}")
         if not seated:
             raise Failed("B seats no agent")
         agent = seated[0]["key"]

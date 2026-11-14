@@ -58,6 +58,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DeviceMeshArea> {
 const DEFAULT_CONFIG: &str = "/etc/tilo/relay.toml";
 const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
 const AGENTS_ACCEPT_KEY: &str = "device_mesh.agents.accept_own_devices";
+const AGENTS_ACT_KEY: &str = "device_mesh.agents.act_without_asking";
 const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
 const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-relay-admin";
 
@@ -1428,21 +1429,44 @@ impl Page<'_> {
     }
 
     fn agents_group(&self) -> Option<Element> {
-        let door = self.cx.settings::<crate::prefs::AgentDoorDevice>();
+        use crate::prefs::AgentDoorDevice;
+        let door = self.cx.settings::<AgentDoorDevice>();
         self.cx.record(&door, |cx| {
-            section(
-                &t("mesh-agents-title"),
-                rows(vec![
-                    cx.setting(t("mesh-agents-accept"))
-                        .described(t("mesh-agents-accept-desc"))
-                        .id(AGENTS_ACCEPT_KEY)
+            // Letting their steps go unasked is for agents let in at all: the row under the first
+            // waits for it to be on.
+            cx.switch(
+                &cx.value(|door: &AgentDoorDevice| door.accept_own_devices),
+                |cx, accepting| {
+                    let act = cx
+                        .setting(t("mesh-agents-act"))
+                        .described(t(if *accepting {
+                            "mesh-agents-act-desc"
+                        } else {
+                            "mesh-agents-act-needs-accept"
+                        }))
+                        .id(AGENTS_ACT_KEY)
+                        .nested()
+                        .enabled(*accepting)
                         .toggle_verb(
-                            |door: &crate::prefs::AgentDoorDevice| door.accept_own_devices,
-                            crate::prefs::AgentDoorDevice::SET_ACCEPT_OWN_DEVICES,
-                        ),
-                ]),
+                            |door: &AgentDoorDevice| door.act_without_asking,
+                            AgentDoorDevice::SET_ACT_WITHOUT_ASKING,
+                        );
+                    section(
+                        &t("mesh-agents-title"),
+                        rows(vec![
+                            cx.setting(t("mesh-agents-accept"))
+                                .described(t("mesh-agents-accept-desc"))
+                                .id(AGENTS_ACCEPT_KEY)
+                                .toggle_verb(
+                                    |door: &AgentDoorDevice| door.accept_own_devices,
+                                    AgentDoorDevice::SET_ACCEPT_OWN_DEVICES,
+                                ),
+                            act,
+                        ]),
+                    )
+                    .into_element()
+                },
             )
-            .into_element()
         })
     }
 

@@ -3,6 +3,7 @@ settings-accessibility = Bedienungshilfen
 settings-accessibility-device = Bedienungshilfen auf diesem Gerät
 settings-agent-door = Agenten von deinen anderen Geräten
 settings-agent-door-set-accept-own-devices = Agenten von meinen anderen Geräten annehmen
+settings-agent-door-set-act-without-asking = Ohne Rückfrage handeln lassen
 settings-continuity = Continuity
 settings-continuity-allow-continuity = Continuity erlauben
 settings-continuity-allow-capability = Eine Art von Continuity erlauben

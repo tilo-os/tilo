@@ -5,7 +5,9 @@
 //! sheet as a program of this login — named after the device it came from —
 //! unless the person let agents from their other devices in on this device.
 //! Nobody answering admits nothing, the agent leaving withdraws the question,
-//! and the person's Stop on its seat ends its connection.
+//! and the person's Stop on its seat ends its connection. Once in, a step its
+//! run asks about is put to the person on the same sheet, unless they let such
+//! agents act without asking on this device too.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -702,6 +704,7 @@ fn dial_in(
 }
 
 /// The agent's next answer, the session running while it waits.
+#[track_caller]
 fn answer(session: &mut Session, agent: &Agent) -> Value {
     crate::common::wait_for(session, "the agent's answer", |_| {
         agent.answers.try_recv().ok()
@@ -941,4 +944,537 @@ fn query(what: &impl serde::Serialize) -> serde_json::Map<String, serde_json::Va
         .as_object()
         .cloned()
         .expect("an argument object")
+}
+
+/// The app the agent's steps are taken in: Notes, as it publishes its notebook.
+const NOTES_APP: &str = "so.tilo.notes";
+
+/// The record of the person's Notes keeps in their own workspace, by its kind.
+const NOTEBOOK: &str = "notes.notebook";
+
+/// Notes' surface, as its package names it: the person's notebook, and `open`, which reaches
+/// outside it.
+const NOTES_SURFACE: &[u8] = b"format = 2\n\n[[resources]]\nkind = \"notes.notebook\"\nlabel = \"Notebook\"\nversion = 1\nperson = true\n\n[[resources.verbs]]\nid = \"open\"\nkind = \"outside\"\n";
+
+/// What the run's question to the person is read as on the sheet.
+const RUN_QUESTION: &str = "session.run-question";
+
+/// Another device of the person's computer's: a laptop their root certified, which their own store
+/// on this computer lists.
+fn laptop_of(computer: &ThisComputer) -> (SigningKey, DeviceCert) {
+    let key = SigningKey::from_bytes(&[0x55; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: computer.cert.user_public_key,
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "Studio laptop".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    cert.signature = computer
+        .root
+        .sign(&tilo_user_identity::device_cert_signing_digest(&cert).expect("the cert's digest"))
+        .expect("the person's root certifies the laptop");
+    tilo_user_identity::verify_device_cert(&cert).expect("a certified laptop");
+    (key, cert)
+}
+
+/// This computer's desk with Notes running in the workspace it holds, and the door toward the
+/// person's other devices answered on its endpoint: the session, the questions it puts to the
+/// person, what the app took, and the laptop the agent runs on.
+struct DeskWithNotes {
+    session: Session,
+    questions: Questions,
+    /// Each invocation Notes was handed, as it took it.
+    taken: mpsc::Receiver<runtime_collab::Invocation>,
+    laptop: (SigningKey, DeviceCert),
+    runtime: tokio::runtime::Runtime,
+    this_box: Endpoint,
+    /// The door of this login's own programs.
+    socket: std::path::PathBuf,
+    _router: Router,
+    _root: tempfile::TempDir,
+    /// Its identity and state, which the session reads while it runs; dropped last.
+    computer: ThisComputer,
+}
+
+impl DeskWithNotes {
+    fn start() -> Self {
+        let computer = ThisComputer::new();
+        // Notes' package names its surface, as the launcher does for an app it starts.
+        ui::app_surface::register_package(NOTES_APP, NOTES_SURFACE);
+        let seated = hex::encode(computer.cert.user_public_key);
+        let root = private_home();
+        let questions = Questions::new();
+        let plane = root.path().join("plane.sock");
+        let socket = root.path().join("agent.sock");
+        // Notes speaks from this test's own process, so the launch the session would have recorded
+        // for it names that process.
+        let launches = Arc::new(tilo_session::Launches::default());
+        launches.started(std::process::id(), NOTES_APP, &computer.workspace, true);
+        let mut session = crate::common::headless(Options {
+            person: seated.clone(),
+            collab: true,
+            state: Some(computer.state.path().to_path_buf()),
+            questions: Some(questions.clone()),
+            action_plane: ActionPlane::At(plane.clone()),
+            agent_door: Some(socket.clone()),
+            launches,
+            // The person's settings, as the session serves them: what they set this computer's
+            // agent door with.
+            services: vec![Box::new(tilo_settings_service::SettingsService::new())],
+            ..Options::default()
+        });
+        session
+            .handle()
+            .replace_tree(desk(&computer.workspace, &seated));
+        crate::common::until(
+            &mut session,
+            "the workspace this computer holds",
+            |session| {
+                session
+                    .conversation_runs()
+                    .requires_workspace(&computer.workspace)
+            },
+        );
+
+        let (published, ready) = mpsc::channel();
+        let (took, taken) = mpsc::channel();
+        {
+            let (workspace, key, cert) = (
+                computer.workspace.clone(),
+                computer.key.clone(),
+                computer.cert.clone(),
+            );
+            std::thread::spawn(move || notes(&plane, &workspace, (&key, &cert), &published, &took));
+        }
+        crate::common::wait_for(&mut session, "Notes publishes its notebook", |_| {
+            ready.try_recv().ok()
+        });
+
+        let laptop = laptop_of(&computer);
+        let store = computer.store();
+        store
+            .admit(|store, now| store.admit_device(&laptop.1, now))
+            .expect("the person's laptop is one of their devices");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let door = session.remote_door(Arc::new(PersonalDevices::new(store)));
+        let (this_box, router) = runtime.block_on(async {
+            let endpoint = endpoint(&computer.key).await;
+            let router = Router::builder(endpoint.clone()).accept(ALPN, door).spawn();
+            (endpoint, router)
+        });
+        Self {
+            session,
+            questions,
+            taken,
+            laptop,
+            runtime,
+            this_box,
+            socket,
+            _router: router,
+            _root: root,
+            computer,
+        }
+    }
+
+    /// Set the switch `verb` of this computer's agent door, as Settings, the palette or an agent of
+    /// the person's does: the setting's own verb.
+    fn set(&mut self, verb: &str, holds: fn(&serde_json::Map<String, Value>) -> bool) {
+        self.session
+            .invoke(
+                "settings:settings.agent-door",
+                verb,
+                json!({"on": true}).as_object().unwrap(),
+            )
+            .expect("the setting is kept");
+        crate::common::until(&mut self.session, "the setting kept", |_| {
+            holds(&settings_store::load())
+        });
+    }
+
+    /// The agent on `device`, dialing this computer's door and naming the workspace it holds.
+    fn dial(&self, (key, certificate): &(SigningKey, DeviceCert)) -> Result<Agent, String> {
+        let dialing = self.runtime.block_on(endpoint(key));
+        let dialed = self.runtime.block_on(open(
+            &dialing,
+            addr(&self.this_box),
+            certificate,
+            Some(&self.computer.workspace),
+            false,
+        ))?;
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        theirs.set_nonblocking(true).unwrap();
+        let theirs = {
+            let _entered = self.runtime.enter();
+            tokio::net::UnixStream::from_std(theirs).unwrap()
+        };
+        self.runtime.spawn(dialed.carry(theirs));
+        Ok(Agent::over(ours, Some(dialing)))
+    }
+
+    /// The questions up now, by the kind each is read as.
+    fn asked(&self) -> Vec<String> {
+        self.questions
+            .pending()
+            .into_iter()
+            .map(|question| question.kind)
+            .collect()
+    }
+
+    /// The run the agent seated as `seated` works in, in this desk's workspace.
+    fn run_of(&self, seated: &str) -> tilo_broker_core::services::TrackerRun {
+        let runs = self
+            .session
+            .conversation_runs()
+            .runs(&self.computer.workspace)
+            .unwrap_or_default();
+        runs.iter()
+            .find(|run| run.title == seated)
+            .cloned()
+            .unwrap_or_else(|| panic!("no run of {seated}: {runs:?}"))
+    }
+}
+
+/// Whether Notes took `taken` as a step of `run`: what the run's history, its activity and its undo
+/// are read from.
+fn a_step_of(
+    taken: &runtime_collab::Invocation,
+    run: &tilo_broker_core::services::TrackerRun,
+) -> bool {
+    taken.context_json.contains(&run.issue)
+}
+
+/// Notes' side: join the workspace as the app the session launched, publish its notebook with the
+/// one action that reaches outside it (`open`), say so on `published`, then take each invocation
+/// the session hands it and hand it on to `took`.
+fn notes(
+    plane: &std::path::Path,
+    workspace: &str,
+    (key, cert): (&SigningKey, &DeviceCert),
+    published: &mpsc::Sender<()>,
+    took: &mpsc::Sender<runtime_collab::Invocation>,
+) {
+    use ed25519_dalek::Signer as _;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the app");
+    runtime.block_on(async {
+        let mut stream = UnixStream::connect(plane).expect("the plane's socket");
+        launcher::services::write_collab_handoff(&mut stream, NOTES_APP, workspace)
+            .expect("the launcher names the app on the connection");
+        stream
+            .set_nonblocking(true)
+            .expect("the connection is ready for the runtime");
+        let stream = tokio::net::UnixStream::from_std(stream).expect("a runtime stream");
+        let (reader, writer) = tokio::io::split(stream);
+        let (client, carrying) = runtime_collab::CollabClient::over(reader, writer);
+        tokio::spawn(carrying);
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: workspace.to_owned(),
+            device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
+            proof: key
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    workspace,
+                ))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .expect("a presentation encodes");
+        // In the person's own workspace an app takes part only in their records.
+        let channel = tilo_action_broker::route::CrdtRoute {
+            app_id: NOTES_APP.into(),
+            cluster_id: workspace.into(),
+            record_id: collab_types::person_record_id(NOTEBOOK),
+        }
+        .channel_key();
+        let mine = client
+            .join_channel(&channel, &presentation)
+            .await
+            .expect("the app the session launched joins the workspace's channel");
+        let invocations = mine
+            .subscribe_stable_invocations()
+            .await
+            .expect("the app listens for the invocations it runs");
+        mine.publish_actions(&[open_action()])
+            .await
+            .expect("Notes publishes its notebook");
+        // Its directory, which an agent lists and names the action by.
+        let directory: runtime_collab::wire::client::Answerer =
+            Arc::new(|ask| Box::pin(std::future::ready(directory_answer(ask))));
+        mine.publish_action_directory(directory)
+            .await
+            .expect("Notes publishes its directory");
+        let _ = published.send(());
+        while let Ok(invocation) = invocations.read().await {
+            if mine
+                .complete_invocation(invocation.id, "", "")
+                .await
+                .is_err()
+                || took.send(invocation).is_err()
+            {
+                return;
+            }
+        }
+    });
+}
+
+/// Notes' directory, as it answers the host: its notebook, with `open` on it.
+fn directory_answer(
+    ask: runtime_collab::wire::Ask,
+) -> Result<runtime_collab::wire::Answer, String> {
+    use runtime_collab::wire::{Answer, Ask};
+    use runtime_collab::{ActionDirectoryPage, ActionDirectoryResolution, ActionDirectoryRow};
+    let open = open_action();
+    let row = ActionDirectoryRow {
+        parent_resource: String::new(),
+        resource: NOTEBOOK.into(),
+        resource_kind: NOTEBOOK.into(),
+        resource_label: "Notebook".into(),
+        presentation: None,
+        action: Some("open".into()),
+        visibility: Some(runtime_collab::RowVisibility {
+            action: "open".into(),
+            contract: open.contract.clone(),
+            governing_kind: Some(open.operation_kind),
+        }),
+        descriptor: Some(open),
+        has_children: false,
+    };
+    match ask {
+        Ask::Query { query, .. } => {
+            // The notebook is all there is, at the top, and holds nothing listed further down; a
+            // page holds as many rows as the host asks for, and the cursor says where the next
+            // one starts.
+            let rows = if query.parent_resource.is_empty()
+                && [String::new(), NOTEBOOK.into()].contains(&query.resource_name)
+            {
+                vec![
+                    row.clone(),
+                    ActionDirectoryRow {
+                        action: None,
+                        descriptor: None,
+                        ..row
+                    },
+                ]
+            } else {
+                Vec::new()
+            };
+            let from = std::str::from_utf8(&query.cursor)
+                .ok()
+                .and_then(|cursor| cursor.parse::<usize>().ok())
+                .unwrap_or(0);
+            let to = rows
+                .len()
+                .min(from.saturating_add(usize::try_from(query.max_results).unwrap_or(1)));
+            let more = to < rows.len();
+            serde_json::to_string(&ActionDirectoryPage {
+                revision: "r1".into(),
+                rows: rows.get(from..to).unwrap_or_default().to_vec(),
+                next_cursor: if more {
+                    to.to_string().into_bytes()
+                } else {
+                    Vec::new()
+                },
+                exhausted: !more,
+                stale_cursor: false,
+                budget_exhausted: false,
+            })
+            .map(Answer::Page)
+            .map_err(|error| error.to_string())
+        }
+        Ask::Resolve {
+            resource, action, ..
+        } => {
+            let found = if resource == NOTEBOOK && action == "open" {
+                ActionDirectoryResolution::Found {
+                    row: Box::new(row),
+                    revision: Some("r1".into()),
+                }
+            } else {
+                ActionDirectoryResolution::NotFound
+            };
+            serde_json::to_string(&found)
+                .map(Answer::Resolution)
+                .map_err(|error| error.to_string())
+        }
+    }
+}
+
+/// Notes' `open` on its notebook: a step that reaches outside the notebook, which an agent asks
+/// its person about before it takes it.
+fn open_action() -> runtime_collab::ExportedAction {
+    use runtime_collab::{ExportedAction, ExportedInput};
+    use tilo_actions::{ActionContract, ActionKind, OperationKind};
+    ExportedAction {
+        resource: NOTEBOOK.into(),
+        semantic_identity: None,
+        action: "open".into(),
+        resource_kind: NOTEBOOK.into(),
+        resource_label: "Notebook".into(),
+        action_label: "Open".into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        state: tilo_actions::ActionState::default(),
+        operation_kind: OperationKind::Effect,
+        params: Vec::new(),
+        contract: ActionContract {
+            kind: ActionKind::Outside,
+            ..ActionContract::default()
+        },
+        view: None,
+        input: ExportedInput::None,
+    }
+}
+
+/// With only agents from their other devices let in unasked, a step such an agent's run asks about
+/// is still put to the person: the agent waits while the sheet is up, and Allow once lets the step
+/// go on as a step of the agent's run.
+#[test]
+fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person() {
+    let _settled = ui::motion::testing::settled();
+    let mut desk = DeskWithNotes::start();
+    desk.set(
+        "set-accept-own-devices",
+        settings_store::agent_door::accepts_own_devices,
+    );
+    let agent = desk
+        .dial(&desk.laptop)
+        .expect("the door opens for the laptop");
+    agent.send(initialize());
+    let introduced = answer(&mut desk.session, &agent);
+    assert!(
+        introduced.pointer("/result/serverInfo").is_some(),
+        "{introduced}"
+    );
+    assert!(desk.asked().is_empty(), "let in without a question");
+
+    agent.send(tool(2, "tilo_do", &json!({"path": "notes#open"})));
+    crate::common::until(&mut desk.session, "the person asked about the step", |_| {
+        !desk.questions.pending().is_empty()
+    });
+    assert_eq!(desk.asked(), [RUN_QUESTION], "the run's question is up");
+    for _ in 0..200 {
+        desk.session.step(Duration::from_millis(2)).expect("step");
+    }
+    assert!(
+        agent.answers.try_recv().is_err(),
+        "the agent waits while the person is asked"
+    );
+    assert!(desk.taken.try_recv().is_err(), "nothing was opened yet");
+
+    // Allow once.
+    crate::common::press_sheet(&mut desk.session, PortalEffect::CONFIRM.id, &json!({}));
+    let opened = answer(&mut desk.session, &agent);
+    assert_eq!(opened["result"]["isError"], false, "{opened}");
+    let taken = desk
+        .taken
+        .recv_timeout(tilo_test_env::hang_bound())
+        .expect("Notes took the step");
+    assert_eq!(taken.action, "open");
+    let run = desk.run_of("Claude Code #1");
+    assert!(
+        a_step_of(&taken, &run),
+        "the step is the run's: {} in {}",
+        taken.context_json,
+        run.issue
+    );
+    assert!(desk.asked().is_empty());
+    agent.leave();
+}
+
+/// With their steps let go unasked as well, a step an agent from another of the person's devices
+/// would ask about is allowed by the setting: no sheet goes up, and the step is taken as a step of
+/// the agent's run, as one the person allowed is. A program of this login is still asked about
+/// its step, and a device of someone else's is still refused at the door.
+#[test]
+fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_question() {
+    let _settled = ui::motion::testing::settled();
+    let mut desk = DeskWithNotes::start();
+    desk.set(
+        "set-accept-own-devices",
+        settings_store::agent_door::accepts_own_devices,
+    );
+    desk.set(
+        "set-act-without-asking",
+        settings_store::agent_door::acts_without_asking,
+    );
+    let agent = desk
+        .dial(&desk.laptop)
+        .expect("the door opens for the laptop");
+    agent.send(initialize());
+    let introduced = answer(&mut desk.session, &agent);
+    assert!(
+        introduced.pointer("/result/serverInfo").is_some(),
+        "{introduced}"
+    );
+
+    agent.send(tool(2, "tilo_do", &json!({"path": "notes#open"})));
+    let opened = answer(&mut desk.session, &agent);
+    assert_eq!(opened["result"]["isError"], false, "{opened}");
+    assert!(desk.asked().is_empty(), "nobody was asked");
+    let taken = desk
+        .taken
+        .recv_timeout(tilo_test_env::hang_bound())
+        .expect("Notes took the step");
+    assert_eq!(taken.action, "open");
+    let run = desk.run_of("Claude Code #1");
+    assert!(
+        a_step_of(&taken, &run),
+        "the step is the run's, as one the person allowed is: {} in {}",
+        taken.context_json,
+        run.issue
+    );
+
+    // A program of this login is asked about, at the door and for its step.
+    let local = Agent::over(UnixStream::connect(&desk.socket).unwrap(), None);
+    local.send(initialize());
+    crate::common::until(
+        &mut desk.session,
+        "the person asked about the program",
+        |_| desk.questions.pending().len() == 1,
+    );
+    // Allow for this session.
+    crate::common::press_sheet(
+        &mut desk.session,
+        PortalEffect::SELECT.id,
+        &json!({"index": 1}),
+    );
+    crate::common::press_sheet(&mut desk.session, PortalEffect::CONFIRM.id, &json!({}));
+    let introduced = answer(&mut desk.session, &local);
+    assert!(
+        introduced.pointer("/result/serverInfo").is_some(),
+        "{introduced}"
+    );
+    local.send(tool(2, "tilo_do", &json!({"path": "notes#open"})));
+    crate::common::until(&mut desk.session, "the person asked about its step", |_| {
+        !desk.questions.pending().is_empty()
+    });
+    assert_eq!(desk.asked(), [RUN_QUESTION], "its step is asked about");
+    assert!(
+        local.answers.try_recv().is_err(),
+        "the program waits for the person"
+    );
+    // Deny.
+    crate::common::press_sheet(&mut desk.session, PortalEffect::CANCEL.id, &json!({}));
+    let denied = answer(&mut desk.session, &local);
+    assert_eq!(denied["result"]["isError"], true, "{denied}");
+    assert!(desk.asked().is_empty());
+    local.leave();
+
+    // A device of someone else's is refused at the door, the settings notwithstanding.
+    let stranger = SigningKey::from_bytes(&[0x22; 32]);
+    let theirs = device(&stranger, 4, "Their laptop");
+    let refused = desk.dial(&theirs).map(|_| ()).unwrap_err();
+    assert!(refused.contains("someone else"), "{refused}");
+    agent.leave();
 }

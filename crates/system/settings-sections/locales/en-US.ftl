@@ -3,6 +3,7 @@ settings-accessibility = Accessibility
 settings-accessibility-device = Accessibility on this device
 settings-agent-door = Agents from your other devices
 settings-agent-door-set-accept-own-devices = Accept agents from my other devices
+settings-agent-door-set-act-without-asking = Let them act without asking
 settings-continuity = Continuity
 settings-continuity-allow-continuity = Allow Continuity
 settings-continuity-allow-capability = Allow a kind of Continuity

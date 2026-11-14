@@ -20422,6 +20422,18 @@
         ],
         "description": ""
       },
+      "settings.agent-door.set-act-without-asking.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "description": ""
+      },
       "sheets.workbook.new-sheet.Arguments": {
         "type": "object",
         "properties": {
@@ -29557,6 +29569,12 @@
       "resource": "settings.agent-door",
       "action": "set-accept-own-devices",
       "arguments": "#/components/schemas/settings.agent-door.set-accept-own-devices.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.agent-door",
+      "action": "set-act-without-asking",
+      "arguments": "#/components/schemas/settings.agent-door.set-act-without-asking.Arguments"
     },
     {
       "app": "so.tilo.settings",

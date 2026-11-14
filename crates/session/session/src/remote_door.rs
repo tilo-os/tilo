@@ -11,7 +11,10 @@
 //!
 //! The person may let such agents in without being asked here — on a box
 //! nobody sits at — with this device's `agent_door` setting
-//! ([`settings_store::agent_door`]), which is off unless they turn it on.
+//! ([`settings_store::agent_door`]), which is off unless they turn it on. With
+//! its second switch on as well, such an agent's steps go unasked too: a step
+//! its run would ask the person about here is allowed by the setting
+//! ([`crate::run_questions`]).
 //!
 //! A key of the person's that dials the door only to read their workspace list is answered it
 //! without anyone being asked ([`Remote::show_list`]): the workspaces it reaches, each with its
@@ -115,6 +118,12 @@ impl Remote {
     /// this device's settings say now.
     pub(crate) fn accepts_own_devices() -> bool {
         settings_store::agent_door::accepts_own_devices(&settings_store::load())
+    }
+
+    /// Whether the person lets such an agent take a step it would ask them about here without
+    /// asking, as this device's settings say now: only while they let it in without asking too.
+    pub(crate) fn acts_without_asking() -> bool {
+        settings_store::agent_door::acts_without_asking(&settings_store::load())
     }
 }
 

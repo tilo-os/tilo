@@ -6,18 +6,25 @@
 //! desk seats it ("Claude Code in dev #1"), the step and what it would do. The person allows it
 //! once, allows the agent every such step for as long as it works here, or denies it, with Deny or
 //! Escape. An agent from another of the
-//! person's devices is asked about on the device it drives, where its run is.
+//! person's devices is asked about on the device it drives, where its run is — unless the person
+//! let such agents act without asking on this device (Settings > Devices & Sync, beside letting
+//! them in without asking): then the setting allows the step once in the person's place, no sheet
+//! goes up, and the run keeps the answer as it keeps any the person gave.
 //!
 //! An app that takes another app's action is asked about on the same sheet: Today's "Morning
 //! cleanup" deleting the finished tasks in Tasks puts "Today wants to change Tasks" to the person,
 //! who allows it once, always (a grant in the workspace's governance), or denies it. A step the
 //! action still asks to confirm every time, the person confirms there too.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use tilo_action_broker::app_actions::{
     AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
 };
 use tilo_service::{Question, Questions};
+
+use crate::door_runs::DoorRuns;
 
 /// The kind the session's sheet reads a run's question as.
 pub(crate) const KIND: &str = "session.run-question";
@@ -55,11 +62,45 @@ pub(crate) struct RunQuestion {
 /// The desk's sheet, as the broker asks it.
 pub(crate) struct Sheet {
     questions: Questions,
+    /// The agent door's runs going now: which of them are agents' from the person's other
+    /// devices.
+    doors: Arc<DoorRuns>,
+    /// Whether the person lets such agents act without asking here, as this device's settings
+    /// say when a step asks.
+    unasked: fn() -> bool,
 }
 
 impl Sheet {
-    pub(crate) const fn new(questions: Questions) -> Self {
-        Self { questions }
+    /// The sheet over `questions`, knowing the door's runs `doors`.
+    pub(crate) fn new(questions: Questions, doors: Arc<DoorRuns>) -> Self {
+        Self {
+            questions,
+            doors,
+            unasked: crate::remote_door::Remote::acts_without_asking,
+        }
+    }
+
+    /// The setting's answer to `request` in the person's place: allowed once, with no sheet, when
+    /// it is a run's question from an agent of the person's other devices and they let such agents
+    /// act without asking here. `None` asks the person.
+    fn allowed_unasked(&self, request: &AppActionConsentRequest) -> Option<AppActionAnswer> {
+        if !request.handle.starts_with(RUN_QUESTION) {
+            return None;
+        }
+        let agent = self
+            .doors
+            .own_device_run(&request.workspace, &request.app_id)?;
+        if !(self.unasked)() {
+            return None;
+        }
+        tracing::info!(
+            %agent,
+            action = %request.action_label,
+            app = %request.target_app,
+            "agent door: the person's setting lets agents from their other devices act without \
+             asking here, so it allowed this step"
+        );
+        Some(AppActionAnswer::unedited(AppActionConsent::Once))
     }
 }
 
@@ -76,6 +117,11 @@ impl AppActionConsentPrompter for Sheet {
         // allowed for that one step only.
         if crate::turn_questions::is_turn_ask(&request) {
             return crate::turn_questions::ask(&self.questions, request);
+        }
+        if let Some(allowed) = self.allowed_unasked(&request) {
+            let (answer, answered) = tokio::sync::oneshot::channel();
+            let _ = answer.send(allowed);
+            return Some(answered);
         }
         let runtime = tokio::runtime::Handle::try_current().ok()?;
         let asked = self.questions.ask(question(&request));
@@ -180,7 +226,7 @@ mod tests {
 
     async fn answered(choice: Option<usize>, scope: Option<&str>) -> Option<AppActionAnswer> {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone());
+        let sheet = Sheet::new(questions.clone(), Arc::default());
         let answer = sheet.ask(request(scope)).expect("asked");
         let pending = questions.pending();
         assert_eq!(pending.len(), 1, "the sheet is up");
@@ -222,12 +268,85 @@ mod tests {
         );
     }
 
+    /// The run of an agent from another of the person's devices, by its task agent `agent`.
+    fn from_another_device(agent: &str) -> (Arc<DoorRuns>, crate::door_runs::Held) {
+        let doors = Arc::new(DoorRuns::default());
+        let run = tilo_broker_core::services::TrackerRun {
+            issue: format!("{}a1", crate::door_runs::DOOR_RUNS),
+            title: "claude-code@laptop#1".into(),
+            instruction: String::new(),
+            agent: agent.into(),
+            epoch: 1,
+            starter: "p".into(),
+            active: true,
+            finished_by_agent: false,
+            paused_through: None,
+            budget: None,
+            subject: None,
+            model: None,
+            directions: Vec::new(),
+            question: None,
+            turn: None,
+            delegation: None,
+        };
+        let held = doors.open("w1", run, true);
+        (doors, held)
+    }
+
+    /// With the person's setting on, the step an agent from another of their devices asks about is
+    /// allowed once with no sheet; with it off, or for any other agent's run or an app, they are
+    /// asked.
+    #[tokio::test]
+    async fn the_setting_allows_an_agent_from_another_device_its_step_unasked() {
+        let (doors, _going) = from_another_device("task-0123456789ab");
+        let sheet = |unasked: fn() -> bool| {
+            let questions = Questions::new();
+            let sheet = Sheet {
+                questions: questions.clone(),
+                doors: Arc::clone(&doors),
+                unasked,
+            };
+            (sheet, questions)
+        };
+
+        let (on, questions) = sheet(|| true);
+        let answer = on
+            .ask(request(Some("claude-code@laptop#1")))
+            .expect("answered");
+        assert!(questions.pending().is_empty(), "no sheet goes up");
+        assert_eq!(
+            answer.await.ok().map(|answer| answer.consent),
+            Some(AppActionConsent::Once),
+            "allowed once, in the person's place"
+        );
+
+        let (off, questions) = sheet(|| false);
+        let _waiting = off.ask(request(None)).expect("asked");
+        assert_eq!(questions.pending().len(), 1, "the person is asked");
+
+        let (on, questions) = sheet(|| true);
+        let mut local = request(None);
+        local.app_id = "task-of-this-login".into();
+        let _waiting = on.ask(local).expect("asked");
+        assert_eq!(
+            questions.pending().len(),
+            1,
+            "an agent of this login is asked about"
+        );
+
+        let (on, questions) = sheet(|| true);
+        let mut app = request(None);
+        app.handle = "app-action:i1".into();
+        let _waiting = on.ask(app).expect("asked");
+        assert_eq!(questions.pending().len(), 1, "an app is asked about");
+    }
+
     /// A run that stops waiting takes its question down; anything but a run's question is not
     /// asked here at all.
     #[tokio::test]
     async fn a_question_nobody_waits_for_leaves_the_sheet() {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone());
+        let sheet = Sheet::new(questions.clone(), Arc::default());
         let answer = sheet.ask(request(None)).expect("asked");
         assert_eq!(questions.pending().len(), 1);
         drop(answer);
@@ -262,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn an_apps_change_of_another_app_is_asked_on_the_sheet() {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone());
+        let sheet = Sheet::new(questions.clone(), Arc::default());
         for (handle, always) in [("app-action:i1", true), ("confirm:i2", false)] {
             let mut asked = request(None);
             asked.handle = handle.into();

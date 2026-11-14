@@ -1209,6 +1209,7 @@ impl Session {
         ) {
             broker.set_app_action_consent(std::sync::Arc::new(crate::run_questions::Sheet::new(
                 questions,
+                conversations.runs().doors(),
             )));
         }
         // Every service this session serves, from the one table that says

@@ -1872,7 +1872,8 @@ impl DoorRun {
     }
 
     /// Start the run of the agent `admitted` names, admitted by its person at this door: mint its
-    /// task agent, hold its run beside the conversations' turns, and join the broker as it.
+    /// task agent, hold its run beside the conversations' turns (as the run of an agent from
+    /// another of the person's own devices when `from_own_device`), and join the broker as it.
     /// `Ok(None)` where the workspace does not confine its agents to runs, so it acts on the
     /// workspace's grants as it always did, and on a device with no identity of its own in the
     /// workspace (a development session), which can delegate nothing: its agents read, and every
@@ -1885,6 +1886,7 @@ impl DoorRun {
         broker: &Arc<AppBrokerState>,
         runs: Option<&Arc<crate::conversations::Runs>>,
         admitted: &crate::door_runs::Admitted<'_>,
+        from_own_device: bool,
     ) -> Result<Option<Self>, String> {
         use tilo_broker_core::services::TrackerRuns as _;
         let Some(runs) = runs.filter(|runs| runs.confines_agents_to_tasks(admitted.workspace))
@@ -1910,7 +1912,9 @@ impl DoorRun {
             admitted,
             tilo_clock::try_unix_now_ns().ok_or("this device has no clock to delegate by")?,
         )?;
-        let held = runs.doors().open(admitted.workspace, minted.run);
+        let held = runs
+            .doors()
+            .open(admitted.workspace, minted.run, from_own_device);
         let host = broker.task_run_host(&minted.presentation)?;
         Ok(Some(Self { host, held }))
     }
@@ -2507,6 +2511,9 @@ fn serve_admitted(
     let agent: Arc<std::sync::Mutex<Option<(String, String, String)>>> = Arc::default();
     let starting = Arc::clone(&agent);
     let seat = seats.joining(facts.entrance.door());
+    // An agent from another of the person's own devices, which the door toward them let through:
+    // what this device's setting for such agents may answer for once its run asks.
+    let from_own_device = facts.origin.is_some();
     let seat_stream = match stream.try_clone() {
         Ok(copy) => Some(copy),
         Err(error) => {
@@ -2534,7 +2541,7 @@ fn serve_admitted(
             };
             // Every admitted agent's connection works in a run of its own: one that cannot start
             // acts on nothing, and the client is told why rather than refused action by action.
-            match DoorRun::start(&broker, session.runs.get(), &admitted) {
+            match DoorRun::start(&broker, session.runs.get(), &admitted, from_own_device) {
                 Ok(run) => {
                     // What it works in, as its card's commands name it: the run taking its work
                     // back names, and the records it changes there.

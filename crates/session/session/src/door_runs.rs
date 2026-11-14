@@ -13,7 +13,9 @@
 //!
 //! A step the person's grants ask first about is asked on this desk's sheet rather than on an
 //! issue ([`crate::run_questions`]): the run keeps the question while it is up, and the person's
-//! "always" for as long as it goes.
+//! "always" for as long as it goes. The run of an agent from another of the person's own devices
+//! is known as such here, so this device's setting that lets those agents act without asking may
+//! answer for the person.
 //!
 //! Nothing is written anywhere: the run is this device's, it ends when the connection does (the
 //! person's Stop on its seat ends both), and the broker stops what it still runs.
@@ -35,6 +37,9 @@ struct Going {
     workspace: String,
     run: TrackerRun,
     answers: Vec<tilo_action_policy::Grant>,
+    /// Whether its agent came in from another of the person's own devices, through the door
+    /// toward them ([`crate::remote_door`]).
+    from_own_device: bool,
 }
 
 /// The door's runs going now, each with its workspace.
@@ -69,6 +74,18 @@ impl DoorRuns {
                 going.workspace == workspace && going.run.issue == issue && going.run.agent == agent
             })
             .map(|going| (going.run.clone(), going.answers.clone()))
+    }
+
+    /// The name of the run in `workspace` whose task agent is `agent`, while it goes, when that
+    /// agent came in from another of the person's own devices; `None` for any other run.
+    pub(crate) fn own_device_run(&self, workspace: &str, agent: &str) -> Option<String> {
+        self.held
+            .lock_recover()
+            .iter()
+            .find(|going| {
+                going.from_own_device && going.workspace == workspace && going.run.agent == agent
+            })
+            .map(|going| going.run.title.clone())
     }
 
     /// Keep `question` as the question of the run of `issue` in `workspace`, or none.
@@ -126,13 +143,20 @@ impl DoorRuns {
             .unwrap_or_default()
     }
 
-    /// Hold `run` in `workspace` until the returned guard drops.
-    pub(crate) fn open(self: &Arc<Self>, workspace: &str, run: TrackerRun) -> Held {
+    /// Hold `run` in `workspace` until the returned guard drops: the run of an agent that came in
+    /// from another of the person's own devices when `from_own_device`.
+    pub(crate) fn open(
+        self: &Arc<Self>,
+        workspace: &str,
+        run: TrackerRun,
+        from_own_device: bool,
+    ) -> Held {
         let issue = run.issue.clone();
         self.held.lock_recover().push(Going {
             workspace: workspace.to_owned(),
             run,
             answers: Vec::new(),
+            from_own_device,
         });
         Held {
             runs: Arc::clone(self),
@@ -369,9 +393,14 @@ mod tests {
         };
         let minted = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
         let runs = Arc::new(DoorRuns::default());
-        let held = runs.open(WORKSPACE, minted.run.clone());
+        let held = runs.open(WORKSPACE, minted.run.clone(), false);
         assert_eq!(runs.in_workspace(WORKSPACE), vec![minted.run.clone()]);
         assert!(runs.in_workspace("another").is_empty());
+        assert_eq!(
+            runs.own_device_run(WORKSPACE, &minted.run.agent),
+            None,
+            "an agent of this login is not one from another device"
+        );
         assert!(
             runs.find(WORKSPACE, &minted.run.issue, &minted.run.agent)
                 .is_some()
@@ -390,5 +419,29 @@ mod tests {
             runs.in_workspace(WORKSPACE).is_empty(),
             "it ends with the connection"
         );
+    }
+
+    /// The run of an agent from another of the person's devices is known as one by its task
+    /// agent, in its workspace alone, for as long as it goes.
+    #[test]
+    fn a_run_from_another_device_is_known_by_its_agent_while_it_goes() {
+        let (key, cert) = device();
+        let person = person(&cert);
+        let admitted = Admitted {
+            workspace: WORKSPACE,
+            person: &person,
+            seated: "claude-code@laptop#1",
+        };
+        let minted = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
+        let runs = Arc::new(DoorRuns::default());
+        let held = runs.open(WORKSPACE, minted.run.clone(), true);
+        assert_eq!(
+            runs.own_device_run(WORKSPACE, &minted.run.agent).as_deref(),
+            Some("claude-code@laptop#1")
+        );
+        assert_eq!(runs.own_device_run("another", &minted.run.agent), None);
+        assert_eq!(runs.own_device_run(WORKSPACE, "task-someone-else"), None);
+        drop(held);
+        assert_eq!(runs.own_device_run(WORKSPACE, &minted.run.agent), None);
     }
 }
