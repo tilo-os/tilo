@@ -2318,6 +2318,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
     }
 
+    fn has_pending_visual_work(&self) -> bool {
+        self.arrivals.revealing(crate::time::now())
+            || super::defaults::has_pending_visual_work(&|visit| {
+                crate::widget::Widget::for_each_child(self, visit);
+            })
+    }
+
     fn mark_drawn(&mut self) {
         self.shown.present();
         if self.rename.is_some() {

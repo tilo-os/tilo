@@ -20,12 +20,25 @@ const MOTION: u8 = 16;
 
 pub use tilolang_app::hosted::Woken;
 
-/// The harness window's frame, and whether a frame drawn now would still show something the last
-/// one did not: a window is read at rest only once it took in what the instance sent it, laid it
-/// out and drew it.
+/// The harness window's frame, and whether a frame drawn now or at a time the window names would
+/// still show something the last one did not: a window is read at rest only once it took in what
+/// the instance sent it, laid it out and drew it.
+///
+/// A placeholder whose answer landed stands until the window's next deadline (a skeleton that
+/// showed is held so it never flashes): the frame then shows the answer, so it is waited for.
 pub fn framed(window: &mut FrameHarness) -> bool {
     window.relayout();
-    window.frame_schedule().needs_redraw
+    let schedule = window.frame_schedule();
+    if schedule.needs_redraw {
+        return true;
+    }
+    if window.pending_visual_work().is_empty() {
+        return false;
+    }
+    if let Some(due) = schedule.next_wake_deadline {
+        std::thread::sleep(due.saturating_duration_since(ui::time::now()));
+    }
+    true
 }
 
 /// The host's frames and the window's, until it owes nothing and the window has drawn what it was

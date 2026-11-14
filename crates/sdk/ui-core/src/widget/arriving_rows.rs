@@ -142,6 +142,16 @@ impl<K: Clone + Eq + Hash> ArrivingRows<K> {
         self.rows.next_wake_deadline(now)
     }
 
+    /// Whether a row's answer landed and a later frame still replaces what stands in its place:
+    /// its skeleton held so it never flashes, or the answer fading in.
+    #[must_use]
+    pub fn revealing(&self, now: Instant) -> bool {
+        self.rows.live().any(|row| {
+            (row.showing == Showing::Placeholder && row.clock.has_arrived())
+                || row.fade.is_moving(now)
+        })
+    }
+
     #[must_use]
     pub fn reveal_due(&self, now: Instant) -> bool {
         self.rows.reveal_due(now)
