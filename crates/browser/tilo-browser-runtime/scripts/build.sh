@@ -32,10 +32,12 @@
 # (os/containers/tilo-sh/stack.sh): `gate`'s code, compiled incrementally
 # (Cargo's `wasm-split-local`) in a build directory that stays, split as
 # `gate` is, and not wasm-opt'd unless `--wasm-opt`. It takes `--update`, so
-# a module that did not change is neither bound nor split again, and a split
-# keeps the modules whose content did not change (split.sh). A one-line app
-# change then costs the compile, the bind and the split, not a minute of
-# optimisation a page on this machine's loopback does not notice.
+# a module that did not change is neither bound nor split again, a split
+# keeps the modules whose content did not change (split.sh), and a change to
+# bodies alone patches the previous bind instead of binding every body again
+# (bind-patch.sh). A one-line app change then costs the compile, that patch
+# and the split, not a minute of optimisation a page on this machine's
+# loopback does not notice.
 # `--bundle desktop` builds crates/browser/tilo-web-desktop instead: the same
 # runtime with every web-capable app registered from its manifest, under the
 # runtime's module name so the page host loads it unchanged, plus apps.json;
@@ -344,17 +346,40 @@ else
     bind_input=$next/.bind-input.wasm
     python3 "$repo/tools/web/wasm-split/without-link-sections.py" "$linked" "$bind_input"
   fi
-  # A few threads each: on a build server of hundreds of cores, wasm-bindgen
-  # and the splitter on every core spent minutes of system time contending
-  # for memory (wasm-bindgen 203 s on all of them, 32 s on eight), for
-  # byte-identical output. Sixteen bind the desktop bundle in about four
-  # seconds fewer than eight (17.9 s against 22.3 s over a 264 MB module);
-  # past that the contention the first line describes comes back (19.4 s on
-  # twenty-four).
-  RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-16} \
-    "$bindgen" "$bind_input" --target web --out-dir "$next" --out-name tilo_browser_runtime "${bindgen_flags[@]}"
+  # A local bundle's change to one body patches the modules wasm-bindgen made
+  # the last time (bind-patch.sh, tools/web/wasm-split/src/bin/bind_patch.rs)
+  # instead of binding every body again: the patch translates the body that
+  # changed with what the bind recorded of the module's index spaces, and
+  # writes exactly what a full bind would have. It asks for a full bind when
+  # anything but bodies changed, and the map it keeps is refreshed after one.
+  # The bound modules and the map live with the build directory's split
+  # cache, not in pkg/: they are large, and the fetch back to this machine
+  # does not carry them.
+  local bind_cache=$target_dir/wasm-split-cache/$bundle-$profile-bind
+  local bounded=0
+  if [[ $profile == local && $update == 1 ]]; then
+    if bash "$repo/tools/web/wasm-split/bind-patch.sh" apply "$bind_input" "$bind_cache" "$next/tilo_browser_runtime_bg.wasm"; then
+      bounded=1
+      took 'wasm-bindgen (patched)' "$began"
+    fi
+  fi
+  if [[ $bounded == 0 ]]; then
+    # A few threads each: on a build server of hundreds of cores, wasm-bindgen
+    # and the splitter on every core spent minutes of system time contending
+    # for memory (wasm-bindgen 203 s on all of them, 32 s on eight), for
+    # byte-identical output. Sixteen bind the desktop bundle in about four
+    # seconds fewer than eight (17.9 s against 22.3 s over a 264 MB module);
+    # past that the contention the first line describes comes back (19.4 s on
+    # twenty-four).
+    RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-16} \
+      "$bindgen" "$bind_input" --target web --out-dir "$next" --out-name tilo_browser_runtime "${bindgen_flags[@]}"
+    took wasm-bindgen "$began"
+    if [[ $profile == local && $update == 1 ]]; then
+      bash "$repo/tools/web/wasm-split/bind-patch.sh" record "$bind_input" \
+        "$next/tilo_browser_runtime_bg.wasm" "$bind_cache" >&2 || true
+    fi
+  fi
   [[ $bind_input == "$linked" ]] || rm -f "$bind_input"
-  took wasm-bindgen "$began"
   began=$SECONDS
   if [[ $bundle == desktop && $split == 1 ]]; then
     # The local bundle keeps the modules each split emitted in the build

@@ -12,6 +12,11 @@ publish = false
 name = "wasm-split"
 path = "src/main.rs"
 
+# Patches wasm-bindgen's output for a body-only change (bind-patch.sh).
+[[bin]]
+name = "bind_patch"
+path = "src/bin/bind_patch.rs"
+
 [dependencies]
 anyhow = "1.0.98"
 id-arena = "2.2.1"
