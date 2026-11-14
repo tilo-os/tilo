@@ -44,11 +44,7 @@ fn the_session_writes_its_file_access_list_for_the_files_daemon() {
     let acl = acl_path(root.path());
     let mut session = crate::common::seeded_session(root.path());
     crate::common::until(&mut session, "the file access list", |_| acl.is_file());
-    let written = access_list(&acl).expect("the list is readable");
-    assert!(
-        !written.workspace_members.is_empty(),
-        "every workspace says who may read it: {written:?}"
-    );
+    access_list(&acl).expect("the list is readable");
     // A desk change that grants nothing new does not rewrite the list: the daemon signs every list
     // it reads into a new revision.
     let before = std::fs::read(&acl).unwrap();
@@ -167,8 +163,7 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
         "the daemon reads the editor's access"
     );
 
-    // Removed from the workspace, their device reaches nothing at its next open, and the relay
-    // membership drops them in the same revision.
+    // Removed from the workspace, their device reaches nothing at its next open.
     let owner = crate::common::PERSON.to_owned();
     change_workspace(&session, |workspace| {
         tilo_desktop::workspace_settings::remove_member(workspace, &owner, &MEMBER.to_owned())
@@ -178,11 +173,6 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
         access_list(&acl).is_some_and(|list| {
             !member_may(&list, NOTE, collab_types::caps::Access::Read)
                 && !member_may(&list, NOTE, collab_types::caps::Access::Write)
-                && list
-                    .workspace_members
-                    .values()
-                    .flatten()
-                    .all(|member| member.user.0 != member_key())
         })
     });
     let removed = access_list(&acl).unwrap();
@@ -196,12 +186,4 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
         NOTE,
         collab_types::caps::Access::Write
     ));
-    assert!(
-        removed
-            .workspace_members
-            .values()
-            .flatten()
-            .all(|member| member.user.0 != member_key()),
-        "the relay no longer admits them either: {removed:?}"
-    );
 }

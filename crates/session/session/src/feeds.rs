@@ -57,14 +57,12 @@ impl crate::Session {
             return;
         }
         self.shared.capabilities_fed.set(Some(revision));
-        let now = tilo_clock::unix_now();
         let tree = self.shared.handle.read(std::clone::Clone::clone);
         if let Some(publisher) = &self.shared.fs_authority {
             publisher.publish(&crate::fs_authority::list(
                 &tree,
                 &self.shared.person,
                 crate::fs_authority::device_key(),
-                now,
             ));
         }
         let Some(captures) = self
@@ -75,6 +73,7 @@ impl crate::Session {
         else {
             return;
         };
+        let now = tilo_clock::unix_now();
         let ended = captures.keep_only(|app, workspace, kind| {
             crate::capture_grants::still_allowed(&tree, app, workspace, kind, now)
         });

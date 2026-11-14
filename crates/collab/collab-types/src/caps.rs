@@ -83,44 +83,17 @@ impl Scope {
     }
 }
 
-/// What a governor exports to its filesystem and the relays that carry its
-/// workspaces: the sandbox capabilities people hold over shared files, and who
-/// may reach each workspace a relay carries (keyed by the relay's workspace
-/// id) — the workspace's members, as its policy names them.
+/// What a governor exports to its filesystem: the sandbox capabilities people
+/// hold over shared files.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FsAuthority {
     pub capabilities: Vec<CapOverride>,
-    /// Who may reach each workspace a relay carries. Absent when the file is a mount's own list.
-    #[serde(default)]
-    pub workspace_members: std::collections::BTreeMap<String, Vec<WorkspaceMember>>,
-}
-
-/// A person a relay admits to one workspace: until `until` (Unix seconds,
-/// exclusive) when their membership lapses, or for as long as they stay a
-/// member.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkspaceMember {
-    pub user: crate::crypto::Ed25519PublicKey,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub until: Option<u64>,
-}
-
-impl WorkspaceMember {
-    /// Whether the membership holds at `now` (Unix seconds).
-    #[must_use]
-    pub fn is_live_at(&self, now: u64) -> bool {
-        self.until.is_none_or(|until| now < until)
-    }
 }
 
 impl From<Vec<CapOverride>> for FsAuthority {
     fn from(capabilities: Vec<CapOverride>) -> Self {
-        Self {
-            capabilities,
-            workspace_members: std::collections::BTreeMap::new(),
-        }
+        Self { capabilities }
     }
 }
 

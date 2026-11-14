@@ -20,7 +20,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use collab_types::Role;
-use collab_types::caps::{Access, CapOverride, FsAuthority, Scope, WorkspaceMember};
+use collab_types::caps::{Access, CapOverride, FsAuthority, Scope};
 use collab_types::crypto::Ed25519PublicKey;
 use tilo_action_policy::{Acting, Grantee, MemberId};
 use tilo_desktop_model::DesktopTree;
@@ -41,15 +41,9 @@ const LAST_RETRY: Duration = Duration::from_secs(5);
 /// person's key and once by this device's, which is the identity the mount itself authenticates as,
 /// so translation can never widen a grant and a revoked one takes both away.
 #[must_use]
-pub(crate) fn list(
-    tree: &DesktopTree,
-    person: &str,
-    device: Option<[u8; 32]>,
-    now: u64,
-) -> FsAuthority {
+pub(crate) fn list(tree: &DesktopTree, person: &str, device: Option<[u8; 32]>) -> FsAuthority {
     let acting = person_key(person).map(|key| Acting::person(hex::encode(key.0)));
     let mut capabilities = Vec::new();
-    let mut workspace_members = std::collections::BTreeMap::new();
     for workspace in &tree.workspaces {
         for capability in workspace.sandbox.iter().filter(|capability| {
             capability.persists_across_restart() && matches!(capability.scope, Scope::FsPath(_))
@@ -69,21 +63,8 @@ pub(crate) fn list(
             .with_id(role_capability_id(&workspace.id().to_string(), &member));
             push_with_device(&mut capabilities, &capability, acting.as_ref(), device);
         }
-        // Signed membership is a separate projection from Files access: who the workspace's policy
-        // lets read it, per relay shard.
-        workspace_members.insert(
-            workspace.id().to_string(),
-            workspace
-                .workspace_readers_at(now)
-                .iter()
-                .filter_map(|(reader, until)| member(reader, *until))
-                .collect::<Vec<_>>(),
-        );
     }
-    FsAuthority {
-        capabilities,
-        workspace_members,
-    }
+    FsAuthority { capabilities }
 }
 
 fn person_key(person: &str) -> Option<Ed25519PublicKey> {
@@ -129,13 +110,6 @@ fn push_with_device(
     let mut bound = capability.clone();
     bound.grantee = Grantee::Member(MemberId::person(hex::encode(device)));
     capabilities.push(bound);
-}
-
-fn member(person: &str, until: Option<u64>) -> Option<WorkspaceMember> {
-    Some(WorkspaceMember {
-        user: person_key(person)?,
-        until,
-    })
 }
 
 /// This device's key, which is the identity the Files mount acts as.
@@ -476,7 +450,7 @@ mod tests {
         let member = Acting::person(MEMBER);
         let mut tree = tree_with(app_folder_grant());
         tree.workspaces[0].admit(MEMBER, Role::Viewer);
-        let read_only = list(&tree, PERSON, None, 0);
+        let read_only = list(&tree, PERSON, None);
         assert!(
             may_read(&read_only, &member, NOTE),
             "a member reads the workspace's files"
@@ -487,7 +461,7 @@ mod tests {
         );
 
         tree.workspaces[0].admit(MEMBER, Role::Editor);
-        let editing = list(&tree, PERSON, None, 0);
+        let editing = list(&tree, PERSON, None);
         assert!(may_write(&editing, &member, NOTE), "an editor writes them");
         assert_ne!(
             editing.capabilities, read_only.capabilities,
@@ -495,7 +469,7 @@ mod tests {
         );
 
         tree.workspaces[0].policy.members.remove(MEMBER);
-        let removed = list(&tree, PERSON, None, 0);
+        let removed = list(&tree, PERSON, None);
         assert!(
             !may_read(&removed, &member, NOTE),
             "a removed member reads nothing"
@@ -521,7 +495,7 @@ mod tests {
         let mut tree = tree_with(grant);
         tree.workspaces[0].sandbox.push(keeps);
         let actor = Acting::person(PERSON);
-        let published = list(&tree, PERSON, device, 0);
+        let published = list(&tree, PERSON, device);
         assert!(may_read(&published, &actor, &format!("{FOLDER}/plan.md")));
         // The device key the mount authenticates as holds the same grant.
         assert!(may_read(
@@ -532,7 +506,7 @@ mod tests {
 
         // The person takes the folder back while an app has it open.
         assert!(tree.workspaces[0].revoke_sandbox("brief"));
-        let now = list(&tree, PERSON, device, 0);
+        let now = list(&tree, PERSON, device);
         assert!(
             !may_read(&now, &actor, &format!("{FOLDER}/plan.md")),
             "the next open is refused"
@@ -561,27 +535,10 @@ mod tests {
         let mut tree = tree_with(app_folder_grant());
         tree.workspaces[0].sandbox.push(transient);
         tree.workspaces[0].sandbox.push(device_only);
-        let published = list(&tree, PERSON, None, 0);
+        let published = list(&tree, PERSON, None);
         assert_eq!(published.capabilities.len(), 1);
         assert!(matches!(published.capabilities[0].scope, Scope::FsPath(_)));
         assert_eq!(published.capabilities[0].effect, Effect::Grant);
-    }
-
-    #[test]
-    fn each_workspace_publishes_who_may_read_it() {
-        let mut tree = tree_with(app_folder_grant());
-        tree.workspaces[0].admit(PERSON, collab_types::Role::Editor);
-        let published = list(&tree, PERSON, None, 0);
-        let readers = published
-            .workspace_members
-            .get(&tree.workspaces[0].id().to_string())
-            .expect("the workspace's topic");
-        assert!(
-            readers
-                .iter()
-                .any(|reader| reader.user == person_key(PERSON).unwrap()),
-            "the reader the workspace admits is published"
-        );
     }
 
     /// A stand-in for the Files daemon: records each publication and copies the list it was handed,
@@ -630,7 +587,7 @@ mod tests {
             dir.path().join("config/fs-capabilities.json"),
         );
         let tree = tree_with(app_folder_grant());
-        let first = list(&tree, PERSON, None, 0);
+        let first = list(&tree, PERSON, None);
         assert!(publisher.publish(&first));
         publisher
             .wait_until_idle(tilo_test_env::hang_bound())
@@ -661,10 +618,10 @@ mod tests {
             dir.path().join("config/fs-capabilities.json"),
         );
         let mut tree = tree_with(app_folder_grant());
-        publisher.publish(&list(&tree, PERSON, None, 0));
+        publisher.publish(&list(&tree, PERSON, None));
         let id = tree.workspaces[0].sandbox[0].id.clone();
         tree.workspaces[0].revoke_sandbox(&id);
-        publisher.publish(&list(&tree, PERSON, None, 0));
+        publisher.publish(&list(&tree, PERSON, None));
         publisher
             .wait_until_idle(tilo_test_env::hang_bound())
             .expect("published");
@@ -731,7 +688,7 @@ mod tests {
             }),
             dir.path().join("config/fs-capabilities.json"),
         );
-        publisher.publish(&list(&tree_with(app_folder_grant()), PERSON, None, 0));
+        publisher.publish(&list(&tree_with(app_folder_grant()), PERSON, None));
         // The first attempt is refused before the gate exists: the daemon's own word for that is
         // what this waits on, so nothing here races the clock.
         tilo_test_env::wait_until("the daemon refusing the first attempt", || {
@@ -767,7 +724,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let acl = dir.path().join("config/fs-capabilities.json");
         let publisher = Publisher::at(None, acl.clone());
-        let newest = list(&tree_with(app_folder_grant()), PERSON, None, 0);
+        let newest = list(&tree_with(app_folder_grant()), PERSON, None);
         assert!(publisher.publish(&newest));
         publisher
             .wait_until_idle(tilo_test_env::hang_bound())

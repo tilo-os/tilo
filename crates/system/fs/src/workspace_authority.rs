@@ -194,11 +194,6 @@ pub struct WorkspaceAuthorityEnvelope {
     pub workspace: uuid::Uuid,
     pub revision: u64,
     pub capabilities: Vec<CapOverride>,
-    /// Who may reach each workspace a relay carries, by its relay workspace id. Written under
-    /// `room_members`, the key every signed and stored revision was written under; one written while
-    /// the field was named for the workspace reads as the same map.
-    #[serde(default, rename = "room_members", alias = "workspace_members")]
-    pub workspace_members: std::collections::BTreeMap<String, Vec<collab_types::WorkspaceMember>>,
     pub tombstoned: bool,
     pub governor: [u8; 32],
     #[serde(with = "serde_bytes")]
@@ -234,15 +229,11 @@ impl WorkspaceAuthorityEnvelope {
         governor: [u8; 32],
         sign: impl FnOnce(&[u8]) -> anyhow::Result<[u8; 64]>,
     ) -> anyhow::Result<Self> {
-        let collab_types::FsAuthority {
-            capabilities,
-            workspace_members,
-        } = authority.into();
+        let collab_types::FsAuthority { capabilities } = authority.into();
         let mut envelope = Self {
             workspace,
             revision,
             capabilities,
-            workspace_members,
             tombstoned,
             governor,
             signature: [0; 64],
@@ -268,7 +259,6 @@ impl WorkspaceAuthorityEnvelope {
             self.workspace,
             self.revision,
             &self.capabilities,
-            &self.workspace_members,
             self.tombstoned,
             self.governor,
         ))?)
@@ -289,7 +279,9 @@ pub struct WorkspaceAuthority {
 }
 
 impl WorkspaceAuthority {
-    /// Open the durable authority projection for one workspace.
+    /// Open the durable authority projection for one workspace. A stored revision this build
+    /// cannot read or verify, such as one an older image wrote, counts as none: the authority is
+    /// derived from the workspace, whose next publication replaces it.
     pub fn open(
         path: impl Into<PathBuf>,
         workspace: uuid::Uuid,
@@ -299,11 +291,9 @@ impl WorkspaceAuthority {
     ) -> anyhow::Result<Self> {
         let path = path.into();
         let current = match std::fs::read(&path) {
-            Ok(bytes) => {
-                let envelope: WorkspaceAuthorityEnvelope = postcard::from_bytes(&bytes)?;
-                envelope.verify(workspace, governor)?;
-                Some(envelope)
-            }
+            Ok(bytes) => postcard::from_bytes::<WorkspaceAuthorityEnvelope>(&bytes)
+                .ok()
+                .filter(|envelope| envelope.verify(workspace, governor).is_ok()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
         };
@@ -819,6 +809,36 @@ mod tests {
     use crate::Access;
     use collab_types::{Access as CapAccess, Effect, Scope};
     use std::sync::Arc;
+
+    #[test]
+    fn a_stored_revision_this_build_cannot_read_opens_as_none_and_the_next_one_applies() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("authority.bin");
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let workspace = uuid::Uuid::new_v4();
+        let subject = [4; 32];
+        std::fs::write(&path, [7; 200]).unwrap();
+        let authority = WorkspaceAuthority::open(
+            &path,
+            workspace,
+            governor.verifying_key().to_bytes(),
+            subject,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(authority.current(), None);
+        assert!(!authority.handle().permits(&subject, "/file", Access::Read));
+        let grant = CapOverride::new(
+            tilo_action_policy::Grantee::person(hex::encode(subject)),
+            Scope::FsPath("/".into()),
+            Effect::Grant,
+            CapAccess::Read,
+        );
+        let next =
+            WorkspaceAuthorityEnvelope::sign(workspace, 1, vec![grant], false, &governor).unwrap();
+        assert!(authority.apply(next).unwrap());
+        assert!(authority.handle().permits(&subject, "/file", Access::Read));
+    }
 
     /// The workspace authority follows the host-local capability list through its file watch: a
     /// revocation written to the list is signed, applied and enforced, and a half-written list is
