@@ -302,3 +302,47 @@ fn a_drag_over_the_second_display_shows_and_lands_on_that_display() {
         "the second display's target took the drop"
     );
 }
+
+/// A tree that asks for animation frames that come out the same, as a hint does that moves
+/// nothing this surface draws.
+struct Still;
+
+impl Widget for Still {
+    fn name(&self) -> &'static str {
+        "Still"
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &ui::Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(Style::default(), nodes, self)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        true
+    }
+}
+
+/// An animation frame that changed no pixel still takes its display frame: the next is due a
+/// display frame later, not at once, so a still animation does not turn the desk's loop as fast as
+/// it can and slow every app opening beside it.
+#[test]
+fn an_animation_frame_that_changes_nothing_waits_for_the_next_display_frame() {
+    let placement = Placement {
+        origin: (0, 0),
+        size: (320, 240),
+        scale: 1.0,
+    };
+    let mut host = WidgetHost::new(Box::new(Still), placement, false);
+    assert!(host.prepare_frame(), "the first frame draws the tree");
+    // The display holds each frame a second from here on; the grid of the first frame has passed.
+    let frame = std::time::Duration::from_secs(1);
+    host.set_frame_interval(frame);
+    let turn = std::time::Instant::now();
+    assert!(!host.prepare_frame(), "the frame shows nothing new");
+    let due = host.next_deadline().expect("the animation asks for frames");
+    assert!(due >= turn + frame, "the next frame waits for the display");
+}

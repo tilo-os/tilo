@@ -1083,6 +1083,10 @@ impl SurfaceHost for WidgetHost {
         // What was owed is consumed by this frame whether or not the tree drew anything of
         // its own.
         let owed = std::mem::take(&mut self.owed);
+        // This turn takes the display frame whether or not it changes a pixel: an animation whose
+        // frame came out the same waits for the next display frame too, rather than asking for
+        // the next turn of the loop at once and keeping the loop busy until it ends.
+        self.cadence.drawn(now);
         // A surface draws its material with the image it has when it draws:
         // new backdrops ask the tree for a frame of its own, even when
         // nothing else in it moved.
@@ -1125,18 +1129,12 @@ impl SurfaceHost for WidgetHost {
         let parts = self.host.scene_parts();
         let damage = match self.retained.repaint(&self.scene, parts, key) {
             // Nothing of what it shows changed: there is nothing to draw.
-            Repaint::Regions(changed) if changed.is_empty() => {
-                if lifted {
-                    self.cadence.drawn(now);
-                }
-                return lifted;
-            }
+            Repaint::Regions(changed) if changed.is_empty() => return lifted,
             Repaint::Regions(changed) => Some(changed),
             Repaint::Full(_) => None,
         };
         self.retained.presented(&self.scene, parts, key);
         self.frames.present(&self.scene, damage.as_deref());
-        self.cadence.drawn(now);
         true
     }
 }
