@@ -417,17 +417,9 @@ fn everything(session: &Session) -> Vec<tilo_actions::ResourceSpec> {
     found
 }
 
-/// The resources `session` publishes under `label` , at any depth, as its action model holds them.
-fn labelled(session: &Session, label: &str) -> Vec<tilo_actions::ResourceSpec> {
-    everything(session)
-        .into_iter()
-        .filter(|resource| resource.label == label)
-        .collect()
-}
-
 /// A seeded app's catalogue is the app's words on the desk: with the interface in German, the
-/// session labels the notes app's notebook and its actions in German, and its search matches the
-/// German word for what it holds.
+/// session names what the notes app's notebook is and its actions in German, and its search
+/// matches the German word for what it holds.
 #[test]
 fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
     let _settled = ui::motion::testing::settled();
@@ -439,31 +431,22 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
     // The apps come from the run's store, which the session reads as a device reads its own.
     let root = private_home();
     let mut session = seeded_session(root.path());
-    let mut said = Vec::new();
-    let german = crate::common::wait_maybe(&mut session, |session| {
-        said = everything(session)
+    // The notebook is called by its first note's title; what it is, is said in the catalogue's
+    // words.
+    let nouns = |session: &Session| -> Vec<tilo_actions::Noun> {
+        everything(session)
             .into_iter()
-            .map(|resource| resource.label)
-            .collect();
-        (!labelled(session, "Notizen").is_empty()).then_some(())
+            .filter_map(|resource| resource.resource_type.map(|kind| kind.noun))
+            .collect()
+    };
+    until(&mut session, "the notebook's German nouns", |session| {
+        nouns(session).contains(&tilo_actions::Noun::new("Notizbuch", "Notizbücher"))
     });
     assert!(
-        german.is_some(),
-        "the notebook is labelled in German: {said:?}"
+        nouns(&session).contains(&tilo_actions::Noun::new("Notiz", "Notizen")),
+        "the notes' nouns are the catalogue's, in the reader's language: {:?}",
+        nouns(&session)
     );
-    let nouns: Vec<tilo_actions::Noun> = everything(&session)
-        .into_iter()
-        .filter_map(|resource| resource.resource_type.map(|kind| kind.noun))
-        .collect();
-    for noun in [
-        tilo_actions::Noun::new("Notizbuch", "Notizbücher"),
-        tilo_actions::Noun::new("Notiz", "Notizen"),
-    ] {
-        assert!(
-            nouns.contains(&noun),
-            "the notebook's nouns are the catalogue's, in the reader's language: {nouns:?}"
-        );
-    }
     let offered: Vec<String> = everything(&session)
         .into_iter()
         .flat_map(|resource| {

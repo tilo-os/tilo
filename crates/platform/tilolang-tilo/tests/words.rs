@@ -372,6 +372,15 @@ fn a_packages_words_are_published_without_a_record() {
     );
 }
 
+/// A notebook with no note yet has no text to be called by: a German reader reads it by the app's
+/// name in their words, as everything nobody named is.
+#[test]
+fn an_empty_notebook_is_called_by_the_apps_name_in_the_readers_words() {
+    let (host, _) = notes("de-DE");
+    let notebook = host.root_of(NOTES).expect("the notebook");
+    assert_eq!(host.label_at(&notebook), "Notizen");
+}
+
 /// A German desktop's palette lists a native app's actions and a tilolang app's in German: each
 /// declares its label as a key of its own catalogue, read in the person's language when it is
 /// published.

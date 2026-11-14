@@ -144,7 +144,8 @@ pub fn app_of(resource: &str) -> Option<&str> {
 
 /// What a resource of `schema` in the package `meta` is called while none of its own text names
 /// it: what its type declares (`(untitled: "Untitled")`, in the reader's words), else a
-/// package's root by the app's title ("Notes"), anything else by its type ("Todo list").
+/// package's root by the app's title in the reader's words ("Notes"), anything else by its type
+/// ("Todo list").
 #[must_use]
 pub fn untitled(meta: &Meta, schema: &crate::schema::TypeSchema, words: &dyn Words) -> String {
     meta.types
@@ -153,7 +154,7 @@ pub fn untitled(meta: &Meta, schema: &crate::schema::TypeSchema, words: &dyn Wor
         .map_or_else(
             || {
                 if meta.roots.contains(&schema.id) {
-                    meta.title.clone()
+                    label_of(words, &meta.app, &meta.title)
                 } else {
                     schema.untitled()
                 }
@@ -163,13 +164,13 @@ pub fn untitled(meta: &Meta, schema: &crate::schema::TypeSchema, words: &dyn Wor
 }
 
 /// What a record of `declared` is called while its title is empty: the words its type declares,
-/// translated; else an app's root by the app's title; else its type's name.
+/// translated; else an app's root by the app's title, translated; else its type's name.
 fn untitled_of(meta: &Meta, declared: &tilolang::meta::TypeMeta, words: &dyn Words) -> String {
     if let Some(untitled) = &declared.untitled {
         return said_of(words, &declared.id, "untitled", None, untitled);
     }
     if meta.roots.contains(&declared.id) {
-        meta.title.clone()
+        label_of(words, &meta.app, &meta.title)
     } else {
         crate::schema::spoken(&declared.name)
     }
