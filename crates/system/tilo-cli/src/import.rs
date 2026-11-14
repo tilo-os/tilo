@@ -354,14 +354,16 @@ enum Key {
     Token,
 }
 
-/// The token `file` holds, or the one `TILO_IMPORT_TOKEN` does.
+/// The token `file` holds, or, with `--token-env`, the one
+/// `TILO_IMPORT_TOKEN` does.
 fn token(token_file: Option<&Path>, from_env: bool) -> Result<String> {
     let token = match (token_file, from_env) {
         (Some(path), _) => {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?
         }
-        (None, _) => std::env::var("TILO_IMPORT_TOKEN")
+        (None, true) => std::env::var("TILO_IMPORT_TOKEN")
             .context("reading TILO_IMPORT_TOKEN: pass --token-file or --token-env")?,
+        (None, false) => bail!("pass --token-file or --token-env to give the source's token"),
     };
     let token = token.trim().to_owned();
     if token.is_empty() {
@@ -1425,6 +1427,22 @@ mod tests {
                 _thread: thread,
             }
         }
+    }
+
+    /// The token is the file's, or, only with `--token-env`, the one the
+    /// environment holds: a token sitting in the environment is not used
+    /// just because nothing else was given.
+    #[test]
+    fn the_token_env_is_read_only_with_its_flag() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_IMPORT_TOKEN", "from-the-environment");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        std::fs::write(&file, " from-the-file \n").unwrap();
+        assert_eq!(token(Some(&file), false).unwrap(), "from-the-file");
+        assert_eq!(token(None, true).unwrap(), "from-the-environment");
+        let said = token(None, false).unwrap_err().to_string();
+        assert!(said.contains("--token-env"), "{said}");
     }
 
     #[test]

@@ -108,7 +108,9 @@ fn reach_starting(
     place: &Place,
     start: impl Fn() -> std::io::Result<std::process::Child>,
 ) -> Result<UnixStream, String> {
-    let deadline = Instant::now() + REACHING;
+    let deadline = Instant::now()
+        .checked_add(REACHING)
+        .unwrap_or_else(Instant::now);
     let mut started: Option<std::process::Child> = None;
     loop {
         match UnixStream::connect(&place.socket) {
@@ -151,17 +153,17 @@ fn start_holder(place: &Place) -> std::io::Result<std::process::Child> {
 
 /// Serve this connection's stdio alone: with no login to share, or when no
 /// holder could be reached.
-pub(crate) fn alone<E: Enter>(shared: Arc<Shared<E>>) -> Result<ExitCode> {
+pub(crate) fn alone<E: Enter>(shared: &Arc<Shared<E>>) -> Result<ExitCode> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
         // Enter the workspace while the agent starts, not at its first call.
-        let entering = Arc::clone(&shared);
+        let entering = Arc::clone(shared);
         tokio::spawn(async move {
             let _ = entering.session(false).await;
         });
-        converse(Arc::clone(&shared), tokio::io::stdin(), tokio::io::stdout()).await;
+        converse(Arc::clone(shared), tokio::io::stdin(), tokio::io::stdout()).await;
         // The connection ended (its input closed): the agent leaves the
         // workspace now, while its session can still say so.
         shared.leaving().await;
@@ -190,6 +192,7 @@ async fn converse<E: Enter>(
                 let mut write = write.lock().await;
                 let _ = write.write_all(format!("{answer}\n").as_bytes()).await;
                 let _ = write.flush().await;
+                drop(write);
             }
         });
         while answering.try_join_next().is_some() {}
@@ -224,18 +227,18 @@ fn hold_for<E: Enter>(
 
 /// The lock that makes this process the device's one holder, once one that
 /// is leaving let go of it; `None` when another holds it still.
-fn take_lock(path: &Path, taking_over: Duration) -> Result<Option<std::fs::File>> {
-    use rustix::fs::{FlockOperation, flock};
-    let lock = std::fs::File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)
-        .with_context(|| format!("open {}", path.display()))?;
-    let deadline = Instant::now() + taking_over;
+fn take_lock(path: &Path, taking_over: Duration) -> Result<Option<advisory_lock::FileLock>> {
+    use advisory_lock::{FileLock, LockMode, TryLockError};
+    let deadline = Instant::now()
+        .checked_add(taking_over)
+        .unwrap_or_else(Instant::now);
     loop {
-        if flock(&lock, FlockOperation::NonBlockingLockExclusive).is_ok() {
-            return Ok(Some(lock));
+        match FileLock::try_open(path, LockMode::Exclusive) {
+            Ok(lock) => return Ok(Some(lock)),
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Error(error)) => {
+                return Err(error).with_context(|| format!("open {}", path.display()));
+            }
         }
         if Instant::now() >= deadline {
             return Ok(None);
@@ -267,12 +270,12 @@ async fn serve_held<E: Enter>(
         tokio::select! {
             accepted = listener.accept() => {
                 let Ok((stream, _)) = accepted else { continue };
-                count.send_modify(|live| *live += 1);
+                count.send_modify(|live| *live = live.saturating_add(1));
                 let (shared, count) = (Arc::clone(&shared), Arc::clone(&count));
                 tokio::spawn(async move {
                     let (read, write) = stream.into_split();
                     converse(shared, read, write).await;
-                    count.send_modify(|live| *live -= 1);
+                    count.send_modify(|live| *live = live.saturating_sub(1));
                 });
             }
             () = idle(&mut live, linger) => break,
@@ -324,15 +327,14 @@ async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
     let mut next = Some(first);
     let mut input_open = true;
     loop {
-        let stream = match next.take() {
-            Some(stream) => stream,
-            None => {
-                let place = place.clone();
-                let reached = tokio::task::spawn_blocking(move || reach(&place)).await?;
-                match reached {
-                    Ok(stream) => stream,
-                    Err(why) => anyhow::bail!("{why}"),
-                }
+        let stream = if let Some(stream) = next.take() {
+            stream
+        } else {
+            let place = place.clone();
+            let reached = tokio::task::spawn_blocking(move || reach(&place)).await?;
+            match reached {
+                Ok(stream) => stream,
+                Err(why) => anyhow::bail!("{why}"),
             }
         };
         stream.set_nonblocking(true)?;
@@ -350,19 +352,16 @@ async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
         let mut unanswered: HashMap<String, Value> = HashMap::new();
         let ended = loop {
             tokio::select! {
-                line = input.recv(), if input_open => match line {
-                    Some(line) => {
-                        if let Some(id) = opening.note(&line) {
-                            unanswered.insert(id.to_string(), id);
-                        }
-                        if write.write_all(format!("{line}\n").as_bytes()).await.is_err() {
-                            break true;
-                        }
+                line = input.recv(), if input_open => if let Some(line) = line {
+                    if let Some(id) = opening.note(&line) {
+                        unanswered.insert(id.to_string(), id);
                     }
-                    None => {
-                        input_open = false;
-                        let _ = write.shutdown().await;
+                    if write.write_all(format!("{line}\n").as_bytes()).await.is_err() {
+                        break true;
                     }
+                } else {
+                    input_open = false;
+                    let _ = write.shutdown().await;
                 },
                 answer = answers.next_line() => match answer {
                     Ok(Some(line)) => {
@@ -452,7 +451,7 @@ mod tests {
 
     impl Enter for Arc<Counting> {
         async fn enter(&self) -> Result<Arc<super::super::Session>, String> {
-            let asked = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+            let asked = self.0.fetch_add(1, Ordering::SeqCst).saturating_add(1);
             Err(format!("asked {asked}"))
         }
     }

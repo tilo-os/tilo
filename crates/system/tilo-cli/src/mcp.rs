@@ -251,7 +251,7 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
     crate::login::trust_test_certificates()?;
     let Ok((key, _)) = &device else {
         // Nothing to share: every call says why there is no workspace.
-        return held::alone(shared(device));
+        return held::alone(&shared(device));
     };
     let place = held::Place::of(
         &crate::login::device_dir()?,
@@ -266,7 +266,7 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
             // The agent keeps its tools: this connection holds a session of
             // its own, which another `tilo mcp` of this device would cut off.
             eprintln!("tilo mcp: {why}; serving this connection alone");
-            held::alone(shared(device))
+            held::alone(&shared(device))
         }
     }
 }
