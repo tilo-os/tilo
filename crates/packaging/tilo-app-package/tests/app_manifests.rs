@@ -164,6 +164,24 @@ fn an_app_says_what_its_windows_are_to_other_devices_in_its_entrypoint() {
     );
 }
 
+/// A window of Browser is its page, which lives in the engine of the device that opened it: its
+/// manifest says so, and the session reads it there, so no session code names an app. No other
+/// shipped app says it yet.
+#[test]
+fn browser_says_its_windows_run_only_on_the_device_that_opened_them() {
+    assert!(
+        load(&repo_root().join("apps/browser")).window_runs_on_its_device(),
+        "a Browser window runs only on the device whose engine holds its page"
+    );
+    let bound: Vec<String> = app_dirs()
+        .iter()
+        .map(|dir| load(dir))
+        .filter(Manifest::window_runs_on_its_device)
+        .map(|manifest| manifest.package.id)
+        .collect();
+    assert_eq!(bound, ["so.tilo.browser"]);
+}
+
 #[test]
 fn shipped_apps_declare_presentation_metadata() {
     {

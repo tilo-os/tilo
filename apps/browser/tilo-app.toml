@@ -78,6 +78,9 @@ shell-ui = "optional@27"
 [entrypoint]
 bin             = "bin/browser"
 type            = "gui"
+# A window is its page, which lives in this device's engine: it runs only here.
+# Other devices list it as this device's window and see it when it is shared.
+window          = "device"
 splash-segments = ["bin/browser[0x0:0x400000]"]
 splash-budget   = 250
 
