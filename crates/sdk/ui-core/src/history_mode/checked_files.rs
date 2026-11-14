@@ -23,6 +23,9 @@ pub struct FileHistoryTarget {
     pub binding: uuid::Uuid,
     pub record: FileRecordId,
     pub label: String,
+    /// The file's parent folder inside the workspace, `/`-rooted: the hover
+    /// that names a change's writer names where the file is.
+    pub folder: Option<String>,
     pub transport: Arc<dyn FileHistoryTransport>,
     /// Who the people and agents writing versions are, as the app knows them: a version an agent's
     /// device signed reads as the agent's, on behalf of its person. Presentation only; never authority.

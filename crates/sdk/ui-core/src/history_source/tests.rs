@@ -892,6 +892,10 @@ tilo_test_env::scenario! {
                 kind: ActorKind::Agent,
                 on_behalf_of: Some("ada".into()),
                 on_behalf_of_name: Some("ada".into()),
+                writer: None,
+                writer_label: None,
+                device: None,
+                folder: None,
             })
         );
 
@@ -934,6 +938,10 @@ tilo_test_env::scenario! {
                 kind: ActorKind::Agent,
                 on_behalf_of: Some(person.clone()),
                 on_behalf_of_name: Some("Ada".into()),
+                writer: None,
+                writer_label: None,
+                device: None,
+                folder: None,
             })
         );
         // The person reading it sees it was done for them.

@@ -228,8 +228,22 @@ pub fn target(
         binding: uuid::Uuid::new_v4(),
         record,
         label,
+        folder: workspace_folder(path),
         transport: Arc::new(MountedFileHistory::open(path)?),
         authors,
+    })
+}
+
+/// The file's parent folder inside the workspace, `/`-rooted: what a history
+/// hover says after the device that vouched for the writer. `None` for a file
+/// outside the Tilo workspace mount.
+fn workspace_folder(path: &Path) -> Option<String> {
+    let relative = path.strip_prefix("/var/workspace").ok()?;
+    let parent = relative.parent()?.to_str()?;
+    Some(if parent.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("/{parent}")
     })
 }
 

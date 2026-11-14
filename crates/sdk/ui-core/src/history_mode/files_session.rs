@@ -773,6 +773,7 @@ mod tests {
             record: fs_protocol::FileRecordId(uuid::Uuid::from_u128(3)),
             label: "Report.txt".into(),
             transport: Arc::new(Transport),
+            folder: None,
             authors: crate::history_source::AuthorDirectory::new(),
         })
     }

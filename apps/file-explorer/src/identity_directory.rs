@@ -221,6 +221,10 @@ impl TrustedHumanDirectory {
                 &person,
                 ui::history_source::author_for_identity(human.display_name.clone(), &person),
             );
+            for device in &human.devices {
+                authors
+                    .register_device(&hex::encode(device.device.as_bytes()), device.label.clone());
+            }
             for agent in &human.agents {
                 let [red, green, blue] = agent.color;
                 authors.register_agent(

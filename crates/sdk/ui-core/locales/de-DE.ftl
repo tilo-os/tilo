@@ -582,6 +582,7 @@ history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Kurzbefehl
 participant-app = { $name } · App
+participant-program = { $name } · Programm
 participant-bot = { $name } · Bot
 # Zwei oder mehr Personen in einem Arbeitsbereich tragen denselben Namen: jede
 # wird nummeriert, für alle im Arbeitsbereich gleich.
@@ -685,6 +686,7 @@ find-bar-no-matches = Keine Treffer
 widget-mention-agent = Agent
 widget-mention-shortcut = Kurzbefehl
 widget-mention-app = App
+widget-mention-program = Programm
 widget-mention-bot = Bot
 widget-mention-list = Personen zum Erwähnen
 rich-text-reference-unreadable = Nicht mit dir geteilt
@@ -819,6 +821,9 @@ author-bot-details = { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-linked = Mit { $person } auf Tilo verknüpft
 author-persona-suffix = { $name }, über { $service }
+history-writer-agent = Externer Agent
+history-writer-app = App
+history-writer-program = Programm
 
 # Das Eingabefeld eines Kontextmenüs: Tippen schränkt seine Einträge ein, und
 # seine Senden-Zeile übernimmt das Getippte in die Sendebox neben dem Menü.

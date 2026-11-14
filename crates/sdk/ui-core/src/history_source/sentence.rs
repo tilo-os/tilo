@@ -87,6 +87,80 @@ pub fn wire_author_line(author: &wire::Author) -> String {
     )
 }
 
+/// The badge that names what wrote an attributed change beside the person's
+/// own avatar: the agent tool ("Claude Code"), the app's name, or the
+/// program's name. `None` for the person's own change, and for an author
+/// whose change carries no recorded writer.
+pub fn writer_badge(author: &HistoryAuthor) -> Option<String> {
+    let attribution = author.attribution.as_ref()?;
+    let label = attribution.writer_label.as_deref();
+    match attribution.writer? {
+        fs_protocol::AttributedWriter::Agent => agent_tool_name(&attribution.actor)
+            .map(str::to_owned)
+            .or_else(|| label.map(str::to_owned)),
+        fs_protocol::AttributedWriter::App | fs_protocol::AttributedWriter::Program => {
+            label.map(str::to_owned)
+        }
+    }
+    .filter(|badge| !badge.trim().is_empty())
+}
+
+/// The hover that names what wrote an attributed change, field by field:
+/// "External agent · Claude Code · ‘Prepare the report’ · Kaiserslautern · /Reports".
+/// `None` for a change with no recorded writer, whose row names a person.
+pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
+    let attribution = author.attribution.as_ref()?;
+    let writer = attribution.writer?;
+    let label = attribution.writer_label.as_deref().unwrap_or_default();
+    let mut parts = Vec::with_capacity(5);
+    match writer {
+        fs_protocol::AttributedWriter::Agent => {
+            parts.push(crate::i18n::widget_format("history-writer-agent", &[]));
+            let tool = agent_tool_name(&attribution.actor);
+            if let Some(tool) = tool {
+                parts.push(tool.to_owned());
+            }
+            // The session's own title, unless it only repeats the tool's name.
+            if !label.trim().is_empty() && Some(label) != tool {
+                parts.push(format!("‘{label}’"));
+            }
+        }
+        fs_protocol::AttributedWriter::App => {
+            parts.push(crate::i18n::widget_format("history-writer-app", &[]));
+            if !label.trim().is_empty() {
+                parts.push(label.to_owned());
+            }
+        }
+        fs_protocol::AttributedWriter::Program => {
+            parts.push(crate::i18n::widget_format("history-writer-program", &[]));
+            if !label.trim().is_empty() {
+                parts.push(label.to_owned());
+            }
+        }
+    }
+    // The device whose session vouched for the writer, then the folder the
+    // change is in: where a reader goes to look at it.
+    parts.extend(attribution.device.clone());
+    parts.extend(attribution.folder.clone());
+    Some(parts.join(" · "))
+}
+
+/// The name of the agent tool a session actor names (`agent:claude:<session>`
+/// is Claude Code). `None` for a legacy `agent:<id>`, which names no tool.
+fn agent_tool_name(actor: &str) -> Option<&'static str> {
+    match actor
+        .strip_prefix("agent:")?
+        .split(':')
+        .next()
+        .unwrap_or_default()
+    {
+        "claude" => Some("Claude Code"),
+        "codex" => Some("Codex"),
+        "pi" => Some("pi"),
+        _ => None,
+    }
+}
+
 fn actor_line(
     name: &str,
     for_person: Option<&str>,

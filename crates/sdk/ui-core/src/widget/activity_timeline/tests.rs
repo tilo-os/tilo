@@ -751,7 +751,11 @@ tilo_test_env::scenario! {
                     kind,
                     on_behalf_of: Some("ada".into()),
                     on_behalf_of_name: Some("Ada".into()),
-                })
+                writer: None,
+                writer_label: None,
+                device: None,
+                folder: None,
+            })
         };
         assert!(is_bot_author(&acting(tilo_actions::ActorKind::Bot)));
         assert!(!is_bot_author(&acting(tilo_actions::ActorKind::Agent)));

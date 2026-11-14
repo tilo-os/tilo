@@ -405,10 +405,13 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
             // agent's own device reads as the agent, on behalf of its person,
             // and so does the agent the signing device recorded as having
             // caused the write through its person's session.
-            let known = files.target.authors.resolve_attributed_file_actor(
+            let known = files.target.authors.resolve_attributed_file_actor_in(
                 person,
                 version.actor.device.as_bytes(),
                 files.attributions.get(&version.id),
+                crate::history_source::WriterPlace {
+                    folder: files.target.folder.as_deref(),
+                },
             );
             let author = known.unwrap_or_else(|| {
                 let identity = hex::encode(person.get(..6).unwrap_or(person));
@@ -561,6 +564,7 @@ mod tests {
                 transport: std::sync::Arc::new(no_transport::NoTransport {
                     never_submits: Some("cancelled confirmation must never submit"),
                 }),
+            folder: None,
                 authors: crate::history_source::AuthorDirectory::new(),
             });
             files.suspend();
@@ -613,7 +617,8 @@ mod tests {
                     label: "A".into(),
                     transport: std::sync::Arc::new(no_transport::NoTransport {
                         never_submits: None,
-                    }),
+                }),
+            folder: None,
                     authors: crate::history_source::AuthorDirectory::new(),
                 };
                 source.set_target(Some(target.clone()));
@@ -752,6 +757,7 @@ mod tests {
             label: "same display path".into(),
             transport: original_handle.clone(),
             authors: crate::history_source::AuthorDirectory::new(),
+            folder: None,
         };
         let mut host = test_host();
         let HistorySourceRegistration::CheckedFiles { source, .. } = host.source() else {
@@ -813,6 +819,7 @@ mod tests {
             label: "same display path".into(),
             transport: fresh.clone(),
             authors: crate::history_source::AuthorDirectory::new(),
+            folder: None,
         }));
         host.refresh(&AutoCommit::new());
         settle(&mut host);
@@ -848,6 +855,7 @@ mod tests {
                 results: AtomicUsize::new(0),
                 reviews: AtomicUsize::new(0),
             }),
+            folder: None,
             authors: crate::history_source::AuthorDirectory::new(),
         };
         source.set_target(Some(replacement.clone()));
@@ -898,6 +906,7 @@ mod tests {
             transport: std::sync::Arc::new(no_transport::NoTransport {
                 never_submits: None,
             }),
+            folder: None,
             authors,
         });
         let version = |id: u128, person: [u8; 32], device: [u8; 32]| FileVersionV1 {
@@ -932,6 +941,10 @@ mod tests {
                 kind: tilo_actions::ActorKind::Agent,
                 on_behalf_of: Some(hex::encode(ada)),
                 on_behalf_of_name: Some("Ada".into()),
+                writer: None,
+                writer_label: None,
+                device: None,
+                folder: None,
             })
         );
         // A device is an agent only of the person who delegated it.
@@ -959,6 +972,10 @@ mod tests {
                 kind: tilo_actions::ActorKind::Agent,
                 on_behalf_of: Some(hex::encode(ada)),
                 on_behalf_of_name: Some("Ada".into()),
+                writer: None,
+                writer_label: None,
+                device: None,
+                folder: None,
             })
         );
         assert_eq!(rows[1].author.name, "Ada", "an unattributed version");
@@ -976,5 +993,133 @@ mod tests {
         let rows = file_timeline_entries(&files);
         assert_eq!(rows[1].author.name, "Ada");
         assert_eq!(rows[1].author.attribution, None);
+
+        // A writer the signing device's session recorded — an agent session,
+        // an app or a third-party program — wrote through Ada's mount: the row
+        // is Ada's own, wearing her avatar, with the writer named beside it and
+        // the device and folder in the hover.
+        let mut files = FileController::new(FileHistoryTarget {
+            binding: uuid::Uuid::new_v4(),
+            record,
+            label: "Report.txt".into(),
+            transport: std::sync::Arc::new(no_transport::NoTransport {
+                never_submits: None,
+            }),
+            folder: Some("/Reports".into()),
+            authors: {
+                let mut authors = AuthorDirectory::new();
+                authors.register_person(
+                    &hex::encode(ada),
+                    crate::HistoryAuthor::new("Ada", 0.0, "ada00000"),
+                );
+                authors.register_device(&hex::encode(ada_laptop), "Ada's laptop");
+                authors
+            },
+        });
+        for (index, (actor, label, writer, badge)) in [
+            (
+                "agent:claude:session-1",
+                "Prepare the report",
+                fs_protocol::AttributedWriter::Agent,
+                "Claude Code",
+            ),
+            (
+                "agent:claude:untitled",
+                "Claude Code",
+                fs_protocol::AttributedWriter::Agent,
+                "Claude Code",
+            ),
+            (
+                "app:so.tilo.notes",
+                "so.tilo.notes",
+                fs_protocol::AttributedWriter::App,
+                "Notes",
+            ),
+            (
+                "program:org.gnome.TextEditor.desktop",
+                "Text Editor",
+                fs_protocol::AttributedWriter::Program,
+                "Text Editor",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = u128::try_from(10 + index).unwrap();
+            let written = version(id, ada, ada_laptop);
+            files.versions = vec![written.clone()];
+            files.attributions = [(
+                written.id,
+                fs_protocol::FileAttributionV1 {
+                    actor: actor.into(),
+                    label: label.into(),
+                    color: [70, 80, 90],
+                },
+            )]
+            .into();
+            let rows = file_timeline_entries(&files);
+            let author = &rows[0].author;
+            assert_eq!(author.name, "Ada", "{actor}: the person's own row");
+            assert_eq!(
+                author.rgb(),
+                (242, 85, 85),
+                "{actor}: the person's avatar, not the writer's colour"
+            );
+            assert_eq!(
+                author.attribution.as_ref().and_then(|a| a.writer),
+                Some(writer),
+                "{actor}"
+            );
+            assert_eq!(
+                author
+                    .attribution
+                    .as_ref()
+                    .and_then(|a| a.folder.as_deref()),
+                Some("/Reports")
+            );
+            assert_eq!(
+                author
+                    .attribution
+                    .as_ref()
+                    .and_then(|a| a.device.as_deref()),
+                Some("Ada's laptop")
+            );
+            assert_eq!(
+                crate::history_source::sentence::writer_badge(author).as_deref(),
+                Some(badge),
+                "{actor}"
+            );
+        }
+        let agent = fs_protocol::FileAttributionV1 {
+            actor: "agent:claude:session-1".into(),
+            label: "Prepare the report".into(),
+            color: [70, 80, 90],
+        };
+        let written = version(10, ada, ada_laptop);
+        files.versions = vec![written.clone()];
+        files.attributions = [(written.id, agent)].into();
+        let rows = file_timeline_entries(&files);
+        assert_eq!(
+            crate::history_source::sentence::attribution_hover(&rows[0].author).as_deref(),
+            Some("External agent · Claude Code · ‘Prepare the report’ · Ada's laptop · /Reports")
+        );
+        assert_eq!(
+            crate::history_source::sentence::writer_badge(&rows[0].author).as_deref(),
+            Some("Claude Code")
+        );
+
+        let program = fs_protocol::FileAttributionV1 {
+            actor: "program:org.gnome.TextEditor.desktop".into(),
+            label: "Text Editor".into(),
+            color: [70, 80, 90],
+        };
+        let written = version(11, ada, ada_laptop);
+        files.versions = vec![written.clone()];
+        files.attributions = [(written.id, program)].into();
+        let rows = file_timeline_entries(&files);
+        assert_eq!(
+            crate::history_source::sentence::attribution_hover(&rows[0].author).as_deref(),
+            Some("Program · Text Editor · Ada's laptop · /Reports")
+        );
     }
 }

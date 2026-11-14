@@ -34,6 +34,9 @@ pub enum ActorKind {
     App,
     /// An installed bot acting as itself, for its installer.
     Bot,
+    /// A third-party desktop program acting under its own identity. Last: the
+    /// compact encodings name a variant by its place.
+    Program,
 }
 
 impl ActorKind {

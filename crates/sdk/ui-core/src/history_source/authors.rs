@@ -29,6 +29,15 @@ pub use collaboration::history_source::authors::{
 #[cfg(test)]
 use collaboration::history_source::authors::{SHORT_LEN, rgb_to_hue};
 
+/// Where an attributed change sits, for the hover that names its writer: the
+/// folder inside the workspace. The device whose session vouched for the
+/// writer is looked up in the directory itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WriterPlace<'a> {
+    /// The file's parent folder inside the workspace, `/`-rooted.
+    pub folder: Option<&'a str>,
+}
+
 /// Maps automerge actor ids to the people the chrome should name.
 ///
 /// Registrations win over inference: the collaboration layer resolves peer
@@ -48,6 +57,9 @@ pub struct AuthorDirectory {
     /// Delegated agents by the actor id they write as (their own device
     /// key): their changes read as theirs, on behalf of their person.
     agents: HashMap<String, HistoryAgent>,
+    /// The people's devices by their actor id: a hover names the device whose
+    /// session vouched for a writer, never a key.
+    devices: HashMap<String, String>,
 }
 
 /// A delegated agent as history names it: its own principal, how it is
@@ -95,6 +107,23 @@ impl AuthorDirectory {
     /// on their behalf both name them.
     pub fn register_person(&mut self, principal: &str, author: HistoryAuthor) {
         self.register(&principal_key(principal), author);
+    }
+
+    /// Bind a device's actor id to its name, so a hover that names the device
+    /// whose session vouched for a writer names the person's own word for it.
+    pub fn register_device(&mut self, actor_hex: &str, name: impl Into<String>) {
+        let name = name.into();
+        if !name.trim().is_empty() {
+            self.devices.insert(actor_hex.to_lowercase(), name);
+        }
+    }
+
+    /// What the directory calls the device `actor_hex`, when it knows it.
+    #[must_use]
+    pub fn device_name(&self, actor_hex: &str) -> Option<&str> {
+        self.devices
+            .get(&actor_hex.to_lowercase())
+            .map(String::as_str)
     }
 
     /// Name the workspace's participants as its roster names them (participant
@@ -203,27 +232,84 @@ impl AuthorDirectory {
     }
 
     /// The author of a file version `device` signed for `person`, when the
-    /// device recorded which agent caused it (`attribution`, from the signed
-    /// record): that agent, on behalf of `person` — never anybody else's
-    /// person. Without a valid attribution, [`Self::resolve_file_actor`].
+    /// device recorded which writer caused it (`attribution`, from the signed
+    /// record): that writer, named on the person's own row — never anybody
+    /// else's person. Without a valid attribution, [`Self::resolve_file_actor`].
     pub fn resolve_attributed_file_actor(
         &self,
         person: &[u8; 32],
         device: &[u8; 32],
         attribution: Option<&fs_protocol::FileAttributionV1>,
     ) -> Option<HistoryAuthor> {
+        self.resolve_attributed_file_actor_in(person, device, attribution, WriterPlace::default())
+    }
+
+    /// [`Self::resolve_attributed_file_actor`] for a version whose file the
+    /// reader sees at `place`: the hover that names the writer also names the
+    /// device whose session vouched for it and the folder the change is in.
+    pub fn resolve_attributed_file_actor_in(
+        &self,
+        person: &[u8; 32],
+        device: &[u8; 32],
+        attribution: Option<&fs_protocol::FileAttributionV1>,
+        place: WriterPlace<'_>,
+    ) -> Option<HistoryAuthor> {
         let Some(attribution) = attribution.filter(|attribution| attribution.validate().is_ok())
         else {
             return self.resolve_file_actor(person, device);
         };
-        let [red, green, blue] = attribution.color;
-        let agent = HistoryAgent {
-            principal: attribution.actor.clone(),
-            label: attribution.label.clone(),
-            rgb: (red, green, blue),
-            person: hex::encode(person),
+        let Some((writer, id)) = attribution.writer() else {
+            return self.resolve_file_actor(person, device);
         };
-        Some(self.agent_author(&hex::encode(device), &agent))
+        let [red, green, blue] = attribution.color;
+        // A session-leased agent (`agent:<id>`, no kind) acted through the
+        // person's Tilo actions, so it wrote as the agent: the row is the
+        // agent's, on behalf of its person, as it has always read.
+        if writer == fs_protocol::AttributedWriter::Agent && !id.contains(':') {
+            let agent = HistoryAgent {
+                principal: attribution.actor.clone(),
+                label: attribution.label.clone(),
+                rgb: (red, green, blue),
+                person: hex::encode(person),
+            };
+            return Some(self.agent_author(&hex::encode(device), &agent));
+        }
+        // A writer the FUSE caller's process named (an agent session, an app,
+        // a program) wrote through the person's mount: the row is the person's
+        // own, wearing the person's avatar, with the writer named beside it.
+        let person_key = hex::encode(person);
+        let kind = match writer {
+            fs_protocol::AttributedWriter::Agent => tilo_actions::ActorKind::Agent,
+            fs_protocol::AttributedWriter::App => tilo_actions::ActorKind::App,
+            fs_protocol::AttributedWriter::Program => tilo_actions::ActorKind::Program,
+        };
+        let label = match writer {
+            fs_protocol::AttributedWriter::App => app_name(
+                &attribution.label,
+                crate::i18n::I18nManager::window_locale().as_str(),
+            ),
+            _ => attribution.label.clone(),
+        };
+        let author = self
+            .resolve_identity(&principal_key(&person_key))
+            .with_attribution(
+                HistoryAttribution::new(attribution.actor.clone(), kind)
+                    .acting_for(person_key.clone(), self.person_name(&person_key))
+                    .written_by(writer, label)
+                    .from_device(self.device_name(&hex::encode(device)).map(str::to_owned))
+                    .in_folder(place.folder.map(str::to_owned)),
+            );
+        let mut author = author;
+        author.for_reader = self.reader().as_deref() == Some(person_key.as_str());
+        Some(author)
+    }
+
+    /// The name the directory has for a person's principal, or the principal
+    /// itself: a hover never prints a bare key where it knows no name.
+    fn person_name(&self, principal: &str) -> String {
+        self.by_actor
+            .get(&principal_key(principal))
+            .map_or_else(|| principal.to_owned(), |author| author.name.clone())
     }
 
     /// The author a registered agent is: the agent, on behalf of its person,
@@ -233,12 +319,10 @@ impl AuthorDirectory {
         let reader = self.reader();
         let mut author = author_coloured(agent.label.clone(), short_id(actor_hex), agent.rgb)
             .with_relation(AuthorRelation::Software)
-            .with_attribution(HistoryAttribution {
-                actor: agent.principal.clone(),
-                kind: tilo_actions::ActorKind::Agent,
-                on_behalf_of: Some(agent.person.clone()),
-                on_behalf_of_name: Some(person),
-            });
+            .with_attribution(
+                HistoryAttribution::new(agent.principal.clone(), tilo_actions::ActorKind::Agent)
+                    .acting_for(agent.person.clone(), person),
+            );
         author.for_reader = reader.as_deref() == Some(agent.person.as_str());
         author
     }
@@ -372,11 +456,11 @@ impl AuthorDirectory {
             .filter(|group| group.kind == crate::history_source::steps::TASK_RUN)
             .map(|task| task.label.clone())
             .filter(|label| !label.trim().is_empty());
-        let attribution = invoker.kind.acts_for_someone().then(|| HistoryAttribution {
-            actor: invoker.actor.clone(),
-            kind: invoker.kind,
-            on_behalf_of: invoker.on_behalf_of.clone(),
-            on_behalf_of_name: for_person,
+        let attribution = invoker.kind.acts_for_someone().then(|| {
+            let mut attribution = HistoryAttribution::new(invoker.actor.clone(), invoker.kind);
+            attribution.on_behalf_of.clone_from(&invoker.on_behalf_of);
+            attribution.on_behalf_of_name = for_person;
+            attribution
         });
         let mut author = author.with_relation(relation);
         author.attribution = attribution;

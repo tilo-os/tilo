@@ -386,6 +386,69 @@ pub struct HistoryAttribution {
     pub on_behalf_of: Option<String>,
     /// That person's display name.
     pub on_behalf_of_name: Option<String>,
+    /// What wrote the change, when the device recorded a writer beside the
+    /// version rather than only a delegated agent: an agent session, an app
+    /// or a third-party program. The device asserts it; it grants nothing.
+    pub writer: Option<fs_protocol::AttributedWriter>,
+    /// The writer's own name: the agent's, the app's or the program's.
+    pub writer_label: Option<String>,
+    /// The device whose session vouched for the writer, by the name its
+    /// person gave it.
+    pub device: Option<String>,
+    /// The folder inside the workspace the change is in.
+    pub folder: Option<String>,
+}
+
+impl HistoryAttribution {
+    /// An attribution of an action's invoker acting for a person, as it was
+    /// before a device began recording the writer beside the version.
+    #[must_use]
+    pub fn new(actor: String, kind: tilo_actions::ActorKind) -> Self {
+        Self {
+            actor,
+            kind,
+            on_behalf_of: None,
+            on_behalf_of_name: None,
+            writer: None,
+            writer_label: None,
+            device: None,
+            folder: None,
+        }
+    }
+
+    /// Record whom it acted for.
+    #[must_use]
+    pub fn acting_for(mut self, principal: impl Into<String>, name: impl Into<String>) -> Self {
+        self.on_behalf_of = Some(principal.into());
+        self.on_behalf_of_name = Some(name.into());
+        self
+    }
+
+    /// Record what wrote the change and the name it goes by.
+    #[must_use]
+    pub fn written_by(
+        mut self,
+        writer: fs_protocol::AttributedWriter,
+        label: impl Into<String>,
+    ) -> Self {
+        self.writer = Some(writer);
+        self.writer_label = Some(label.into());
+        self
+    }
+
+    /// Record the device whose session vouched for the writer.
+    #[must_use]
+    pub fn from_device(mut self, device: Option<String>) -> Self {
+        self.device = device;
+        self
+    }
+
+    /// Record the folder inside the workspace the change is in.
+    #[must_use]
+    pub fn in_folder(mut self, folder: Option<String>) -> Self {
+        self.folder = folder;
+        self
+    }
 }
 
 /// Who an author is to the person reading the history. Rows draw the

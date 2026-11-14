@@ -412,6 +412,7 @@ fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggest
         ParticipantKind::Agent => Some(widget_text("widget-mention-agent")),
         ParticipantKind::Shortcut => Some(widget_text("widget-mention-shortcut")),
         ParticipantKind::App => Some(widget_text("widget-mention-app")),
+        ParticipantKind::Program => Some(widget_text("widget-mention-program")),
         ParticipantKind::Bot => Some(widget_text("widget-mention-bot")),
     };
     let row = Suggestion::labelled(value, candidate.name.clone()).with_person(SuggestionPerson {

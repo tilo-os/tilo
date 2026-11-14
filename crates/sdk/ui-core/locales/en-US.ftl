@@ -583,6 +583,7 @@ history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Shortcut
 participant-app = { $name } · App
+participant-program = { $name } · Program
 participant-bot = { $name } · Bot
 # Two or more people in a workspace go by the same name: each is numbered, the
 # same numbers for everyone in it.
@@ -689,6 +690,7 @@ find-bar-no-matches = No matches
 widget-mention-agent = Agent
 widget-mention-shortcut = Shortcut
 widget-mention-app = App
+widget-mention-program = Program
 widget-mention-bot = Bot
 widget-mention-list = People to mention
 rich-text-reference-unreadable = Not shared with you
@@ -828,6 +830,9 @@ author-bot-details = { $bot } (bot, added by { $installer })
 author-bot-details-as = { $name }, via { $bot } (bot, added by { $installer })
 author-bot-linked = Linked to { $person } on Tilo
 author-persona-suffix = { $name }, via { $service }
+history-writer-agent = External agent
+history-writer-app = App
+history-writer-program = Program
 
 # A context menu's query field: typing narrows its entries, and its send row
 # carries the typing into the send-to box that opens beside the menu.

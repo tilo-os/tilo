@@ -1149,8 +1149,27 @@ impl ActivityTimeline {
         if self.filters_people {
             entry.author.name.clone()
         } else {
-            crate::history_source::sentence::author_line(&entry.author)
+            crate::history_source::sentence::attribution_hover(&entry.author)
+                .unwrap_or_else(|| crate::history_source::sentence::author_line(&entry.author))
         }
+    }
+
+    /// The chip naming what wrote an attributed change: an agent tool, an app
+    /// or a program, beside the person whose avatar the row wears.
+    fn writer_chip(
+        entry: &HistoryEntry,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<(String, f64)> {
+        let label = crate::history_source::sentence::writer_badge(&entry.author)?;
+        let width = crate::widget::ChipFace::intrinsic_width(
+            &label,
+            crate::widget::ChipLead::None,
+            false,
+            text_renderer,
+            theme,
+        );
+        (width > 0.0).then_some((label, width))
     }
 
     fn bot_chip(
@@ -2235,7 +2254,9 @@ impl ActivityTimeline {
         let bot_w = if entry.is_genesis() {
             0.0
         } else {
-            Self::bot_chip(entry, ctx.text, ctx.theme).map_or(0.0, |(_, width)| width + 6.0)
+            Self::bot_chip(entry, ctx.text, ctx.theme)
+                .or_else(|| Self::writer_chip(entry, ctx.text, ctx.theme))
+                .map_or(0.0, |(_, width)| width + 6.0)
         };
         let layout = EntryRowLayout {
             row,
@@ -2380,7 +2401,9 @@ impl ActivityTimeline {
             author_slot_w,
             ..
         } = layout;
-        let Some((label, width)) = Self::bot_chip(entry, text_renderer, theme) else {
+        let Some((label, width)) = Self::bot_chip(entry, text_renderer, theme)
+            .or_else(|| Self::writer_chip(entry, text_renderer, theme))
+        else {
             return;
         };
         let slot_end = row.x0 + author_slot_w - 6.0;

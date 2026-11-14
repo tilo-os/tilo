@@ -222,6 +222,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         label: "report.txt".into(),
         transport: transport.clone(),
         authors: ui::history_source::AuthorDirectory::new(),
+        folder: None,
     }));
     let driver = app.harness();
     driver.relayout();
@@ -507,6 +508,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
                     inner: target.transport.clone(),
                     returned: returned.clone(),
                 }),
+                folder: None,
                 ..target
             }
         };
