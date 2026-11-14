@@ -174,13 +174,13 @@ async fn only_member_hears_deleted(
     let host_device = hex::encode(on_relay.host.cert.device_public_key);
     let place = tilo_session_client::entered::Place {
         origin: on_relay.relay.clone(),
-        room: workspace.to_owned(),
+        workspace: workspace.to_owned(),
     };
     let remembered = tilo_session_client::entered::remember(
         Vec::new(),
         tilo_session_client::entered::Entered {
             origin: place.origin.clone(),
-            room: place.room.clone(),
+            workspace: place.workspace.clone(),
             host_device: host_device.clone(),
             name: Some("Applicant: Jane Doe".into()),
             unavailable: false,

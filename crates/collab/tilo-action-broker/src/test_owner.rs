@@ -345,8 +345,8 @@ impl SessionOwner {
                     .receive_from(
                         TransportOrigin::RelayDelta(self.key.verifying_key().to_bytes()),
                         NeighbourMsg::SyncResp {
-                            room: request.workspace.clone(),
                             changes,
+                            workspace: request.workspace.clone(),
                         },
                         now,
                     )

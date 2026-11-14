@@ -45,15 +45,15 @@ tilo_agent_participant::app_worker!();
 #[cfg(feature = "agents")]
 mod persistent_moderation;
 #[cfg(feature = "agents")]
-mod persistent_room_cli;
-#[cfg(feature = "agents")]
-mod room_chat;
-#[cfg(feature = "agents")]
-mod room_discussions;
-#[cfg(feature = "agents")]
-mod room_strips;
+mod persistent_workspace_cli;
 #[cfg(feature = "web")]
 mod web_cli;
+#[cfg(feature = "agents")]
+mod workspace_chat;
+#[cfg(feature = "agents")]
+mod workspace_discussions;
+#[cfg(feature = "agents")]
+mod workspace_strips;
 
 /// Default location for the daemon config on a Fedora bootc image.
 const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/relay.toml";
@@ -87,7 +87,7 @@ enum Cmd {
     /// A short-lived shared workspace: its own user root and browser listener,
     /// certifying only the browsers its operator admits on stdin.
     #[cfg(feature = "web")]
-    Room(Box<web_cli::WorkspaceArgs>),
+    Workspace(Box<web_cli::WorkspaceArgs>),
     /// Print, as one line of JSON, what a site hands its page about the host
     /// at an origin: the web entry's `TILO_WEB_HOME_HOST_INFO`.
     #[cfg(feature = "web")]
@@ -150,7 +150,7 @@ fn run() -> anyhow::Result<()> {
             tilo_rt::daemon("tilo-relay").run(web_cli::dev(args, wait_for_shutdown()))?
         }
         #[cfg(feature = "web")]
-        Cmd::Room(args) => {
+        Cmd::Workspace(args) => {
             tilo_rt::daemon("tilo-relay").run(web_cli::workspace(*args, wait_for_shutdown()))?
         }
         #[cfg(feature = "web")]

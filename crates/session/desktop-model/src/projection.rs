@@ -24,7 +24,7 @@ use crate::tree::Layout;
 use crate::workspace::Workspace;
 
 /// Key naming the workspace a document describes (a UUID string).
-pub const WORKSPACE_ID_KEY: &str = "room";
+pub const WORKSPACE_ID_KEY: &str = "workspace";
 /// Key of the workspace's display name.
 pub const WORKSPACE_NAME_KEY: &str = "name";
 /// Key of the workspace owner's user id.

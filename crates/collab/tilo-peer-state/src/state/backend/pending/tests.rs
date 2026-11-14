@@ -107,7 +107,7 @@ fn bounded_pending_preserves_exact_count_and_declared_byte_denials() {
 fn bounded_pending_enforces_four_mib_at_literal_serialized_boundary() {
     let limit = 4 * 1024 * 1024;
     let mut message = NeighbourMsg::SyncResp {
-        room: String::new(),
+        workspace: String::new(),
         changes: vec![vec![0; limit]],
     };
     let overhead = postcard::to_allocvec(&message).unwrap().len() - limit;

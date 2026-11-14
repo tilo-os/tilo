@@ -37,10 +37,10 @@ mod device_certification;
 mod durable_host_restart;
 #[path = "end_to_end_sync.rs"]
 mod end_to_end_sync;
-#[path = "governed_rooms.rs"]
-mod governed_rooms;
 #[path = "governed_workspace_access.rs"]
 mod governed_workspace_access;
+#[path = "governed_workspaces.rs"]
+mod governed_workspaces;
 #[cfg(feature = "agents")]
 #[path = "hosted_browser.rs"]
 mod hosted_browser;
@@ -58,8 +58,8 @@ mod offloadable_action;
 #[path = "out_of_band_join_modes.rs"]
 mod out_of_band_join_modes;
 #[cfg(feature = "agents")]
-#[path = "persistent_room.rs"]
-mod persistent_room;
+#[path = "persistent_workspace.rs"]
+mod persistent_workspace;
 #[path = "personal_device_process.rs"]
 mod personal_device_process;
 #[cfg(feature = "agents")]
@@ -76,16 +76,16 @@ mod record_content_routing;
 mod relay_daemon;
 #[path = "remote_action_routing.rs"]
 mod remote_action_routing;
-#[path = "room_admission.rs"]
-mod room_admission;
-#[path = "room_host.rs"]
-mod room_host;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
 #[path = "surface_content.rs"]
 mod surface_content;
 #[path = "tenant_isolation.rs"]
 mod tenant_isolation;
+#[path = "workspace_admission.rs"]
+mod workspace_admission;
+#[path = "workspace_host.rs"]
+mod workspace_host;
 
 #[path = "additional_protocol.rs"]
 mod additional_protocol;

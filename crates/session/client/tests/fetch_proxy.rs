@@ -150,9 +150,10 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
     wait_for("the fetch proxy's counters", || {
         let text = std::fs::read_to_string(&metrics).unwrap_or_default();
         async move {
-            (text.contains("tilo_rooms_fetch_proxy_requests_total{outcome=\"answered\"} 1")
-                && text
-                    .contains("tilo_rooms_fetch_proxy_requests_total{outcome=\"unauthorized\"} 1"))
+            (text.contains("tilo_workspaces_fetch_proxy_requests_total{outcome=\"answered\"} 1")
+                && text.contains(
+                    "tilo_workspaces_fetch_proxy_requests_total{outcome=\"unauthorized\"} 1",
+                ))
             .then_some(())
         }
     })

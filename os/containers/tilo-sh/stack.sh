@@ -78,7 +78,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
   stack.sh down [--wipe] stop it; --wipe also deletes its state
 
 What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
-  relay     tilo-relay room through the Lounge image's entrypoint, as tilo.sh's
+  relay     tilo-relay workspace through the Lounge image's entrypoint, as tilo.sh's
             relay
   tls       production's Caddy and Caddyfile in front of it, plain HTTP:
             http://127.0.0.1:BASE (eu1.tilo.sh) and http://127.0.0.1:BASE+6
@@ -370,35 +370,35 @@ wait_for() { # WHAT URL SECONDS [CURL ARGS…]
 # turned into this stack's addresses, its secrets into throwaway local ones.
 relay_env() {
   local env=(
-    TILO_ROOMS_PERSISTENT=lounge
-    TILO_ROOMS_NAME=Lounge
-    "TILO_ROOMS_DESCRIPTION=The Tilo community: chat, notes and a shared desktop"
-    TILO_ROOMS_DEFAULT_ROLE=editor
-    TILO_ROOMS_LAYOUT=shared
-    "TILO_ROOMS_RELAY_ORIGIN=$relay_origin"
-    "TILO_ROOMS_LIVE=127.0.0.1:$packet_port"
-    "TILO_ROOMS_IROH_LISTEN=127.0.0.1:$iroh_port"
-    "TILO_ROOMS_LIVE_ORIGIN=$live_origin"
-    "TILO_ROOMS_WEB_ENTRY=$site_origin/"
-    "TILO_ROOMS_SITE_ORIGINS=$site_origin"
+    TILO_WORKSPACES_PERSISTENT=lounge
+    TILO_WORKSPACES_NAME=Lounge
+    "TILO_WORKSPACES_DESCRIPTION=The Tilo community: chat, notes and a shared desktop"
+    TILO_WORKSPACES_DEFAULT_ROLE=editor
+    TILO_WORKSPACES_LAYOUT=shared
+    "TILO_WORKSPACES_RELAY_ORIGIN=$relay_origin"
+    "TILO_WORKSPACES_LIVE=127.0.0.1:$packet_port"
+    "TILO_WORKSPACES_IROH_LISTEN=127.0.0.1:$iroh_port"
+    "TILO_WORKSPACES_LIVE_ORIGIN=$live_origin"
+    "TILO_WORKSPACES_WEB_ENTRY=$site_origin/"
+    "TILO_WORKSPACES_SITE_ORIGINS=$site_origin"
     # The site is plain http on this machine: the relay's local mode, in which
     # its door mails links to such a page (production's is https).
-    TILO_ROOMS_LOCAL=1
-    "TILO_ROOMS_ROOT_FILE=$secrets_path/room-root-lounge"
-    TILO_ROOMS_FEEDBACK_CHANNEL=feedback
+    TILO_WORKSPACES_LOCAL=1
+    "TILO_WORKSPACES_ROOT_FILE=$secrets_path/workspace-root-lounge"
+    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback
     # Its mail goes to this stack's mail sink (stack.sh mail reads it) where
     # production's goes to Resend.
-    TILO_ROOMS_CONTACT=hello@tilo.localhost
-    "TILO_ROOMS_MAIL_FROM=Tilo <hello@tilo.localhost>"
-    "TILO_ROOMS_RESEND_KEY_FILE=$secrets_path/resend-key"
-    "TILO_ROOMS_RESEND_URL=http://127.0.0.1:$mail_port/emails"
+    TILO_WORKSPACES_CONTACT=hello@tilo.localhost
+    "TILO_WORKSPACES_MAIL_FROM=Tilo <hello@tilo.localhost>"
+    "TILO_WORKSPACES_RESEND_KEY_FILE=$secrets_path/resend-key"
+    "TILO_WORKSPACES_RESEND_URL=http://127.0.0.1:$mail_port/emails"
     # Production's listeners, which its pod binds on all addresses, here on
     # loopback only.
-    "TILO_ROOMS_RELAY_PLAIN=127.0.0.1:$plain_port"
-    "TILO_ROOMS_HTTP=127.0.0.1:$routes_port"
-    "TILO_ROOMS_WEB=127.0.0.1:$relay_web_port"
-    "TILO_ROOMS_LINK=127.0.0.1:$link_port"
-    "TILO_ROOMS_LINK_ORIGIN=https://127.0.0.1:$link_port"
+    "TILO_WORKSPACES_RELAY_PLAIN=127.0.0.1:$plain_port"
+    "TILO_WORKSPACES_HTTP=127.0.0.1:$routes_port"
+    "TILO_WORKSPACES_WEB=127.0.0.1:$relay_web_port"
+    "TILO_WORKSPACES_LINK=127.0.0.1:$link_port"
+    "TILO_WORKSPACES_LINK_ORIGIN=https://127.0.0.1:$link_port"
   )
   # Production's door: only people invited, or declared by the operator
   # (stack.sh owner), join, and a stranger leaves an address on its wait
@@ -408,21 +408,21 @@ relay_env() {
   # state keeps: the restart carries no environment of the up that made it.
   local admission=${TILO_SH_ADMISSION:-$(cat "$state/admission" 2>/dev/null || echo invite)}
   case $admission in
-    invite) env+=(TILO_ROOMS_ADMISSION=invite TILO_ROOMS_WAIT_LIST_MAX=500) ;;
-    open) env+=(TILO_ROOMS_ADMISSION=open) ;;
+    invite) env+=(TILO_WORKSPACES_ADMISSION=invite TILO_WORKSPACES_WAIT_LIST_MAX=500) ;;
+    open) env+=(TILO_WORKSPACES_ADMISSION=open) ;;
     *) die "TILO_SH_ADMISSION is invite (production's) or open, not $admission" ;;
   esac
   # Not here: the moderation and summary model keys (no model is asked
   # locally), and the Discord bridge's real server unless --discord.
   if [[ -n ${discord_api:-} ]]; then
     env+=(
-      TILO_ROOMS_DISCORD_CLIENT_ID=1559266815148953650
-      "TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE=$secrets_path/discord-client-secret"
-      "TILO_ROOMS_DISCORD_AUTHORIZE_URL=$discord_api/oauth2/authorize"
-      "TILO_ROOMS_DISCORD_API_BASE=$discord_api"
+      TILO_WORKSPACES_DISCORD_CLIENT_ID=1559266815148953650
+      "TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE=$secrets_path/discord-client-secret"
+      "TILO_WORKSPACES_DISCORD_AUTHORIZE_URL=$discord_api/oauth2/authorize"
+      "TILO_WORKSPACES_DISCORD_API_BASE=$discord_api"
       # Production's bridge, on the fake's one server (fake-discord's
       # GUILD), its bot token the fake's (TOKEN) in the secrets.
-      "TILO_ROOMS_BOTS=$bots_path/discord-bridge.json guild=1000 server=Tilo mirror-channels=yes"
+      "TILO_WORKSPACES_BOTS=$bots_path/discord-bridge.json guild=1000 server=Tilo mirror-channels=yes"
     )
   fi
   # A workspace's programs and its Browser run in its VM on this stack's own
@@ -742,7 +742,7 @@ vm_host() {
   local enrol=${enroll:-${TILO_SH_TILO_ENROLL:-$(cat "$state/vm-host-enroll" 2>/dev/null || true)}}
   # Where the relay that places here reads what the host writes for it: the
   # image's volumes with --images, the stack's own state natively.
-  local secrets_view=/run/secrets rooms_view=/run/tilo-rooms
+  local secrets_view=/run/secrets rooms_view=/run/tilo-workspaces
   if [[ $mode == native ]]; then secrets_view=$state/secrets rooms_view=$state/relay; fi
   "${sudo[@]}" env \
     TILO_SH_STATE="$vm_state" \
@@ -752,7 +752,7 @@ vm_host() {
     "TILO_SH_RELAY_SECRETS=$state/secrets" \
     "TILO_SH_RELAY_SECRETS_VIEW=$secrets_view" \
     "TILO_SH_RELAY_ROOMS_VIEW=$rooms_view" \
-    "TILO_SH_RELAY_ROOT=$state/secrets/room-root-lounge" \
+    "TILO_SH_RELAY_ROOT=$state/secrets/workspace-root-lounge" \
     "TILO_SH_RELAY_STATE=$state/relay/lounge/relay" \
     "TILO_SH_RELAY_IROH=127.0.0.1:$iroh_port" \
     "TILO_SH_BROWSER_FREE_ACTIONS=${TILO_SH_BROWSER_FREE_ACTIONS:-}" \
@@ -1333,7 +1333,7 @@ start_native_relay() {
   local lounge=${lounge:-$native/lounge}
   { private_env relay "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
-      "TILO_ROOMS_STATE=$state/relay" "TILO_SECRETS_DIR=$state/relay/secrets"
+      "TILO_WORKSPACES_STATE=$state/relay" "TILO_SECRETS_DIR=$state/relay/secrets"
     # Where the image keeps the app surfaces the relay publishes at start,
     # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
@@ -1500,7 +1500,7 @@ up_native() {
   start_native_relay
   wait_relay
   local room
-  room=$(cat "$state/relay/lounge/room-id") || die 'the relay kept no workspace id'
+  room=$(cat "$state/relay/lounge/workspace-id") || die 'the relay kept no workspace id'
   say "relay ready: the Lounge is $room ($((SECONDS - phase))s, $((SECONDS - began))s in)"
   phase=$SECONDS
   start_native_api
@@ -1535,7 +1535,7 @@ restart() {
       build_bundle
       stop_native web
       lay_out_web
-      start_native_web "$(cat "$state/relay/lounge/room-id")"
+      start_native_web "$(cat "$state/relay/lounge/workspace-id")"
       wait_web ;;
     tls)
       start_native_tls
@@ -1556,8 +1556,8 @@ restart() {
 # workspace root, made once. Who is an owner is the workspace's own governance
 # from then on.
 make_secrets() {
-  if [[ ! -s $state/secrets/room-root-lounge ]]; then
-    od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$state/secrets/room-root-lounge"
+  if [[ ! -s $state/secrets/workspace-root-lounge ]]; then
+    od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$state/secrets/workspace-root-lounge"
     printf 'local-fake-discord-secret' > "$state/secrets/discord-client-secret"
     chmod 0400 "$state/secrets"/*
   fi
@@ -1608,7 +1608,7 @@ up() {
 
   printf '%s\n' "$((SECONDS - began))" > "$state/bring-up-seconds"
   if [[ -n $seed ]]; then
-    seed "$(cat "$state/relay/lounge/room-id")"
+    seed "$(cat "$state/relay/lounge/workspace-id")"
   fi
   say "up in $((SECONDS - began))s ($mode)"
   # The operator is the Lounge's owner from the start, as this computer's tilo
@@ -1692,14 +1692,14 @@ up_images() {
   local relay_user=()
   mapfile -d '' relay_user < <(as_user 10001)
   start relay --network host --read-only --tmpfs /tmp "${relay_user[@]}" \
-    -v "$state/relay:/run/tilo-rooms:Z" -v "$state/secrets:/run/secrets:ro,Z" \
+    -v "$state/relay:/run/tilo-workspaces:Z" -v "$state/secrets:/run/secrets:ro,Z" \
     -v "$state/trust-bundle.pem:/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem:ro,Z" \
     --env "TILO_SOURCE_REVISION=local-$commit" \
     "${relay_args[@]}" "$lounge"
   wait_for 'relay (its readiness probe, /mode)' "http://127.0.0.1:$routes_port/mode" 300
   wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 60
   local room
-  room=$(cat "$state/relay/lounge/room-id") || die 'the relay kept no workspace id'
+  room=$(cat "$state/relay/lounge/workspace-id") || die 'the relay kept no workspace id'
   say "relay ready: the Lounge is $room ($((SECONDS - began))s)"
 
   # The API server: uid 65532, its state on its own volume.

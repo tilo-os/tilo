@@ -341,7 +341,6 @@ pub struct PendingConfirmation {
     /// Whether Undo takes the action back.
     pub undoable: bool,
     /// The workspace the agent acts in.
-    #[serde(rename = "room")]
     pub workspace: String,
     /// Unanswered by then, the question is a refusal; ns since the epoch.
     pub expires_at_ns: u64,
@@ -509,7 +508,7 @@ mod tests {
                 "risk": "outside",
                 "kind": "",
                 "undoable": false,
-                "room": "ws",
+                "workspace": "ws",
                 "expires_at_ns": 7,
             }))
             .expect("a question without a page is one");

@@ -21,7 +21,7 @@
 //! - [`sealed_invitations`] — the shelf a site keeps sealed invitations on,
 //!   so a link carries a handle and a key instead of an invitation;
 //! - [`operator`] — the JSON-lines protocol between the public-workspace
-//!   service and each `tilo-relay room` child it runs;
+//!   service and each `tilo-relay workspace` child it runs;
 //! - [`mesh`] — service capabilities and the server advertisements devices
 //!   offer work with;
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;

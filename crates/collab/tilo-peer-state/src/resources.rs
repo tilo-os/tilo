@@ -52,7 +52,7 @@ mod tests {
     fn outer_limits_refuse_oversized_messages_and_keep_valid_ones() {
         let message = NeighbourMsg::SyncResp {
             changes: vec![vec![1; 128]],
-            room: "room".into(),
+            workspace: "workspace".into(),
         };
         let bytes = postcard::to_allocvec(&message).unwrap();
         let limits = OuterLimits {

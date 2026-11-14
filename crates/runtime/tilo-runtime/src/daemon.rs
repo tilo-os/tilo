@@ -250,12 +250,7 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
     }
     let mut next = arguments.next();
     let mut workspace = None;
-    // `--room` is what the flag was called: a launcher outside this repository
-    // may still pass it, so it is read as the same thing.
-    if matches!(
-        next.as_deref().and_then(std::ffi::OsStr::to_str),
-        Some("--workspace" | "--room")
-    ) {
+    if next.as_deref().and_then(std::ffi::OsStr::to_str) == Some("--workspace") {
         workspace = Some(
             arguments
                 .next()
@@ -286,10 +281,10 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
 struct Status {
     version: u32,
     pid: u32,
-    /// The workspace the daemon serves. The probe answers it as `room`, the
+    /// The workspace the daemon serves. The probe answers it as `workspace`, the
     /// name launchers and scripts outside this crate read; `workspace` is
     /// read as the same.
-    #[serde(rename = "room", alias = "workspace")]
+    #[serde(rename = "workspace", alias = "workspace")]
     workspace: String,
 }
 
@@ -1053,10 +1048,10 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
         .read_until(b'\n', &mut reply)?;
     let reply: Value = serde_json::from_slice(&reply).map_err(io::Error::other)?;
     match (
-        // A daemon older than this name answers `room`.
+        // A daemon older than this name answers `workspace`.
         reply
             .get("workspace")
-            .or_else(|| reply.get("room"))
+            .or_else(|| reply.get("workspace"))
             .and_then(Value::as_str),
         reply.get("error"),
     ) {

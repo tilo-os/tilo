@@ -64,7 +64,7 @@ pub(crate) fn admit_invited_member(
     let cert = redemption.certificate();
     tilo_user_identity::verify_device_cert_at(cert, now_ns).map_err(|error| error.to_string())?;
     let declared_workspace = document
-        .get(ROOT, "room")
+        .get(ROOT, "workspace")
         .map_err(|error| error.to_string())?
         .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
         .ok_or("governed workspace id is missing")?;

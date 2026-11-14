@@ -35,7 +35,7 @@ use tilo_action_broker::workspace_keys::{
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::StatePeer;
-use tilo_room_host::workspaces::{
+use tilo_workspace_host::workspaces::{
     DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswerFuture, KeySink, Workspaces,
 };
 use tokio::task::JoinHandle;
@@ -312,7 +312,7 @@ fn vault_key(device: &SigningKey) -> VaultKey {
 /// same device key.
 fn released_vault_key(device: &SigningKey) -> VaultKey {
     VaultKey::new(blake3::derive_key(
-        "tilo-relay governed room channel vault v1",
+        "tilo-relay governed workspace channel vault v1",
         &device.to_bytes(),
     ))
 }

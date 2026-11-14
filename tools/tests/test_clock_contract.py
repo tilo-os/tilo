@@ -111,7 +111,7 @@ class ClockContractTests(unittest.TestCase):
         self.assertEqual(contract.audit(root), [])
 
     def test_tokio_timers_keep_their_reason_and_every_other_file_needs_one(self):
-        listed = "crates/hosting/tilo-room-host/src/peer/delivery.rs"
+        listed = "crates/hosting/tilo-workspace-host/src/peer/delivery.rs"
         with self.subTest(phase="a listed timer file passes"):
             root = self.fixture(
                 {
@@ -122,11 +122,11 @@ class ClockContractTests(unittest.TestCase):
             )
             self.assertEqual(contract.audit(root), [])
         with self.subTest(phase="an unlisted timer read is reported"):
-            unlisted = "crates/hosting/tilo-room-host/src/peer/other.rs"
+            unlisted = "crates/hosting/tilo-workspace-host/src/peer/other.rs"
             root = self.fixture({unlisted: "fn go() -> tokio::time::Instant { tokio::time::Instant::now() }\n"})
             self.assertEqual(self.paths(root), [unlisted])
         with self.subTest(phase="a bare timer read is told apart by its import"):
-            bare = "crates/hosting/tilo-room-host/src/peer/other.rs"
+            bare = "crates/hosting/tilo-workspace-host/src/peer/other.rs"
             root = self.fixture(
                 {bare: "use tokio::time::Instant;\nfn go() -> Instant { Instant::now() }\n"}
             )

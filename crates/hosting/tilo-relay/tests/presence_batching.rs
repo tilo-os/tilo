@@ -154,7 +154,7 @@ fn pointer(step: u32, user: &str) -> NeighbourMsg {
     NeighbourMsg::RetiredPresenceMoved {
         peer: 0x9e37_79b9_7f4a_7c15,
         user: user.into(),
-        key: format!(r#"{{"pointer":{{"space":{{"tile":{{"room":"{ROOM}","tab":1}}}}}}}}"#),
+        key: format!(r#"{{"pointer":{{"space":{{"tile":{{"workspace":"{ROOM}","tab":1}}}}}}}}"#),
         point: (f64::from(step).mul_add(3.0, 200.0), 300.0),
         ts: 1_800_000_000_000 + u64::from(step) * 10,
         colour: Some("teal".into()),
@@ -318,9 +318,9 @@ impl Member {
     }
 }
 
-/// The author's room state with one text document, and the author's
+/// The author's workspace state with one text document, and the author's
 /// replica of that document.
-fn seeded_room(author: &TestDevice, reader: &TestDevice) -> (StatePeer, AutoCommit) {
+fn seeded_workspace(author: &TestDevice, reader: &TestDevice) -> (StatePeer, AutoCommit) {
     let now = SystemTime::now();
     let certificates = vec![author.cert.clone(), reader.cert.clone()];
     let mut owner = StatePeer::new(
@@ -370,7 +370,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     ))
     .await;
 
-    let (mut owner, mut doc) = seeded_room(&author, &reader);
+    let (mut owner, mut doc) = seeded_workspace(&author, &reader);
     let body = doc.get(ROOT, "body").unwrap().unwrap().1;
 
     let mut member = Member::open(&relay, &reader).await;

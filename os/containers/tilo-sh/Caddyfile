@@ -32,7 +32,7 @@ http://127.0.0.1:{$TILO_SH_RELAY_PORT} {
 }
 
 # The relay's live plane: its packet relay, which pages reach over
-# websockets (TILO_ROOMS_LIVE) and the relay's own endpoint uses as its home.
+# websockets (TILO_WORKSPACES_LIVE) and the relay's own endpoint uses as its home.
 http://127.0.0.1:{$TILO_SH_LIVE_PORT} {
 	reverse_proxy 127.0.0.1:{$TILO_SH_PACKET_PORT}
 }

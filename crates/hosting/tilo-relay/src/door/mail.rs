@@ -1,10 +1,10 @@
-//! The mail the persistent room's door sends about its wait list: the link
+//! The mail the persistent workspace's door sends about its wait list: the link
 //! that confirms an address, the invitation a member sends there, and word
 //! that an address left the list.
 //!
 //! The words are in `mail/` beside this crate's sources, one plain-text and
 //! one HTML file per mail and language, and `mail/layout.html` around the
-//! HTML ones. `TILO_ROOMS_MAIL_TEMPLATES` names a directory of the same
+//! HTML ones. `TILO_WORKSPACES_MAIL_TEMPLATES` names a directory of the same
 //! shape to use instead (the shared mail repository's generated coffee set);
 //! a configured file that is missing or malformed stops the service, never
 //! falling back to the built-in words. A plain-text file's first line is the
@@ -127,7 +127,7 @@ pub struct Templates {
 
 impl Templates {
     /// The templates built into the service, for a door that configures no
-    /// directory (`TILO_ROOMS_MAIL_TEMPLATES`).
+    /// directory (`TILO_WORKSPACES_MAIL_TEMPLATES`).
     pub fn baked() -> Self {
         Self {
             layout: LAYOUT.to_owned(),
@@ -384,7 +384,7 @@ impl Mail {
             && !self.html.trim().is_empty()
     }
 
-    /// How much room this mail takes in an outbox, near enough for a bound.
+    /// How much workspace this mail takes in an outbox, near enough for a bound.
     pub(crate) fn weight(&self) -> usize {
         self.to
             .len()
@@ -448,8 +448,8 @@ fn filled(template: &str, fill: &Fill<'_>, escape: fn(&str) -> String) -> String
 }
 
 /// Whether `url` is a page mail may link to: `https` with a host, or, in the
-/// local review mode (`TILO_ROOMS_LOCAL`) the door was started in, a plain
-/// `http` address on this machine, which `TILO_ROOMS_WEB_ENTRY` accepts there too.
+/// local review mode (`TILO_WORKSPACES_LOCAL`) the door was started in, a plain
+/// `http` address on this machine, which `TILO_WORKSPACES_WEB_ENTRY` accepts there too.
 /// Nothing that could run as another kind of URL, carry credentials or break
 /// out of the attribute.
 fn safe_url(url: &str, local: bool) -> bool {
@@ -616,19 +616,19 @@ fn transport_error(error: &tilo_net::NetError) -> SendError {
 /// The door's mail: what it fills in, and where what it sends is kept.
 #[derive(Clone)]
 pub struct DoorMail {
-    /// The door's page (`TILO_ROOMS_WEB_ENTRY`), which the links open.
+    /// The door's page (`TILO_WORKSPACES_WEB_ENTRY`), which the links open.
     door: String,
     workspace: String,
     templates: Templates,
     outbox: Arc<Outbox>,
-    /// The door runs in the local review mode (`TILO_ROOMS_LOCAL`), where
+    /// The door runs in the local review mode (`TILO_WORKSPACES_LOCAL`), where
     /// its page may be a plain `http` loopback address.
     local: bool,
 }
 
 impl DoorMail {
     /// A door that keeps its mail only while the process runs, with the
-    /// built-in words: for tests. A persistent room's door is
+    /// built-in words: for tests. A persistent workspace's door is
     /// [`Self::durable`], so a restart delays its mail rather than losing
     /// it.
     #[cfg(test)]
@@ -642,7 +642,7 @@ impl DoorMail {
         )
     }
 
-    /// The door of a persistent room: `templates` as configured or built in,
+    /// The door of a persistent workspace: `templates` as configured or built in,
     /// and every mail kept in `dir` until it is sent, across restarts.
     pub fn durable(
         mailer: Arc<dyn Mailer>,
@@ -700,7 +700,7 @@ impl DoorMail {
         } else {
             remove.as_str()
         };
-        // The room checks an invitation link, and the door's own links are
+        // The workspace checks an invitation link, and the door's own links are
         // built from its page; this is the last look before a link is mailed
         // to someone who will click it.
         if !safe_url(&self.door, self.local)
@@ -803,7 +803,7 @@ pub(crate) fn preview(dir: &Path, templates: &Templates) -> Result<Vec<PathBuf>>
     let door = "https://tilo.example/";
     let link = |name: &str| format!("{door}?{name}=0123456789abcdef");
     let (confirm, remove) = (link("wait-list-confirm"), link("wait-list-remove"));
-    let invite = format!("{door}#/desktop/room/example?invite=AAECAwQF");
+    let invite = format!("{door}#/desktop/workspace/example?invite=AAECAwQF");
     let mut written = Vec::new();
     for language in LANGUAGES {
         for kind in Kind::ALL {
@@ -940,7 +940,7 @@ mod tests {
                 "Lounge",
             );
             assert!(door.on_door("https://tilo.example/?invite=AAEC"));
-            assert!(door.on_door("https://tilo.example/#/desktop/room/x?invite=AAEC"));
+            assert!(door.on_door("https://tilo.example/#/desktop/workspace/x?invite=AAEC"));
             // An invitation with its certificate chain is several KiB long.
             let long = format!(
                 "https://tilo.example/#/@host/w/x?invite={}",
@@ -976,7 +976,7 @@ mod tests {
                 false
             ));
             assert!(safe_url(
-                "https://tilo.example/#/desktop/room/x?invite=AAEC",
+                "https://tilo.example/#/desktop/workspace/x?invite=AAEC",
                 false
             ));
             assert!(safe_url("http://localhost:8790/", true));
@@ -984,7 +984,7 @@ mod tests {
             assert!(safe_url("http://[::1]:9/", true));
             assert!(safe_url("http://tilo.localhost:24120/", true));
             assert!(!safe_url("http://localhost.tilo.example/", true));
-            // A plain loopback page is the local review mode's, not a room's.
+            // A plain loopback page is the local review mode's, not a workspace's.
             assert!(!safe_url("http://localhost:8790/", false));
             assert!(!safe_url("http://127.0.0.1:9/", false));
             for bad in [
@@ -1012,7 +1012,7 @@ mod tests {
             };
             assert!(
                 door.invite(&to, "javascript:alert(1)", "aa").is_none(),
-                "an invitation the room let through is never mailed"
+                "an invitation the workspace let through is never mailed"
             );
             assert!(
                 door.invite(&to, "http://tilo.example/?invite=AA", "aa")
@@ -1023,9 +1023,9 @@ mod tests {
                     .is_some()
             );
 
-            // A room's door, outside the local mode, mails no plain http link.
+            // A workspace's door, outside the local mode, mails no plain http link.
             let dir = tempfile::tempdir().unwrap();
-            let room = DoorMail::durable(
+            let workspace = DoorMail::durable(
                 Arc::new(FakeMailer::default()),
                 "https://tilo.example/",
                 "Lounge",
@@ -1035,11 +1035,11 @@ mod tests {
             )
             .unwrap();
             assert!(
-                room.invite(&to, "http://localhost:8790/?invite=AA", "aa")
+                workspace.invite(&to, "http://localhost:8790/?invite=AA", "aa")
                     .is_none()
             );
             assert!(
-                room.invite(&to, "https://tilo.example/?invite=AA", "aa")
+                workspace.invite(&to, "https://tilo.example/?invite=AA", "aa")
                     .is_some()
             );
         }

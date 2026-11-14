@@ -21,7 +21,9 @@ const RELEASED: &str =
     include_str!("../../../tests/fixtures/owner-record/single-file.owner.json.hex");
 /// One workspace's file as this build writes it: [`RELEASED`]'s `Founders`
 /// as it comes up.
-const CURRENT: &str = include_str!("../../../golden/owner-workspace-record/v4.hex");
+const CURRENT: &str = include_str!("../../../golden/owner-workspace-record/v5.hex");
+/// The same entry in version 4's layout, which this build brings up.
+const PREVIOUS: &str = include_str!("../../../golden/owner-workspace-record/v4.hex");
 const FOUNDERS: &str = "40267648-f762-4c8d-89ad-c5ab27aa13b8";
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -50,10 +52,21 @@ fn the_format_brings_every_version_up() {
 fn a_released_entry_reads_in_this_builds_layout() {
     let mut previous = released_entry();
     previous["version"] = 3.into();
-    assert_step_reads_previous(&FORMAT, &serde_json::to_vec(&previous).unwrap(), |bytes| {
+    let bytes = FORMAT
+        .migrate(serde_json::to_vec(&previous).unwrap(), 3)
+        .unwrap();
+    let stored: StoredWorkspace = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(stored.version, WORKSPACE_VERSION);
+    assert_eq!(stored.workspace, founders());
+}
+
+#[test]
+fn a_version_4_entry_reads_in_this_builds_layout() {
+    assert_step_reads_previous(&FORMAT, &bytes(PREVIOUS), |bytes| {
         let stored: StoredWorkspace = serde_json::from_slice(bytes).unwrap();
         assert_eq!(stored.version, WORKSPACE_VERSION);
         assert_eq!(stored.workspace, founders());
+        assert!(stored.hosted_here());
     });
 }
 

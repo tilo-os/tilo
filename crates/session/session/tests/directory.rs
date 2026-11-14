@@ -2280,7 +2280,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
         "the lounge's remaining devices to hear its governance",
         || {
             page.status()
-                .room_members
+                .workspace_members
                 .get(&lounge.workspace)
                 .is_some_and(|members| !members.contains(&removed))
         },

@@ -1,10 +1,10 @@
 //! A fresh page joining a real Lounge, as the deployment rehearsal: the
-//! image's own entrypoint with eu1's environment, `tilo-relay room
+//! image's own entrypoint with eu1's environment, `tilo-relay workspace
 //! --persistent` on a copy of the deployment's state, watched by pages that
 //! were never here before.
 //!
 //! This is the deployment's own composition, not a fixture: the host is
-//! `os/containers/tilo-lounge/entrypoint.sh` given eu1's `TILO_ROOMS_*`
+//! `os/containers/tilo-lounge/entrypoint.sh` given eu1's `TILO_WORKSPACES_*`
 //! (`apps/tilo-eu1/deployment.yaml`), the state volume is the operator's
 //! copy of production, and the pages go through the host's real door
 //! (`/host`, and the session the door serves) with invitations the
@@ -22,7 +22,7 @@
 //!   cargo test -p tilo-session-client -p workspace-unify --test lounge_fresh_page -- --nocapture
 //! ```
 //!
-//! `TILO_LOUNGE_REFOUND` is passed to the host as `TILO_ROOMS_REFOUND`, the
+//! `TILO_LOUNGE_REFOUND` is passed to the host as `TILO_WORKSPACES_REFOUND`, the
 //! way the deployment will set it.
 
 #![allow(
@@ -139,15 +139,15 @@ impl Lounge {
             .expect("cp runs");
         assert!(copied.success(), "the snapshot copies into the volume");
         assert!(
-            state.path().join("lounge/room-id").is_file(),
+            state.path().join("lounge/workspace-id").is_file(),
             "the volume holds the workspace's id: {}",
             state.path().join("lounge").display()
         );
         let mounted = [
-            from.join("secrets/room-root-lounge"),
-            from.join("secrets/room-root"),
-            snapshot.join("secrets/room-root-lounge"),
-            snapshot.join("secrets/room-root"),
+            from.join("secrets/workspace-root-lounge"),
+            from.join("secrets/workspace-root"),
+            snapshot.join("secrets/workspace-root-lounge"),
+            snapshot.join("secrets/workspace-root"),
         ]
         .into_iter()
         .find(|path| path.is_file())
@@ -159,7 +159,7 @@ impl Lounge {
         });
         let secrets = state.path().join("secrets");
         std::fs::create_dir_all(&secrets).expect("the secrets directory");
-        let root_file = secrets.join("room-root-lounge");
+        let root_file = secrets.join("workspace-root-lounge");
         std::fs::copy(&mounted, &root_file).expect("the owner root");
         (state, root_file)
     }
@@ -172,7 +172,7 @@ impl Lounge {
         let state = tempfile::tempdir().expect("a state volume for the run");
         let secrets = state.path().join("secrets");
         std::fs::create_dir_all(&secrets).expect("the secrets directory");
-        let root_file = secrets.join("room-root-lounge");
+        let root_file = secrets.join("workspace-root-lounge");
         let owner_root = SigningKey::generate(&mut UnwrapErr(SysRng));
         std::fs::write(&root_file, hex::encode(owner_root.to_bytes())).expect("the owner root");
         Self::start_at(state, &root_file, Some(owner_root), None)
@@ -198,34 +198,37 @@ impl Lounge {
             // UDP port, as the deployment's own name does. The host takes the
             // port the kernel picks and publishes it at `/host`, so nothing
             // here holds a port no one is bound to.
-            .env("TILO_ROOMS_LINK", "127.0.0.1:0")
-            .env("TILO_ROOMS_LINK_ORIGIN", "https://127.0.0.1:0")
+            .env("TILO_WORKSPACES_LINK", "127.0.0.1:0")
+            .env("TILO_WORKSPACES_LINK_ORIGIN", "https://127.0.0.1:0")
             .env("PATH", relay_on_path())
             // eu1's environment, as apps/tilo-eu1/deployment.yaml sets it,
             // without the Discord, mail and model secrets: this run starts no
             // bridge that needs them.
-            .env("TILO_ROOMS_PERSISTENT", "lounge")
-            .env("TILO_ROOMS_NAME", "Lounge")
+            .env("TILO_WORKSPACES_PERSISTENT", "lounge")
+            .env("TILO_WORKSPACES_NAME", "Lounge")
             .env(
-                "TILO_ROOMS_DESCRIPTION",
+                "TILO_WORKSPACES_DESCRIPTION",
                 "The Tilo community: chat, notes and a shared desktop",
             )
-            .env("TILO_ROOMS_DEFAULT_ROLE", "editor")
-            .env("TILO_ROOMS_LAYOUT", "shared")
-            .env("TILO_ROOMS_ADMISSION", "invite")
-            .env("TILO_ROOMS_RELAY_ORIGIN", "https://127.0.0.1")
-            .env("TILO_ROOMS_WEB_ENTRY", "https://tilo.sh/")
-            .env("TILO_ROOMS_SITE_ORIGINS", "https://tilo.sh,https://tilo.so")
-            .env("TILO_ROOMS_ROOT_FILE", root_file)
-            .env("TILO_ROOMS_FEEDBACK_CHANNEL", "feedback")
+            .env("TILO_WORKSPACES_DEFAULT_ROLE", "editor")
+            .env("TILO_WORKSPACES_LAYOUT", "shared")
+            .env("TILO_WORKSPACES_ADMISSION", "invite")
+            .env("TILO_WORKSPACES_RELAY_ORIGIN", "https://127.0.0.1")
+            .env("TILO_WORKSPACES_WEB_ENTRY", "https://tilo.sh/")
+            .env(
+                "TILO_WORKSPACES_SITE_ORIGINS",
+                "https://tilo.sh,https://tilo.so",
+            )
+            .env("TILO_WORKSPACES_ROOT_FILE", root_file)
+            .env("TILO_WORKSPACES_FEEDBACK_CHANNEL", "feedback")
             // The deployment starts without seeding Chat: the volume's record
             // cannot be served to new members until it is founded again.
-            .env("TILO_ROOMS_SEED_APPS", "")
-            .env("TILO_ROOMS_STATE", state.path())
-            .env("TILO_ROOMS_WEB", "127.0.0.1:0")
-            .env("TILO_ROOMS_RELAY_PLAIN", "127.0.0.1:0")
-            .env("TILO_ROOMS_LIVE", "127.0.0.1:0")
-            .env("TILO_ROOMS_HTTP", "127.0.0.1:0")
+            .env("TILO_WORKSPACES_SEED_APPS", "")
+            .env("TILO_WORKSPACES_STATE", state.path())
+            .env("TILO_WORKSPACES_WEB", "127.0.0.1:0")
+            .env("TILO_WORKSPACES_RELAY_PLAIN", "127.0.0.1:0")
+            .env("TILO_WORKSPACES_LIVE", "127.0.0.1:0")
+            .env("TILO_WORKSPACES_HTTP", "127.0.0.1:0")
             .env("TILO_SECRETS_DIR", state.path().join("secrets"))
             .env("TILO_RELAY_LOG", "info")
             .env(
@@ -236,7 +239,7 @@ impl Lounge {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         if let Some(refound) = refound {
-            command.env("TILO_ROOMS_REFOUND", refound);
+            command.env("TILO_WORKSPACES_REFOUND", refound);
         }
         // The image lays every version of each built-in app's `surface.toml`
         // at this one path and the host publishes them into its content plane
@@ -246,8 +249,11 @@ impl Lounge {
             command.env("TILO_SURFACES", surfaces);
         }
         let mut child = command.spawn_locked().expect("the Lounge starts");
-        let stdin = Some(child.stdin.take().expect("the room's operator input"));
-        let stdout = child.stdout.take().expect("the room's operator output");
+        let stdin = Some(child.stdin.take().expect("the workspace's operator input"));
+        let stdout = child
+            .stdout
+            .take()
+            .expect("the workspace's operator output");
         let (sender, events) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -272,7 +278,7 @@ impl Lounge {
         } = started
         else {
             panic!(
-                "a persistent room announces its workspace, its plain listener and its certificate: {started:?}"
+                "a persistent workspace announces its workspace, its plain listener and its certificate: {started:?}"
             );
         };
         let _ = sha256;
@@ -514,7 +520,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     println!("the host minted an invitation for the visitor");
 
     let page = fresh_page(&lounge, &visitor, &invitation).await;
-    let room_id = tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).unwrap();
+    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).unwrap();
     println!("the fresh page joined the Lounge");
 
     let desktop = DocumentRoute {
@@ -624,12 +630,12 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
         // the host fans out and never keeps, so it says it again while the
         // second page listens.
         page.send(Cmd::Presence(
-            room_id,
+            workspace_id,
             vec![Presence::pointing(&lounge.workspace, tab, at.0, at.1)],
         ))
         .unwrap();
         page.send(Cmd::Presence(
-            room_id,
+            workspace_id,
             vec![Presence::desktop(
                 &lounge.workspace,
                 collab_types::presence::Payload::Status {
@@ -658,7 +664,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     );
     let roster = |page: &Link| {
         page.status()
-            .room_members
+            .workspace_members
             .get(&lounge.workspace)
             .map_or(0, std::collections::BTreeSet::len)
     };
@@ -691,7 +697,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
 /// state volume, and the second sees where the first put its pointer.
 ///
 /// This is the deployment's own composition (`os/containers/tilo-lounge/
-/// entrypoint.sh` starting `tilo-relay room --persistent`), with nothing of
+/// entrypoint.sh` starting `tilo-relay workspace --persistent`), with nothing of
 /// production: the host makes its workspace and its owner root as it starts,
 /// and both people are guests the host invites through the door it serves. It
 /// is the fast check of the one thing a member's page needs to see another
@@ -710,7 +716,7 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
     let page = fresh_page(&lounge, &first, &first_invitation).await;
     let other = fresh_page(&lounge, &second, &second_invitation).await;
     println!("both pages joined the Lounge");
-    let workspace_id = room_id(&lounge);
+    let workspace_id = workspace_id(&lounge);
     // Both pages are in the workspace's live plane before anything is said:
     // a page says presence only on a plane it joined, and a plane joined
     // after the word would not draw it.
@@ -794,7 +800,7 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     let agent_invitation = lounge.invite(&agent);
     let tab = fresh_page(&lounge, &person_tab, &tab_invitation).await;
     let bridge = fresh_page(&lounge, &agent, &agent_invitation).await;
-    let workspace_id = room_id(&lounge);
+    let workspace_id = workspace_id(&lounge);
     wait_for_plane(&tab).await;
     wait_for_plane(&bridge).await;
     // What `tilo mcp` holds once it entered: the device's session and the host's actions asked
@@ -890,7 +896,7 @@ async fn wait_for_plane(page: &Link) {
 }
 
 /// The workspace's id as a page numbers it.
-fn room_id(lounge: &Lounge) -> tilo_relay_protocol::WorkspaceId {
+fn workspace_id(lounge: &Lounge) -> tilo_relay_protocol::WorkspaceId {
     tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).unwrap()
 }
 

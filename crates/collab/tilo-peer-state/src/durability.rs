@@ -217,7 +217,7 @@ mod tests {
     fn receipt(generation: u64) -> DurableReceipt {
         DurableReceipt::new(
             Coverage {
-                workspace: "room".into(),
+                workspace: "workspace".into(),
                 app: "app".into(),
                 record: "record".into(),
                 payload_hash: [3; 32],

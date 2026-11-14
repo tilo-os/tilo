@@ -1,7 +1,7 @@
 //! A computer joins a real workspace service: the composition its deployment
 //! runs, started from this tree, with nothing of its join path stood in for.
 //!
-//! The service is `tilo-relay room --persistent` as the Lounge image starts
+//! The service is `tilo-relay workspace --persistent` as the Lounge image starts
 //! it: a governed workspace on a temporary state volume, a generated owner
 //! root, the members' desktop shared, people taken by invitation. It names its
 //! site in an `entry.json` written as the web entry image writes one — the home
@@ -58,7 +58,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 /// plane at that origin's host and the port it bound, and the member's page dials it there.
 const ORIGIN: &str = "https://127.0.0.1";
 
-/// A room service as its deployment runs it: `tilo-relay room --persistent` with the deployment's
+/// A room service as its deployment runs it: `tilo-relay workspace --persistent` with the deployment's
 /// own routes beside it, spoken to over its stdin as the operator (whose input a deployment leaves
 /// closed).
 struct Room {
@@ -118,25 +118,31 @@ impl Room {
             // `exec tilo-relay` finds the binary the run built beside the test's own programs.
             .env("PATH", relay_on_path())
             // eu1's environment, as apps/tilo-eu1/deployment.yaml sets it.
-            .env("TILO_ROOMS_PERSISTENT", "lounge")
-            .env("TILO_ROOMS_NAME", "Lounge")
-            .env("TILO_ROOMS_ADMISSION", admission)
+            .env("TILO_WORKSPACES_PERSISTENT", "lounge")
+            .env("TILO_WORKSPACES_NAME", "Lounge")
+            .env("TILO_WORKSPACES_ADMISSION", admission)
             // The origin the ingress publishes. The listeners below stand where it forwards to,
             // each on a port the kernel picks: the plain one's is announced once the room has bound
             // it, and the live plane's is the room's own origin host and that port.
-            .env("TILO_ROOMS_RELAY_ORIGIN", ORIGIN)
-            .env("TILO_ROOMS_PUBLIC_API", ORIGIN)
-            .env("TILO_ROOMS_WEB_ENTRY", "https://tilo.sh/")
-            .env("TILO_ROOMS_SITE_ORIGINS", "https://tilo.sh,https://tilo.so")
-            .env("TILO_ROOMS_ROOT_FILE", &root_file)
-            .env("TILO_ROOMS_FEEDBACK_CHANNEL", "feedback")
+            .env("TILO_WORKSPACES_RELAY_ORIGIN", ORIGIN)
+            .env("TILO_WORKSPACES_PUBLIC_API", ORIGIN)
+            .env("TILO_WORKSPACES_WEB_ENTRY", "https://tilo.sh/")
+            .env(
+                "TILO_WORKSPACES_SITE_ORIGINS",
+                "https://tilo.sh,https://tilo.so",
+            )
+            .env("TILO_WORKSPACES_ROOT_FILE", &root_file)
+            .env("TILO_WORKSPACES_FEEDBACK_CHANNEL", "feedback")
             // The listeners, on loopback, each on a port the kernel picks as it binds: two rooms on
             // one machine take the ports they are given, and the room announces the ones it bound.
-            .env("TILO_ROOMS_STATE", state.path().join("tilo-workspaces"))
-            .env("TILO_ROOMS_WEB", "127.0.0.1:0")
-            .env("TILO_ROOMS_RELAY_PLAIN", "127.0.0.1:0")
-            .env("TILO_ROOMS_LIVE", "127.0.0.1:0")
-            .env("TILO_ROOMS_HTTP", "127.0.0.1:0")
+            .env(
+                "TILO_WORKSPACES_STATE",
+                state.path().join("tilo-workspaces"),
+            )
+            .env("TILO_WORKSPACES_WEB", "127.0.0.1:0")
+            .env("TILO_WORKSPACES_RELAY_PLAIN", "127.0.0.1:0")
+            .env("TILO_WORKSPACES_LIVE", "127.0.0.1:0")
+            .env("TILO_WORKSPACES_HTTP", "127.0.0.1:0")
             // The room's state volume, where the host keeps its secrets.
             .env(
                 "TILO_SECRETS_DIR",
@@ -153,7 +159,7 @@ impl Room {
         // eu1 keeps a wait list at its door. The list is what a door taking people by invitation
         // offers those it turns away: the image refuses to start an open door with one.
         if admission == "invite" {
-            command.env("TILO_ROOMS_WAIT_LIST_MAX", "16");
+            command.env("TILO_WORKSPACES_WAIT_LIST_MAX", "16");
         }
         let mut child = command.spawn_locked().expect("the room service starts");
         let stdin = Some(child.stdin.take().expect("the room's operator input"));

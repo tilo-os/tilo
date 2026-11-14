@@ -48,7 +48,7 @@
 //! the store is on: while that runs low the store refuses new content and
 //! says why ([`tilo_content::ContentError::DiskLow`]), and the host asks
 //! again later, so a file it could not keep then stays with the members that
-//! wrote it until there is room. A blob of a file dropped from a tree stays
+//! wrote it until there is workspace. A blob of a file dropped from a tree stays
 //! in the store until nothing in the workspace references it any more.
 
 use std::collections::{BTreeMap, BTreeSet};

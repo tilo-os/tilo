@@ -183,9 +183,9 @@ fn first_launch_reuse_and_stale_socket_recovery() -> Result<()> {
     let published = status(profile.path())?;
     ensure!(
         published
-            .get("room")
+            .get("workspace")
             .and_then(Value::as_str)
-            .is_some_and(|room| !room.is_empty()),
+            .is_some_and(|workspace| !workspace.is_empty()),
         "the status names no workspace: {published}"
     );
     Ok(())

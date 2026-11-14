@@ -1,6 +1,6 @@
 [package]
 name = "tilo-network-actor"
-description = "The desktop's peer-to-peer transport: the iroh actor that keeps room host sessions, sessions with the person's own devices, direct links and a person's private device lane."
+description = "The desktop's peer-to-peer transport: the iroh actor that keeps workspace host sessions, sessions with the person's own devices, direct links and a person's private device lane."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -45,7 +45,7 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
-tilo-room-host = { path = "../../hosting/tilo-room-host" }
+tilo-workspace-host = { path = "../../hosting/tilo-workspace-host" }
 tilo-rt.workspace = true
 tilo-session-client = { path = "../client" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
@@ -53,7 +53,7 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-window-share = { path = "../window-share" }
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
-# Room sync states, as apps are told them.
+# Workspace sync states, as apps are told them.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 uuid.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }

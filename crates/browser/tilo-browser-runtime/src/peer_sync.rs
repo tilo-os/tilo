@@ -528,7 +528,7 @@ pub(crate) fn view(peer: u32, workspace: &str) -> Option<BoardView> {
             .find(|shown| shown.as_str() == workspace)?;
         let (members, named) = with_persons(
             page.client.members(workspace),
-            &page.handle.room_devices(workspace),
+            &page.handle.workspace_devices(workspace),
         );
         Some(BoardView {
             // What is known here changed: the board, or how many of its members the workspace's
@@ -572,7 +572,7 @@ pub(crate) fn members(peer: u32, workspace: &str) -> Option<Vec<Shown>> {
         Some(
             with_persons(
                 page.client.members(workspace),
-                &page.handle.room_devices(workspace),
+                &page.handle.workspace_devices(workspace),
             )
             .0,
         )

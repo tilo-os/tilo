@@ -109,11 +109,11 @@ pub struct RelayConfig {
     pub member_limits: Option<MemberLimitsConfig>,
     /// Pre-admissions a governed workspace keeps, spent ones included. A
     /// public workspace that pre-admits every visitor raises it. `None` keeps
-    /// 1024. It keeps the key `max_room_grants` in `relay.toml`.
+    /// 1024. It keeps the key `max_workspace_grants` in `relay.toml`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        rename = "max_room_grants"
+        rename = "max_workspace_grants"
     )]
     pub max_workspace_grants: Option<usize>,
 }

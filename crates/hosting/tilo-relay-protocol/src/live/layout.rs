@@ -98,12 +98,12 @@ impl LiveLayout {
             .collect();
         // Too many to carry: the focused window stays, then the first others.
         if placed.len() > MAX_LAYOUT_WINDOWS {
-            let room =
+            let workspace =
                 MAX_LAYOUT_WINDOWS.saturating_sub(usize::from(placed.iter().any(|w| w.focused)));
             let mut others = 0_usize;
             placed.retain(|window| {
                 others = others.saturating_add(usize::from(!window.focused));
-                window.focused || others <= room
+                window.focused || others <= workspace
             });
             placed.truncate(MAX_LAYOUT_WINDOWS);
         }

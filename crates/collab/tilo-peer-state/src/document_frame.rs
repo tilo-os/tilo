@@ -265,7 +265,7 @@ pub fn open_frame(
 
 /// A record as its writer reads it: `base`, the record's saved bytes as the replica holds them
 /// (`None` when it holds none of it, or cannot open it yet), with `frames`, writes of `author` the
-/// replica has not taken in yet (they wait for the record's keys or for room in custody), merged
+/// replica has not taken in yet (they wait for the record's keys or for workspace in custody), merged
 /// over it. Only the writer reads these: nobody else holds them until they land.
 ///
 /// # Errors
@@ -320,7 +320,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let route = DocumentRoute {
             app_id: "app".into(),
-            cluster_id: "room".into(),
+            cluster_id: "workspace".into(),
             record: "record".into(),
         };
         let creator = key_group::GroupPeer::create_now(
@@ -347,7 +347,7 @@ mod tests {
             vec![1],
             route.artifact(),
             author,
-            document_attestation_id("app", "room", "record"),
+            document_attestation_id("app", "workspace", "record"),
             collab_types::OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             1,
@@ -359,7 +359,7 @@ mod tests {
                 .unwrap(),
             route.artifact(),
             author,
-            document_attestation_id("app", "room", "record"),
+            document_attestation_id("app", "workspace", "record"),
             collab_types::OpKind::Compaction,
             std::time::SystemTime::UNIX_EPOCH,
             2,

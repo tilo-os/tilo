@@ -225,7 +225,7 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
     // The domain stored policies were already dated under: a workspace's
     // authorization basis keeps its digest, whatever the code around it is
     // called now.
-    hasher.update(b"tilo-room-media-auth-basis-v1\0");
+    hasher.update(b"tilo-workspace-media-auth-basis-v1\0");
     crate::postcard_sink::hash_into(
         &(owner_key, members, grants, roster, rows, revocations),
         &mut hasher,

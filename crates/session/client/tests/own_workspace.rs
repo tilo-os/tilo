@@ -169,7 +169,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // A workspace Bob neither owns nor was invited into is refused, typed as the host refused it.
     let elsewhere = workspaces.create("Not Bob's").await.unwrap();
     let mut not_his = Map::new();
-    not_his.insert("room".into(), json!(elsewhere.workspace));
+    not_his.insert("workspace".into(), json!(elsewhere.workspace));
     let refused = device
         .own_workspace(not_his, "Firefox on Linux")
         .await

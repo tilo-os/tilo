@@ -84,11 +84,11 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let avatars =
-                PublicAvatars::new(dir.path().join("avatars"), "https://rooms.example/avatars")
+                PublicAvatars::new(dir.path().join("avatars"), "https://workspaces.example/avatars")
                     .unwrap();
             let url = avatars.publish(PNG).unwrap();
             let name = blake3::hash(PNG).to_hex().to_string();
-            assert_eq!(url, format!("https://rooms.example/avatars/{name}"));
+            assert_eq!(url, format!("https://workspaces.example/avatars/{name}"));
             assert_eq!(
                 std::fs::read(dir.path().join("avatars").join(&name)).unwrap(),
                 PNG

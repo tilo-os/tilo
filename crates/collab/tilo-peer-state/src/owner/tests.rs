@@ -1114,13 +1114,9 @@ fn a_workspace_file_names_its_host_under_the_stored_key() {
     let value = workspace_json(&joined.path, joined.workspace);
     let stored = value.as_object().expect("a stored workspace");
     assert!(
-        stored.contains_key("room_host"),
-        "one key, one spelling: {}",
+        stored.contains_key("workspace_host"),
+        "the stored key names the workspace's host: {}",
         serde_json::to_string_pretty(&value).unwrap()
-    );
-    assert!(
-        !stored.contains_key("workspace_host"),
-        "one key, one spelling"
     );
     let reopened = open_file(&joined.path).expect("the file this build wrote reads");
     assert_eq!(
@@ -1133,45 +1129,16 @@ fn a_workspace_file_names_its_host_under_the_stored_key() {
 }
 
 #[test]
-fn a_host_written_under_each_renamed_key_reads() {
-    for key in ["governor", "workspace_host"] {
-        let joined = enrolled();
-        let host = joined
-            .owner
-            .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
-            .unwrap();
-        drop(joined.owner);
-        let file = workspace_file(&joined.path, joined.workspace);
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-        let stored = value.as_object_mut().expect("a stored workspace");
-        let named_as_the_host = stored
-            .remove("room_host")
-            .expect("the record names the host");
-        stored.insert(key.into(), named_as_the_host);
-        std::fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
-        let reopened = open_file(&joined.path).expect("a file written under that key reads");
-        assert_eq!(
-            reopened
-                .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
-                .unwrap(),
-            host,
-            "the {key} field is the workspace's host"
-        );
-    }
-}
-
-#[test]
-fn an_owner_file_written_while_the_map_was_named_for_workspaces_restores() {
+fn an_owner_file_written_while_the_map_was_named_for_rooms_restores() {
     let joined = enrolled();
     drop(joined.owner);
     let mut value = whole_record(&joined.path);
     let workspaces = value
         .as_object_mut()
         .expect("a storage object")
-        .remove("rooms")
+        .remove("workspaces")
         .expect("the storage names its workspaces");
-    value["workspaces"] = workspaces;
+    value["rooms"] = workspaces;
     // That build's file, where the split layout this build keeps is not.
     std::fs::remove_dir_all(crate::owner::file_store::parts_of(&joined.path)).unwrap();
     std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
@@ -1196,22 +1163,6 @@ fn a_pending_enrollment_handle_is_written_under_the_stored_key() {
     assert_eq!(
         serde_json::from_value::<PendingEnrollmentId>(value).unwrap(),
         id
-    );
-}
-
-#[test]
-fn a_pending_enrollment_handle_written_under_the_workspace_key_reads() {
-    let id = PendingEnrollmentId::new(WorkspaceId::parse(WORKSPACE).unwrap(), 7, [3; 32]);
-    let mut value = serde_json::to_value(&id).unwrap();
-    let object = value.as_object_mut().expect("a handle object");
-    let workspace = object
-        .remove("room")
-        .expect("the handle names its workspace");
-    object.insert("workspace".into(), workspace);
-    assert_eq!(
-        serde_json::from_value::<PendingEnrollmentId>(value).unwrap(),
-        id,
-        "the handle reads under the key it was written under"
     );
 }
 
@@ -1434,7 +1385,7 @@ fn a_worker_crash_while_installing_leaves_the_join_pending() {
     bootstrap.governance_messages = vec![
         postcard::to_stdvec(&NeighbourMsg::SyncResp {
             changes: vec![hex::decode(CRASHING_CHANGE).unwrap()],
-            room: WORKSPACE.into(),
+            workspace: WORKSPACE.into(),
         })
         .unwrap(),
     ];

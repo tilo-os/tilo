@@ -51,7 +51,7 @@ use crate::workspace_keys;
 
 /// The engine's record, under this device's state directory: the name an earlier build kept it
 /// under, so the state it wrote is still read.
-const FILE: &str = "rooms.json";
+const FILE: &str = "workspaces.json";
 
 /// The largest document the session reads out of a workspace.
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
@@ -286,7 +286,7 @@ const FRAMES_KEPT: tilo_peer_state::store::Appetite = tilo_peer_state::store::Ap
 type SavedRecord = Option<(Vec<u8>, [u8; 32])>;
 
 /// The writes this device made that its replica has not taken in yet, by record, as document
-/// frames in the clear: they wait for their record's keys (nothing goes out unsealed) or for room
+/// frames in the clear: they wait for their record's keys (nothing goes out unsealed) or for workspace
 /// in custody. The session that writes them keeps them here, and its readers read them over the
 /// replica ([`Engine::read_record`]); nobody else sees them until they land.
 #[derive(Clone, Default)]
@@ -1410,7 +1410,7 @@ impl Engine {
         endpoint: &iroh_base::EndpointAddr,
         now: SystemTime,
     ) -> Result<Issued, String> {
-        let room = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
+        let workspace_id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         let identity = self.identity();
         // What the joiner dials: this device's endpoint, signed by the device the grant names, as a
         // host of its own workspace. A link is handed to someone who may be anywhere, so it names
@@ -1430,7 +1430,7 @@ impl Engine {
         let issued = self
             .owner
             .issue_invitation(
-                room,
+                workspace_id,
                 &identity.device_cert,
                 &IssueInvitationRequest {
                     request_id,
@@ -1628,7 +1628,7 @@ impl Engine {
         self.link.lock_recover().clone()
     }
 
-    /// Where this session's channel service installs this device's keys: the broker, the room host
+    /// Where this session's channel service installs this device's keys: the broker, the workspace host
     /// and every sealed read meet here.
     /// This device's own writes its replica has not taken in yet.
     pub fn held_writes(&self) -> &HeldWrites {
@@ -1842,7 +1842,7 @@ impl tilo_broker_core::custody::OwnerCustody for Engine {
                 .unwrap_or(false)
     }
 
-    fn projects_room(&self, workspace_id: WorkspaceId) -> bool {
+    fn projects_workspace(&self, workspace_id: WorkspaceId) -> bool {
         self.holds(workspace_id)
     }
 

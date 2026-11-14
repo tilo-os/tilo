@@ -9,7 +9,7 @@
 //!
 //! 1. the placer which host runs the workspace's VM ([`Request::Place`]);
 //!    while every host is full it answers [`Reply::Busy`], and the run waits,
-//!    saying so once, never refused for room;
+//!    saying so once, never refused for workspace;
 //! 2. that host's member device, over the device plane as this host's own
 //!    device, to run the command line
 //!    ([`environment_runs`](tilo_actions::remote::environment_runs)), and
@@ -253,7 +253,7 @@ fn wait(for_: Duration, stop: Option<&(dyn Fn() -> bool + Sync)>) {
     }
 }
 
-/// The run of a command stopped while it waited for room: it ran nothing.
+/// The run of a command stopped while it waited for workspace: it ran nothing.
 fn stopped_before_start(command: &str, waited: Option<String>) -> CommandRan {
     CommandRan {
         command: command.to_owned(),

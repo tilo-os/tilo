@@ -381,7 +381,7 @@ mod tests {
 
         phase a_pem_pair_loads_into_an_https_config_and_an_empty_chain_is_refused;
         {
-            let generated = rcgen::generate_simple_self_signed(vec!["rooms.internal".into()]).unwrap();
+            let generated = rcgen::generate_simple_self_signed(vec!["workspaces.internal".into()]).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let (chain, key, empty) = (
                 dir.path().join("chain.pem"),

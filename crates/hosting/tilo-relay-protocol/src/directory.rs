@@ -277,7 +277,7 @@ impl DoorRefused {
 /// [`DoorRefused::wait_list`] (`workspaces::Workspaces::offer_wait_list`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DoorWaitList {
-    /// Where someone asks to be taken off the list (`TILO_ROOMS_CONTACT`).
+    /// Where someone asks to be taken off the list (`TILO_WORKSPACES_CONTACT`).
     pub contact: Option<String>,
     /// The door mails the address a link that confirms it.
     pub mail: bool,
@@ -421,7 +421,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_door_names_its_steps_and_reads_its_pages_error_reports;
 
-        phase a_door_route_names_its_room_and_step;
+        phase a_door_route_names_its_workspace_and_step;
         {
             let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
             assert_eq!(
@@ -438,7 +438,7 @@ mod tests {
                 door_route(&format!("/directory/{workspace}/report/more")),
                 None
             );
-            assert_eq!(door_route("/rooms"), None);
+            assert_eq!(door_route("/workspaces"), None);
         }
 
         phase a_page_error_report_is_what_the_page_sends;

@@ -60,7 +60,7 @@ on:
       - "crates/hosting/tilo-relay-protocol/**"
       - "crates/hosting/tilo-relay-session/**"
       - "crates/hosting/tilo-relay-store/**"
-      - "crates/hosting/tilo-room-host/**"
+      - "crates/hosting/tilo-workspace-host/**"
       - "crates/lang/tilolang-lex/**"
       - "crates/media/thumbnail/**"
       - "crates/packaging/app-catalogue/**"

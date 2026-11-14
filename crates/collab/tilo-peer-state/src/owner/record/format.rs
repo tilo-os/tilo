@@ -1,9 +1,11 @@
 //! The layouts a workspace's entry in the owner record has had, and how an
 //! older one comes up to the one this build writes.
 //!
-//! Version 4 ([`WORKSPACE_VERSION`]) is this build's: the entry names its
-//! workspace once, by its id ([`WorkspaceId`]) under `workspace`, and so does
-//! every grant and bootstrap in its join ledger.
+//! Version 5 ([`WORKSPACE_VERSION`]) is this build's: the entry names its
+//! workspace once, by its id ([`WorkspaceId`]) under `workspace`, and its
+//! host under `workspace_host`, as every grant and bootstrap in its join
+//! ledger names its workspace too. Version 4 spelled the host's key
+//! `room_host`.
 //!
 //! Versions 2 and 3 are what the 0.1 releases wrote (v0.1.5 among them), one
 //! layout: 3 marked an entry holding an effect history root, so a build that
@@ -53,7 +55,7 @@ pub(crate) const FORMAT: Format = Format {
     name: "owner workspace record",
     version: WORKSPACE_VERSION,
     oldest: 2,
-    steps: &[v2_to_v3, v3_to_v4],
+    steps: &[v2_to_v3, v3_to_v4, v4_to_v5],
 };
 
 /// The version an entry's bytes name.
@@ -84,6 +86,9 @@ pub(crate) fn read_whole(bytes: &[u8]) -> Result<NativeAuthorityStorage, String>
             *entry =
                 serde_json::from_slice(&up(bytes, stored)?).map_err(|error| error.to_string())?;
         }
+    }
+    if let Some(rooms) = record.remove("rooms") {
+        record.insert("workspaces".into(), rooms);
     }
     serde_json::from_value(Value::Object(record)).map_err(|error| error.to_string())
 }
@@ -144,7 +149,7 @@ fn v3_to_v4(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
         .remove("room")
         .and_then(|room| room.as_str().map(str::to_owned))
         .ok_or("a version 3 workspace record names no room")?;
-    let workspace = workspace(&room)?;
+    let workspace = workspace_of(&room)?;
     entry.insert("version".into(), Value::from(4_u32));
     entry.insert(
         "workspace".into(),
@@ -167,8 +172,23 @@ fn v3_to_v4(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     bytes_of(&entry)
 }
 
+/// Version 4's entry in this build's layout: the same entry under this build's
+/// keys for the workspace's host.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a migration step takes its bytes by value"
+)]
+fn v4_to_v5(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut entry = entry_of(&bytes, 4)?;
+    if let Some(host) = entry.remove("room_host") {
+        entry.insert("workspace_host".into(), host);
+    }
+    entry.insert("version".into(), Value::from(5_u32));
+    bytes_of(&entry)
+}
+
 /// The workspace an entry of the releases' layout names by `room`.
-fn workspace(room: &str) -> Result<WorkspaceId, String> {
+fn workspace_of(room: &str) -> Result<WorkspaceId, String> {
     WorkspaceId::parse(room).ok_or_else(|| format!("version 3 record names {room:?}, not a UUID"))
 }
 
@@ -242,7 +262,7 @@ impl Invitation {
             request_digest: self.request_digest,
             issued: self.issued,
             grant: InviteGrant {
-                workspace_id: workspace(&grant.room)?,
+                workspace_id: workspace_of(&grant.room)?,
                 issuer: grant.issuer,
                 role: grant.role.into(),
                 nonce: grant.nonce,
@@ -322,7 +342,7 @@ impl Bootstrap {
             invite_id: self.invite_id,
             device_cert: self.device_cert,
             role: self.role.into(),
-            workspace_id: workspace(&self.room)?,
+            workspace_id: workspace_of(&self.room)?,
             host: self.host,
             certified_roster: self.certified_roster,
             revocations: self.revocations,
@@ -353,7 +373,7 @@ impl OwnerBootstrap {
         Ok(OwnerBootstrapV1 {
             version: self.version,
             device_cert: self.device_cert,
-            workspace_id: workspace(&self.room)?,
+            workspace_id: workspace_of(&self.room)?,
             host: self.host,
             certified_roster: self.certified_roster,
             revocations: self.revocations,

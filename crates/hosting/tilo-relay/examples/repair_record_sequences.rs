@@ -74,19 +74,19 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc as _, hydrate};
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
-use tilo_room_host::workspaces::Workspaces;
 use tilo_user_identity::{DeviceCert, RevocationList, sign_device_cert};
+use tilo_workspace_host::workspaces::Workspaces;
 
 const CHAT: &str = "so.tilo.chat";
 /// Where the changes a repaired record leaves out are kept, under the host's
 /// state: `<workspace>/<app>/<record>/<hash>.change`, each as it was written.
 /// The host takes each in again once its record holds what it builds on.
-const ARCHIVE: &str = tilo_room_host::workspaces::repaired_records::REPAIRED_RECORDS;
+const ARCHIVE: &str = tilo_workspace_host::workspaces::repaired_records::REPAIRED_RECORDS;
 
 struct Args {
     state: PathBuf,
     root_file: PathBuf,
-    /// The workspace's name, as `tilo-relay room --persistent` names it.
+    /// The workspace's name, as `tilo-relay workspace --persistent` names it.
     persistent: String,
     workspace: Option<String>,
     app: Option<String>,
@@ -115,11 +115,12 @@ fn args() -> anyhow::Result<Args> {
         }
     }
     Ok(Args {
-        state: state.context("--state: the directory `tilo-relay room --state` names")?,
+        state: state.context("--state: the directory `tilo-relay workspace --state` names")?,
         root_file: root_file
-            .context("--root-file: the file `tilo-relay room --root-file` names")?,
-        persistent: persistent
-            .context("--persistent: the name `tilo-relay room --persistent` gives the workspace")?,
+            .context("--root-file: the file `tilo-relay workspace --root-file` names")?,
+        persistent: persistent.context(
+            "--persistent: the name `tilo-relay workspace --persistent` gives the workspace",
+        )?,
         workspace,
         app,
         dry_run,
@@ -175,7 +176,7 @@ fn main() -> ExitCode {
     reason = "the host stays open until every record is repaired, then read back"
 )]
 async fn run(args: &Args) -> anyhow::Result<Vec<RecordReport>> {
-    let relay_root = tilo_relay_protocol::metrics::room_relay_root(&args.state);
+    let relay_root = tilo_relay_protocol::metrics::workspace_relay_root(&args.state);
     // Nothing else runs on this state while it is repaired.
     let _lock = tilo_relay::state_lock::StateLock::acquire(&relay_root)
         .map_err(anyhow::Error::msg)
@@ -230,7 +231,7 @@ async fn run(args: &Args) -> anyhow::Result<Vec<RecordReport>> {
     Ok(reports)
 }
 
-/// The host's workspaces opened as `tilo-relay room --persistent` opens them,
+/// The host's workspaces opened as `tilo-relay workspace --persistent` opens them,
 /// under the certificate it signs, on an endpoint bound to this machine alone
 /// and found by nobody: no member reaches the host while its records are
 /// repaired.
@@ -528,7 +529,7 @@ async fn apply(
         .join(workspace)
         .join(app)
         .join(if record.is_empty() {
-            tilo_room_host::workspaces::repaired_records::PRIMARY
+            tilo_workspace_host::workspaces::repaired_records::PRIMARY
         } else {
             record
         });
@@ -547,7 +548,7 @@ async fn apply(
     let governor = workspaces.serving_certificate().clone();
     let branches = analysis.branches.clone();
     workspaces
-        .author_room_record(workspace, &governor, (app, record), |doc| {
+        .author_workspace_record(workspace, &governor, (app, record), |doc| {
             for branch in &branches {
                 carry(doc, &branch.ancestor, &branch.document)
                     .map_err(|error| error.to_string())?;
@@ -1084,7 +1085,7 @@ fn read_host_key(path: &Path) -> anyhow::Result<SigningKey> {
     Ok(SigningKey::from_bytes(&seed))
 }
 
-/// The certificate `tilo-relay room --persistent <name>` serves with, signed
+/// The certificate `tilo-relay workspace --persistent <name>` serves with, signed
 /// afresh from the workspace root, the host's key and the workspace's name,
 /// exactly as the host signs it at every start: the host's workspaces name it
 /// among their hosts, so the repair acts as the host itself and changes
@@ -1120,8 +1121,8 @@ mod tests {
         reason = "in a test these are the assertion"
     )]
 
-    use tilo_room_host::workspaces::fixtures::{TestGroupKeys, governor, test_host_holding};
-    use tilo_room_host::workspaces::sealed_fixtures::{SealingMember, member_device};
+    use tilo_workspace_host::workspaces::fixtures::{TestGroupKeys, governor, test_host_holding};
+    use tilo_workspace_host::workspaces::sealed_fixtures::{SealingMember, member_device};
 
     use super::*;
 

@@ -73,12 +73,12 @@ pub(crate) fn read(document: &automerge::AutoCommit) -> std::sync::Arc<PolicyDat
     read
 }
 
-/// The workspace `document` governs, as its `room` row names it: whose
+/// The workspace `document` governs, as its `workspace` row names it: whose
 /// states a reading is remembered among.
 fn governed_workspace(document: &automerge::AutoCommit) -> String {
     use automerge::ReadDoc as _;
     document
-        .get(automerge::ROOT, "room")
+        .get(automerge::ROOT, "workspace")
         .ok()
         .flatten()
         .and_then(|(value, _)| value.into_string().ok())

@@ -89,7 +89,7 @@ pub fn encode_presence_batch(
         workspace_id: WorkspaceId,
         items: &'a [PresenceItem],
     }
-    // Workspace for the length prefix, written once the length is known.
+    // Room for the length prefix, written once the length is known.
     let mut out = vec![0, 0, 0, 0, PRESENCE_BATCH_KIND];
     out = postcard::to_extend(
         &Fields {

@@ -5,7 +5,7 @@
 //! there: a file a caller uploaded and what an app made in a record the host
 //! runs, the files the workspace's members wrote ([`crate::files_content`]),
 //! what its bots fetched from outside and the files its members posted in
-//! Chat ([`crate::room_bots::attachments`]). Members read any of it by asking
+//! Chat ([`crate::workspace_bots::attachments`]). Members read any of it by asking
 //! their workspace for the hash their record names
 //! ([`crate::workspaces::Workspaces::content_answer`]), and are answered from
 //! that workspace's store alone: possessing a hash grants nothing in another

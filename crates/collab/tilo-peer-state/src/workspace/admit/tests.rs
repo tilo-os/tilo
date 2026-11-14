@@ -73,7 +73,7 @@ fn put_role(
 /// A workspace the owner governs, with an editor and a viewer.
 fn governed() -> AutoCommit {
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", WORKSPACE).unwrap();
+    doc.put(ROOT, "workspace", WORKSPACE).unwrap();
     doc.put(ROOT, "name", "Workspace").unwrap();
     doc.put(ROOT, "owner", person_id(owner_root())).unwrap();
     sign(
@@ -280,7 +280,7 @@ fn malformed_batch_and_foreign_workspace_are_refused() {
         Err(WorkspaceRefusal::Malformed(_))
     ));
     let moved = changes_after(&before, |doc| {
-        doc.put(ROOT, "room", "5b0e8c47-26a1-4f3e-8d9c-1a2b3c4d5e6f")
+        doc.put(ROOT, "workspace", "5b0e8c47-26a1-4f3e-8d9c-1a2b3c4d5e6f")
             .unwrap();
     });
     assert_eq!(
@@ -1124,7 +1124,7 @@ fn started() -> Started {
     let (editor_key, editor) = rooted(0x31);
     let (_, viewer) = rooted(0x41);
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", WORKSPACE).unwrap();
+    doc.put(ROOT, "workspace", WORKSPACE).unwrap();
     doc.put(ROOT, "owner", person_of(&owner)).unwrap();
     let mut changes: Vec<Change> = [
         (&admin, Role::Moderator),

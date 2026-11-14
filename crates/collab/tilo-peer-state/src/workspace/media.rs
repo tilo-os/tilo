@@ -762,8 +762,12 @@ mod workspace_media_tests {
 
     fn workspace() -> AutoCommit {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "room", uuid::Uuid::from_bytes([1; 16]).to_string())
-            .unwrap();
+        doc.put(
+            ROOT,
+            "workspace",
+            uuid::Uuid::from_bytes([1; 16]).to_string(),
+        )
+        .unwrap();
         doc.commit();
         doc
     }

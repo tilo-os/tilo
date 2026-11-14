@@ -6,7 +6,7 @@
 //! the workspace's root: a restriction is the workspace's expiring `restrict:<person>`
 //! Deny, a ban the workspace's ban. Reports, history, decisions and undos go
 //! through the bot's replica of the chat record; the host runs it as the
-//! workspace's moderation bot ([`tilo_relay::room_bots::ModerationBot`]).
+//! workspace's moderation bot ([`tilo_relay::workspace_bots::ModerationBot`]).
 
 use std::path::Path;
 
@@ -41,7 +41,7 @@ pub(crate) const PUBLIC_MODERATION_MODEL_ENV: &str = "TILO_RELAY_MODERATION_MODE
 /// model key ([`PUBLIC_MODERATION_KEY_ENV`]): a public workspace takes in
 /// strangers, so its reports are answered even while its moderators are
 /// away. Each workspace's agent is the persistent workspace's
-/// ([`tilo_relay::room_bots::ModerationBot`]), its verdicts enforced
+/// ([`tilo_relay::workspace_bots::ModerationBot`]), its verdicts enforced
 /// through that workspace's governance.
 ///
 /// # Errors
@@ -58,7 +58,7 @@ pub(crate) fn follow_published(
     let Some(workspaces) = relay.workspaces().cloned() else {
         return Ok(None);
     };
-    let store = tilo_secrets::SecretStore::for_app(crate::persistent_room_cli::SECRET_APP);
+    let store = tilo_secrets::SecretStore::for_app(crate::persistent_workspace_cli::SECRET_APP);
     let agent = load(&store, &key_file, model.as_deref())?;
     tracing::info!(model = agent.model(), "public workspaces are moderated");
     Ok(Some(tokio::spawn(async move {
@@ -66,8 +66,11 @@ pub(crate) fn follow_published(
         let mut running: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
             std::collections::HashMap::new();
         loop {
-            let published: std::collections::BTreeSet<String> =
-                workspaces.published_rooms().await.into_iter().collect();
+            let published: std::collections::BTreeSet<String> = workspaces
+                .published_workspaces()
+                .await
+                .into_iter()
+                .collect();
             running.retain(|workspace, bot| {
                 let listed = published.contains(workspace);
                 if !listed {
@@ -81,7 +84,7 @@ pub(crate) fn follow_published(
                 }
                 match load(&store, &key_file, model.as_deref()) {
                     Ok(agent) => {
-                        let bot = tilo_relay::room_bots::ModerationBot::new(
+                        let bot = tilo_relay::workspace_bots::ModerationBot::new(
                             workspaces.clone(),
                             workspace.clone(),
                             workspaces.governor().clone(),

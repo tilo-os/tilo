@@ -419,10 +419,10 @@ mod tests {
         }
 
         phase a_setting_that_wants_room_is_turned_away_where_it_has_none;
-        // The room a setting wants is the room it gets, and a device told nothing about its states
+        // The workspace a setting wants is the workspace it gets, and a device told nothing about its states
         // takes work whatever the machine is doing.
         {
-            let room_kept = WorkSetting {
+            let workspace_kept = WorkSetting {
                 when: super::WorkWhen {
                     free_cpu_percent: 20,
                     free_memory_percent: 20,
@@ -436,7 +436,7 @@ mod tests {
             };
             assert_eq!(busy.free_cpu_percent(), 10);
             assert_eq!(
-                room_kept
+                workspace_kept
                     .answer(&own(), busy, true, None, Vec::new())
                     .verdict,
                 Err(Decline::LowResources),
@@ -447,7 +447,7 @@ mod tests {
                 ..roomy()
             };
             assert_eq!(
-                room_kept
+                workspace_kept
                     .answer(&own(), full, true, None, Vec::new())
                     .verdict,
                 Err(Decline::LowResources)

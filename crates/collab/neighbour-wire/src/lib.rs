@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 47;
+pub const PEER_PROTOCOL_VERSION: u32 = 48;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -344,10 +344,10 @@ impl WriteRefusal {
 /// [`Eq`]; [`PartialEq`] is sufficient for tests and dispatch logic.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum NeighbourMsg {
-    /// Request: replay every Automerge change to the workspace named by `room`
+    /// Request: replay every Automerge change to the workspace named by `workspace`
     /// after the included clock.
     ///
-    /// `room` is the workspace id as text that scopes the
+    /// `workspace` is the workspace id as text that scopes the
     /// answer — an empty/unparseable value names no workspace (not a wildcard) and gets
     /// no document back. The transport emits one on peer-join, before it knows
     /// what workspace the peer is in. A device on a direct link sends one when
@@ -355,7 +355,7 @@ pub enum NeighbourMsg {
     /// end answers on that link with the state it holds.
     SyncReq {
         since: Vec<u8>,
-        room: String,
+        workspace: String,
         /// Hash of the exact signed bearer invite being redeemed. Ordinary
         /// anti-entropy requests omit it; an authority uses it once to bind
         /// the authenticated transport identity to that invite's role.
@@ -369,9 +369,12 @@ pub enum NeighbourMsg {
         nonce: u64,
     },
     /// Response: a batch of opaque Automerge change blobs for the workspace named by
-    /// `room`. The blobs carry the workspace identity too; the receiver checks the two
+    /// `workspace`. The blobs carry the workspace identity too; the receiver checks the two
     /// agree before merging.
-    SyncResp { changes: Vec<Vec<u8>>, room: String },
+    SyncResp {
+        changes: Vec<Vec<u8>>,
+        workspace: String,
+    },
     /// Retired: a peer's presence cursor moved within `key`'s coordinate
     /// space. A pointer move is a frame on the workspace's live plane now; no
     /// build produces this, and it stays only so every later Postcard
@@ -711,7 +714,7 @@ pub enum NeighbourMsg {
     /// rides it (a wave) reaches the workspace's people with or without a host.
     /// Appended to preserve every existing Postcard discriminant.
     LivePresence { peer: PeerId, frame: Vec<u8> },
-    /// Viewer `peer`, a member of the workspace `room` names, shows these of the
+    /// Viewer `peer`, a member of the workspace `workspace` names, shows these of the
     /// receiving device's windows (host and unconfined programs' windows, which cross
     /// a workspace that shares its layout as hosted on that device): it streams
     /// each to the viewer while the list keeps arriving and names it, read
@@ -720,7 +723,7 @@ pub enum NeighbourMsg {
     /// to preserve every existing Postcard discriminant.
     SurfaceViewRequest {
         peer: PeerId,
-        room: String,
+        workspace: String,
         views: Vec<SurfaceView>,
         decode: Vec<SurfaceDecodeLimit>,
     },
@@ -1074,7 +1077,7 @@ mod tests {
             "surface view request",
             NeighbourMsg::SurfaceViewRequest {
                 peer: 3,
-                room: "07848ffe-1898-4f72-8419-0b54c93e6dad".into(),
+                workspace: "07848ffe-1898-4f72-8419-0b54c93e6dad".into(),
                 views: vec![SurfaceView {
                     tab: 0x5EED_0000_0000_0007,
                     width: 1280,
@@ -1146,7 +1149,7 @@ mod tests {
                 "sync request",
                 NeighbourMsg::SyncReq {
                     since: vec![1, 2, 3],
-                    room: WORKSPACE.into(),
+                    workspace: WORKSPACE.into(),
                     invite_id: Some([9; 32]),
                     nonce: 7,
                 },
@@ -1155,7 +1158,7 @@ mod tests {
                 "sync response",
                 NeighbourMsg::SyncResp {
                     changes: vec![vec![0xAA, 0xBB], vec![0xCC]],
-                    room: WORKSPACE.into(),
+                    workspace: WORKSPACE.into(),
                 },
             ),
             (

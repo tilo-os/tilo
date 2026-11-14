@@ -376,6 +376,7 @@ pub struct ActivityDeepLink {
 mod admitted_history_tests {
     use super::*;
     use automerge::{ROOT, transaction::Transactable};
+    use tilo_desktop_model::projection::WORKSPACE_ID_KEY;
     use tilo_desktop_model::{Workspace, WorkspaceId};
 
     #[test]
@@ -385,7 +386,8 @@ mod admitted_history_tests {
         };
         let workspace = Workspace::new(WorkspaceId::from_u128(9), "Actual workspace");
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "room", workspace.id().to_string()).unwrap();
+        doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
+            .unwrap();
         doc.put(ROOT, "name", "Actual workspace").unwrap();
         doc.commit();
         let mut strips = vec![Strip {

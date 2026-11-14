@@ -302,7 +302,7 @@ pub fn extract_governed_fields(
     #[cfg(test)]
     POLICY_READS.with(|count| count.set(count.get().saturating_add(1)));
     let text = |key: &str| candidate.str_at(&ROOT, key);
-    let workspace = text("room").unwrap_or_default();
+    let workspace = text("workspace").unwrap_or_default();
     (
         text("name"),
         crate::workspace::policy_of(candidate, &workspace),
@@ -361,7 +361,7 @@ pub fn candidate_on(
     Ok(candidate)
 }
 pub fn declared_workspace_mismatches(candidate: &AutoCommit, workspace: uuid::Uuid) -> bool {
-    let declared = match candidate.get(ROOT, "room").ok().flatten() {
+    let declared = match candidate.get(ROOT, "workspace").ok().flatten() {
         Some((Value::Scalar(s), _)) => match s.as_ref() {
             ScalarValue::Str(value) => tilo_failure::ignored!(
                 "a workspace id that does not parse declares no other workspace",

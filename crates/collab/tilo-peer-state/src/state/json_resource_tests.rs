@@ -46,7 +46,7 @@ pub(crate) fn grant_fixture() -> tilo_action_policy::Grant {
     Grant::new(
         "grant \u{0003}id",
         Grantee::person("person 🦀\n\"named\"\\"),
-        TreePath::workspace("room")
+        TreePath::workspace("workspace")
             .app("so.tilo.chat")
             .resource("chat.channel:\u{0002}general")
             .action("message.\u{0001}send"),

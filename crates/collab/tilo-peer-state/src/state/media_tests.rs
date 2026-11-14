@@ -61,7 +61,7 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
 }
 fn message(doc: &mut AutoCommit) -> NeighbourMsg {
     NeighbourMsg::SyncResp {
-        room: WORKSPACE.into(),
+        workspace: WORKSPACE.into(),
         changes: doc
             .get_changes(&[])
             .iter()
@@ -997,7 +997,7 @@ fn workspace_media_governed_revocation_fence_cannot_be_removed_by_higher_revisio
         .publish_governed_revocations(&[revocation], &key, now)
         .unwrap();
     // The relay's historical retention proof refuses the same candidate; that
-    // half lives beside the proof, in `tilo_room_host::payloads`.
+    // half lives beside the proof, in `tilo_workspace_host::payloads`.
     let mut current = peer.admitted_workspace().unwrap().clone();
     let ids = current.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     // Every owner device's row carries the owner's revocations: clear them all.

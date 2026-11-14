@@ -164,7 +164,7 @@ fn native_publication_closed_families_do_not_promote_presence_or_requests() {
     for message in [
         NeighbourMsg::SyncReq {
             since: vec![],
-            room: peer.workspace_id().into(),
+            workspace: peer.workspace_id().into(),
             invite_id: None,
             nonce: 0,
         },
@@ -543,7 +543,7 @@ fn native_publication_streaming_cut_requires_complete_workspace_history() {
         .unwrap();
     workspace.commit_edit("fixture", "cut-workspace-parent");
     let parent = NeighbourMsg::SyncResp {
-        room: receiver.core.workspace.clone(),
+        workspace: receiver.core.workspace.clone(),
         changes: workspace
             .get_changes(&before)
             .iter()
@@ -554,7 +554,7 @@ fn native_publication_streaming_cut_requires_complete_workspace_history() {
     workspace.put(ROOT, "cut-workspace-child", "child").unwrap();
     workspace.commit_edit("fixture", "cut-workspace-child");
     let child = NeighbourMsg::SyncResp {
-        room: receiver.core.workspace.clone(),
+        workspace: receiver.core.workspace.clone(),
         changes: workspace
             .get_changes(&before)
             .iter()

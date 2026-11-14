@@ -47,7 +47,7 @@
 //! move_relay_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge --remove-sources
 //! ```
 //!
-//! `--state`, `--root-file` and `--persistent` are what `tilo-relay room` runs
+//! `--state`, `--root-file` and `--persistent` are what `tilo-relay workspace` runs
 //! with: the host serves under the certificate it signs from them at every
 //! start, and the tool opens the workspaces under that same certificate, so
 //! it acts as the host itself and changes nothing in their governance. Running it
@@ -72,7 +72,7 @@ const UNASSIGNED: &str = "unassigned";
 struct Args {
     state: PathBuf,
     root_file: PathBuf,
-    /// The workspace's name, as `tilo-relay room --persistent` names it.
+    /// The workspace's name, as `tilo-relay workspace --persistent` names it.
     persistent: String,
     dry_run: bool,
     remove_sources: bool,
@@ -98,11 +98,12 @@ fn args() -> anyhow::Result<Args> {
         }
     }
     Ok(Args {
-        state: state.context("--state: the directory `tilo-relay room --state` names")?,
+        state: state.context("--state: the directory `tilo-relay workspace --state` names")?,
         root_file: root_file
-            .context("--root-file: the file `tilo-relay room --root-file` names")?,
-        persistent: persistent
-            .context("--persistent: the name `tilo-relay room --persistent` gives the workspace")?,
+            .context("--root-file: the file `tilo-relay workspace --root-file` names")?,
+        persistent: persistent.context(
+            "--persistent: the name `tilo-relay workspace --persistent` gives the workspace",
+        )?,
         dry_run,
         remove_sources,
     })
@@ -159,7 +160,7 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args) -> anyhow::Result<Report> {
-    let relay_root = tilo_relay_protocol::metrics::room_relay_root(&args.state);
+    let relay_root = tilo_relay_protocol::metrics::workspace_relay_root(&args.state);
     // Nothing else runs on this state while it moves.
     let _lock = tilo_relay::state_lock::StateLock::acquire(&relay_root)
         .map_err(anyhow::Error::msg)
@@ -340,7 +341,7 @@ fn read_host_key(path: &Path) -> anyhow::Result<SigningKey> {
     Ok(SigningKey::from_bytes(&seed))
 }
 
-/// The certificate `tilo-relay room --persistent <name>` serves with: it is
+/// The certificate `tilo-relay workspace --persistent <name>` serves with: it is
 /// kept nowhere, but signed afresh at every start from the workspace root,
 /// the host's key and the workspace's name, exactly so. The host's
 /// workspaces name it among their hosts; a certificate signed any other way
@@ -591,7 +592,7 @@ mod tests {
                     tilo_relay::daemon::RelayIdentity {
                         user_public_key: root.verifying_key().to_bytes(),
                         device_signing_key: host.clone(),
-                        // As `tilo-relay room --persistent lounge` signs it.
+                        // As `tilo-relay workspace --persistent lounge` signs it.
                         device_cert: host_cert(root, host, "lounge").unwrap(),
                         revocations: RevocationList::new(),
                     },
@@ -603,7 +604,7 @@ mod tests {
                 let other = workspaces.create("Elsewhere").await.unwrap().workspace;
                 let governor = workspaces.serving_certificate().clone();
                 workspaces
-                    .author_room_record(&lounge, &governor, ("so.tilo.notes", ""), |doc| {
+                    .author_workspace_record(&lounge, &governor, ("so.tilo.notes", ""), |doc| {
                         doc.put(automerge::ROOT, "picture", picture)
                             .map_err(|error| error.to_string())?;
                         doc.put(automerge::ROOT, "avatar", earlier)
@@ -627,7 +628,7 @@ mod tests {
         let root_file = state.path().join("root");
         std::fs::write(&root_file, hex::encode(root.to_bytes())).unwrap();
         std::fs::write(state.path().join("host-device.key"), host.to_bytes()).unwrap();
-        let relay_root = tilo_relay_protocol::metrics::room_relay_root(state.path());
+        let relay_root = tilo_relay_protocol::metrics::workspace_relay_root(state.path());
         let blobs = relay_root.join(BLOBS);
         let picture = kept(&blobs, b"a picture the lounge's notes show");
         let stray = kept(&blobs, b"an upload no record ever named");

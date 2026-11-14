@@ -12,7 +12,7 @@
  *   pointer and caret while it is the mount acted in last;
  * - `live`: the workspace's live layer.
  *
- * A workspace on a loopback `http:` origin (local review, `tilo-relay room
+ * A workspace on a loopback `http:` origin (local review, `tilo-relay workspace
  * --web-plain`) is accepted: the page then needs no certificate exception.
  */
 import * as host from './host.mjs';

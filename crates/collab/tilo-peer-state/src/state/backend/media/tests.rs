@@ -212,7 +212,7 @@ fn media_fixture() -> (StatePeer, SigningKey, SystemTime) {
     peer.receive_from(
         TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
         NeighbourMsg::SyncResp {
-            room: peer.workspace_id().into(),
+            workspace: peer.workspace_id().into(),
             changes,
         },
         now,

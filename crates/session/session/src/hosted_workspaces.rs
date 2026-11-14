@@ -294,7 +294,7 @@ fn record_request(
         target: tilo_actions::remote::RemoteActionTarget {
             provider: tilo_relay_session::workspaces::HOST_ACTIONS_PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(
-                tilo_relay_session::workspaces::HOST_ROOMS_RESOURCE,
+                tilo_relay_session::workspaces::HOST_WORKSPACES_RESOURCE,
                 step,
             ),
         },

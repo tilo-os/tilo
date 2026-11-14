@@ -556,14 +556,14 @@ impl Relay {
         // serves workspace joining itself. It answers their governance as
         // actions itself, beside whatever apps its embedder serves, and it
         // runs the app transforms its embedder gives it a job runner for.
-        let governs_rooms = !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
+        let governs_workspaces = !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
             && !additional_protocols.iter().any(|(alpn, _)| {
                 alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
             });
         // A relay whose device may own workspaces takes part in every channel of
         // the workspaces it governs, as one participant beside their members; a
         // relay whose device may not keeps no channel keys at all.
-        let workspace_keys = (governs_rooms
+        let workspace_keys = (governs_workspaces
             && identity.device_cert.capabilities.holds_workspace_keys())
         .then(|| {
             crate::workspace_keys::KeyService::open(
@@ -579,7 +579,7 @@ impl Relay {
         // below name it straight away, and a host that has none yet names it when
         // it makes its first, so wait for the relay before serving either.
         if !relayless {
-            tilo_room_host::workspaces::await_relay(&endpoint).await;
+            tilo_workspace_host::workspaces::await_relay(&endpoint).await;
         }
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
@@ -593,7 +593,7 @@ impl Relay {
             },
             identity.clone(),
             endpoint.clone(),
-            governs_rooms,
+            governs_workspaces,
             workspace_keys
                 .as_ref()
                 .map(|workspace_keys| workspace_keys.device()),
@@ -1579,7 +1579,7 @@ mod tests {
             clippy::too_many_lines,
             reason = "each phase keeps one former test's body verbatim"
         )]
-        fn startup_validation_and_room_authority_admit_only_signed_hosts;
+        fn startup_validation_and_workspace_authority_admit_only_signed_hosts;
 
         phase valid_host_identity_passes_startup_validation;
         {
@@ -1998,12 +1998,12 @@ mod tests {
                 admin_key.clone(),
                 RevocationList::new(),
                 HomePeerManagementRequest::Rename {
-                    label: "Living room NAS".into(),
+                    label: "Living workspace NAS".into(),
                 },
             )
             .await
             .unwrap();
-            assert_eq!(renamed.label, "Living room NAS");
+            assert_eq!(renamed.label, "Living workspace NAS");
             let mut revocation = tilo_user_identity::RevocationEntry {
                 user_public_key: user.public_key,
                 revoked_device_public_key: host.public_key,

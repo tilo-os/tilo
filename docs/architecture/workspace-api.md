@@ -119,9 +119,9 @@ no `workspace` and whose path is under `account` is answered by the API server:
 
 | Path | What it is |
 |---|---|
-| `account/workspaces#list` | the relay's `room.list` as the grant: the workspaces of the person's own there |
-| `account/workspaces#create {name, host?}` | the relay's `room.create-own` as the grant, which then joins it; a person may have any number of workspaces of their own, sharing what the host keeps for them |
-| `account/workspaces#delete {workspace}` | the relay's `room.delete` as the grant, for one of the person's own: final. The relay tells everyone in it it was deleted, lets nobody in again, removes its record, retained state, history and content, and releases its storage; the API server then revokes every key that reached only it. Answers `{deleted, revoked_keys}`; one not theirs, or gone already, is `not_found`. The call is the confirmation |
+| `account/workspaces#list` | the relay's `workspace.list` as the grant: the workspaces of the person's own there |
+| `account/workspaces#create {name, host?}` | the relay's `workspace.create-own` as the grant, which then joins it; a person may have any number of workspaces of their own, sharing what the host keeps for them |
+| `account/workspaces#delete {workspace}` | the relay's `workspace.delete` as the grant, for one of the person's own: final. The relay tells everyone in it it was deleted, lets nobody in again, removes its record, retained state, history and content, and releases its storage; the API server then revokes every key that reached only it. Answers `{deleted, revoked_keys}`; one not theirs, or gone already, is `not_found`. The call is the confirmation |
 | `account/keys#list` | this key and the keys it minted, each with `expires_at_ms` (`null` until revoked), `last_used_at_ms` and `created_by` |
 | `account/keys#create {name, workspace?, expires_in?}` | asks the person; the run is `pending` until they approve, and `tilo_status` then answers the key |
 | `account/keys#mint {workspace, name?, expires_in?}` | a minted grant: `{grant, token, mcp_url, expires_at_ms}` |
@@ -157,7 +157,7 @@ agent window, `tilo agent check`) connects to it over a socket only that
 account can open. Each connection is its own agent run over that one session.
 The holder leaves the workspace ten seconds after its last connection ends.
 
-The relay admits an agent's grant (`tilo_room_host::workspace_access`) as
+The relay admits an agent's grant (`tilo_workspace_host::workspace_access`) as
 its person's agent, iff
 
 - its scope reaches the workspace;
@@ -179,7 +179,7 @@ all workspaces makes and lists the person's own; nothing else.
 
 A grant enters a workspace as every device of the person does
 (`Device::enter_workspace`): on its session with the relay, in no workspace,
-it asks the relay for the invitation into that workspace (`room.create-own`
+it asks the relay for the invitation into that workspace (`workspace.create-own`
 naming it), redeems the invitation on the same connection, and joins. A grant reaching all the person's workspaces may
 also make one; a minted grant, or one certified for one workspace directly,
 enters only its own and makes none. The relay asks for no parent and no site

@@ -124,7 +124,7 @@ pub struct CertificationProtocol {
     stand_in: Arc<std::sync::OnceLock<Arc<dyn StandInApprover>>>,
     /// The workspaces this host governs, whose records keep each person's
     /// devices: a certificate a root issues here joins its person's record.
-    records: Arc<std::sync::OnceLock<tilo_room_host::workspaces::Workspaces>>,
+    records: Arc<std::sync::OnceLock<tilo_workspace_host::workspaces::Workspaces>>,
     /// Moves each time a request is queued or answered: what an approver
     /// waiting for its person's requests to change
     /// ([`ApproverRequest::AwaitPending`]) wakes on.
@@ -180,7 +180,7 @@ impl CertificationProtocol {
 
     /// Add every certificate a person's root issues here to that person's
     /// record in `workspaces`. Named once; a later call keeps the first.
-    pub(crate) fn keep_issued_in(&self, workspaces: tilo_room_host::workspaces::Workspaces) {
+    pub(crate) fn keep_issued_in(&self, workspaces: tilo_workspace_host::workspaces::Workspaces) {
         let _ = self.records.set(workspaces);
     }
 
@@ -878,7 +878,7 @@ mod confirmation_tests {
             action_label: "Clear history".into(),
             resource_label: "Calculator".into(),
             risk: "destructive".into(),
-            workspace: "room".into(),
+            workspace: "workspace".into(),
             expires_at_ns: unix_now_ns().saturating_add(u64::try_from(wait.as_nanos()).unwrap()),
             ..PendingConfirmation::default()
         }

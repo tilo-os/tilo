@@ -231,7 +231,7 @@ struct RevokeArgs {
     #[arg(long)]
     device: String,
     /// The relay's state directory, whose revocation log the host reads: the
-    /// `relay` directory under `tilo-relay room --state`, or the plain
+    /// `relay` directory under `tilo-relay workspace --state`, or the plain
     /// daemon's configured state root.
     #[arg(long)]
     state: PathBuf,

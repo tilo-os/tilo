@@ -87,9 +87,10 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     }
     let scratch = tempfile::tempdir().unwrap();
     let plane = scratch.path().join("surfaces");
-    tilo_room_host::surfaces::decide_receipt(&plane);
-    let (key, cert) = tilo_room_host::workspaces::fixtures::governor();
-    let host = tilo_room_host::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
+    tilo_workspace_host::surfaces::decide_receipt(&plane);
+    let (key, cert) = tilo_workspace_host::workspaces::fixtures::governor();
+    let host =
+        tilo_workspace_host::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
     let workspaces = host.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     let surface = unserved_surface();
@@ -113,7 +114,7 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     );
 
     // It is the workspace's content now: the host decides with it
-    // ([`tilo_room_host::surfaces`]) and answers members reading the record it
+    // ([`tilo_workspace_host::surfaces`]) and answers members reading the record it
     // was written with.
     assert_eq!(
         gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &hash))),
@@ -124,7 +125,7 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     // Kept beside the workspace's state: a start after this one has it without
     // asking anybody.
     assert_eq!(std::fs::read(plane.join(&hash)).unwrap(), surface);
-    tilo_room_host::surfaces::decide_receipt(&plane);
+    tilo_workspace_host::surfaces::decide_receipt(&plane);
     assert_eq!(
         gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &hash))),
         Some(surface),

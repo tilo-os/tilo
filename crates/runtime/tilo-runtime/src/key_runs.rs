@@ -7,7 +7,7 @@
 //! addressed to the host's own device. A relay answers them with its app
 //! workers; a person's device answers them with its own action broker, which
 //! is what [`KeyRuns`] puts behind the host
-//! ([`HostConfig::apps`](tilo_room_host::host::HostConfig::apps)).
+//! ([`HostConfig::apps`](tilo_workspace_host::host::HostConfig::apps)).
 //!
 //! Each key works in a run of its own, which the device's broker admits as it
 //! admits an agent at the device's agent door ([`Runs::open`]). Before every
@@ -20,8 +20,8 @@ use std::sync::{Arc, OnceLock};
 
 use tilo_actions::remote::{ActionHost, ActionHostError, Caller, Pending, RemoteActionMessage};
 use tilo_lock::MutexRecover as _;
-use tilo_room_host::app_serving::AppServingPlane;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_host::app_serving::AppServingPlane;
 
 use crate::remote_door::PersonsDevices;
 use collab_types::WorkspaceId;
@@ -50,7 +50,7 @@ pub trait Runs: Send + Sync {
 
 /// The record actions of the workspaces a device hosts, answered for its
 /// person's keys by its own broker: the device's
-/// [`AppServingPlane`](tilo_room_host::app_serving::AppServingPlane).
+/// [`AppServingPlane`](tilo_workspace_host::app_serving::AppServingPlane).
 pub struct KeyRuns {
     /// The person's devices and the broker, once they run: a host opens
     /// before the store and the broker it serves.

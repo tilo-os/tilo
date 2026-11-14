@@ -44,7 +44,7 @@ const SAID_DOMAIN: &[u8] = b"tilo-host-voice-v1\0";
 pub struct HostSaid {
     /// [`HOST_VOICE_VERSION`].
     pub version: u16,
-    /// The workspace it is said in, as the relay's room names it.
+    /// The workspace it is said in, as the relay's workspace names it.
     pub workspace_id: WorkspaceId,
     /// The host device that says it: the key the signature verifies under.
     pub host: [u8; 32],

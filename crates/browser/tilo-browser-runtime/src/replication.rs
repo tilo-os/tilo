@@ -1599,9 +1599,9 @@ impl Joined {
     /// people who share a name in the workspace's own order.
     fn follow_members(&mut self, woken: &mut HashSet<u64>) {
         let status = self.peer.status();
-        let members = status.room_members.get(&self.uuid).cloned();
+        let members = status.workspace_members.get(&self.uuid).cloned();
         let joined = status
-            .room_joined
+            .workspace_joined
             .get(&self.uuid)
             .cloned()
             .unwrap_or_default();

@@ -142,7 +142,7 @@ fn json_encodings_are_pinned() {
   "subscriber_dropped_backpressure": 11,
   "bytes_sent": 12,
   "bytes_sent_live": 13,
-  "rooms": {
+  "workspaces": {
     "00000000-0000-0000-0000-00000000000e": {
       "bytes_sent": 15,
       "bytes_sent_live": 16

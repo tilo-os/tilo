@@ -10,13 +10,13 @@ and, if a peer is offline, its deltas are store-and-forwarded.
 - Binds an iroh endpoint on the `tilo-relay/1` ALPN.
 - Verifies every inbound peer's `DeviceCert`. A home host defaults to the
   same user identity; shared/provider hosts use an explicit trust policy, and
-  each room's own governance decides which devices it admits. Certs are Ed25519
+  each workspace's own governance decides which devices it admits. Certs are Ed25519
   signatures over `blake3("tilo-devcert-v1\0" || postcard(view))`; the
   canonical types live in `tilo-user-identity`.
 - Fans out incoming Automerge deltas to every other subscribed
   peer for the same workspace.
-- A default same-owner home host auto-binds and pins rooms on first subscribe;
-  other rooms are those it governs or hosts for their governor.
+- A default same-owner home host auto-binds and pins workspaces on first subscribe;
+  other workspaces are those it governs or hosts for their governor.
 - Enqueues deltas for offline members under
   `workspaces/<id>/pending/<hex(device_pubkey)>/<seq>.delta` and
   drains them on next `Subscribe`.
@@ -33,9 +33,9 @@ and, if a peer is offline, its deltas are store-and-forwarded.
 The headless home-peer deployment runs `tilo-relay` with the authenticated
 filesystem replica. It retains workspace/app collaboration records,
 checkpoints, offline queues, and all filesystem blobs, media/book bytes, and
-thumbnails for every workspace in `/etc/tilo/home-peer.toml`. Which rooms it
-holds is up to the rooms: a room's governor adds the home peer as one of the
-room's hosts.
+thumbnails for every workspace in `/etc/tilo/home-peer.toml`. Which workspaces it
+holds is up to the workspaces: a workspace's governor adds the home peer as one of the
+workspace's hosts.
 
 `ReplicationIntent::FullWorkspace` is backed by the composite host. The relay
 reads the replica's aggregate freshness proof for every advertisement and
@@ -91,7 +91,7 @@ the network learns the endpoint id. Invite addresses work without it.
 ## Operational boundaries
 
 - Same-owner home hosts auto-enrol authenticated devices. Shared/rented hosts
-  require the operator/control plane to bind the room and add each device key;
+  require the operator/control plane to bind the workspace and add each device key;
   the bearer invite itself does not grant a provider-host account.
 - Per-device pending queues are replayed on reconnect and acknowledged only
   after the replay reaches the wire. Retained bootstrap tails
@@ -104,7 +104,7 @@ What a relay costs per active collaborator is measured, not estimated:
 
 - **Egress counters.** The daemon counts every byte it writes to a peer
   session (`bytes_sent`), the presence part of it (`bytes_sent_live`),
-  both per room, and each connected session's total
+  both per workspace, and each connected session's total
   (`Metrics::session_egress`). `tilo-relay-admin status` prints them.
   They count framed bytes before QUIC; the load bench adds what the iroh
   endpoint actually put on UDP.
@@ -117,7 +117,7 @@ What a relay costs per active collaborator is measured, not estimated:
   budgets, and the live egress counter checked against the frames the
   subscribers read.
 - **Load bench** (`examples/relay_load`, run by
-  `tools/ci/perf-scheduled.sh hosting`): 100 collaborators in rooms of four, each typing 30
+  `tools/ci/perf-scheduled.sh hosting`): 100 collaborators in workspaces of four, each typing 30
   characters, then pointing for four seconds at 30 Hz (which the relay
   forwards one frame per move, in the order it was posted), then idle, every
   minute, against one relay process. It records CPU-seconds, resident MiB and

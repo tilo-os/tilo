@@ -18,7 +18,7 @@ pub struct Entered {
     /// The origin its host is reached at.
     pub origin: String,
     /// The workspace's id.
-    pub room: String,
+    pub workspace: String,
     /// The device key (hex) of the host that held it when it was entered.
     pub host_device: String,
     /// What the person saw it called, once known.
@@ -33,18 +33,18 @@ pub struct Entered {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Place {
     pub origin: String,
-    pub room: String,
+    pub workspace: String,
 }
 
 impl Entered {
     fn is(&self, place: &Place) -> bool {
-        self.origin == place.origin && self.room == place.room
+        self.origin == place.origin && self.workspace == place.workspace
     }
 
     fn place(&self) -> Place {
         Place {
             origin: self.origin.clone(),
-            room: self.room.clone(),
+            workspace: self.workspace.clone(),
         }
     }
 
@@ -52,7 +52,7 @@ impl Entered {
     /// as nothing could ever tell whether it still exists.
     #[must_use]
     pub fn kept(&self) -> bool {
-        !self.room.is_empty() && !self.origin.is_empty() && host_device(&self.host_device)
+        !self.workspace.is_empty() && !self.origin.is_empty() && host_device(&self.host_device)
     }
 }
 
@@ -230,20 +230,20 @@ mod tests {
     const HOST: &str = "abababababababababababababababababababababababababababababababab";
     const OTHER: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
 
-    fn entry(origin: &str, room: &str, host: &str) -> Entered {
+    fn entry(origin: &str, workspace: &str, host: &str) -> Entered {
         Entered {
             origin: origin.into(),
-            room: room.into(),
+            workspace: workspace.into(),
             host_device: host.into(),
             name: None,
             unavailable: false,
         }
     }
 
-    fn place(origin: &str, room: &str) -> Place {
+    fn place(origin: &str, workspace: &str) -> Place {
         Place {
             origin: origin.into(),
-            room: room.into(),
+            workspace: workspace.into(),
         }
     }
 
@@ -254,7 +254,7 @@ mod tests {
         let changed = forget_deleted(list, &place("https://a", "deleted"));
         assert_eq!(changed.unchoose, [place("https://a", "deleted")]);
         assert_eq!(changed.entered.len(), 1);
-        assert_eq!(changed.entered[0].room, "kept");
+        assert_eq!(changed.entered[0].workspace, "kept");
         let again = forget_deleted(changed.entered, &place("https://a", "deleted"));
         assert!(
             again.unchoose.is_empty(),
@@ -265,11 +265,11 @@ mod tests {
     #[test]
     fn the_last_opened_comes_first_keeps_its_name_and_the_list_is_bounded() {
         let mut list = Vec::new();
-        for room in 0..40 {
-            list = remember(list, entry("https://a", &room.to_string(), HOST)).entered;
+        for workspace in 0..40 {
+            list = remember(list, entry("https://a", &workspace.to_string(), HOST)).entered;
         }
         assert_eq!(list.len(), MAX_ENTERED);
-        assert_eq!(list[0].room, "39");
+        assert_eq!(list[0].workspace, "39");
         let named = name(list, &place("https://a", "39"), "Acme").entered;
         let again = remember(named, entry("https://a", "39", HOST)).entered;
         assert_eq!(
@@ -293,7 +293,7 @@ mod tests {
             changed
                 .entered
                 .iter()
-                .map(|entry| entry.room.as_str())
+                .map(|entry| entry.workspace.as_str())
                 .collect::<Vec<_>>(),
             ["3", "2"]
         );

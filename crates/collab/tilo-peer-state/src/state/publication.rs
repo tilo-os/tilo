@@ -323,7 +323,7 @@ impl PeerPublicationMut<'_> {
         if !changes.is_empty() {
             messages.push(NeighbourMsg::SyncResp {
                 changes,
-                room: self.peer.core.workspace.clone(),
+                workspace: self.peer.core.workspace.clone(),
             });
         }
         messages.extend(snapshots);

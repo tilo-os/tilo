@@ -191,7 +191,7 @@ fn wait_for_kept(dir: &Path, bytes: u64, what: &str) {
 
 /// Bytes no two calls with different `seed`s share, `length` of them, with no
 /// stretch of them repeating: content is kept by its hash, so a file whose
-/// chunks repeat takes less room than its length wherever it is kept.
+/// chunks repeat takes less workspace than its length wherever it is kept.
 fn content(seed: u32, length: usize) -> Vec<u8> {
     (0..length)
         .map(|at| {

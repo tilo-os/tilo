@@ -624,11 +624,9 @@ What that implies for the layers above:
 The code still carries models this page does not have. Each goes, not beside
 the model but instead of it:
 
-- **The stored room spelling.** `RoomId`, the `room` key a desktop entry or an
-  action row stores its workspace id under, `(app, room, record)` addresses and
-  `tilo-workspaces` on disk. The workspace is the key and is written `workspace`;
-  what is stored today keeps reading, and `RoomId`'s last uses are the old
-  shell's.
+- **The old spelling.** The `workspace` key a desktop entry or an action row
+  stores its workspace id under, `(app, workspace, record)` addresses and
+  `tilo-workspaces` on disk.
 - **Governance by one device.** The governor, the pinned governance writer,
   the separate governance document with its receipts, custody and succession,
   and the host-served `tilo.host` / `tilo.member` namespaces. Membership is

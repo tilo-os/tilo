@@ -60,7 +60,7 @@ fn texts_by(messages: &chat::messages::Messages, author: &str) -> Vec<String> {
 
 /// The workspace's chat after Mallory flooded `#general` and Ada reported her,
 /// her posts in the parts of its messages the page holds beside it.
-fn flooded_room() -> Replica {
+fn flooded_workspace() -> Replica {
     let catalogue = AppCatalogue::native();
     let mut page = Replica::open(
         &catalogue,
@@ -201,8 +201,8 @@ fn bot_replica(page: &Replica) -> Replica {
 }
 
 #[test]
-fn a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot() {
-    let mut page = flooded_room();
+fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
+    let mut page = flooded_workspace();
     assert_eq!(texts_by(&messages(&page), MALLORY).len(), 3);
     let mut bot = bot_replica(&page);
     let mut policy = WorkspacePolicy::new(ROOM, OWNER);

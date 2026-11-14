@@ -46,9 +46,9 @@ impl WorkspaceLink {
 }
 
 impl std::fmt::Display for WorkspaceLink {
-    /// `tilo-room:<relay endpoint>[@<ip:port>]/<workspace id>/<workspace uuid>`.
+    /// `tilo-workspace:<relay endpoint>[@<ip:port>]/<workspace id>/<workspace uuid>`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "tilo-room:{}", self.relay)?;
+        write!(f, "tilo-workspace:{}", self.relay)?;
         if let Some(direct) = self.direct {
             write!(f, "@{direct}")?;
         }
@@ -62,10 +62,10 @@ impl std::str::FromStr for WorkspaceLink {
     fn from_str(link: &str) -> Result<Self, String> {
         let shape = || {
             format!(
-                "{link}: a workspace link is tilo-room:<relay>[@<ip:port>]/<workspace id>/<workspace uuid>"
+                "{link}: a workspace link is tilo-workspace:<relay>[@<ip:port>]/<workspace id>/<workspace uuid>"
             )
         };
-        let rest = link.strip_prefix("tilo-room:").ok_or_else(shape)?;
+        let rest = link.strip_prefix("tilo-workspace:").ok_or_else(shape)?;
         let mut parts = rest.split('/');
         let (relay, shard, workspace) =
             match (parts.next(), parts.next(), parts.next(), parts.next()) {
@@ -197,7 +197,9 @@ async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Result<()
         match client.recv().await {
             Some(Envelope::Ready { .. }) => return Ok(()),
             Some(Envelope::NotAuthorised { reason, .. }) => {
-                return Err(format!("the room does not admit this device: {reason}"));
+                return Err(format!(
+                    "the workspace does not admit this device: {reason}"
+                ));
             }
             None => return Err("the session closed".into()),
             Some(_) => {}
@@ -252,7 +254,9 @@ async fn call(
                 return match receipt.status {
                     ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
                     ReceiptStatus::Rejected { error } => Err(error.to_string()),
-                    other => Err(format!("the room did not finish `{action}`: {other:?}")),
+                    other => Err(format!(
+                        "the workspace did not finish `{action}`: {other:?}"
+                    )),
                 };
             }
             Some(Envelope::RemoteActionUndeliverable { reason, .. }) => return Err(reason),
@@ -277,7 +281,7 @@ mod tests {
             workspace: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
         };
         let text = link.to_string();
-        assert!(text.starts_with("tilo-room:"), "{text}");
+        assert!(text.starts_with("tilo-workspace:"), "{text}");
         assert_eq!(text.parse::<WorkspaceLink>().unwrap(), link);
         let found = WorkspaceLink {
             direct: None,
@@ -286,9 +290,9 @@ mod tests {
         assert_eq!(found.to_string().parse::<WorkspaceLink>().unwrap(), found);
         for wrong in [
             "https://tilo.sh/lounge".to_owned(),
-            "tilo-room:nope/1/room".to_owned(),
-            format!("tilo-room:{relay}/not-a-number/room"),
-            format!("tilo-room:{relay}/42"),
+            "tilo-workspace:nope/1/workspace".to_owned(),
+            format!("tilo-workspace:{relay}/not-a-number/workspace"),
+            format!("tilo-workspace:{relay}/42"),
         ] {
             assert!(wrong.parse::<WorkspaceLink>().is_err(), "{wrong}");
         }

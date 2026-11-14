@@ -1,9 +1,9 @@
 //! A workspace's shell command runs on the VM host that holds the workspace's
 //! VM: the relay asks the placer which host runs it, waits while none has
-//! room, and asks that VM host's member device, a device of the relay's own
+//! workspace, and asks that VM host's member device, a device of the relay's own
 //! person, to run it over the device plane. The member holds the workspace as
 //! any member does — entering it the first time the relay asks about it, with
-//! the invitation the relay's own `room.enter` answers — and its command works
+//! the invitation the relay's own `workspace.enter` answers — and its command works
 //! on the member's copy of the workspace's files, its output coming back as
 //! the run.
 
@@ -241,7 +241,7 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
     assert_eq!(
         placed.asked.load(Ordering::SeqCst),
         2,
-        "asked again once there was room"
+        "asked again once there was workspace"
     );
     assert_eq!(
         std::fs::read_to_string(placed.member.files(&placed.workspace).join("out/artifact"))

@@ -13,7 +13,7 @@ pub trait OwnerCustody: collab_types::signer::MaybeSendSync + 'static {
     /// Whether `workspace`'s replica is projected here, its records committed
     /// documents or sealed channels: a workspace held here, with its
     /// governance.
-    fn projects_room(&self, workspace: WorkspaceId) -> bool;
+    fn projects_workspace(&self, workspace: WorkspaceId) -> bool;
     /// The owner if it is open, never waiting: `unavailable` when there is
     /// none.
     fn opened_owner(&self, unavailable: &str) -> Result<NativeWorkspaceOwner, String>;

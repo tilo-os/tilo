@@ -2842,7 +2842,10 @@ impl PatchCounts {
             (automerge::PatchAction::PutMap { key, .. }, _) if key == "owner" => {
                 self.owner_set = true;
             }
-            (automerge::PatchAction::PutMap { key, .. }, _) if key == "room" => {
+            // The workspace's id at its root, not a field of the same name in its layout.
+            (automerge::PatchAction::PutMap { key, .. }, "")
+                if key == tilo_desktop_model::projection::WORKSPACE_ID_KEY =>
+            {
                 self.workspace_set = true;
             }
             (automerge::PatchAction::PutMap { key, value, .. }, _) if key == "title" => {

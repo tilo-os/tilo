@@ -926,7 +926,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     let members = loop {
         browser.pump();
         let status = browser.peer.status();
-        if let Some(devices) = status.room_devices.get(&cluster)
+        if let Some(devices) = status.workspace_devices.get(&cluster)
             && devices.contains_key(&hex::encode(page_device.cert.device_public_key))
         {
             break devices.clone();

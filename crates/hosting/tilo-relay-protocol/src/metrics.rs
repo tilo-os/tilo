@@ -14,18 +14,18 @@ use thiserror::Error;
 /// Last daemon counter snapshot, consumed by offline admin/status commands.
 pub const METRICS_FILE: &str = "metrics.json";
 
-/// The relay's own state root under the `--state` of `tilo-relay room`: it
+/// The relay's own state root under the `--state` of `tilo-relay workspace`: it
 /// keeps [`METRICS_FILE`] there. A workspace host reads the snapshot from here.
 #[must_use]
-pub fn room_relay_root(workspace_state: &Path) -> PathBuf {
+pub fn workspace_relay_root(workspace_state: &Path) -> PathBuf {
     workspace_state.join("relay")
 }
 
-/// Where the connector workers of a `tilo-relay room` keep their counters as
+/// Where the connector workers of a `tilo-relay workspace` keep their counters as
 /// Prometheus text, one `<app>.prom` each, under its `--state`. A workspace
 /// host appends these to its metrics page.
 #[must_use]
-pub fn room_textfile_dir(workspace_state: &Path) -> PathBuf {
+pub fn workspace_textfile_dir(workspace_state: &Path) -> PathBuf {
     workspace_state.join("metrics.d")
 }
 
@@ -69,8 +69,12 @@ pub struct MetricsSnapshot {
     pub sessions_open: u64,
     /// Egress per workspace, for the frames that belong to one. Lists only
     /// workspaces that were sent something since the daemon started. It keeps
-    /// the key `rooms`, which status readers and dashboards read.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", rename = "rooms")]
+    /// the key `workspaces`, which status readers and dashboards read.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        rename = "workspaces"
+    )]
     pub workspaces: BTreeMap<WorkspaceId, WorkspaceEgress>,
 }
 

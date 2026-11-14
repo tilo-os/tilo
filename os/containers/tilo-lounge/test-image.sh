@@ -41,7 +41,7 @@ revision=$(inspect_image '{{index .OCIv1.Config.Labels "org.opencontainers.image
 environment=$(inspect_image '{{range .OCIv1.Config.Env}}{{println .}}{{end}}')
 grep -Fqx "TILO_SOURCE_REVISION=$revision" <<<"$environment" \
   || fail "TILO_SOURCE_REVISION is not the image's revision"
-grep -Fqx 'TILO_SECRETS_DIR=/run/tilo-rooms/secrets' <<<"$environment" \
+grep -Fqx 'TILO_SECRETS_DIR=/run/tilo-workspaces/secrets' <<<"$environment" \
   || fail "the host is not told where its sealed secrets live"
 
 container=$(b from --pull=never --quiet "$image")
@@ -64,7 +64,7 @@ b run "$container" -- bash -c 'DISCORD_GUILD_ID=not-a-discord-id exec /usr/local
 [[ $worker == 1 ]] || fail "discord-worker does not start in the image (status $worker)"
 
 # And the image boots as its deployment runs it: the entrypoint, as uid 10001,
-# its state and its secret store on the volume /run/tilo-rooms (here the
+# its state and its secret store on the volume /run/tilo-workspaces (here the
 # image's writable /tmp, which stands in for it until the container is
 # mounted), answering the
 # readiness probe its ingress asks, which reports the revision the image was
@@ -73,22 +73,22 @@ b run "$container" -- bash -c 'DISCORD_GUILD_ID=not-a-discord-id exec /usr/local
 # given.
 b run "$container" -- bash -c '
   set -e
-  mkdir -p /tmp/tilo-rooms /tmp/tilo-secrets
-  od -An -tx1 -N32 /dev/urandom | tr -d " \n" > /tmp/tilo-secrets/room-root-lounge
-  chmod 0444 /tmp/tilo-secrets/room-root-lounge' \
+  mkdir -p /tmp/tilo-workspaces /tmp/tilo-secrets
+  od -An -tx1 -N32 /dev/urandom | tr -d " \n" > /tmp/tilo-secrets/workspace-root-lounge
+  chmod 0444 /tmp/tilo-secrets/workspace-root-lounge' \
   || fail 'the image would not make its state and root files'
 port=18790
 b run \
-  -e TILO_ROOMS_STATE=/tmp/tilo-rooms \
-  -e TILO_SECRETS_DIR=/tmp/tilo-rooms/secrets \
-  -e TILO_ROOMS_PERSISTENT=lounge \
-  -e TILO_ROOMS_ROOT_FILE=/tmp/tilo-secrets/room-root-lounge \
-  -e "TILO_ROOMS_RELAY_ORIGIN=https://127.0.0.1:$port" \
-  -e "TILO_ROOMS_WEB_ENTRY=http://127.0.0.1:$port/" \
-  -e "TILO_ROOMS_HTTP=127.0.0.1:$port" \
-  -e TILO_ROOMS_RELAY_PLAIN=127.0.0.1:19780 \
-  -e TILO_ROOMS_WEB=127.0.0.1:19781 \
-  -e TILO_ROOMS_LIVE=127.0.0.1:19782 \
+  -e TILO_WORKSPACES_STATE=/tmp/tilo-workspaces \
+  -e TILO_SECRETS_DIR=/tmp/tilo-workspaces/secrets \
+  -e TILO_WORKSPACES_PERSISTENT=lounge \
+  -e TILO_WORKSPACES_ROOT_FILE=/tmp/tilo-secrets/workspace-root-lounge \
+  -e "TILO_WORKSPACES_RELAY_ORIGIN=https://127.0.0.1:$port" \
+  -e "TILO_WORKSPACES_WEB_ENTRY=http://127.0.0.1:$port/" \
+  -e "TILO_WORKSPACES_HTTP=127.0.0.1:$port" \
+  -e TILO_WORKSPACES_RELAY_PLAIN=127.0.0.1:19780 \
+  -e TILO_WORKSPACES_WEB=127.0.0.1:19781 \
+  -e TILO_WORKSPACES_LIVE=127.0.0.1:19782 \
   "$container" -- /usr/local/bin/tilo-lounge > "$scratch/lounge.log" 2>&1 &
 lounge=$!
 stop_lounge() {
@@ -108,7 +108,7 @@ grep -Eq "\"revision\": *\"$revision\"" <<< "$mode" \
 stop_lounge
 trap cleanup EXIT
 root=$(b mount "$container")
-[[ -f $root/tmp/tilo-rooms/lounge/room-id ]] || fail 'the Lounge kept no workspace id in its state'
+[[ -f $root/tmp/tilo-workspaces/lounge/workspace-id ]] || fail 'the Lounge kept no workspace id in its state'
 
 for program in tilo-relay discord-worker tilo-lounge; do
   [[ -x $root/usr/local/bin/$program ]] || fail "/usr/local/bin/$program is missing or not executable"

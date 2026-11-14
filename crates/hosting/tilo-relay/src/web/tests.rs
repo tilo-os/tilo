@@ -874,7 +874,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
             destinations: tilo_net::proxy::host::Destinations::Any,
             budgets: tilo_net::proxy::host::Budgets {
                 visitor_bytes: None,
-                room_bytes: Some(52),
+                workspace_bytes: Some(52),
                 ..Default::default()
             },
             ..Default::default()
@@ -1906,7 +1906,7 @@ async fn an_invitation_only_door_keeps_an_address_confirms_it_and_takes_it_off()
     let listed = relay
         .workspaces()
         .unwrap()
-        .page_rooms(
+        .page_workspaces(
             &host.cert,
             tilo_relay_protocol::workspaces::WorkspacesRequest::WaitList {
                 workspace: workspace.clone(),

@@ -969,8 +969,8 @@ package = "tilo-relay"
 # ships, the import it plans resuming after the workspace refused part of a run.
 inputs = ["apps/discord/bridge/program.json", "apps/notes/surface.toml"]
 readers = [
-  "crates/hosting/tilo-relay/src/room_bots/tests.rs",
-  "crates/hosting/tilo-relay/tests/governed_rooms/app_push.rs",
+  "crates/hosting/tilo-relay/src/workspace_bots/tests.rs",
+  "crates/hosting/tilo-relay/tests/governed_workspaces/app_push.rs",
 ]
 
 [[cargo]]

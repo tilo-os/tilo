@@ -1,7 +1,7 @@
 //! `--share` for `run --platform web` and `dev --platform web`: the app in a
 //! workspace other people join from their own browser.
 //!
-//! The workspace's host is the SDK's own, `tilo-relay room --persistent`, on
+//! The workspace's host is the SDK's own, `tilo-relay workspace --persistent`, on
 //! this machine: it governs the workspace, so it keys every record's channel
 //! and what one person does reaches everyone else. The workspace is listed in
 //! the host's directory at its default role, so its door admits each person
@@ -31,7 +31,7 @@ use tilo_workspace_directory::web_origin;
 
 use super::Project;
 
-const OPERATOR: &str = "tilo-room-operator ";
+const OPERATOR: &str = "tilo-workspace-operator ";
 const START_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct SharedWorkspace {
@@ -136,8 +136,8 @@ impl SharedWorkspace {
             .args(["--default-role", "editor"])
             .arg("--root-file")
             .arg(&owner_root)
-            .arg("--room-id-file")
-            .arg(state.join("room-id"))
+            .arg("--workspace-id-file")
+            .arg(state.join("workspace-id"))
             .args(["--author-app", &app_id])
             // Both listeners take a port the kernel picks, which the host
             // announces once it serves: a port chosen here could be held by

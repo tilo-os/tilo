@@ -54,7 +54,7 @@ def main(argv):
                 break
             answer += chunk
     line = answer.decode(errors="replace").strip()
-    prefix = "tilo-room-operator "
+    prefix = "tilo-workspace-operator "
     if not line.startswith(prefix):
         print(f"the workspace answered nothing: {line!r}", file=sys.stderr)
         return 1

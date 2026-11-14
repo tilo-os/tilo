@@ -74,7 +74,7 @@ pub(crate) fn parse<R: WorkspaceRead, D: PolicyDecode>(
     let uuid = uuid::Uuid::from_bytes(policy.workspace);
     let expected = uuid.hyphenated().encode_lower(&mut buffer);
     let count = workspace
-        .visit_property(&workspace.root(), "room", Selection::All, |value| {
+        .visit_property(&workspace.root(), "workspace", Selection::All, |value| {
             if matches!(value, WorkspaceValue::Str(workspace) if workspace == expected) {
                 Ok(())
             } else {

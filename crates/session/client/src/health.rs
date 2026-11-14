@@ -160,8 +160,8 @@ pub struct AdmissionHealth {
 pub struct RecordRef {
     /// Application id.
     pub app_id: String,
-    /// The workspace (its cluster id), named `room` in `SessionHealth` v1.
-    pub room: String,
+    /// The workspace (its cluster id), named `workspace` in `SessionHealth` v1.
+    pub workspace: String,
     /// Record wire name.
     pub record_id: String,
 }
@@ -401,7 +401,7 @@ fn record_health(
         .map(|(route, writes, local)| RecordHealth {
             record: RecordRef {
                 app_id: route.app_id.clone(),
-                room: route.cluster_id.clone(),
+                workspace: route.cluster_id.clone(),
                 record_id: route.record.clone(),
             },
             editing: if blocked {

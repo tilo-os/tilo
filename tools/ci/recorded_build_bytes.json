@@ -339,7 +339,7 @@
   "tilo-resource-macros": {"libraries": 7937328, "tests": 5709296},
   "tilo-rich-text": {"libraries": 5414640, "tests": 1531690376},
   "tilo-rollback": {"libraries": 7542881, "tests": 31740592},
-  "tilo-room-host": {"libraries": 145305193, "tests": 1492577040},
+  "tilo-workspace-host": {"libraries": 145305193, "tests": 1492577040},
   "tilo-rt": {"libraries": 3254199, "tests": 19712504},
   "tilo-runner-native": {"libraries": 201167, "tests": 2856464},
   "tilo-runtime": {"libraries": 46875783, "tests": 7026709304},

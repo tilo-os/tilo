@@ -1128,7 +1128,7 @@ impl ExportSource for SessionExport {
 
 /// The export's body: `workspace`'s document, each resource written as the
 /// walk reads it. `permit` is held until the last byte is written, so a
-/// burst of exports queues instead of running the server out of room.
+/// burst of exports queues instead of running the server out of workspace.
 fn export_body<S: ExportSource + 'static>(
     source: S,
     workspace: answers::Workspace,

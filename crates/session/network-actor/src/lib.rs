@@ -2358,7 +2358,7 @@ impl ActorState {
             || !self.hosts.is_empty()
             || self.remote_host_sessions()
             || self.native_routes.any_remote()
-            // A room this device hosts is joined in process; a join not yet
+            // A workspace this device hosts is joined in process; a join not yet
             // made is retried here as a remote dial is, so nothing waits on it
             // with nothing to wake it.
             || self

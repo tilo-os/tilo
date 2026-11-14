@@ -25,8 +25,8 @@ use fake_discord::{CHANNEL_GENERAL, FakeDiscord, GUILD, TOKEN, User};
 use serde_json::Value;
 use tilo_agent_participant::AppCatalogue;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
-use tilo_relay::room_bots::installed::{self, BotRunner};
-use tilo_relay::room_bots::membership::{HostRootCertifier, keep_member};
+use tilo_relay::workspace_bots::installed::{self, BotRunner};
+use tilo_relay::workspace_bots::membership::{HostRootCertifier, keep_member};
 use tilo_relay::workspaces::Workspaces;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use ui::tilo_actions::ActionContext;
@@ -197,11 +197,16 @@ impl Workspace {
             match mutation {
                 DocumentMutation::Snapshot(bytes) => self
                     .workspaces
-                    .author_room_record(&self.id, &self.cert, (CHAT, record.as_str()), move |doc| {
-                        tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                            .map(drop)
-                            .map_err(|error| error.to_string())
-                    })
+                    .author_workspace_record(
+                        &self.id,
+                        &self.cert,
+                        (CHAT, record.as_str()),
+                        move |doc| {
+                            tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
+                                .map(drop)
+                                .map_err(|error| error.to_string())
+                        },
+                    )
                     .await
                     .unwrap(),
                 DocumentMutation::Incremental(bytes) => self
@@ -1963,7 +1968,7 @@ impl Bridge {
         let bytes = self.emoji_changed(&record, saved, change());
         self.workspace
             .workspaces
-            .author_room_record(
+            .author_workspace_record(
                 &self.workspace.id,
                 &self.workspace.cert,
                 (CHAT, record.as_str()),

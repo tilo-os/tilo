@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn counts_compares_and_hashes_the_exact_encoding() {
-        let value = ("room", 7u64, [1u8; 4]);
+        let value = ("workspace", 7u64, [1u8; 4]);
         let bytes = postcard::to_allocvec(&value).unwrap();
         assert_eq!(encoded_len(&value, usize::MAX).unwrap(), bytes.len());
         assert!(encoded_len(&value, bytes.len() - 1).is_err());

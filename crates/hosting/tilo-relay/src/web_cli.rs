@@ -71,7 +71,7 @@ pub struct WebArgs {
     #[arg(long = "web-plain", value_name = "ADDR")]
     pub web_plain: Option<SocketAddr>,
     /// The `https://` origin a TLS-terminating proxy publishes
-    /// `--web-plain` at (a public room behind an ingress); it lets
+    /// `--web-plain` at (a public workspace behind an ingress); it lets
     /// `--web-plain` bind a non-loopback address.
     #[arg(long = "public-origin", value_name = "ORIGIN", requires = "web_plain")]
     pub public_origin: Option<String>,
@@ -116,8 +116,8 @@ pub struct WebArgs {
     /// a page read sites that send no CORS headers (feeds, video directories,
     /// calendar subscriptions) through this host. Only public addresses are
     /// reached; requests, bytes and destinations are rate-limited, and what
-    /// each visitor and each room receives a day is budgeted
-    /// (`TILO_RELAY_FETCH_PROXY_*`, see the room service's README).
+    /// each visitor and each workspace receives a day is budgeted
+    /// (`TILO_RELAY_FETCH_PROXY_*`, see the workspace service's README).
     #[arg(long = "fetch-proxy")]
     pub fetch_proxy: bool,
     /// The device key (hex) of the session beside this node, the shell that
@@ -179,12 +179,12 @@ pub struct AgentArgs {
     /// `gpt-4.1-mini-2025-04-14`). Default `$TILO_AGENT_MODEL_NAME`.
     #[arg(long = "agent-model-name", value_name = "ID")]
     pub model_name: Option<String>,
-    /// Without `--agents`, still serve the rooms' records to their pages:
-    /// the host runs an action of a room record for whoever the room's
+    /// Without `--agents`, still serve the workspaces' records to their pages:
+    /// the host runs an action of a workspace record for whoever the workspace's
     /// policy lets ask, such as a member linking their own account on the
-    /// room's Discord from their profile card. `--agents` serves them too.
+    /// workspace's Discord from their profile card. `--agents` serves them too.
     #[arg(long)]
-    pub room_records: bool,
+    pub workspace_records: bool,
 }
 
 #[cfg(feature = "agents")]
@@ -260,7 +260,7 @@ fn announce_web_entry(cfg: &mut tilo_relay::RelayConfig, args: &WebArgs) {
 
 /// Start the relay; with `--agents`, with its agent supervisor as the
 /// app-serving plane and the agents kept under `state_root/agents`; with
-/// `--room-records` alone, serving the rooms' records without agents.
+/// `--workspace-records` alone, serving the workspaces' records without agents.
 ///
 /// # Errors
 /// The relay did not start, or the agent state could not be read.
@@ -277,15 +277,15 @@ pub async fn start_relay(
     start_relay_lending(cfg, identity, args, state_root, Lent::default()).await
 }
 
-/// What a host lends its rooms besides serving their records.
+/// What a host lends its workspaces besides serving their records.
 #[derive(Default)]
 pub struct Lent {
-    /// The model its rooms' reporters may have look over their reports.
+    /// The model its workspaces' reporters may have look over their reports.
     #[cfg(feature = "agents")]
     pub feedback_reviewer: Option<std::sync::Arc<dyn tilo_agent_participant::FeedbackReviewer>>,
 }
 
-/// [`start_relay`], lending the rooms what `lent` holds.
+/// [`start_relay`], lending the workspaces what `lent` holds.
 ///
 /// # Errors
 /// The relay did not start, or the agent state could not be read.
@@ -300,7 +300,7 @@ pub async fn start_relay_lending(
     state_root: &Path,
     lent: Lent,
 ) -> anyhow::Result<HostedRelay> {
-    if let Some(max) = env_count("TILO_RELAY_MAX_ROOM_GRANTS") {
+    if let Some(max) = env_count("TILO_RELAY_MAX_WORKSPACE_GRANTS") {
         cfg.max_workspace_grants = Some(max);
     }
     announce_web_entry(&mut cfg, args);
@@ -329,7 +329,7 @@ pub async fn start_relay_lending(
         });
     }
     #[cfg(feature = "agents")]
-    if args.agents.room_records {
+    if args.agents.workspace_records {
         let browsers = tilo_relay::hosted_browser::HostedBrowsers::from_env()
             .map_err(anyhow::Error::msg)?
             .map(std::sync::Arc::new);
@@ -399,11 +399,11 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
         fetch_proxy: args.fetch_proxy.then(|| tilo_relay::web::FetchProxySetup {
             config: fetch_proxy_config(),
             metrics_file: Some(
-                tilo_relay_protocol::metrics::room_textfile_dir(state_root)
+                tilo_relay_protocol::metrics::workspace_textfile_dir(state_root)
                     .join("fetch-proxy.prom"),
             ),
         }),
-        // The door's wait list is the room's own: whoever starts one sets it
+        // The door's wait list is the workspace's own: whoever starts one sets it
         // on the config it gives the listener.
         door: None,
         link: args
@@ -446,9 +446,9 @@ fn fetch_proxy_config() -> tilo_net::proxy::host::Config {
             "TILO_RELAY_FETCH_PROXY_VISITOR_MIB",
             budget_defaults.visitor_bytes,
         ),
-        room_bytes: budget(
-            "TILO_RELAY_FETCH_PROXY_ROOM_MIB",
-            budget_defaults.room_bytes,
+        workspace_bytes: budget(
+            "TILO_RELAY_FETCH_PROXY_WORKSPACE_MIB",
+            budget_defaults.workspace_bytes,
         ),
     };
     #[allow(
@@ -612,7 +612,7 @@ pub async fn serve(
 pub struct DevArgs {
     #[command(flatten)]
     pub web: WebArgs,
-    /// Keeps the throwaway user root, the host's device and every room, so
+    /// Keeps the throwaway user root, the host's device and every workspace, so
     /// browsers stay certified across restarts. Delete it to start over.
     #[arg(long, value_name = "DIR")]
     pub state: Option<PathBuf>,
@@ -874,7 +874,7 @@ fn announce(
 
 /// A local host for development: a throwaway user root kept under
 /// `--state`, the browser listener, and an approver that certifies every
-/// browser device that asks. Rooms of that user are bound on first use.
+/// browser device that asks. Workspaces of that user are bound on first use.
 ///
 /// # Errors
 /// The state directory, relay or listener cannot be set up.
@@ -976,19 +976,19 @@ pub async fn dev(
     Ok(())
 }
 
-/// `tilo-relay room`: the subcommand keeps the name deployed hosts and
+/// `tilo-relay workspace`: the subcommand keeps the name deployed hosts and
 /// ops scripts run.
 #[derive(clap::Args, Clone, Debug)]
 pub struct WorkspaceArgs {
     #[command(flatten)]
     pub web: WebArgs,
-    /// The room's throwaway user root, host device and documents. The
-    /// operator removes it when the room ends.
+    /// The workspace's throwaway user root, host device and documents. The
+    /// operator removes it when the workspace ends.
     #[arg(long, value_name = "DIR")]
     pub state: PathBuf,
     #[cfg(feature = "agents")]
     #[command(flatten)]
-    pub persistent: crate::persistent_room_cli::PersistentArgs,
+    pub persistent: crate::persistent_workspace_cli::PersistentArgs,
 }
 
 /// One operator line from stdin, or why it could not be read.
@@ -1001,7 +1001,7 @@ pub(crate) fn operator_lines() -> anyhow::Result<tokio::sync::mpsc::Receiver<Ope
 }
 
 /// [`OperatorCommand`]s from `input`, one per line. A line that does not
-/// decode is passed on as an error and ends the reading, so the room stops
+/// decode is passed on as an error and ends the reading, so the workspace stops
 /// instead of skipping it; the end of `input` closes the channel, which a
 /// short-lived workspace ends with and a persistent one keeps serving through.
 fn operator_lines_from(
@@ -1010,7 +1010,7 @@ fn operator_lines_from(
     use std::io::BufRead;
     let (sender, receiver) = tokio::sync::mpsc::channel(16);
     std::thread::Builder::new()
-        .name("tilo-room-operator".into())
+        .name("tilo-workspace-operator".into())
         .spawn(move || {
             for line in std::io::BufReader::new(input).lines() {
                 let Ok(line) = line else { break };
@@ -1028,7 +1028,7 @@ fn operator_lines_from(
     Ok(receiver)
 }
 
-/// What the room approver does with one admitted pairing code.
+/// What the workspace approver does with one admitted pairing code.
 #[derive(Debug, PartialEq, Eq)]
 enum Admission {
     /// Exactly one pending browser request displays the code: certify it.
@@ -1109,7 +1109,7 @@ impl Admissions {
     }
 }
 
-/// Certify, as the room's user root, exactly the pending browsers whose
+/// Certify, as the workspace's user root, exactly the pending browsers whose
 /// pairing codes the operator admitted, each once, and `report` the outcome
 /// of every admitted code. Agent grants are never approved. A malformed
 /// operator line is an error.
@@ -1187,7 +1187,7 @@ async fn approve_admitted(
 }
 
 /// Answers the one request an admitted code matched: a browser certificate
-/// under the room's root, or a denial when the policy refuses it.
+/// under the workspace's root, or a denial when the policy refuses it.
 async fn certify_admitted(
     approver: &mut tilo_relay_client::Approver,
     root: &SigningKey,
@@ -1225,9 +1225,9 @@ async fn certify_admitted(
     })
 }
 
-/// A short-lived shared room: a throwaway user root kept under `--state`,
+/// A short-lived shared workspace: a throwaway user root kept under `--state`,
 /// the browser listener, and an approver that certifies only the browsers
-/// the operator admits. It speaks [`room_operator`]: commands on stdin,
+/// the operator admits. It speaks [`workspace_operator`]: commands on stdin,
 /// events on stdout, starting with [`OperatorEvent::Started`].
 ///
 /// # Errors
@@ -1240,13 +1240,13 @@ pub async fn workspace(
     args: WorkspaceArgs,
     shutdown: impl std::future::Future<Output = anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
-    // Every change the room receives is decided against its app's surface,
-    // a bot's included: the room's own apps carry theirs, others the room
+    // Every change the workspace receives is decided against its app's surface,
+    // a bot's included: the workspace's own apps carry theirs, others the workspace
     // keeps for them in its content plane.
     tilo_relay::surfaces::decide_receipt(&args.state.join("surfaces"));
     #[cfg(feature = "agents")]
     if args.persistent.persistent.is_some() {
-        return crate::persistent_room_cli::run(args, shutdown).await;
+        return crate::persistent_workspace_cli::run(args, shutdown).await;
     }
     let state = args.state;
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
@@ -1262,7 +1262,7 @@ pub async fn workspace(
         DeviceCapabilities::primary(),
     )?;
     let config = tilo_relay::RelayConfig {
-        state_root: tilo_relay_protocol::metrics::room_relay_root(&state),
+        state_root: tilo_relay_protocol::metrics::workspace_relay_root(&state),
         identity_root: state.join("identity"),
         ..Default::default()
     };
@@ -1344,7 +1344,7 @@ mod tests {
         }
         let parse = |args: &[&str]| {
             <Command as clap::Parser>::try_parse_from(
-                std::iter::once("room").chain(args.iter().copied()),
+                std::iter::once("workspace").chain(args.iter().copied()),
             )
             .unwrap()
             .web
@@ -1582,10 +1582,10 @@ mod tests {
         );
     }
 
-    /// A room's relay under a fresh root kept in `state`, with the room
+    /// A workspace's relay under a fresh root kept in `state`, with the workspace
     /// approver's session open on it: the relay, the root, the approver and
     /// the approver's endpoint.
-    async fn room_relay(
+    async fn workspace_relay(
         state: &Path,
     ) -> (
         Relay,
@@ -1605,7 +1605,7 @@ mod tests {
         .unwrap();
         let relay = Relay::start_with_relay_mode(
             tilo_relay::RelayConfig {
-                state_root: tilo_relay_protocol::metrics::room_relay_root(state),
+                state_root: tilo_relay_protocol::metrics::workspace_relay_root(state),
                 identity_root: state.join("identity"),
                 ..Default::default()
             },
@@ -1633,9 +1633,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_room_certifies_exactly_the_admitted_browser_and_refuses_an_unmatched_code() {
+    async fn the_workspace_certifies_exactly_the_admitted_browser_and_refuses_an_unmatched_code() {
         let tmp = tempfile::tempdir().unwrap();
-        let (relay, root, approver, approver_endpoint) = room_relay(tmp.path()).await;
+        let (relay, root, approver, approver_endpoint) = workspace_relay(tmp.path()).await;
         let user = root.verifying_key().to_bytes();
         let (operator, commands) = tokio::sync::mpsc::channel(16);
         let (reports, mut reported) = tokio::sync::mpsc::unbounded_channel();
@@ -1720,10 +1720,10 @@ mod tests {
         assert!(
             tokio::time::timeout(Duration::from_secs(10), approving)
                 .await
-                .expect("the room kept running after a malformed operator line")
+                .expect("the workspace kept running after a malformed operator line")
                 .unwrap()
                 .is_err(),
-            "a malformed operator line stops the room with an error"
+            "a malformed operator line stops the workspace with an error"
         );
         browser.close().await;
         approver_endpoint.close().await;

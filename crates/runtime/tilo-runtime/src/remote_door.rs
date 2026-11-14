@@ -387,7 +387,7 @@ impl RemoteDoor {
             .workspace
             .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok());
         // A key made for an agent works where its scope reaches, as a relay
-        // admits it (`tilo_room_host::workspace_access`): a key for one
+        // admits it (`tilo_workspace_host::workspace_access`): a key for one
         // workspace in that one alone, never the one in front of the person.
         if let Some(scope) = device.capabilities.agent
             && !hello.list

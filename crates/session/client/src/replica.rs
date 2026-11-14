@@ -59,7 +59,7 @@ impl Store for PageWorkspaces {
         self.healthy.load(Ordering::Acquire)
     }
 
-    fn uncertain(&self, _room: WorkspaceId) -> bool {
+    fn uncertain(&self, _workspace: WorkspaceId) -> bool {
         !self.healthy()
     }
 
@@ -70,7 +70,7 @@ impl Store for PageWorkspaces {
     fn put_custody(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
         let hash = *blake3::hash(bytes).as_bytes();
         let name = tilo_peer_state::owner::custody_run_name(workspace, hash);
-        self.store.save_rooms_run(&name, Some(bytes))?;
+        self.store.save_workspaces_run(&name, Some(bytes))?;
         self.runs.lock_recover().insert(name, Some(bytes.to_vec()));
         Ok(hash)
     }
@@ -81,7 +81,7 @@ impl Store for PageWorkspaces {
             return Ok(bytes.clone());
         }
         self.store
-            .load_rooms_run(&name)
+            .load_workspaces_run(&name)
             .ok_or_else(|| format!("the run of custody {name} is not kept"))
     }
 
@@ -92,7 +92,7 @@ impl Store for PageWorkspaces {
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
         let bytes = serde_json::to_vec(next).map_err(|error| error.to_string())?;
-        if let Err(error) = self.store.save_rooms(&bytes) {
+        if let Err(error) = self.store.save_workspaces(&bytes) {
             self.healthy.store(false, Ordering::Release);
             return Err(error);
         }
@@ -110,7 +110,7 @@ impl Store for PageWorkspaces {
             gone
         };
         for name in gone {
-            if let Err(error) = self.store.save_rooms_run(&name, None) {
+            if let Err(error) = self.store.save_workspaces_run(&name, None) {
                 tracing::warn!(%error, "a run of custody the record no longer names was kept");
             }
         }
@@ -133,7 +133,7 @@ impl Replicas {
     pub(crate) fn new(device: DeviceCert, store: Arc<dyn PeerStore>) -> Self {
         let now = tilo_clock::wall();
         let kept = store
-            .load_rooms()
+            .load_workspaces()
             .and_then(|bytes| serde_json::from_slice::<NativeAuthorityStorage>(&bytes).ok());
         let runs = kept
             .iter()

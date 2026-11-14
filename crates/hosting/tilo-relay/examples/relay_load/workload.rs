@@ -32,7 +32,7 @@ use crate::relay_process::Setup;
 use collab_types::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 
-/// The document every room edits together.
+/// The document every workspace edits together.
 const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "tab:0000000000000001";
 /// Characters in the document before anyone types (~10 kB).
@@ -77,11 +77,11 @@ impl Device {
     }
 }
 
-struct Room {
-    workspace_id: WorkspaceId,
+struct Workspace {
+    id: WorkspaceId,
     uuid: String,
     members: Vec<Device>,
-    /// The room as its authority seeded it; each member starts from a copy.
+    /// The workspace as its authority seeded it; each member starts from a copy.
     seed: StatePeer,
 }
 
@@ -107,11 +107,11 @@ struct PendingPresence {
     remaining: usize,
 }
 
-/// Every room and collaborator of a run, and what they observed.
+/// Every workspace and collaborator of a run, and what they observed.
 pub struct Fleet {
     user_public_key: [u8; 32],
     relay: Device,
-    rooms: Vec<Room>,
+    workspaces: Vec<Workspace>,
     /// Latencies are kept only while this is set.
     pub measuring: AtomicBool,
     pub edits: AtomicU64,
@@ -124,9 +124,9 @@ pub struct Fleet {
 }
 
 impl Fleet {
-    /// Mint a user, the relay's device and `collaborators` devices in rooms
-    /// of `room_size`, and seed each room's document.
-    pub fn enrol(collaborators: usize, room_size: usize) -> anyhow::Result<Arc<Self>> {
+    /// Mint a user, the relay's device and `collaborators` devices in workspaces
+    /// of `workspace_size`, and seed each workspace's document.
+    pub fn enrol(collaborators: usize, workspace_size: usize) -> anyhow::Result<Arc<Self>> {
         let (user_sk, user) = UserIdentity::generate("Hosting cost bench", 1);
         let enrol = |label: String, capabilities: DeviceCapabilities| -> anyhow::Result<Device> {
             let (sk, device) = DeviceIdentity::generate(label, 100);
@@ -144,11 +144,13 @@ impl Fleet {
             Ok(Device { sk, cert })
         };
         let relay = enrol("relay".into(), DeviceCapabilities::member())?;
-        let mut rooms = Vec::new();
+        let mut workspaces = Vec::new();
         let mut enrolled = 0;
         while enrolled < collaborators {
-            let size = room_size.min(collaborators.saturating_sub(enrolled)).max(2);
-            let index = rooms.len();
+            let size = workspace_size
+                .min(collaborators.saturating_sub(enrolled))
+                .max(2);
+            let index = workspaces.len();
             let members = (0..size)
                 .map(|member| {
                     let capabilities = if member == 0 {
@@ -160,12 +162,12 @@ impl Fleet {
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             enrolled = enrolled.saturating_add(size);
-            rooms.push(Room::seed(index, members)?);
+            workspaces.push(Workspace::seed(index, members)?);
         }
         Ok(Arc::new(Self {
             user_public_key: user.public_key,
             relay,
-            rooms,
+            workspaces,
             measuring: AtomicBool::new(false),
             edits: AtomicU64::new(0),
             presence: AtomicU64::new(0),
@@ -177,11 +179,11 @@ impl Fleet {
         }))
     }
 
-    pub fn rooms(&self) -> usize {
-        self.rooms.len()
+    pub fn workspaces(&self) -> usize {
+        self.workspaces.len()
     }
 
-    /// The relay process's identity and rooms.
+    /// The relay process's identity and workspaces.
     pub fn relay_setup(&self, state: &Path) -> Setup {
         Setup {
             state_root: state.to_path_buf(),
@@ -189,12 +191,12 @@ impl Fleet {
             relay_secret_key: self.relay.sk.to_bytes(),
             relay_cert: self.relay.cert.clone(),
             workspaces: self
-                .rooms
+                .workspaces
                 .iter()
-                .map(|room| {
+                .map(|workspace| {
                     (
-                        room.workspace_id,
-                        room.members.iter().map(Device::public_key).collect(),
+                        workspace.id,
+                        workspace.members.iter().map(Device::public_key).collect(),
                     )
                 })
                 .collect(),
@@ -209,19 +211,21 @@ impl Fleet {
         relay_device: [u8; 32],
     ) -> anyhow::Result<Vec<Collaborator>> {
         let mut seats = Vec::new();
-        for (room_index, room) in self.rooms.iter().enumerate() {
-            for member in 0..room.members.len() {
-                seats.push((room_index, member));
+        for (workspace_index, workspace) in self.workspaces.iter().enumerate() {
+            for member in 0..workspace.members.len() {
+                seats.push((workspace_index, member));
             }
         }
         let mut collaborators = Vec::with_capacity(seats.len());
         for batch in seats.chunks(DIAL_BATCH) {
             let dials: Vec<_> = batch
                 .iter()
-                .map(|&(room, member)| {
+                .map(|&(workspace, member)| {
                     let fleet = self.clone();
                     let relay = relay.clone();
-                    tokio::spawn(async move { fleet.join(room, member, relay, relay_device).await })
+                    tokio::spawn(
+                        async move { fleet.join(workspace, member, relay, relay_device).await },
+                    )
                 })
                 .collect();
             for dial in dials {
@@ -236,15 +240,15 @@ impl Fleet {
 
     async fn join(
         self: Arc<Self>,
-        room_index: usize,
+        workspace_index: usize,
         member: usize,
         relay: EndpointAddr,
         relay_device: [u8; 32],
     ) -> anyhow::Result<Collaborator> {
         let (workspace_id, cert, sk) = {
-            let room = self.rooms.get(room_index).context("room")?;
-            let device = room.members.get(member).context("member")?;
-            (room.workspace_id, device.cert.clone(), device.sk.clone())
+            let workspace = self.workspaces.get(workspace_index).context("workspace")?;
+            let device = workspace.members.get(member).context("member")?;
+            (workspace.id, device.cert.clone(), device.sk.clone())
         };
         let device_public_key = cert.device_public_key;
         let endpoint = Endpoint::builder(presets::Minimal).bind().await?;
@@ -275,9 +279,9 @@ impl Fleet {
         .await
         .context("a subscription never got ready")??;
         tokio::spawn(receive(self.clone(), session.clone()));
-        let room = self.rooms.get(room_index).context("room")?;
-        let device = room.members.get(member).context("member")?;
-        Collaborator::new(self.clone(), room, device, session)
+        let workspace = self.workspaces.get(workspace_index).context("workspace")?;
+        let device = workspace.members.get(member).context("member")?;
+        Collaborator::new(self.clone(), workspace, device, session)
     }
 
     /// Note an edit about to be published to `recipients` other members.
@@ -361,7 +365,7 @@ impl Fleet {
     }
 
     /// The pointer and caret delivery latencies measured so far, in
-    /// milliseconds: publish to receipt by each other member of the room.
+    /// milliseconds: publish to receipt by each other member of the workspace.
     pub fn take_presence_latencies(&self) -> (Vec<f64>, Vec<f64>) {
         let take = |latencies: &Mutex<Vec<f64>>| std::mem::take(&mut *latencies.lock_recover());
         (take(&self.pointer_latencies), take(&self.caret_latencies))
@@ -382,10 +386,10 @@ impl Fleet {
     }
 }
 
-impl Room {
+impl Workspace {
     fn seed(index: usize, members: Vec<Device>) -> anyhow::Result<Self> {
         let uuid = format!("5e11f00d-7110-4625-8000-{index:012x}");
-        let authority = members.first().context("a room has members")?;
+        let authority = members.first().context("a workspace has members")?;
         let certificates: Vec<DeviceCert> =
             members.iter().map(|device| device.cert.clone()).collect();
         let now = SystemTime::now();
@@ -417,9 +421,7 @@ impl Room {
         )
         .map_err(|error| anyhow!("{error}"))?;
         Ok(Self {
-            workspace_id: WorkspaceId::from_u128(
-                592_000_u128.saturating_add(u128::try_from(index)?),
-            ),
+            id: WorkspaceId::from_u128(592_000_u128.saturating_add(u128::try_from(index)?)),
             uuid,
             members,
             seed,
@@ -439,7 +441,7 @@ async fn receive(fleet: Arc<Fleet>, session: Arc<RelayCoeditSession>) {
     }
 }
 
-/// One connected collaborator: a device, its replica of the room and its
+/// One connected collaborator: a device, its replica of the workspace and its
 /// session.
 pub struct Collaborator {
     pub index: usize,
@@ -452,7 +454,7 @@ pub struct Collaborator {
     cursor: usize,
     keystrokes: u64,
     recipients: usize,
-    room: String,
+    workspace: String,
     handle: u64,
     user: String,
     caret_key: Vec<u8>,
@@ -462,24 +464,24 @@ pub struct Collaborator {
 impl Collaborator {
     fn new(
         fleet: Arc<Fleet>,
-        room: &Room,
+        workspace: &Workspace,
         device: &Device,
         session: Arc<RelayCoeditSession>,
     ) -> anyhow::Result<Self> {
-        let peer = room.seed.clone();
+        let peer = workspace.seed.clone();
         let mut doc = AutoCommit::load(&peer.document(APP, RECORD).context("seeded document")?)?;
         doc.set_actor(automerge::ActorId::from(device.public_key().to_vec()));
         let (_, body) = doc.get(ROOT, "body")?.context("document body")?;
         // Members type in different places, as people writing different
         // paragraphs of one document would.
-        let place = room
+        let place = workspace
             .members
             .iter()
             .position(|member| member.public_key() == device.public_key())
             .unwrap_or(0);
         let cursor = DOCUMENT_CHARS
             .saturating_mul(place.saturating_add(1))
-            .checked_div(room.members.len().saturating_add(1))
+            .checked_div(workspace.members.len().saturating_add(1))
             .unwrap_or(0);
         Ok(Self {
             index: 0,
@@ -490,8 +492,8 @@ impl Collaborator {
             body,
             cursor,
             keystrokes: 0,
-            recipients: room.members.len().saturating_sub(1),
-            room: room.uuid.clone(),
+            recipients: workspace.members.len().saturating_sub(1),
+            workspace: workspace.uuid.clone(),
             handle: neighbour_wire::peer_handle(&device.public_key()),
             user: hex::encode(fleet.user_public_key),
             // The toolkit's key for a text field and the shell's for a
@@ -499,7 +501,7 @@ impl Collaborator {
             caret_key: serde_json::to_vec(&ui::PresenceKey::Widget {
                 path: vec![ui::PathSegment::Field("body".into())],
             })?,
-            pointer_key: serde_json::to_string(&ui::PresenceKey::tile_pointer(&room.uuid, 1))?,
+            pointer_key: serde_json::to_string(&ui::PresenceKey::tile_pointer(&workspace.uuid, 1))?,
             fleet,
         })
     }
@@ -553,7 +555,7 @@ impl Collaborator {
             &NeighbourMsg::RetiredAppPresenceV2 {
                 peer: self.handle,
                 app_id: APP.into(),
-                cluster_id: self.room.clone(),
+                cluster_id: self.workspace.clone(),
                 presence: PeerPresence {
                     key: self.caret_key.clone(),
                     payload,

@@ -28,13 +28,13 @@ use tilo_actions::remote::{
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::{PersonalStore, PersonalSync};
-use tilo_room_host::host::{HostConfig, HostIdentity, WorkspaceHost};
 use tilo_runtime::enter::Entered;
 use tilo_runtime::key_runs::{KeyRuns, RunHost, Runs};
 use tilo_runtime::remote_door::PersonalDevices;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_workspace_host::host::{HostConfig, HostIdentity, WorkspaceHost};
 
 /// The app the device runs, which a key lists and acts on.
 const NOTES: &str = "so.tilo.notes";
@@ -240,7 +240,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
     let state = tempfile::tempdir().unwrap();
     let key_runs = KeyRuns::new();
     // A host opens only after its endpoint had its whole wait to reach a relay
-    // (`tilo_room_host::workspaces::Workspaces::open`), and this endpoint has
+    // (`tilo_workspace_host::workspaces::Workspaces::open`), and this endpoint has
     // none to reach. A test on a runtime whose clock it can hold holds it over
     // the open: the same wait runs on that clock, which passes it when nothing
     // else can run instead of five seconds later.
@@ -254,11 +254,10 @@ async fn device_host(root: &SigningKey) -> Box_ {
     let host = Arc::new(
         WorkspaceHost::open(
             HostConfig {
-                apps: Some(
-                    Arc::clone(&key_runs) as Arc<dyn tilo_room_host::app_serving::AppServingPlane>
-                ),
+                apps: Some(Arc::clone(&key_runs)
+                    as Arc<dyn tilo_workspace_host::app_serving::AppServingPlane>),
                 ..HostConfig::new(
-                    state.path().join("room-host"),
+                    state.path().join("workspace-host"),
                     tilo_relay_protocol::WorkSetting::none(),
                 )
             },

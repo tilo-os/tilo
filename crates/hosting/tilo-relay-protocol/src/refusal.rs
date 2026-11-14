@@ -73,10 +73,7 @@ pub const PLAIN_NOT_READY: &str = "The workspace wasn't ready for this change; t
 pub const PLAIN_REFUSED: &str = "The workspace didn't accept this change.";
 
 // Wordings of the receipt check (`collab_types::ReceiptRefusal`), the
-// workspace's shared-desktop rules and its access decisions. Each needle
-// matches both the wording hosts wrote when they called a workspace a room
-// and the wording they write now, so a device classifies a refusal from a
-// host that has not been updated the same way.
+// workspace's shared-desktop rules and its access decisions.
 const NOT_ALLOWED: &[&str] = &[
     "is not granted",
     "publishes no",
@@ -96,7 +93,6 @@ const NOT_A_MEMBER: &[&str] = &[
     "certificate expired",
     "withdrawn",
     "delegation expired",
-    "not delegated this room",
     "not delegated this workspace",
 ];
 const NOT_READY: &[&str] = &[
@@ -199,7 +195,7 @@ mod tests {
         {
             // `ReceiptRefusal::NotGranted`'s wording.
             assert_eq!(
-                plain_reason("the author is not granted Undoable on /rooms/r/apps/a/post"),
+                plain_reason("the author is not granted Undoable on /workspaces/r/apps/a/post"),
                 PLAIN_NOT_ALLOWED
             );
         }
@@ -231,21 +227,8 @@ mod tests {
 mod older_wording_tests {
     use super::*;
 
-    // A host deployed before a workspace was called one everywhere still
-    // sends reasons that name the workspace. The device reading them classifies
-    // them exactly as it classifies the wording it writes now.
     #[test]
-    fn a_reason_written_before_the_wording_changed_reads_the_same() {
-        for (old, new, plain) in [
-            (
-                "the author is not delegated this room",
-                "the author is not delegated this workspace",
-                PLAIN_NOT_A_MEMBER,
-            ),
-            ("something new", "something new", PLAIN_REFUSED),
-        ] {
-            assert_eq!(plain_reason(old), plain, "{old}");
-            assert_eq!(plain_reason(old), plain_reason(new), "{old} vs {new}");
-        }
+    fn a_reason_the_needles_do_not_name_is_plainly_refused() {
+        assert_eq!(plain_reason("something new"), PLAIN_REFUSED);
     }
 }

@@ -195,7 +195,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
         cert.device_public_key,
         NeighbourMsg::SyncResp {
             changes,
-            room: peer.workspace_id().to_owned(),
+            workspace: peer.workspace_id().to_owned(),
         },
         now,
     )
@@ -899,7 +899,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         sign_join_proof, verify_join_proof,
     };
     let (mut base, authority_key, delegate_key, _, now) = seeded();
-    let NeighbourMsg::SyncResp { changes, room } = base.workspace_message() else {
+    let NeighbourMsg::SyncResp { changes, workspace } = base.workspace_message() else {
         panic!("unexpected fixture shape")
     };
     let mut legacy = crate::workspace::candidate(None, &changes).unwrap();
@@ -917,7 +917,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
                 .into_iter()
                 .map(|change| change.raw_bytes().to_vec())
                 .collect(),
-            room,
+            workspace,
         },
         now,
     )
@@ -1119,7 +1119,7 @@ fn a_members_governance_change_is_its_roles_and_another_receiver_takes_it() {
             TransportOrigin::RelayDelta(editor_cert.device_public_key),
             NeighbourMsg::SyncResp {
                 changes: changed,
-                room: workspace,
+                workspace,
             },
             now,
         )
@@ -1138,11 +1138,7 @@ fn a_members_governance_change_is_its_roles_and_another_receiver_takes_it() {
 #[test]
 fn concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first() {
     let (base, authority_key, _, _, now) = seeded();
-    let NeighbourMsg::SyncResp {
-        changes,
-        room: workspace,
-    } = base.workspace_message()
-    else {
+    let NeighbourMsg::SyncResp { changes, workspace } = base.workspace_message() else {
         panic!("unexpected fixture shape")
     };
     let mut document = crate::workspace::candidate(None, &changes).unwrap();
@@ -1186,7 +1182,7 @@ fn concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first(
             .into_iter()
             .map(|change| change.raw_bytes().to_vec())
             .collect(),
-        room: workspace.clone(),
+        workspace: workspace.clone(),
     };
     let from = TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes());
     let receive = |first: NeighbourMsg, second: NeighbourMsg| {
@@ -1425,18 +1421,14 @@ fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
         .publication_mut()
         .bootstrap_messages(&a, now)
         .unwrap();
-    let NeighbourMsg::SyncResp {
-        changes,
-        room: workspace,
-    } = messages[0].clone()
-    else {
+    let NeighbourMsg::SyncResp { changes, workspace } = messages[0].clone() else {
         panic!("unexpected fixture shape")
     };
     let mut doc = workspace::candidate(None, &changes).unwrap();
     doc.delete(ROOT, coverage::FIELD_V2).unwrap();
     doc.commit_edit("fixture", "fixture");
     let legacy = NeighbourMsg::SyncResp {
-        room: workspace.clone(),
+        workspace: workspace.clone(),
         changes: doc
             .get_changes(&[])
             .into_iter()
@@ -2278,7 +2270,7 @@ fn governed_import_is_atomic_even_for_direct_admission() {
     valid.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
     sign_device_cert(&mut valid, &root).unwrap();
     source.admit_certificate(valid, &a, now).unwrap();
-    let NeighbourMsg::SyncResp { changes, room } = source.workspace_message() else {
+    let NeighbourMsg::SyncResp { changes, workspace } = source.workspace_message() else {
         panic!("unexpected fixture shape")
     };
     let mut candidate = workspace::candidate(None, &changes).unwrap();
@@ -2301,7 +2293,7 @@ fn governed_import_is_atomic_even_for_direct_admission() {
         receiver
             .receive(
                 a.verifying_key().to_bytes(),
-                NeighbourMsg::SyncResp { changes, room },
+                NeighbourMsg::SyncResp { changes, workspace },
                 now
             )
             .is_err()
@@ -2673,11 +2665,11 @@ fn a_record_covered_as_empty_is_held_from_its_coverage() {
         .publication_mut()
         .bootstrap_messages(&a_key, now)
         .unwrap();
-    let NeighbourMsg::SyncResp { changes, room } = messages[0].clone() else {
+    let NeighbourMsg::SyncResp { changes, workspace } = messages[0].clone() else {
         panic!("unexpected fixture shape")
     };
     let mut joiner = StatePeer::new(
-        &room,
+        &workspace,
         native.owner_certificates()[0].clone(),
         vec![b_cert],
         RevocationList::new(),
@@ -2688,7 +2680,7 @@ fn a_record_covered_as_empty_is_held_from_its_coverage() {
     joiner
         .receive_from(
             TransportOrigin::RelayDelta(a_key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp { changes, room },
+            NeighbourMsg::SyncResp { changes, workspace },
             now,
         )
         .unwrap();
@@ -2871,7 +2863,7 @@ fn a_removed_members_device_writes_nothing_after_its_removal() {
         issuer: None,
     };
     sign_device_cert(&mut newcomer_cert, &newcomer).unwrap();
-    let NeighbourMsg::SyncResp { changes, room } = peer.workspace_message() else {
+    let NeighbourMsg::SyncResp { changes, workspace } = peer.workspace_message() else {
         panic!("unexpected fixture shape");
     };
     let mut workspace_doc = crate::workspace::candidate(None, &changes).unwrap();
@@ -2898,7 +2890,7 @@ fn a_removed_members_device_writes_nothing_after_its_removal() {
                 .into_iter()
                 .map(|change| change.raw_bytes().to_vec())
                 .collect(),
-            room,
+            workspace,
         },
         later,
     )

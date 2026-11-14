@@ -11,6 +11,7 @@ mod workspace_activity {
         AutoCommit, ROOT,
         transaction::{CommitOptions, Transactable},
     };
+    use tilo_desktop_model::projection::WORKSPACE_ID_KEY;
     use tilo_desktop_model::{Layout, StripId, Tab, TileContent, WindowGroup, WindowWidth};
     use ui::record::RecordStore;
 
@@ -38,7 +39,8 @@ mod workspace_activity {
             focus_history: Vec::new(),
         });
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "room", workspace.to_string()).unwrap();
+        doc.put(ROOT, WORKSPACE_ID_KEY, workspace.to_string())
+            .unwrap();
         doc.put(ROOT, "name", "Design").unwrap();
         for (n, title) in [(3, "Plan"), (4, "Review")] {
             strip.window_groups[0].tabs.push(Tab {
@@ -204,7 +206,7 @@ mod workspace_activity {
     fn malformed_historical_workspace_is_not_a_valid_replay_checkpoint() {
         let mut tree = causal_workspace();
         let workspace = tree.active_workspace().unwrap().id();
-        tree.doc.delete(ROOT, "room").unwrap();
+        tree.doc.delete(ROOT, WORKSPACE_ID_KEY).unwrap();
         let broken = tree
             .doc
             .commit_with(CommitOptions::default().with_time(6))
@@ -212,7 +214,9 @@ mod workspace_activity {
         let mut bytes = [0; 16];
         bytes.copy_from_slice(&broken.0[..16]);
         let broken_id = HistoryEntryId::from_bytes(bytes);
-        tree.doc.put(ROOT, "room", workspace.to_string()).unwrap();
+        tree.doc
+            .put(ROOT, WORKSPACE_ID_KEY, workspace.to_string())
+            .unwrap();
         tree.doc.commit_with(CommitOptions::default().with_time(7));
         let mut pane = WorkspaceActivityPane::new();
         pane.refresh(&mut tree);

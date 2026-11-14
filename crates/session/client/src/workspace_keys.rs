@@ -85,7 +85,7 @@ impl KeyService {
     /// settles them: keys a record waited for may be here since.
     ///
     /// Without a secret store the service still runs, for the workspaces this
-    /// device's own room host takes part in: their keys come from that host,
+    /// device's own workspace host takes part in: their keys come from that host,
     /// and this device's own sealed state is the only thing it cannot keep.
     ///
     /// # Errors

@@ -858,7 +858,7 @@ mod tests {
                 WorkspaceId::from_u128(7),
                 &heard(NeighbourMsg::SyncResp {
                     changes: Vec::new(),
-                    room: "workspace".into(),
+                    workspace: "workspace".into(),
                 })
             )
             .is_none(),

@@ -19,7 +19,7 @@ fn person(cert: &DeviceCert) -> String {
 /// A workspace document naming `owner` its owner, and nothing else.
 fn workspace(owner: &DeviceCert) -> AutoCommit {
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", WORKSPACE).unwrap();
+    doc.put(ROOT, "workspace", WORKSPACE).unwrap();
     doc.put(ROOT, "owner", person(owner)).unwrap();
     doc
 }

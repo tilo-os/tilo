@@ -22,9 +22,8 @@ and opens is that workspace's. Several coding agents can work on one device
 at once, each in a workspace of its own, each with its own files, shell and
 environment, none seeing another's:
 
-- **Records.** An environment's record is kept in its workspace's room,
-  where Terminal opened there keeps its own records, and names the
-  workspace. Listing environments in a workspace lists only that
+- **Records.** An environment's record is kept in its workspace, where
+  Terminal opened there keeps its own records, and names the workspace. Listing environments in a workspace lists only that
   workspace's.
 - **Files.** Its `~` is the workspace's own files: for a workspace `W`, its
   tree of the device's files, `/var/workspace/.workspaces/W`. Only that tree
@@ -134,7 +133,7 @@ not persist a publisher policy or bypass signature, revocation or runtime checks
 ## The environment record
 
 An environment is a synced record (`#[resource(kind = "environment")]`,
-declared by the Terminal app), kept in its workspace's room, so it follows
+declared by the Terminal app), kept in its workspace, so it follows
 the user to every device that holds the workspace:
 
 ```rust
@@ -487,7 +486,7 @@ hosted-VM service starts beside the Linux VM; the relay asks for them the way
 it asks for a shell command, placing `<workspace>/browser` first
 (`crates/hosting/tilo-relay/src/placed_browsers.rs`). The first time the relay
 asks about a workspace it placed on the member, the member enters it: it asks
-the relay's own `room.enter`, which answers an invitation naming the member's
+the relay's own `workspace.enter`, which answers an invitation naming the member's
 person, and redeems it as a device joins any workspace. The relay decides
 which member may enter which workspace, never the request: a device of another
 person asking the member gets nothing from it, and a workspace the relay does

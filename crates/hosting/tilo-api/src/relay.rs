@@ -274,7 +274,7 @@ impl Relay {
         let fresh = id.unwrap_or_else(uuid::Uuid::new_v4).to_string();
         let mut arguments = Map::new();
         arguments.insert("name".into(), json!(name));
-        arguments.insert("room".into(), json!(fresh));
+        arguments.insert("workspace".into(), json!(fresh));
         if !labels.is_empty() {
             arguments.insert("labels".into(), json!(labels));
         }
@@ -296,11 +296,11 @@ impl Relay {
             return Err(RelayError::NotFound);
         }
         let mut arguments = Map::new();
-        arguments.insert("room".into(), json!(workspace));
+        arguments.insert("workspace".into(), json!(workspace));
         connection
             .device
             .host_action(
-                tilo_relay_session::workspaces::DELETE_ROOM,
+                tilo_relay_session::workspaces::DELETE_WORKSPACE,
                 arguments,
                 "tilo api",
             )

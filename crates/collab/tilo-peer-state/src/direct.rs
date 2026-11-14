@@ -1653,7 +1653,7 @@ impl DirectSync {
             from: self.device(),
             message: NeighbourMsg::SyncReq {
                 since: Vec::new(),
-                room: self.0.replica.workspace(),
+                workspace: self.0.replica.workspace(),
                 invite_id: None,
                 nonce: now_ns(),
             },

@@ -122,7 +122,7 @@ command.
   200 Mbit/s each way.
 - **The session's device reaches one record and one page.** A page may hold
   the device's key, so the relay confines it to what its window is: the one
-  Browser record the open made (`tilo_room_host::environment`), decided where
+  Browser record the open made (`tilo_workspace_host::environment`), decided where
   the relay certifies the device. In the state plane it is replayed and
   handed only that record's channel and may write no other; on the live
   plane it publishes its own participant namespace (its presence, its
@@ -343,12 +343,12 @@ fifteenth of a cent on demand, and a hundred-and-fiftieth of a cent on Spot.
 
 ## Running it
 
-A host that places workspaces (`tilo-relay room … --room-records`) serves
+A host that places workspaces (`tilo-relay workspace … --workspace-records`) serves
 their Browser with `TILO_HOSTED_PLACER`, `TILO_HOSTED_MEMBERS`,
 `TILO_HOSTED_ACCOUNT` and `TILO_HOSTED_VM_SIZE` (as for shells), plus
 `TILO_HOSTED_BROWSER_RELAY` (`KEY@HOST:PORT`, the public address sessions
 reach it at), `TILO_HOSTED_BROWSER_ACTIONS` (the action ledger) and
 `TILO_HOSTED_PLANS`. A host that holds its person's root makes itself their
-stand-in from it at start (`room --root-file`), and keeps it in its state.
+stand-in from it at start (`workspace --root-file`), and keeps it in its state.
 A VM host serves Browser in its VMs when `TILO_VM_RELAY_ENDPOINT` is set; it
 keeps its templates under its state directory by itself.

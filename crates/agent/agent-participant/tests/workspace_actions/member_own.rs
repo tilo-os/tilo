@@ -173,7 +173,8 @@ async fn a_member_links_their_discord_account_through_the_host() {
             .unwrap()
             .expect("the governor holds the Discord record");
         let mut doc = automerge::AutoCommit::load(&saved).unwrap();
-        let governors = tilo_relay::room_bots::opened::<discord::record::Guild>(&mut doc).unwrap();
+        let governors =
+            tilo_relay::workspace_bots::opened::<discord::record::Guild>(&mut doc).unwrap();
         let people: Vec<_> = governors
             .connects
             .iter()
@@ -251,11 +252,11 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
     );
     assert_eq!(reading["connected"], false, "{reading}");
 
-    tilo_relay::room_bots::discord::connect(
+    tilo_relay::workspace_bots::discord::connect(
         workspaces,
         &workspace.workspace,
         &host.cert,
-        &tilo_relay::room_bots::discord::DiscordLink {
+        &tilo_relay::workspace_bots::discord::DiscordLink {
             guild_id: "1".into(),
             only_channel: None,
             name: "Tilo".into(),

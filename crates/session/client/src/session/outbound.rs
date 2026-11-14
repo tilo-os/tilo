@@ -222,7 +222,7 @@ impl Task {
 
     /// Send `workspace_id`'s writes in this device's custody its host was not sent on this
     /// connection, as far as the transport takes them; the rest go as the host's answers make
-    /// room. Returns `false` when the transport took no more.
+    /// workspace. Returns `false` when the transport took no more.
     pub(super) fn send_custody(&mut self, workspace_id: WorkspaceId, client: &RelayClient) -> bool {
         let Some(workspace) = self.replicas.workspace(workspace_id) else {
             return true;

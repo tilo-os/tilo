@@ -1,5 +1,5 @@
-//! A bridged person's avatar, which only the room's host keeps: a member's
-//! Chat asks the room for it over its live session, as it asks any member,
+//! A bridged person's avatar, which only the workspace's host keeps: a member's
+//! Chat asks the workspace for it over its live session, as it asks any member,
 //! and the host answers in pieces addressed to that member alone.
 
 #![allow(
@@ -24,16 +24,16 @@ use crate::common::{TestDevice, device_endpoint};
 
 const CHAT: &str = "so.tilo.chat";
 
-/// A room on `relay` that `member` entered as its owner's, and the member's
+/// A workspace on `relay` that `member` entered as its owner's, and the member's
 /// live session in it.
-async fn member_in_a_new_room(
+async fn member_in_a_new_workspace(
     relay: &Relay,
     member: &TestDevice,
 ) -> (WorkspaceSummary, RelayCoeditSession) {
     let workspaces = relay.workspaces().unwrap();
-    let room = workspaces.create("Bridged").await.unwrap();
+    let workspace = workspaces.create("Bridged").await.unwrap();
     workspaces
-        .enter(&room.workspace, &member.cert)
+        .enter(&workspace.workspace, &member.cert)
         .await
         .unwrap();
     let client = RelayClient::connect_to_pinned_host(
@@ -46,13 +46,14 @@ async fn member_in_a_new_room(
     .await
     .unwrap();
     let session =
-        RelayCoeditSession::join(client, room.workspace_id, member.device_pubkey()).unwrap();
-    crate::common::wait_until_subscribed(relay, room.workspace_id, &member.device_pubkey()).await;
-    (room, session)
+        RelayCoeditSession::join(client, workspace.workspace_id, member.device_pubkey()).unwrap();
+    crate::common::wait_until_subscribed(relay, workspace.workspace_id, &member.device_pubkey())
+        .await;
+    (workspace, session)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
+async fn a_member_fetches_a_bridged_avatar_from_the_workspace_host() {
     let alice = crate::common::TestUser::fresh("Alice");
     let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
@@ -72,7 +73,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
     .await
     .unwrap();
 
-    let (room, session) = member_in_a_new_room(&relay, &laptop).await;
+    let (workspace, session) = member_in_a_new_workspace(&relay, &laptop).await;
 
     // What a bridge fetched from the other service, kept as the host keeps
     // it, in the workspace's content: larger than one piece, so the member
@@ -80,7 +81,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
     let avatar: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
     let hash = relay
         .content()
-        .get(&room.workspace)
+        .get(&workspace.workspace)
         .unwrap()
         .put(&avatar)
         .unwrap();
@@ -90,7 +91,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
         postcard::to_stdvec(&NeighbourMsg::RecordContentWant {
             requester,
             app_id: CHAT.into(),
-            cluster_id: room.workspace.clone(),
+            cluster_id: workspace.workspace.clone(),
             hash: hash.into(),
             have: Vec::new(),
         })
@@ -139,7 +140,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
                     cluster_id.as_str(),
                     piece_hash.as_str()
                 ),
-                (requester, CHAT, room.workspace.as_str(), hash.as_str()),
+                (requester, CHAT, workspace.workspace.as_str(), hash.as_str()),
                 "only the asked-for avatar is answered"
             );
             assert_eq!(offset, received.len() as u64, "pieces arrive in order");

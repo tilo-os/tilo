@@ -3,7 +3,7 @@
 //! One relay runs in its own process, so its CPU time and memory are its
 //! own: this binary re-executes itself with `--serve`, which starts the
 //! production [`tilo_relay::Relay`] with authentication and the co-edit path
-//! as a daemon runs them. The parent then connects N collaborators in rooms
+//! as a daemon runs them. The parent then connects N collaborators in workspaces
 //! of four, each its own device certificate, iroh endpoint and
 //! `tilo-relay/7` session, and plays a fixed, deterministic minute of work
 //! for each of them, over and over:
@@ -26,7 +26,7 @@
 //! Per window the parent asks the relay process for its CPU time, resident
 //! memory, egress counters and the bytes its iroh endpoint put on UDP, and
 //! divides by collaborators and hours. Fan-out latency is publish to receipt
-//! by each other member of the room; pointer and caret latency are the same
+//! by each other member of the workspace; pointer and caret latency are the same
 //! for each pointer move and caret the relay forwarded (one it coalesced
 //! away under a later one is never received, and not counted). Store fsyncs per edit divides the file
 //! and directory barriers the relay's workspace stores issued by the deltas
@@ -77,9 +77,9 @@ struct Args {
     /// Simulated collaborators, each its own device and session.
     #[arg(long, default_value_t = 100)]
     collaborators: usize,
-    /// Collaborators per room; the last room takes the remainder.
+    /// Collaborators per workspace; the last workspace takes the remainder.
     #[arg(long, default_value_t = 4)]
-    room_size: usize,
+    workspace_size: usize,
     /// Measured minutes after the one-minute warm-up; each is one sample.
     #[arg(long, default_value_t = 10)]
     minutes: u32,
@@ -123,10 +123,13 @@ fn main() -> ExitCode {
 }
 
 fn bench(args: &Args) -> anyhow::Result<()> {
-    anyhow::ensure!(args.room_size >= 2, "--room-size must be at least 2");
     anyhow::ensure!(
-        args.collaborators >= 2 && args.collaborators.checked_rem(args.room_size) != Some(1),
-        "--collaborators must fill rooms of at least two"
+        args.workspace_size >= 2,
+        "--workspace-size must be at least 2"
+    );
+    anyhow::ensure!(
+        args.collaborators >= 2 && args.collaborators.checked_rem(args.workspace_size) != Some(1),
+        "--collaborators must fill workspaces of at least two"
     );
     anyhow::ensure!(args.minutes >= 1, "--minutes must be at least 1");
     // Split the CPUs before this process starts its runtime, so its workers
@@ -142,7 +145,7 @@ fn bench(args: &Args) -> anyhow::Result<()> {
 }
 
 async fn run(args: &Args, relay_cpus: Option<&[usize]>) -> anyhow::Result<()> {
-    let fleet = Fleet::enrol(args.collaborators, args.room_size)?;
+    let fleet = Fleet::enrol(args.collaborators, args.workspace_size)?;
     let state = tempfile::Builder::new()
         .prefix("tilo-relay-load-")
         .tempdir()
@@ -178,9 +181,9 @@ async fn measure(
     );
     let connected = relay.sample().await?;
     eprintln!(
-        "{} collaborators in {} rooms connected; relay RSS {:.1} MiB idle, {:.1} MiB connected",
+        "{} collaborators in {} workspaces connected; relay RSS {:.1} MiB idle, {:.1} MiB connected",
         collaborators.len(),
-        fleet.rooms(),
+        fleet.workspaces(),
         mib(idle.rss_bytes),
         mib(connected.rss_bytes),
     );
@@ -356,8 +359,8 @@ impl Window {
 /// Everything one run measured.
 struct Report {
     collaborators: usize,
-    rooms: usize,
-    room_size: usize,
+    workspaces: usize,
+    workspace_size: usize,
     /// The CPUs the relay was confined to (`--relay-cpus`); none is all.
     relay_cpus: Option<usize>,
     idle_rss_bytes: u64,
@@ -393,8 +396,8 @@ impl Report {
         caret_ms.sort_by(f64::total_cmp);
         Ok(Self {
             collaborators: args.collaborators,
-            rooms: fleet.rooms(),
-            room_size: args.room_size,
+            workspaces: fleet.workspaces(),
+            workspace_size: args.workspace_size,
             relay_cpus: args.relay_cpus,
             idle_rss_bytes: idle.rss_bytes,
             windows,
@@ -498,8 +501,8 @@ impl Report {
             |unit: &str, samples: Vec<f64>| serde_json::json!({"unit": unit, "samples": samples});
         serde_json::json!({
             "collaborators": self.collaborators,
-            "rooms": self.rooms,
-            "room_size": self.room_size,
+            "workspaces": self.workspaces,
+            "workspace_size": self.workspace_size,
             "relay_cpus": self.relay_cpus,
             "window_s": WINDOW.as_secs(),
             "windows": self.windows.len(),
@@ -529,7 +532,7 @@ impl Report {
 
     fn summary_line(&self) -> String {
         format!(
-            "HOSTING_LOAD collaborators={} rooms={} windows={} edits={} presence={} \
+            "HOSTING_LOAD collaborators={} workspaces={} windows={} edits={} presence={} \
              undelivered_edits={} cpu_s_per_collab_hour_p50={:.3} rss_mib_per_collab_p50={:.3} \
              egress_mb_per_collab_hour_p50={:.3} frame_mb_per_collab_hour_p50={:.3} \
              live_frame_mb_per_collab_hour_p50={:.3} client_packets_per_collab_hour_p50={:.0} \
@@ -541,7 +544,7 @@ impl Report {
              compaction_cpu_ms_per_collab_hour_p50={:.1} \
              compaction_signature_checks_per_edit_p50={:.3}",
             self.collaborators,
-            self.rooms,
+            self.workspaces,
             self.windows.len(),
             self.edits,
             self.presence,

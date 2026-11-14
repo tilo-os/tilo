@@ -2,8 +2,8 @@
 //! restart, a failing service or a busy one delays a confirmation, an
 //! invitation or word of a removal instead of losing it.
 //!
-//! In the persistent room the outbox is durable: one file per mail in the
-//! room's own state directory, created `0600` in a `0700` directory and
+//! In the persistent workspace the outbox is durable: one file per mail in the
+//! workspace's own state directory, created `0600` in a `0700` directory and
 //! published atomically, so a crash leaves either the whole entry or none.
 //! An entry holds the mail itself — including its links, until it is sent or
 //! ages out — and never the mail service's key. It is bounded in number,
@@ -91,7 +91,7 @@ struct Item {
     attempts: u32,
     /// When the next attempt may begin.
     next_at_ms: u64,
-    /// How much room this entry takes.
+    /// How much workspace this entry takes.
     bytes: usize,
     /// Where it is kept, when the outbox is durable.
     path: Option<PathBuf>,
@@ -409,9 +409,9 @@ impl Outbox {
             removal,
         };
         let mut state = self.state.lock_recover();
-        let room = state.items.len() < self.limits.max_items
+        let workspace = state.items.len() < self.limits.max_items
             && state.bytes.saturating_add(item.bytes) <= self.limits.max_bytes;
-        if !room {
+        if !workspace {
             drop(state);
             discard_file(&item);
             eprintln!("the door: the door's outbox is full, so {kind} was not queued");
@@ -461,7 +461,7 @@ impl Outbox {
             && self.eligibility.lock_recover().is_some()
         {
             // Recipient-dependent mail without eligibility metadata is
-            // not safe to send from a persistent room.
+            // not safe to send from a persistent workspace.
             self.finish(&item.id);
             self.sending.store(false, Ordering::Release);
             return true;

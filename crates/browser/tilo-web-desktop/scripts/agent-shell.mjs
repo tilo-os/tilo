@@ -407,7 +407,7 @@ const relayPort = await freePort();
 const plainPort = await freePort();
 // Where pages reach the host: WebTransport over UDP. The site in front of the host carries only
 // TCP, as a deployment's ingress does, so the host takes its sessions at a port of its own and
-// names that origin to the pages, as a deployment's TILO_ROOMS_LINK does.
+// names that origin to the pages, as a deployment's TILO_WORKSPACES_LINK does.
 const linkPort = await freePort();
 const siteLog = line => {
   try { appendFileSync(join(browserDir, 'site.log'), `${new Date().toISOString()} ${line}\n`); } catch {}
@@ -464,7 +464,7 @@ writeFileSync(rootFile, `${randomBytes(32).toString('hex')}\n`, {mode: 0o600});
 const hostHome = join(work, 'host-home');
 const secretsDir = join(work, 'secrets');
 mkdirSync(secretsDir, {recursive: true, mode: 0o700});
-const OPERATOR_LINE = 'tilo-room-operator ';
+const OPERATOR_LINE = 'tilo-workspace-operator ';
 const host = detached('host', relayBin, ['room', '--state', join(work, 'room-state'),
   '--persistent', 'tilo', '--workspace-name', 'Tilo', '--root-file', rootFile, '--room-id-file', roomIdFile,
   '--web', `127.0.0.1:${hostPort}`, '--tls', `files:${certPath},${keyPath}`,

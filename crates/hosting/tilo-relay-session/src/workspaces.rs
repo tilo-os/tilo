@@ -70,7 +70,7 @@ pub async fn ask_host(
 }
 
 /// Ask `client`'s relay to enter this device into `workspace`, and answer the
-/// invitation text the device redeems to hold it: [`ENTER_ROOM`]'s ask, and
+/// invitation text the device redeems to hold it: [`ENTER_WORKSPACE`]'s ask, and
 /// the invitation it answers with, in the shape every join redeems.
 ///
 /// # Errors
@@ -82,14 +82,14 @@ pub async fn enter_invitation(
     expires_in_seconds: u64,
 ) -> Result<String, String> {
     let arguments = serde_json::Map::from_iter([
-        ("room".to_owned(), workspace.into()),
+        ("workspace".to_owned(), workspace.into()),
         ("expires_in_seconds".to_owned(), expires_in_seconds.into()),
     ]);
     let invoke = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),
-            address: ActionAddress::new(HOST_ROOMS_RESOURCE.to_owned(), ENTER_ROOM),
+            address: ActionAddress::new(HOST_WORKSPACES_RESOURCE.to_owned(), ENTER_WORKSPACE),
         },
         argument: InvokeArgument::Json(arguments),
         context: None,
@@ -122,33 +122,33 @@ pub async fn enter_invitation(
 /// every door decides a host operation.
 pub const HOST_ACTIONS_PROVIDER: &str = "tilo.host";
 /// The one resource the host operations are published on.
-pub const HOST_ROOMS_RESOURCE: &str = "host.rooms";
+pub const HOST_WORKSPACES_RESOURCE: &str = "host.workspaces";
 /// Create a governed workspace. Arguments: `name`, and the terms of its first
 /// invitation when one is wanted (`invite_role`, `invite_recipient`,
 /// `invitee_name`, `invite_expires_in_seconds`). Answers a [`CreatedWorkspace`].
-pub const CREATE_ROOM: &str = "room.create";
+pub const CREATE_WORKSPACE: &str = "workspace.create";
 /// Make the one workspace of the caller's own person on a host that keeps
 /// workspaces of people's own, or answer theirs again: any person's device
 /// may ask. Arguments: `name` (the new workspace's; unused once they have
 /// one), `language` (the language one they do not name is named in, a tag such
-/// as `de-DE`; English when omitted), `room` (the identity of a workspace
+/// as `de-DE`; English when omitted), `workspace` (the identity of a workspace
 /// that moves here as theirs; a different one than theirs is refused with a
 /// `tilo_actions::remote::host_account::Refusal`), and `expires_in_seconds`
 /// (how long the invitation stays redeemable; 600 when omitted). Answers a
 /// [`CreatedWorkspace`] with the invitation the person's devices redeem to
 /// hold it, as its administrator.
-pub const CREATE_OWN_ROOM: &str = "room.create-own";
+pub const CREATE_OWN_WORKSPACE: &str = "workspace.create-own";
 /// Every workspace the host governs, each as a [`WorkspaceListing`].
-pub const LIST_ROOMS: &str = "room.list";
-/// Delete the workspace `room`, one of the caller's person's own (any
+pub const LIST_WORKSPACES: &str = "workspace.list";
+/// Delete the workspace `workspace`, one of the caller's person's own (any
 /// workspace this host governs, for the host's own person), with everything
 /// the host keeps of it: its records, history, files and the storage they
 /// took. Everyone in it is told it was deleted
 /// ([`tilo_relay_protocol::refusal::WORKSPACE_DELETED`]) and let in no more.
 /// Final: there is no undo. Only a person's device, or an agent's grant
 /// reaching all their workspaces, deletes; a workspace that is not theirs is
-/// refused with [`NOT_YOUR_OWN`]. Answers `{"deleted": room}`.
-pub const DELETE_ROOM: &str = "room.delete";
+/// refused with [`NOT_YOUR_OWN`]. Answers `{"deleted": workspace}`.
+pub const DELETE_WORKSPACE: &str = "workspace.delete";
 /// What the host refuses a person asking for, or deleting, a workspace that
 /// is not one of their own with.
 pub const NOT_YOUR_OWN: &str = "that workspace is not one of your own";
@@ -156,7 +156,7 @@ pub const NOT_YOUR_OWN: &str = "that workspace is not one of your own";
 /// an [`EnteredWorkspace`]: the invitation the device redeems to hold the workspace,
 /// restricted to its person and redeemable `expires_in_seconds` (600 when
 /// omitted).
-pub const ENTER_ROOM: &str = "room.enter";
+pub const ENTER_WORKSPACE: &str = "workspace.enter";
 /// The revocations of the host's person the host enforces, as the person's
 /// devices announced them: a JSON array of root-signed
 /// `tilo_user_identity::RevocationEntry`. What a service that signs the
@@ -169,20 +169,20 @@ pub const LIST_REVOCATIONS: &str = "identity.revocations";
 /// signed address) and `bootstrap` (the workspace as a joining member gets it,
 /// the host's device admitted), each signed value postcard in hex. Only a
 /// certified host serves workspaces this way. Answers a [`HostedWorkspace`].
-pub const HOST_ROOM: &str = "room.host";
+pub const HOST_WORKSPACE: &str = "workspace.host";
 /// Stop serving `workspace` for its governor. Answers `{"stopped": bool}`.
-pub const UNHOST_ROOM: &str = "room.unhost";
+pub const UNHOST_WORKSPACE: &str = "workspace.unhost";
 /// Have the certified host `host` (its device key, 64 hex) of the person,
 /// reachable at `host_addr` (an endpoint address), serve the workspace `workspace`
 /// governed here as well: admitted as one of the owner's devices, handed the
-/// workspace with [`HOST_ROOM`], and named among the workspace's hosts. Answers a
+/// workspace with [`HOST_WORKSPACE`], and named among the workspace's hosts. Answers a
 /// [`HostedWorkspace`].
-pub const ATTACH_HOST: &str = "room.attach-host";
+pub const ATTACH_HOST: &str = "workspace.attach-host";
 /// Stop having the host `host` serve `workspace`: it is no longer named among the
 /// workspace's hosts, and is asked to stop at `host_addr` when given, else at the
 /// address it last answered. Answers `{"confirmed": bool}`, whether the host
 /// confirmed it stopped.
-pub const DETACH_HOST: &str = "room.detach-host";
+pub const DETACH_HOST: &str = "workspace.detach-host";
 
 /// The person's whole workspace list, as one of their own devices keeps it
 /// here: argument `list`, a [`PersonalList`] naming each workspace of theirs,
@@ -192,7 +192,7 @@ pub const DETACH_HOST: &str = "room.detach-host";
 /// The devices the list carries are added to the person's devices kept
 /// here, never taken away: a device leaves only by its root's revocation.
 /// Answers `{"kept": count}`.
-pub const KEEP_PERSONAL: &str = "room.personal.keep";
+pub const KEEP_PERSONAL: &str = "workspace.personal.keep";
 /// The caller's person's workspace list ([`PersonalList`]): the one their
 /// devices kept here, with the workspaces this host keeps for them, each
 /// naming its host and how to reach it. Any certified key of the person's
@@ -200,7 +200,7 @@ pub const KEEP_PERSONAL: &str = "room.personal.keep";
 /// asking it may name its browser's tab devices (argument `browser`, a
 /// [`PersonalBrowser`]): they join the person's devices, and the list marks
 /// them as that browser's.
-pub const LIST_PERSONAL: &str = "room.personal";
+pub const LIST_PERSONAL: &str = "workspace.personal";
 /// The most workspaces a kept list names.
 pub const MAX_PERSONAL_WORKSPACES: usize = 4096;
 /// The most devices a person's record keeps.
@@ -396,7 +396,7 @@ impl PersonalList {
     }
 }
 
-/// What [`HOST_ROOM`] and [`ATTACH_HOST`] answer.
+/// What [`HOST_WORKSPACE`] and [`ATTACH_HOST`] answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedWorkspace {
     /// The serving host's own signed address for the workspace, postcard in hex.
@@ -521,7 +521,7 @@ impl ActionInvitation {
     }
 }
 
-/// What [`CREATE_ROOM`] answers.
+/// What [`CREATE_WORKSPACE`] answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreatedWorkspace {
     #[serde(flatten)]
@@ -531,7 +531,7 @@ pub struct CreatedWorkspace {
     pub invitation: Option<ActionInvitation>,
 }
 
-/// What [`ENTER_ROOM`] answers.
+/// What [`ENTER_WORKSPACE`] answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnteredWorkspace {
     /// Whether governance changed to admit the caller.

@@ -74,7 +74,7 @@ jobs:
         run: bash tools/ci/publish/lounge-binaries.sh "$OUT/lounge/binaries"
 
       - name: Test the Lounge entrypoint
-        # The deployment's TILO_ROOMS_* to the host's flags, against a stub
+        # The deployment's TILO_WORKSPACES_* to the host's flags, against a stub
         # relay: the image's program starts with what the deployment says.
         run: bash os/containers/tilo-lounge/test-entrypoint.sh
 

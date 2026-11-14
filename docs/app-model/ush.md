@@ -253,14 +253,14 @@ workspace a request is for:
   is refused, in words.
 - **The session's own process** (the shell hosting Terminal in-process,
   which holds the person's authority): the `workspace` its request names.
-- **Neither**: the **primary workspace**, `personal` — the room the
+- **Neither**: the **primary workspace**, `personal` — the one the
   launcher gives a launch in no workspace.
 
 What is the workspace's:
 
 | | The primary workspace | Any other workspace `W` |
 |---|---|---|
-| Records | `tilo-workspaces/personal/…` (unchanged) | `tilo-workspaces/W/so.tilo.terminal/…`, room `W` |
+| Records | `tilo-workspaces/personal/…` (unchanged) | `tilo-workspaces/W/so.tilo.terminal/…`, workspace `W` |
 | `~` | the device's files folder (`/var/workspace`) | `W`'s own tree: `/var/workspace/.workspaces/W` |
 | Homes, `/var` state | `environments/<record>/` | `workspaces/W/environments/<record>/` |
 | May be granted | as before | its own tree; nothing else under the files folder |
@@ -268,8 +268,7 @@ What is the workspace's:
 Two Terminals in two workspaces open two environments, side by side, each
 with its own `~`: an agent in one sees neither the other's files nor its
 records. A record names its workspace (`workspace`), written when it is made
-and changed by no action; one found in another workspace's room is not
-opened. An environment of `W` is refused a grant of another workspace's
+and changed by no action; one found in another workspace is not opened. An environment of `W` is refused a grant of another workspace's
 tree, of the files folder that holds every tree, and of anything above it —
 asked by `perm trust-dir` in its guest, by Terminal or by `set-home` — and a
 grant that reached its record anyway (written by a Tilo without this check)

@@ -65,22 +65,22 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
     /// The stored record of the workspaces this device holds
     /// ([`tilo_peer_state::owner::NativeWorkspaceOwner`]), if any. A store
     /// without it holds them for the session only.
-    fn load_rooms(&self) -> Option<Vec<u8>> {
+    fn load_workspaces(&self) -> Option<Vec<u8>> {
         None
     }
     /// Replace the stored record of the workspaces this device holds.
-    fn save_rooms(&self, _bytes: &[u8]) -> Result<(), String> {
+    fn save_workspaces(&self, _bytes: &[u8]) -> Result<(), String> {
         Ok(())
     }
     /// Keep `bytes` under `name` beside the record of the workspaces this device holds: a run of
     /// a workspace's outgoing custody waiting behind what the record keeps itself
     /// ([`tilo_peer_state::owner::Store::put_custody`]). `None` lets it go. A store without
     /// them holds them for the session only.
-    fn save_rooms_run(&self, _name: &str, _bytes: Option<&[u8]>) -> Result<(), String> {
+    fn save_workspaces_run(&self, _name: &str, _bytes: Option<&[u8]>) -> Result<(), String> {
         Ok(())
     }
-    /// The run [`Self::save_rooms_run`] keeps under `name`, if any.
-    fn load_rooms_run(&self, _name: &str) -> Option<Vec<u8>> {
+    /// The run [`Self::save_workspaces_run`] keeps under `name`, if any.
+    fn load_workspaces_run(&self, _name: &str) -> Option<Vec<u8>> {
         None
     }
     /// The key channel state is sealed under at rest, kept apart from that
@@ -136,16 +136,16 @@ impl PeerStore for MemoryPeerStore {
         Some(self.2)
     }
 
-    fn load_rooms(&self) -> Option<Vec<u8>> {
+    fn load_workspaces(&self) -> Option<Vec<u8>> {
         self.3.lock_recover().clone()
     }
 
-    fn save_rooms(&self, bytes: &[u8]) -> Result<(), String> {
+    fn save_workspaces(&self, bytes: &[u8]) -> Result<(), String> {
         *self.3.lock_recover() = Some(bytes.to_vec());
         Ok(())
     }
 
-    fn save_rooms_run(&self, name: &str, bytes: Option<&[u8]>) -> Result<(), String> {
+    fn save_workspaces_run(&self, name: &str, bytes: Option<&[u8]>) -> Result<(), String> {
         match bytes {
             Some(bytes) => self
                 .4
@@ -156,7 +156,7 @@ impl PeerStore for MemoryPeerStore {
         Ok(())
     }
 
-    fn load_rooms_run(&self, name: &str) -> Option<Vec<u8>> {
+    fn load_workspaces_run(&self, name: &str) -> Option<Vec<u8>> {
         self.4.lock_recover().get(name).cloned()
     }
 }

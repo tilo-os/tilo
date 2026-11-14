@@ -684,7 +684,7 @@ mod tests {
     fn admission(author: u8, sequence: u64, id: u8) -> DocumentAdmission {
         DocumentAdmission {
             key: AdmissionKey {
-                workspace: "room".into(),
+                workspace: "workspace".into(),
                 app: "so.tilo.chat".into(),
                 record: "lounge".into(),
                 author: [author; 32],
@@ -698,7 +698,7 @@ mod tests {
     /// recently, and how far it has read one writer. Kept in hex so the layout
     /// stays the one devices already hold; a field added, removed or reordered
     /// changes these bytes.
-    const KEPT: &str = "0104726f6f6d0c736f2e74696c6f2e63686174066c6f756e676501010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010104726f6f6d0c736f2e74696c6f2e63686174066c6f756e676502020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020104726f6f6d0c736f2e74696c6f2e63686174066c6f756e6765090909090909090909090909090909090909090909090909090909090909090905";
+    const KEPT: &str = "0109776f726b73706163650c736f2e74696c6f2e63686174066c6f756e676501010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010109776f726b73706163650c736f2e74696c6f2e63686174066c6f756e676502020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020109776f726b73706163650c736f2e74696c6f2e63686174066c6f756e6765090909090909090909090909090909090909090909090909090909090909090905";
 
     fn kept_index() -> ExactAdmissions {
         let mut index = ExactAdmissions::default();
@@ -706,7 +706,7 @@ mod tests {
         index.recent.insert(admission(2, 2, 2).key, [2; 32]);
         std::sync::Arc::make_mut(&mut index.marks).insert(
             WriterKey {
-                workspace: "room".into(),
+                workspace: "workspace".into(),
                 app: "so.tilo.chat".into(),
                 record: "lounge".into(),
                 author: [9; 32],
@@ -776,7 +776,7 @@ mod tests {
     fn a_cover_folds_entries_into_a_mark_that_only_rises() {
         let admission = |author: u8, sequence: u64, id: u8| DocumentAdmission {
             key: AdmissionKey {
-                workspace: "room".into(),
+                workspace: "workspace".into(),
                 app: "app".into(),
                 record: "record".into(),
                 author: [author; 32],
@@ -791,7 +791,7 @@ mod tests {
         }
         let full = index.encode().unwrap().len();
         index
-            .cover(("room", "app", "record"), [([1; 32], 500)])
+            .cover(("workspace", "app", "record"), [([1; 32], 500)])
             .unwrap();
         assert_eq!(index.len(), 700);
         assert!(index.encode().unwrap().len() < full);
@@ -807,7 +807,7 @@ mod tests {
         );
         let before = index.encode().unwrap();
         index
-            .cover(("room", "app", "record"), [([1; 32], 10)])
+            .cover(("workspace", "app", "record"), [([1; 32], 10)])
             .unwrap();
         assert_eq!(index.encode().unwrap(), before);
         let decoded = ExactAdmissions::decode(&before).unwrap();
@@ -831,7 +831,7 @@ mod tests {
     fn a_copy_shares_settled_admissions_and_encodes_one_ordered_index() {
         let admission = |sequence: u64| DocumentAdmission {
             key: AdmissionKey {
-                workspace: "room".into(),
+                workspace: "workspace".into(),
                 app: "app".into(),
                 record: "record".into(),
                 author: [u8::try_from(sequence % 7).unwrap(); 32],

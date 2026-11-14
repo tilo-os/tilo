@@ -96,14 +96,14 @@ tilo_sh=$repo/os/containers/tilo-sh
 # hangs is stopped with everything it started.
 if [[ ${1:-} == --flow ]]; then
   flow=$2 out=$E2E_WORK/$2
-  site_origin=$E2E_SITE relay_origin=$E2E_RELAY room=$E2E_ROOM owner_socket=$E2E_OWNER_SOCKET
+  site_origin=$E2E_SITE relay_origin=$E2E_RELAY workspace=$E2E_WORKSPACE owner_socket=$E2E_OWNER_SOCKET
   case $flow in
     directory)
       page=$(curl -fsS --max-time 5 -X POST "$relay_origin/peer/v1/directory") \
         || { echo 'FAIL: the directory did not answer'; exit 1; }
       E2E_PAGE=$page python3 -c '
 import json, os, sys
-room = sys.argv[1]
+workspace = sys.argv[1]
 page = json.loads(os.environ["E2E_PAGE"])
 listings = page.get("workspaces")
 if listings is None or len(listings) != 1:
@@ -113,20 +113,20 @@ expected = {
     "name": "Lounge",
     "description": "The Tilo community: chat, notes and a shared desktop",
     "defaultRole": "Editor",
-    "door": f"directory/{room}/",
-    "workspace": room,
+    "door": f"directory/{workspace}/",
+    "workspace": workspace,
 }
 wrong = {field: listing.get(field) for field, want in expected.items() if listing.get(field) != want}
 if wrong:
     sys.exit(f"FAIL: the listing differs from the deployment'"'"'s: {wrong} (wanted {expected})")
 print("ok: the directory lists the Lounge, joined at its door as an editor")
-' "$room"
+' "$workspace"
       exit ;;
     boot) exec node "$integration/page-boot.mjs" "$site_origin" "$relay_origin" "$out" ;;
     people-call|people-desk|people-menus|people-invite)
       TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$relay_origin" \
         "$relay_origin" "$out" "$owner_socket" ;;
-    share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$room" "$out" ;;
+    share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$workspace" "$out" ;;
     reloads) exec node "$integration/reloads.mjs" "$site_origin" "$out" ;;
     agent-setup|setup-resume)
       exec node "$integration/$flow.mjs" "$site_origin" "$relay_origin" "$TILO_CLI_BIN" "$out" ;;
@@ -147,9 +147,9 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
       # kept, the site and the door left serving: what a deployment's restart
       # is.
       bash "$tilo_sh/stack.sh" restart relay
-      [[ $(cat "$TILO_SH_STATE/relay/lounge/room-id") == "$room" ]] \
+      [[ $(cat "$TILO_SH_STATE/relay/lounge/workspace-id") == "$workspace" ]] \
         || { echo 'FAIL: a restart on the same volume served a different workspace'; exit 1; }
-      echo "ok: the Lounge started again on its own volume ($room)"
+      echo "ok: the Lounge started again on its own volume ($workspace)"
       exec node "$integration/people.mjs" "$site_origin" "$relay_origin" "$relay_origin" "$out" "$owner_socket" "$earlier" ;;
   esac
   exit 2
@@ -221,13 +221,13 @@ bash "$tilo_sh/stack.sh" up --fresh
 # tilo command they run.
 # shellcheck source=../tilo-sh/stack.sh
 . "$tilo_sh/stack.sh"
-room=$(cat "$state/relay/lounge/room-id")
+workspace=$(cat "$state/relay/lounge/workspace-id")
 owner_socket=$state/relay/lounge/operator.sock
 log=$state/logs/relay.log
 bash "$tilo_sh/stack.sh" status || true
 timing 'phase=the stack up'
 
-export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_origin E2E_ROOM=$room \
+export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_origin E2E_WORKSPACE=$workspace \
   E2E_OWNER_SOCKET=$owner_socket E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
 
 # What each of the stack's services complained about while it ran: each error

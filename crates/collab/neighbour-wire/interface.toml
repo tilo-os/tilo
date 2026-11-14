@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 47
+version = 48
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -620,16 +620,16 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "NeighbourMsg::SurfaceViewRequest" = "#27 struct"
 "NeighbourMsg::SurfaceViewRequest.decode" = "#3 Vec<SurfaceDecodeLimit>"
 "NeighbourMsg::SurfaceViewRequest.peer" = "#0 PeerId"
-"NeighbourMsg::SurfaceViewRequest.room" = "#1 String"
 "NeighbourMsg::SurfaceViewRequest.views" = "#2 Vec<SurfaceView>"
+"NeighbourMsg::SurfaceViewRequest.workspace" = "#1 String"
 "NeighbourMsg::SyncReq" = "#0 struct"
 "NeighbourMsg::SyncReq.invite_id" = "#2 Option<[u8; 32]>"
 "NeighbourMsg::SyncReq.nonce" = "#3 u64"
-"NeighbourMsg::SyncReq.room" = "#1 String"
 "NeighbourMsg::SyncReq.since" = "#0 Vec<u8>"
+"NeighbourMsg::SyncReq.workspace" = "#1 String"
 "NeighbourMsg::SyncResp" = "#1 struct"
 "NeighbourMsg::SyncResp.changes" = "#0 Vec<Vec<u8>>"
-"NeighbourMsg::SyncResp.room" = "#1 String"
+"NeighbourMsg::SyncResp.workspace" = "#1 String"
 "NeighbourMsg::WriteRefusals" = "#29 struct"
 "NeighbourMsg::WriteRefusals.refusals" = "#0 Vec<WriteRefusal>"
 "Offload" = "struct"

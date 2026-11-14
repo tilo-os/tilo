@@ -3,13 +3,13 @@ name = "tilo-relay-session"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "Client side of a Tilo relay session: the authenticated relay client, the co-edit session, anti-entropy, room administration and workspace join clients, without the relay daemon."
+description = "Client side of a Tilo relay session: the authenticated relay client, the co-edit session, anti-entropy, workspace administration and workspace join clients, without the relay daemon."
 license = "MIT OR Apache-2.0"
 
 # Everything a device needs to talk to a relay, and nothing the relay needs to
 # be one. The daemon (`tilo-relay`) depends on this crate and re-exports it
 # under its historic paths; clients (the shell, the action broker, the
-# runtime and joined rooms) depend on this crate alone, so a daemon edit does
+# runtime and joined workspaces) depend on this crate alone, so a daemon edit does
 # not rebuild them. Keep it free of the daemon's native stack: no launcher,
 # package store, environments, filesystem or tokio "full".
 #
@@ -23,12 +23,12 @@ ignored = ["getrandom", "getrandom03"]
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # Frame codec, co-edit payloads and the device-signer seam.
 tilo-relay-client = { path = "../tilo-relay-client" }
-# The remote-action vocabulary a room's governance answers in.
+# The remote-action vocabulary a workspace's governance answers in.
 tilo-actions = { path = "../../collab/actions" }
 # Delivery v2/v3, private actions and the workspace join contract.
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-# The join contract and governed member rows the room and join clients carry.
+# The join contract and governed member rows the workspace and join clients carry.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 # Co-edit bodies are neighbour messages; presence slots classify them.
 neighbour-wire = { path = "../../collab/neighbour-wire" }

@@ -465,10 +465,15 @@ mod tests {
         // The pass has read every record and holds the workspace no longer.
         let edited = tokio::time::timeout(
             Duration::from_secs(5),
-            workspaces.author_room_record(&workspace, &governor, ("so.tilo.notes", ""), |doc| {
-                doc.put(automerge::ROOT, "picture", picture.as_str())
-                    .map_err(|error| error.to_string())
-            }),
+            workspaces.author_workspace_record(
+                &workspace,
+                &governor,
+                ("so.tilo.notes", ""),
+                |doc| {
+                    doc.put(automerge::ROOT, "picture", picture.as_str())
+                        .map_err(|error| error.to_string())
+                },
+            ),
         )
         .await;
         assert!(
@@ -574,7 +579,7 @@ mod tests {
         // Days later the draft is sent: the conversation's record names the
         // attachment, and the message the host reads carries it.
         workspaces
-            .author_room_record(&workspace, &governor, (APP, "c_general"), |doc| {
+            .author_workspace_record(&workspace, &governor, (APP, "c_general"), |doc| {
                 doc.put(automerge::ROOT, "body", "look at this")
                     .map_err(|error| error.to_string())?;
                 doc.put(automerge::ROOT, "attachment", hash.as_str())

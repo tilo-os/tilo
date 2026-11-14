@@ -164,8 +164,8 @@ struct StoredIdentityRef<'a> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct WorkspaceDelegation {
     pub(crate) version: u32,
-    pub(crate) room: String,
-    /// The number the builds of that layout derived from `room`.
+    pub(crate) workspace: String,
+    /// The number the builds of that layout derived from `workspace`.
     pub(crate) workspace_id: u64,
     pub(crate) authority_device_public_key: [u8; 32],
     pub(crate) delegate: DeviceCert,

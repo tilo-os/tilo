@@ -10,7 +10,7 @@
   one enrollment in flight into `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`, so the
   file carries a workspace, an enrollment in flight and the absent cases beside
   them. Each workspace's entry is version 2 of its layout: the workspace named
-  by its UUID as text (`room`) and by a number derived from it (`workspace`).
+  by its UUID as text (`workspace`) and by a number derived from it (`workspace`).
 - `../../../golden/owner-workspace-record/v4.hex`: one workspace's file in the
   layout this build writes (version 4): `Founders` from the record above, as
   this build brings it up and keeps it beside the record.

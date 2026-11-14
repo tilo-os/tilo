@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use hyper::{Method, Request, Response, header};
 use tilo_net::proxy::ProxyFailure;
-use tilo_net::proxy::host::{Caller, Config, FetchProxy, Room};
+use tilo_net::proxy::host::{Caller, Config, FetchProxy, Workspace};
 
 use super::{Body, Web, protocol, reply};
 
@@ -37,7 +37,7 @@ pub struct FetchProxySetup {
 /// How often the counters are written.
 const METRICS_EVERY: Duration = Duration::from_secs(5);
 /// The counters' name prefix, as a workspace host's metrics page names its own.
-const METRICS_PREFIX: &str = "tilo_rooms_fetch_proxy";
+const METRICS_PREFIX: &str = "tilo_workspaces_fetch_proxy";
 
 /// The fetch proxy a listener serves, if any, and the task writing its
 /// counters.
@@ -178,7 +178,7 @@ fn session_token(request: &Request<hyper::body::Incoming>) -> Option<[u8; 32]> {
 async fn caller(
     web: &Web,
     request: &Request<hyper::body::Incoming>,
-) -> Result<(Caller, Vec<Room>), &'static str> {
+) -> Result<(Caller, Vec<Workspace>), &'static str> {
     // A media element cannot send the session header; its GET carries the
     // session in the query (`tilo_net::proxy::media_url`).
     let token = session_token(request)
@@ -202,7 +202,7 @@ async fn caller(
 
 /// The workspaces here `user` is admitted to as a person of its own: a
 /// member or a guest.
-async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
+async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Workspace> {
     let workspaces: Vec<_> = web
         .context
         .relay
@@ -217,7 +217,7 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
     for (id, workspace) in workspaces {
         let workspace = workspace.lock().await;
         if workspace.admits_person(&user, &own_user) {
-            admitted.push(Room(id.as_uuid().as_u128()));
+            admitted.push(Workspace(id.as_uuid().as_u128()));
         }
     }
     admitted

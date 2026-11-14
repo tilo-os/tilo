@@ -17,7 +17,7 @@ use tilo_relay_protocol::WorkspaceId;
 pub(super) struct GovernanceBatch {
     workspace_id: WorkspaceId,
     author: [u8; 32],
-    room: String,
+    workspace: String,
     /// Each frame's changes, in the order they came.
     frames: Vec<Vec<Vec<u8>>>,
     bytes: usize,
@@ -192,7 +192,9 @@ impl Task {
                     record,
                 },
             ),
-            Envelope::WorkspacesReply { request_id, frame } => self.rooms_reply(request_id, &frame),
+            Envelope::WorkspacesReply { request_id, frame } => {
+                self.workspaces_reply(request_id, &frame);
+            }
             answer @ Envelope::AgentRunAnswer { .. } => self.agent_run_answered(answer),
             Envelope::Committed { op, seq, .. } => self.acknowledge(op, Ok(seq)),
             Envelope::CommitRefused { op, reason, .. } => {
@@ -259,24 +261,28 @@ impl Task {
         self.planes_due.insert(workspace_id);
         self.land_admitted(workspace_id);
         if let Some((workspace, members)) = self.replicas.members(workspace_id) {
-            if self.reports.status().room_members.get(&workspace) != members.as_ref() {
+            if self.reports.status().workspace_members.get(&workspace) != members.as_ref() {
                 self.reports.change(|status| match members {
-                    Some(members) => _ = status.room_members.insert(workspace.clone(), members),
-                    None => _ = status.room_members.remove(&workspace),
+                    Some(members) => {
+                        _ = status.workspace_members.insert(workspace.clone(), members);
+                    }
+                    None => _ = status.workspace_members.remove(&workspace),
                 });
             }
             let devices = self.replicas.member_devices(workspace_id);
-            if self.reports.status().room_devices.get(&workspace) != devices.as_ref() {
+            if self.reports.status().workspace_devices.get(&workspace) != devices.as_ref() {
                 self.reports.change(|status| match devices {
-                    Some(devices) => _ = status.room_devices.insert(workspace.clone(), devices),
-                    None => _ = status.room_devices.remove(&workspace),
+                    Some(devices) => {
+                        _ = status.workspace_devices.insert(workspace.clone(), devices);
+                    }
+                    None => _ = status.workspace_devices.remove(&workspace),
                 });
             }
             let joined = self.replicas.member_joined(workspace_id);
-            if self.reports.status().room_joined.get(&workspace) != joined.as_ref() {
+            if self.reports.status().workspace_joined.get(&workspace) != joined.as_ref() {
                 self.reports.change(|status| match joined {
-                    Some(joined) => _ = status.room_joined.insert(workspace.clone(), joined),
-                    None => _ = status.room_joined.remove(&workspace),
+                    Some(joined) => _ = status.workspace_joined.insert(workspace.clone(), joined),
+                    None => _ = status.workspace_joined.remove(&workspace),
                 });
             }
         }
@@ -302,8 +308,8 @@ impl Task {
         author: [u8; 32],
     ) {
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) {
-            Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
-                self.gather_governance(workspace_id, author, room, changes);
+            Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, workspace }) => {
+                self.gather_governance(workspace_id, author, workspace, changes);
             }
             Ok(message @ neighbour_wire::NeighbourMsg::IdentityHello { .. }) => {
                 self.admit_governance();
@@ -329,14 +335,14 @@ impl Task {
         &mut self,
         workspace_id: WorkspaceId,
         author: [u8; 32],
-        room: String,
+        workspace: String,
         changes: Vec<Vec<u8>>,
     ) {
         let bytes: usize = changes.iter().map(Vec::len).sum();
         let joins = self.governance_batch.as_ref().is_some_and(|batch| {
             batch.workspace_id == workspace_id
                 && batch.author == author
-                && batch.room == room
+                && batch.workspace == workspace
                 && batch.bytes.saturating_add(bytes) <= GOVERNANCE_BATCH_BYTES
         });
         if !joins {
@@ -347,7 +353,7 @@ impl Task {
             .get_or_insert_with(|| GovernanceBatch {
                 workspace_id,
                 author,
-                room,
+                workspace,
                 frames: Vec::new(),
                 bytes: 0,
             });
@@ -368,14 +374,14 @@ impl Task {
         let GovernanceBatch {
             workspace_id,
             author,
-            room,
+            workspace,
             frames,
             ..
         } = batch;
         if frames.len() > 1 {
             let message = neighbour_wire::NeighbourMsg::SyncResp {
                 changes: frames.iter().flatten().cloned().collect(),
-                room: room.clone(),
+                workspace: workspace.clone(),
             };
             if self.admit_governance_message(workspace_id, author, message) {
                 return;
@@ -384,7 +390,7 @@ impl Task {
         for changes in frames {
             let message = neighbour_wire::NeighbourMsg::SyncResp {
                 changes,
-                room: room.clone(),
+                workspace: workspace.clone(),
             };
             self.admit_governance_message(workspace_id, author, message);
         }

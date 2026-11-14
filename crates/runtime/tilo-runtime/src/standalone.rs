@@ -71,7 +71,7 @@ use workspaces::Workspaces;
 const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
 /// Where the workspace host this runtime runs keeps its workspaces: the
 /// directory profiles already keep it in.
-const HOST_STORE: &str = "room-host";
+const HOST_STORE: &str = "workspace-host";
 
 /// A standalone service session over one profile. Drop applications first.
 pub struct Standalone {
@@ -987,7 +987,7 @@ struct PersonalServing<'a> {
     take_work: Option<ActionPlane>,
     /// The workspace host this device runs, when it governs the profile's
     /// workspace: the person's keys open their sessions with it here.
-    host: Option<&'a tilo_room_host::host::WorkspaceHost>,
+    host: Option<&'a tilo_workspace_host::host::WorkspaceHost>,
 }
 
 /// The person's own store, and what serves it to their other devices.
@@ -1041,7 +1041,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         // A member that takes its relay's work answers the device plane with
         // that work's plane instead, registered after it.
         for (alpn, handler) in host
-            .map(tilo_room_host::host::WorkspaceHost::protocols)
+            .map(tilo_workspace_host::host::WorkspaceHost::protocols)
             .unwrap_or_default()
         {
             router = router.accept(alpn, handler);
@@ -1264,7 +1264,7 @@ fn place_own_workspace(
     keys: &tilo_action_broker::workspace_keys::KeyProvider,
     (apps, dev): (&Arc<apps::Apps>, bool),
 ) -> io::Result<(
-    Arc<tilo_room_host::host::WorkspaceHost>,
+    Arc<tilo_workspace_host::host::WorkspaceHost>,
     Arc<crate::key_runs::KeyRuns>,
 )> {
     let workspace_id = workspace.workspace();
@@ -1275,16 +1275,16 @@ fn place_own_workspace(
     let host = Arc::new(
         tilo_rt::app()
             .handle()
-            .block_on(tilo_room_host::host::WorkspaceHost::open(
-                tilo_room_host::host::HostConfig {
+            .block_on(tilo_workspace_host::host::WorkspaceHost::open(
+                tilo_workspace_host::host::HostConfig {
                     apps: Some(Arc::clone(&key_runs)
-                        as Arc<dyn tilo_room_host::app_serving::AppServingPlane>),
-                    ..tilo_room_host::host::HostConfig::new(
+                        as Arc<dyn tilo_workspace_host::app_serving::AppServingPlane>),
+                    ..tilo_workspace_host::host::HostConfig::new(
                         profile.join(HOST_STORE),
                         tilo_relay_protocol::WorkSetting::none(),
                     )
                 },
-                tilo_room_host::host::HostIdentity {
+                tilo_workspace_host::host::HostIdentity {
                     user_public_key: cert.user_public_key,
                     device_signing_key: key,
                     device_cert: cert,

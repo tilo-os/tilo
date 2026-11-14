@@ -212,7 +212,7 @@ fn local_outbox_structural_lookup_rejects_conflicting_unknown_and_cross_scope_ev
             .lookup_retained_local_document(&original, governor_key.verifying_key().to_bytes())
             .is_err()
     );
-    for field in ["room", "record", "peer", "signature"] {
+    for field in ["workspace", "record", "peer", "signature"] {
         let mut wrong = original.clone();
         let NeighbourMsg::AppDocument {
             peer,
@@ -225,7 +225,7 @@ fn local_outbox_structural_lookup_rejects_conflicting_unknown_and_cross_scope_ev
             panic!()
         };
         match field {
-            "room" => *cluster_id = "other-workspace".into(),
+            "workspace" => *cluster_id = "other-workspace".into(),
             "record" => *record_id = "other-record".into(),
             "peer" => *peer = peer.wrapping_add(1),
             _ => envelope.payload.push(1),

@@ -78,7 +78,8 @@ impl OwnerCommitService for NativeOwnerCommits {
     /// A held workspace's effect receipts are this device's own to record in
     /// it, whichever model its records follow.
     fn records_effects(&self, workspace: &str) -> bool {
-        WorkspaceId::parse(workspace).is_some_and(|room| self.custody.projects_room(room))
+        WorkspaceId::parse(workspace)
+            .is_some_and(|workspace| self.custody.projects_workspace(workspace))
     }
     fn health(&self) -> Result<(), String> {
         self.custody

@@ -118,9 +118,9 @@ pub struct Budgets {
     pub visitor_bytes: Option<u64>,
     /// Bytes everyone in one workspace together may receive per window.
     ///
-    /// Spelled `room_bytes` after the [`Room`] identifier it counts against,
+    /// Spelled `workspace_bytes` after the [`Workspace`] identifier it counts against,
     /// which is published API.
-    pub room_bytes: Option<u64>,
+    pub workspace_bytes: Option<u64>,
 }
 
 impl Default for Budgets {
@@ -128,7 +128,7 @@ impl Default for Budgets {
         Self {
             window: Duration::from_secs(24 * 60 * 60),
             visitor_bytes: Some(2 * 1024 * 1024 * 1024),
-            room_bytes: Some(64 * 1024 * 1024 * 1024),
+            workspace_bytes: Some(64 * 1024 * 1024 * 1024),
         }
     }
 }
@@ -137,7 +137,7 @@ impl Default for Budgets {
 /// share one budget. Hosts outside this crate import the type under this
 /// name, so the name stays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Room(pub u128);
+pub struct Workspace(pub u128);
 
 /// The device a request is made for: the key the host authenticated its
 /// session with. A development host uses [`Caller::LOCAL`].
@@ -502,7 +502,7 @@ struct Limiter {
     device_bytes: Buckets<Caller>,
     destinations: Buckets<String>,
     visitor_spent: Spent<Caller>,
-    room_spent: Spent<Room>,
+    workspace_spent: Spent<Workspace>,
     device_in_flight: HashMap<Caller, usize>,
     in_flight: usize,
 }
@@ -595,7 +595,7 @@ impl FetchProxy {
                     device_bytes: Buckets::new(limits.device_bytes),
                     destinations: Buckets::new(limits.destination_requests),
                     visitor_spent: Spent::new(budgets.visitor_bytes, budgets.window),
-                    room_spent: Spent::new(budgets.room_bytes, budgets.window),
+                    workspace_spent: Spent::new(budgets.workspace_bytes, budgets.window),
                     device_in_flight: HashMap::new(),
                     in_flight: 0,
                 }),
@@ -615,13 +615,13 @@ impl FetchProxy {
         self.serve_in(caller, &[], request).await
     }
 
-    /// [`Self::serve`] for a caller who belongs to `rooms` on the host: what it
+    /// [`Self::serve`] for a caller who belongs to `workspaces` on the host: what it
     /// receives counts against each workspace's budget too, and a workspace that
     /// spent its budget is refused.
     pub async fn serve_in<B>(
         &self,
         caller: Caller,
-        rooms: &[Room],
+        workspaces: &[Workspace],
         request: Request<B>,
     ) -> Response<ProxyBody>
     where
@@ -632,7 +632,7 @@ impl FetchProxy {
             .checked_add(self.inner.config.deadline)
             .unwrap_or_else(Instant::now);
         let method = request.method().clone();
-        match self.relay(caller, rooms, request, deadline).await {
+        match self.relay(caller, workspaces, request, deadline).await {
             Ok(response) => {
                 self.inner.metrics.answered.fetch_add(1, Ordering::Relaxed);
                 response
@@ -736,7 +736,7 @@ impl FetchProxy {
     async fn relay<B>(
         &self,
         caller: Caller,
-        rooms: &[Room],
+        workspaces: &[Workspace],
         request: Request<B>,
         deadline: Instant,
     ) -> Result<Response<ProxyBody>, (Refused, Option<String>)>
@@ -750,7 +750,7 @@ impl FetchProxy {
         let (mut method, mut url, form) = checked;
         let origin = |url: &Url| Some(url.origin().ascii_serialization());
         let permit = self
-            .admit(caller, rooms)
+            .admit(caller, workspaces)
             .map_err(|refused| (refused, origin(&url)))?;
         let mut body = request_body(body, config.max_request_bytes, deadline)
             .await
@@ -821,14 +821,14 @@ impl FetchProxy {
             limit: config.max_response_bytes,
             proxy: self.clone(),
             caller,
-            rooms: rooms.into(),
+            workspaces: workspaces.into(),
             over_budget: false,
             _permit: permit,
         };
         streamed(answer, &url, relayed).map_err(|refused| (refused, origin(&url)))
     }
 
-    fn admit(&self, caller: Caller, rooms: &[Room]) -> Result<Permit, Refused> {
+    fn admit(&self, caller: Caller, workspaces: &[Workspace]) -> Result<Permit, Refused> {
         let limits = self.inner.config.limits;
         let now = Instant::now();
         {
@@ -852,9 +852,9 @@ impl FetchProxy {
                     wait,
                 ));
             }
-            if let Some(wait) = rooms
+            if let Some(wait) = workspaces
                 .iter()
-                .filter_map(|room| limiter.room_spent.exhausted(room, now))
+                .filter_map(|workspace| limiter.workspace_spent.exhausted(workspace, now))
                 .max()
             {
                 return Err(Refused::over_budget(
@@ -899,7 +899,7 @@ impl FetchProxy {
             .map_err(|wait| Refused::limited(format!("too many requests to {host} lately"), wait))
     }
 
-    fn received(&self, caller: Caller, rooms: &[Room], bytes: usize) -> bool {
+    fn received(&self, caller: Caller, workspaces: &[Workspace], bytes: usize) -> bool {
         let bytes_u64 = u64::try_from(bytes).unwrap_or(u64::MAX);
         self.inner
             .metrics
@@ -914,8 +914,8 @@ impl FetchProxy {
         let mut limiter = self.inner.limiter.lock_recover();
         limiter.device_bytes.debit(&caller, amount, now);
         let mut spent = limiter.visitor_spent.spend(&caller, bytes_u64, now);
-        for room in rooms {
-            spent |= limiter.room_spent.spend(room, bytes_u64, now);
+        for workspace in workspaces {
+            spent |= limiter.workspace_spent.spend(workspace, bytes_u64, now);
         }
         spent
     }
@@ -1361,7 +1361,7 @@ struct Relayed {
     limit: u64,
     proxy: FetchProxy,
     caller: Caller,
-    rooms: Arc<[Room]>,
+    workspaces: Arc<[Workspace]>,
     /// A budget this response counts against was spent by its last chunk: it ends
     /// here, with an error if more was coming.
     over_budget: bool,
@@ -1444,7 +1444,7 @@ fn chunks(relayed: Relayed) -> Chunks {
                     relayed.over_budget =
                         relayed
                             .proxy
-                            .received(relayed.caller, &relayed.rooms, chunk.len());
+                            .received(relayed.caller, &relayed.workspaces, chunk.len());
                     Some((Ok(chunk), Some(relayed)))
                 }
             }

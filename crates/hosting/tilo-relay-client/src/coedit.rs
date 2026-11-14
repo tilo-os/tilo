@@ -205,7 +205,7 @@ pub enum Inbound {
         /// This workspace sends records only when opened.
         records_when_opened: bool,
     },
-    /// The room's governor answered about one of its calls.
+    /// The workspace's governor answered about one of its calls.
     Voice(VoiceEvent),
     /// The host sent everything it retains of an on-demand record this
     /// device opened, as [`Inbound::Delta`]s before this event; its changes
@@ -232,7 +232,7 @@ pub enum Inbound {
     },
 }
 
-/// What the governor of a room says about its calls; see
+/// What the governor of a workspace says about its calls; see
 /// [`tilo_relay_protocol::voice`].
 #[derive(Debug, Clone)]
 pub enum VoiceEvent {
@@ -252,7 +252,7 @@ pub enum VoiceEvent {
         /// Why.
         reason: String,
     },
-    /// The room's calls with who is in each, or why the room listed none.
+    /// The workspace's calls with who is in each, or why the workspace listed none.
     Calls(Result<Vec<tilo_relay_protocol::voice::CallSummary>, String>),
 }
 

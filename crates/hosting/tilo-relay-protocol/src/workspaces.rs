@@ -4,10 +4,10 @@
 //!
 //! | Route | Session | Body | Answer |
 //! |---|---|---|---|
-//! | `/rooms` | yes | [`WorkspacesRequest`] | [`WorkspacesReply`] |
+//! | `/workspaces` | yes | [`WorkspacesRequest`] | [`WorkspacesReply`] |
 //! | `/invitation` ([`crate::web::INVITATION_PATH`]) | no | the signed invitation (`Vec<u8>`) | [`JoinReply`] |
 //!
-//! `/rooms` administers the host's workspaces for a device of the host's own
+//! `/workspaces` administers the host's workspaces for a device of the host's own
 //! user: create a governed workspace, enter it as its owner, invite and
 //! cancel invitations, change members' roles and remove them. `/invitation`
 //! says what an invitation offers ([`JoinReply::Invitation`]) to anyone
@@ -62,7 +62,6 @@ pub const MAX_PRE_ADMISSION_LABEL_CHARS: usize = 128;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreAdmission {
     /// The workspace's UUID.
-    #[serde(rename = "room")]
     pub workspace: String,
     pub role: Role,
     /// SHA-256 of the token the person presents.
@@ -83,7 +82,6 @@ pub struct PreAdmission {
 
 #[derive(Serialize)]
 struct PreAdmissionView<'a> {
-    #[serde(rename = "room")]
     workspace: &'a str,
     role: Role,
     token_sha256: &'a [u8; 32],
@@ -196,7 +194,7 @@ pub struct PendingInvite {
     pub administrator: bool,
 }
 
-/// One `/rooms` request. `workspace` is a workspace UUID. Each change answers with
+/// One `/workspaces` request. `workspace` is a workspace UUID. Each change answers with
 /// the workspace as it is after it, except as noted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspacesRequest {
@@ -207,13 +205,11 @@ pub enum WorkspacesRequest {
     },
     /// Admit the calling device to `workspace` as its owner.
     Enter {
-        #[serde(rename = "room")]
         workspace: String,
     },
     /// Issue an invitation anyone holding it may redeem; it admits each
     /// device that redeems it, by this invitation's own grant.
     Invite {
-        #[serde(rename = "room")]
         workspace: String,
         /// Caller-chosen idempotency key; never zero.
         request_id: [u8; 32],
@@ -245,7 +241,6 @@ pub enum WorkspacesRequest {
     /// Cancel an invitation not yet redeemed: answered with
     /// [`WorkspacesReply::Pending`].
     Cancel {
-        #[serde(rename = "room")]
         workspace: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -254,7 +249,6 @@ pub enum WorkspacesRequest {
     },
     /// The invitations to `workspace` still redeemable.
     Pending {
-        #[serde(rename = "room")]
         workspace: String,
     },
     /// Retired: an invitation admits by itself, so nobody waits for the
@@ -267,7 +261,6 @@ pub enum WorkspacesRequest {
     RetiredDecline {},
     /// Change a member's role.
     SetRole {
-        #[serde(rename = "room")]
         workspace: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -277,7 +270,6 @@ pub enum WorkspacesRequest {
     },
     /// Remove a member and every device of theirs.
     Remove {
-        #[serde(rename = "room")]
         workspace: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -287,7 +279,6 @@ pub enum WorkspacesRequest {
     /// Remove a person, when a member, and keep them out until unbanned.
     /// The owner, and a Moderator for members ranked below Moderator.
     Ban {
-        #[serde(rename = "room")]
         workspace: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -296,7 +287,6 @@ pub enum WorkspacesRequest {
     },
     /// Let a banned person be admitted again.
     Unban {
-        #[serde(rename = "room")]
         workspace: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -316,7 +306,6 @@ pub enum WorkspacesRequest {
     },
     /// What happened in `workspace` without the owner deciding it then.
     Notices {
-        #[serde(rename = "room")]
         workspace: String,
     },
     /// Whether the calling device's person may make an undoable change at
@@ -324,7 +313,6 @@ pub enum WorkspacesRequest {
     /// with [`WorkspacesReply::Permits`]. A page asks before it offers what only
     /// some members may do, such as acting on what other people made.
     Permits {
-        #[serde(rename = "room")]
         workspace: String,
         /// A node of the workspace's published tree, in its text form
         /// (`workspace:<id>/app:<app>/…`).
@@ -333,7 +321,6 @@ pub enum WorkspacesRequest {
     /// The addresses left at `workspace`'s door, oldest first: answered with
     /// [`WorkspacesReply::WaitList`]. Whoever may invite.
     WaitList {
-        #[serde(rename = "room")]
         workspace: String,
     },
     /// Take an address left at `workspace`'s door off its wait list, when it
@@ -341,7 +328,6 @@ pub enum WorkspacesRequest {
     /// invited ([`WorkspacesRequest::Invite`]'s `wait_list_entry`) leaves the
     /// list by itself once someone joins with that invitation.
     Unlist {
-        #[serde(rename = "room")]
         workspace: String,
         /// The entry.
         request_id: [u8; 32],
@@ -351,7 +337,6 @@ pub enum WorkspacesRequest {
     /// answered with [`WorkspacesReply::WaitList`], or refused where the workspace
     /// sends no mail, when the page shares the link itself.
     MailInvite {
-        #[serde(rename = "room")]
         workspace: String,
         /// The confirmed entry.
         wait_list_entry: [u8; 32],
@@ -365,7 +350,6 @@ pub enum WorkspacesRequest {
     /// many grants the share holds. The members below the owner get what
     /// `access` gives, never more than the sharer holds there.
     Share {
-        #[serde(rename = "room")]
         workspace: String,
         /// The share's id, such as the message that shares it: 1 to 128
         /// letters, digits or `.` `_` `:` `-`.
@@ -381,7 +365,6 @@ pub enum WorkspacesRequest {
     /// [`WorkspacesReply::Shared`], how many of its grants were revoked (its
     /// sharer's, or any for a person who may govern revoking).
     Unshare {
-        #[serde(rename = "room")]
         workspace: String,
         share: String,
     },
@@ -391,7 +374,6 @@ pub enum WorkspacesRequest {
     /// Answered with [`WorkspacesReply::Named`]. A page sends it as it joins and
     /// whenever its person renames themself.
     Name {
-        #[serde(rename = "room")]
         workspace: String,
         name: String,
     },
@@ -402,7 +384,6 @@ pub enum WorkspacesRequest {
     /// workspaces. A page places its person's workspace before it subscribes, so
     /// the workspace has governance like every other.
     Place {
-        #[serde(rename = "room")]
         workspace: String,
         name: String,
     },
@@ -453,7 +434,6 @@ pub enum JoinReply {
     /// What the invitation offers.
     Invitation {
         /// The workspace's UUID.
-        #[serde(rename = "room")]
         workspace: String,
         /// Its relay workspace.
         workspace_id: WorkspaceId,
@@ -471,7 +451,6 @@ pub enum JoinReply {
     /// The workspace admitted the device.
     Admitted {
         /// The workspace's UUID.
-        #[serde(rename = "room")]
         workspace: String,
         /// Its relay workspace.
         workspace_id: WorkspaceId,
@@ -616,7 +595,7 @@ mod tests {
             let door = "https://tilo.example/";
             assert!(invitation_on_door(
                 door,
-                "https://tilo.example/#/room?invite=signed-invitation"
+                "https://tilo.example/#/workspace?invite=signed-invitation"
             ));
             assert!(invitation_on_door(
                 door,

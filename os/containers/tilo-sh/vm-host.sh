@@ -49,14 +49,14 @@
 #                                       mounts them at /run/secrets; the
 #                                       native stack's relay reads them in the
 #                                       stack's own state)
-#   TILO_SH_RELAY_ROOMS_VIEW=/run/tilo-rooms
+#   TILO_SH_RELAY_ROOMS_VIEW=/run/tilo-workspaces
 #                                       where that relay reads its own state
 #                                       (the image's volume, or natively the
 #                                       stack's state)
-#   TILO_SH_RELAY_ROOT=<state>/secrets/room-root-lounge
+#   TILO_SH_RELAY_ROOT=<state>/secrets/workspace-root-lounge
 #                                       the relay's owner root, 64 hex
 #                                       characters: what certifies the member
-#   TILO_SH_RELAY_STATE=<state>/rooms/lounge/relay
+#   TILO_SH_RELAY_STATE=<state>/workspaces/lounge/relay
 #                                       the relay's own state, where the
 #                                       device key it answers as is
 #   TILO_SH_RELAY_IROH=127.0.0.1:24104  where the relay's endpoint listens
@@ -77,8 +77,8 @@ place_port=${TILO_SH_VM_HOST_PLACER_PORT:-7702}
 status_port=${TILO_SH_VM_HOST_STATUS_PORT:-7701}
 member_port=${TILO_SH_VM_HOST_MEMBER_PORT:-7703}
 relay_iroh=${TILO_SH_RELAY_IROH:-127.0.0.1:24104}
-relay_root=${TILO_SH_RELAY_ROOT:-$secrets/room-root-lounge}
-relay_state=${TILO_SH_RELAY_STATE:-$state/rooms/lounge/relay}
+relay_root=${TILO_SH_RELAY_ROOT:-$secrets/workspace-root-lounge}
+relay_state=${TILO_SH_RELAY_STATE:-$state/workspaces/lounge/relay}
 enroll=${TILO_SH_TILO_ENROLL:-tilo-enroll}
 # What the host holds awake at once: the size's warm template (a template is
 # counted at its size's whole memory, since warming it fills its guest), a
@@ -98,7 +98,7 @@ memory_mib=${TILO_SH_VM_HOST_MEMORY_MIB:-$((size_memory_mib + 3072))}
 # volume and state volume, or, for the stack that runs the relay natively, the
 # paths of its state (TILO_SH_RELAY_SECRETS_VIEW, TILO_SH_RELAY_ROOMS_VIEW).
 relay_secrets=${TILO_SH_RELAY_SECRETS_VIEW:-/run/secrets}
-relay_rooms=${TILO_SH_RELAY_ROOMS_VIEW:-/run/tilo-rooms}
+relay_rooms=${TILO_SH_RELAY_ROOMS_VIEW:-/run/tilo-workspaces}
 # A VM host's state disk is 512 GiB on the cloud: a sparse file that size
 # holds the same, since only what is written is stored.
 state_size=${TILO_SH_VM_HOST_STATE_SIZE:-512G}

@@ -29,7 +29,9 @@ use tilo_desktop_surface::session::DesktopSession;
 #[cfg(target_arch = "wasm32")]
 use tilo_lock::MutexRecover as _;
 #[cfg(target_arch = "wasm32")]
-use tilo_relay_session::workspaces::{HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, LIST_PERSONAL};
+use tilo_relay_session::workspaces::{
+    HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL,
+};
 #[cfg(target_arch = "wasm32")]
 use tilo_session_core::remote::SessionActions;
 
@@ -269,7 +271,7 @@ impl ActionHost for PageIdentity {
                 let record = InvokeRequest {
                     target: RemoteActionTarget {
                         provider: HOST_ACTIONS_PROVIDER.to_owned(),
-                        address: ActionAddress::new(HOST_ROOMS_RESOURCE, LIST_PERSONAL),
+                        address: ActionAddress::new(HOST_WORKSPACES_RESOURCE, LIST_PERSONAL),
                     },
                     argument: browser_devices(),
                     ..request

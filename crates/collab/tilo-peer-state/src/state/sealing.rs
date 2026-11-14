@@ -23,7 +23,7 @@ impl StatePeer {
             .unwrap_or_default();
         NeighbourMsg::SyncResp {
             changes,
-            room: self.core.workspace.clone(),
+            workspace: self.core.workspace.clone(),
         }
     }
     /// Install the governed seed workspace and documents as the authority.
@@ -37,7 +37,7 @@ impl StatePeer {
             key.device_public_key(),
             NeighbourMsg::SyncResp {
                 changes: seed.workspace_changes,
-                room: self.core.workspace.clone(),
+                workspace: self.core.workspace.clone(),
             },
             now,
         )?;

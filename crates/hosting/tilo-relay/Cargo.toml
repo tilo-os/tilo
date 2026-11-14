@@ -16,12 +16,12 @@ path = "src/lib.rs"
 # Test-only hooks and helpers: the checkpoint-prefix fault marker, the store's
 # test barriers, and the replay and staging entry points the host's tests
 # drive the store through.
-test-support = ["tilo-room-host/test-support"]
+test-support = ["tilo-workspace-host/test-support"]
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
-agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:legacy-vm", "dep:tilo-host-account"]
-web = ["tilo-room-host/web", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac"]
+agents = ["web", "tilo-workspace-host/agents", "dep:tilo-agent-participant", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:legacy-vm", "dep:tilo-host-account"]
+web = ["tilo-workspace-host/web", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac"]
 
 [[bin]]
 name = "tilo-relay"
@@ -59,13 +59,13 @@ path = "src/approve.rs"
 # - Mostly a store-and-forward peer, not a passive one. Device deltas are
 #   received, retained and forwarded, but the host also originates, under
 #   its own device key:
-#   - governance commits for the rooms it governs (`rooms*`);
+#   - governance commits for the workspaces it governs (`workspaces*`);
 #   - its retained `IdentityHello` certificate frame (`compaction`);
 #   - folded snapshots of unsealed document channels (`compaction`).
 #   It reads the desktop's peer-sync messages inside co-edit bodies to
 #   decide retention, replay and compaction: document frames, checkpoint
 #   kinds and audiences through the injected `payloads::ShellPayloads`
-#   (`tilo_room_host::payloads`); it refuses document
+#   (`tilo_workspace_host::payloads`); it refuses document
 #   changes an app's surface does not allow (`surfaces`). Sealed document
 #   content stays opaque.
 # - Multi-host by construction — several relays bound to the same
@@ -89,7 +89,7 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # Both ends of every relay stream use its frame codec.
 tilo-relay-client = { path = "../tilo-relay-client" }
-# The session clients (relay, co-edit, anti-entropy, room administration and
+# The session clients (relay, co-edit, anti-entropy, workspace administration and
 # workspace join): the daemon dials other relays with them and re-exports them
 # under its historic paths. Clients depend on that crate, not on this one.
 tilo-relay-session = { path = "../tilo-relay-session" }
@@ -129,7 +129,7 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
 # Enrollment envelopes are sealed through the one reviewed sealing crate.
 tilo-seal = { path = "../../system/tilo-seal" }
-# Content addresses the room keeps bytes under.
+# Content addresses the workspace keeps bytes under.
 tilo-content = { path = "../../system/content", default-features = false }
 zeroize.workspace = true
 blake3.workspace = true
@@ -178,15 +178,15 @@ legacy-vm = { path = "../../runtime/legacy-vm", optional = true }
 # What the host's account standing is read from: its plans file and the
 # ledger of the Browser page actions this host ran for it.
 tilo-host-account = { path = "../tilo-host-account", optional = true }
-# Who may close, move or rename what is on a room's shared desktop, and the
-# strips a persistent room's shared desktop starts with.
+# Who may close, move or rename what is on a workspace's shared desktop, and the
+# strips a persistent workspace's shared desktop starts with.
 tilo-desktop-model = { path = "../../session/desktop-model" }
-# A persistent public room keeps its owner and spectator roots in the host's
+# A persistent public workspace keeps its owner and spectator roots in the host's
 # secret store.
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
-# The persistent room's moderation agent and its model provider.
+# The persistent workspace's moderation agent and its model provider.
 tilo-moderation = { path = "../../collab/moderation", features = ["host"], optional = true }
-# A persistent public room's chat opens with the operator's channels.
+# A persistent public workspace's chat opens with the operator's channels.
 chat = { path = "../../../apps/chat", optional = true, default-features = false }
 discord = { path = "../../../apps/discord", optional = true }
 tilo-connector = { path = "../../agent/connector", optional = true }
@@ -196,7 +196,7 @@ app-cli = { path = "../../packaging/app-cli", optional = true }
 tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
 # The workspace's emoji, which a bot's program may be told of.
 tilo-workspace-emoji = { path = "../../platform/tilo-workspace-emoji", optional = true }
-# The room's default record id, the one members' first windows open.
+# The workspace's default record id, the one members' first windows open.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 # Read existing signed document envelopes through the shared, read-only cipher.
 tilo-session-client = { path = "../../session/client", optional = true }
@@ -232,20 +232,20 @@ fs-protocol = { path = "../../system/fs-protocol" }
 fs-content = { path = "../../system/fs-content" }
 # The checksum each member of a folder's zip carries.
 crc32fast.workspace = true
-# The scope of a room's document media, which an offloaded action's inputs
+# The scope of a workspace's document media, which an offloaded action's inputs
 # and outputs are.
 runtime-fs = { path = "../../runtime/runtime-fs" }
-# The workspace-join exchange every governor answers, over this relay's rooms.
+# The workspace-join exchange every governor answers, over this relay's workspaces.
 collab-types = { path = "../../collab/collab-types" }
-# A node takes part in the encrypted channels of the rooms it governs, through
+# A node takes part in the encrypted channels of the workspaces it governs, through
 # the one channel service every device runs.
 key-group = { path = "../../collab/key-group" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
-# The room host every device runs, which the relay embeds. Every relay build
+# The workspace host every device runs, which the relay embeds. Every relay build
 # follows the sealed records of the workspaces it governs and opens them with
 # the channels' keys it holds there, whether or not it serves pages.
-tilo-room-host = { path = "../tilo-room-host", features = ["web"] }
+tilo-workspace-host = { path = "../tilo-workspace-host", features = ["web"] }
 # Retained-store primitives the workspace store keeps its retained data with.
 # Owners pre-admit people by the SHA-256 of a token someone else hands them.
 sha2.workspace = true
@@ -269,12 +269,12 @@ uuid = { workspace = true, features = ["js"] }
 zip.workspace = true
 # The TLS tests write a PEM pair and read it back.
 rcgen.workspace = true
-# The room host's fixtures: a certified test host and the devices around it.
-# The tests author a room's record through the host's app plane
-# (`author_room_record`), which the `agents` feature carries: asking for it here
+# The workspace host's fixtures: a certified test host and the devices around it.
+# The tests author a workspace's record through the host's app plane
+# (`author_workspace_record`), which the `agents` feature carries: asking for it here
 # keeps them building on their own, rather than only when another crate in the
 # same build turns it on.
-tilo-room-host = { path = "../tilo-room-host", features = ["test-support", "agents"] }
+tilo-workspace-host = { path = "../tilo-workspace-host", features = ["test-support", "agents"] }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
@@ -296,7 +296,7 @@ tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
-# The persistent room test's page fetches over the room's plain listener.
+# The persistent workspace test's page fetches over the workspace's plain listener.
 hyper = { version = "1", features = ["client", "http1"] }
 # The fetch proxy test's target.
 test-http = { path = "../../dev/test-http" }

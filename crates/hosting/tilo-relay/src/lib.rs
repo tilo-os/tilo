@@ -99,12 +99,12 @@ pub mod placed_browsers;
 pub mod placed_shells;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod public_avatars;
-#[cfg(feature = "agents")]
-pub mod room_bots;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod state_lock;
 #[cfg(feature = "web")]
 pub mod web;
+#[cfg(feature = "agents")]
+pub mod workspace_bots;
 pub mod workspace_join;
 mod workspace_keys;
 
@@ -120,12 +120,12 @@ tilo_agent_participant::app_worker!();
 // workspace join) in `tilo-relay-session`, so clients need not link the
 // daemon. The daemon keeps addressing them here.
 #[cfg(not(target_arch = "wasm32"))]
-pub use tilo_room_host::{
+pub use tilo_workspace_host::{
     app_serving, compaction, environment, host, member_limits, metrics, payloads, peer,
     presence_mailbox, store, surfaces, workspace, workspace_records, workspaces,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_room_host::{authority_epoch, handshake, workspace_access};
+use tilo_workspace_host::{authority_epoch, handshake, workspace_access};
 
 pub use tilo_relay_client::frame;
 pub use tilo_relay_protocol::{

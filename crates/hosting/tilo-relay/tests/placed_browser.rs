@@ -234,7 +234,7 @@ async fn a_workspace_opens_browser_where_its_vm_host_is() {
     // Ending it goes to the same host's member, and deletes what it wrote.
     tokio::task::block_in_place(|| placed.browsers.stop(&workspace)).unwrap();
 
-    // A workspace the placer never finds room for is told so, not waited on
+    // A workspace the placer never finds workspace for is told so, not waited on
     // forever.
     let impatient = PlacedBrowsers::new(Arc::new(PlacedShells::new(
         "127.0.0.1:1".into(),

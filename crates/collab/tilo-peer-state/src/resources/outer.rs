@@ -35,7 +35,7 @@ mod tests {
         // with no element bytes. Capacity must win over malformed element EOF.
         let mut bytes = postcard::to_allocvec(&NeighbourMsg::SyncResp {
             changes: vec![],
-            room: String::new(),
+            workspace: String::new(),
         })
         .unwrap();
         bytes.truncate(1);
@@ -50,13 +50,13 @@ mod tests {
     fn outer_resources_bound_owned_buffers_across_all_chunks() {
         let message = NeighbourMsg::SyncResp {
             changes: vec![vec![1; 2048], vec![2; 2048]],
-            room: "room".into(),
+            workspace: "workspace".into(),
         };
         let bytes = postcard::to_allocvec(&message).unwrap();
         let original = bytes.clone();
         let one_chunk = NeighbourMsg::SyncResp {
             changes: vec![vec![1; 2048]],
-            room: "room".into(),
+            workspace: "workspace".into(),
         };
         assert_eq!(
             decode::<NeighbourMsg>(
@@ -81,7 +81,7 @@ mod tests {
     fn outer_resources_refuse_string_copy_and_preserve_valid_wire() {
         let message = NeighbourMsg::SyncReq {
             since: vec![],
-            room: "r".repeat(4096),
+            workspace: "r".repeat(4096),
             invite_id: None,
             nonce: 0,
         };

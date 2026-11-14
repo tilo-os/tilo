@@ -729,7 +729,7 @@ impl Envelope {
             Self::HostAction { .. } => "HostAction",
             // The kind names a key in the web envelope JSON, so it keeps the
             // spelling it was first written under.
-            Self::WorkspaceBootstrap { .. } => "RoomBootstrap",
+            Self::WorkspaceBootstrap { .. } => "WorkspaceBootstrap",
             Self::RecordContentWant { .. } => "RecordContentWant",
             Self::WorkspacesRequest { .. } => "WorkspacesRequest",
             Self::WorkspacesReply { .. } => "WorkspacesReply",

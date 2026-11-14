@@ -278,7 +278,7 @@ const MAX_SEALED_OPS: usize = 256;
 const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 /// Most payload bytes of a record's compaction set, the compaction and the
 /// segments it names: a snapshot as large as one document transfer, with
-/// room for its pieces' envelopes (a few bytes each) and the writers it
+/// workspace for its pieces' envelopes (a few bytes each) and the writers it
 /// covers.
 const MAX_COMPACTION_SET_BYTES: usize =
     collab_types::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES + 1024 * 1024;
@@ -336,7 +336,7 @@ pub fn workspace_host_actor(device: &[u8; 32]) -> automerge::ActorId {
     // The salt is the namespace a host's changes were already made under: a
     // workspace's stored history keeps its host's actor, whatever the code
     // around it is called now.
-    automerge::ActorId::from(blake3::derive_key("tilo room host actor v1", device).to_vec())
+    automerge::ActorId::from(blake3::derive_key("tilo workspace host actor v1", device).to_vec())
 }
 
 fn defaults() -> &'static std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)> {

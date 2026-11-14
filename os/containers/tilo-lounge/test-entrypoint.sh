@@ -29,12 +29,12 @@ fail() {
 # environment given here.
 lounge() {
   env -i PATH="$work/bin:/usr/bin:/bin" \
-    TILO_ROOMS_PERSISTENT=lounge \
-    TILO_ROOMS_ROOT_FILE=/run/secrets/room-root-lounge \
-    TILO_ROOMS_RELAY_ORIGIN=https://eu1.tilo.sh/ \
-    TILO_ROOMS_DESCRIPTION='Coffee and tea, and whatever is being made' \
-    TILO_ROOMS_WEB_ENTRY=https://tilo.sh/ \
-    TILO_ROOMS_STATE="$work/state" \
+    TILO_WORKSPACES_PERSISTENT=lounge \
+    TILO_WORKSPACES_ROOT_FILE=/run/secrets/workspace-root-lounge \
+    TILO_WORKSPACES_RELAY_ORIGIN=https://eu1.tilo.sh/ \
+    TILO_WORKSPACES_DESCRIPTION='Coffee and tea, and whatever is being made' \
+    TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ \
+    TILO_WORKSPACES_STATE="$work/state" \
     "$@" sh "$here/entrypoint.sh"
 }
 
@@ -53,15 +53,15 @@ fails_with() {
 }
 
 cat > "$work/want" <<'EXPECTED'
-room
+workspace
 --state
 --persistent
 lounge
 --root-file
-/run/secrets/room-root-lounge
---room-id-file
+/run/secrets/workspace-root-lounge
+--workspace-id-file
 --member-limits
---room-records
+--workspace-records
 --public-avatars
 --public-avatars-url
 https://eu1.tilo.sh/avatars
@@ -97,7 +97,7 @@ subsequence "$work/want" "$work/args" || fail "the plain deployment maps other a
 # the old wrapper left.
 grep -Fqx -- "--state" "$work/args" || fail "no state flag"
 grep -Fqx -- "$work/state/lounge/relay" "$work/args" || fail "the relay state is not under the workspace"
-grep -Fqx -- "$work/state/lounge/room-id" "$work/args" || fail "the workspace id is not kept with the workspace"
+grep -Fqx -- "$work/state/lounge/workspace-id" "$work/args" || fail "the workspace id is not kept with the workspace"
 grep -Fqx -- "$work/state/lounge/avatars" "$work/args" || fail "the avatars are not published from the workspace"
 # The packet relay binds where the ingress forwards; without a named origin the
 # host advertises the address it bound.
@@ -106,27 +106,27 @@ grep -Fqx -- --packet-relay-url "$work/args" && fail "a published relay URL was 
 # Every setting of a populated deployment reaches the host, and replaces the
 # default it shares a flag with.
 lounge \
-  TILO_ROOMS_NAME=Lounge \
-  TILO_ROOMS_SITE_ORIGINS='https://tilo.sh, https://tilo.so' \
-  TILO_ROOMS_CHAT_CHANNELS='general,feedback' \
-  TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
-  TILO_ROOMS_SEED_APPS='so.tilo.chat,so.tilo.board' \
-  TILO_ROOMS_AUTHOR_APPS='so.tilo.chat' \
-  TILO_ROOMS_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
-  TILO_ROOMS_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
-  TILO_ROOMS_PERSON_STORAGE_GB=10 \
-  TILO_ROOMS_IROH_LISTEN=0.0.0.0:7704 \
-  TILO_ROOMS_FETCH_PROXY=0 \
-  TILO_ROOMS_WEB=127.0.0.1:0 \
-  TILO_ROOMS_RELAY_PLAIN=0.0.0.0:9880 \
-  TILO_ROOMS_LIVE=0.0.0.0:9881 \
-  TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
-  TILO_ROOMS_HTTP=0.0.0.0:8890 \
-  TILO_ROOMS_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
-  TILO_ROOMS_MODERATION_MODEL=claude-test \
-  TILO_ROOMS_DISCORD_CLIENT_ID=1559266815148953650 \
-  TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
-  TILO_ROOMS_DISCORD_API_BASE=http://127.0.0.1:9090 \
+  TILO_WORKSPACES_NAME=Lounge \
+  TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh, https://tilo.so' \
+  TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
+  TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
+  TILO_WORKSPACES_SEED_APPS='so.tilo.chat,so.tilo.board' \
+  TILO_WORKSPACES_AUTHOR_APPS='so.tilo.chat' \
+  TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
+  TILO_WORKSPACES_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
+  TILO_WORKSPACES_PERSON_STORAGE_GB=10 \
+  TILO_WORKSPACES_IROH_LISTEN=0.0.0.0:7704 \
+  TILO_WORKSPACES_FETCH_PROXY=0 \
+  TILO_WORKSPACES_WEB=127.0.0.1:0 \
+  TILO_WORKSPACES_RELAY_PLAIN=0.0.0.0:9880 \
+  TILO_WORKSPACES_LIVE=0.0.0.0:9881 \
+  TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
+  TILO_WORKSPACES_HTTP=0.0.0.0:8890 \
+  TILO_WORKSPACES_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
+  TILO_WORKSPACES_MODERATION_MODEL=claude-test \
+  TILO_WORKSPACES_DISCORD_CLIENT_ID=1559266815148953650 \
+  TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
+  TILO_WORKSPACES_DISCORD_API_BASE=http://127.0.0.1:9090 \
   >"$work/args" || fail "the populated deployment did not start"
 cat > "$work/want" <<'EXPECTED'
 --workspace-name
@@ -179,7 +179,7 @@ grep -Fqx -- 127.0.0.1:9781 "$work/args" && fail "the HTTPS listener default was
 # Where Discord's API is reaches the host on its own, without a sign-in set
 # up: the bridge's worker is pointed at it too, so one test server serves both.
 lounge \
-  TILO_ROOMS_DISCORD_API_BASE=http://127.0.0.1:9090 \
+  TILO_WORKSPACES_DISCORD_API_BASE=http://127.0.0.1:9090 \
   >"$work/args" || fail "a deployment naming Discord's API does not start"
 pair --discord-api-base http://127.0.0.1:9090 || fail "the Discord API base did not reach the host"
 grep -Fqx -- --discord-client-id "$work/args" && fail "an API base asked for a sign-in"
@@ -190,17 +190,17 @@ grep -Fqx -- --discord-client-id "$work/args" && fail "an API base asked for a s
 # by.
 eu1() {
   env -i PATH="$work/bin:/usr/bin:/bin" \
-    TILO_ROOMS_PERSISTENT=lounge \
-    TILO_ROOMS_NAME=Lounge \
-    TILO_ROOMS_ADMISSION=invite \
-    TILO_ROOMS_ROOT_FILE=/run/secrets/room-root-lounge \
-    TILO_ROOMS_RELAY_ORIGIN=https://eu1.tilo.sh \
-    TILO_ROOMS_PUBLIC_API=https://eu1.tilo.sh \
-    TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.sh \
-    TILO_ROOMS_WEB_ENTRY=https://tilo.sh/ \
-    TILO_ROOMS_SITE_ORIGINS=https://tilo.sh,https://tilo.so \
-    TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
-    TILO_ROOMS_STATE="$work/state" \
+    TILO_WORKSPACES_PERSISTENT=lounge \
+    TILO_WORKSPACES_NAME=Lounge \
+    TILO_WORKSPACES_ADMISSION=invite \
+    TILO_WORKSPACES_ROOT_FILE=/run/secrets/workspace-root-lounge \
+    TILO_WORKSPACES_RELAY_ORIGIN=https://eu1.tilo.sh \
+    TILO_WORKSPACES_PUBLIC_API=https://eu1.tilo.sh \
+    TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh \
+    TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ \
+    TILO_WORKSPACES_SITE_ORIGINS=https://tilo.sh,https://tilo.so \
+    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
+    TILO_WORKSPACES_STATE="$work/state" \
     sh "$here/entrypoint.sh"
 }
 eu1 >"$work/args" || fail "eu1's environment does not start"
@@ -212,44 +212,44 @@ pair --public-origin https://eu1.tilo.sh || fail "eu1's origin did not reach the
 
 # An admission the image does not honor stops the start, as any other setting
 # it does not read does.
-fails_with lounge TILO_ROOMS_ADMISSION=anyone
-grep -Fq TILO_ROOMS_ADMISSION "$work/err" || fail "the refusal does not name the setting"
-fails_with lounge TILO_ROOMS_PERSON_STORAGE_GB=lots
-grep -Fq TILO_ROOMS_PERSON_STORAGE_GB "$work/err" || fail "the refusal does not name the setting"
-fails_with lounge TILO_ROOMS_MAX_SPECTATORS=2000
-grep -Fq TILO_ROOMS_MAX_SPECTATORS "$work/err" || fail "the refusal does not name the setting"
+fails_with lounge TILO_WORKSPACES_ADMISSION=anyone
+grep -Fq TILO_WORKSPACES_ADMISSION "$work/err" || fail "the refusal does not name the setting"
+fails_with lounge TILO_WORKSPACES_PERSON_STORAGE_GB=lots
+grep -Fq TILO_WORKSPACES_PERSON_STORAGE_GB "$work/err" || fail "the refusal does not name the setting"
+fails_with lounge TILO_WORKSPACES_MAX_SPECTATORS=2000
+grep -Fq TILO_WORKSPACES_MAX_SPECTATORS "$work/err" || fail "the refusal does not name the setting"
 
 # A mounted certificate replaces the development one, chain and key in the
 # host's one flag; one without the other, or a path the flag cannot carry,
 # stops the start.
 lounge \
-  TILO_ROOMS_TLS_CERT=/run/tls/tls.crt \
-  TILO_ROOMS_TLS_KEY=/run/tls/tls.key \
+  TILO_WORKSPACES_TLS_CERT=/run/tls/tls.crt \
+  TILO_WORKSPACES_TLS_KEY=/run/tls/tls.key \
   >"$work/args" || fail "a deployment with a certificate did not start"
 pair --tls files:/run/tls/tls.crt,/run/tls/tls.key || fail "the mounted certificate did not reach the host"
 pair --tls dev && fail "the development certificate stayed beside the mounted one"
-fails_with lounge TILO_ROOMS_TLS_CERT=/run/tls/tls.crt
-grep -Fq TILO_ROOMS_TLS_KEY "$work/err" || fail "the refusal does not name the missing key"
-fails_with lounge TILO_ROOMS_TLS_KEY=/run/tls/tls.key
-grep -Fq TILO_ROOMS_TLS_CERT "$work/err" || fail "the refusal does not name the missing certificate"
-fails_with lounge TILO_ROOMS_TLS_CERT=/run/tls/a,b.crt TILO_ROOMS_TLS_KEY=/run/tls/tls.key
+fails_with lounge TILO_WORKSPACES_TLS_CERT=/run/tls/tls.crt
+grep -Fq TILO_WORKSPACES_TLS_KEY "$work/err" || fail "the refusal does not name the missing key"
+fails_with lounge TILO_WORKSPACES_TLS_KEY=/run/tls/tls.key
+grep -Fq TILO_WORKSPACES_TLS_CERT "$work/err" || fail "the refusal does not name the missing certificate"
+fails_with lounge TILO_WORKSPACES_TLS_CERT=/run/tls/a,b.crt TILO_WORKSPACES_TLS_KEY=/run/tls/tls.key
 grep -Fq comma "$work/err" || fail "a path with a comma was not refused"
 
 # Pages reach the host over WebTransport at the address and origin named
 # together; one without the other stops the start.
 lounge \
-  TILO_ROOMS_LINK=0.0.0.0:8443 \
-  TILO_ROOMS_LINK_ORIGIN=https://live.example:443/ \
+  TILO_WORKSPACES_LINK=0.0.0.0:8443 \
+  TILO_WORKSPACES_LINK_ORIGIN=https://live.example:443/ \
   >"$work/args" || fail "a deployment with a WebTransport listener did not start"
 pair --link-listen 0.0.0.0:8443 || fail "the WebTransport address did not reach the host"
 pair --link-origin https://live.example:443 || fail "the WebTransport origin did not reach the host"
-fails_with lounge TILO_ROOMS_LINK=0.0.0.0:8443
-grep -Fq TILO_ROOMS_LINK_ORIGIN "$work/err" || fail "the refusal does not name the missing origin"
+fails_with lounge TILO_WORKSPACES_LINK=0.0.0.0:8443
+grep -Fq TILO_WORKSPACES_LINK_ORIGIN "$work/err" || fail "the refusal does not name the missing origin"
 
 # Without what it cannot invent, it names the setting and starts nothing.
-for required in TILO_ROOMS_PERSISTENT TILO_ROOMS_ROOT_FILE TILO_ROOMS_RELAY_ORIGIN TILO_ROOMS_WEB_ENTRY; do
-  unset_env=(TILO_ROOMS_PERSISTENT=lounge TILO_ROOMS_ROOT_FILE=/root TILO_ROOMS_RELAY_ORIGIN=https://eu1.example
-    TILO_ROOMS_DESCRIPTION=text TILO_ROOMS_WEB_ENTRY=https://tilo.example/)
+for required in TILO_WORKSPACES_PERSISTENT TILO_WORKSPACES_ROOT_FILE TILO_WORKSPACES_RELAY_ORIGIN TILO_WORKSPACES_WEB_ENTRY; do
+  unset_env=(TILO_WORKSPACES_PERSISTENT=lounge TILO_WORKSPACES_ROOT_FILE=/root TILO_WORKSPACES_RELAY_ORIGIN=https://eu1.example
+    TILO_WORKSPACES_DESCRIPTION=text TILO_WORKSPACES_WEB_ENTRY=https://tilo.example/)
   status=0
   env -i PATH="$work/bin:/usr/bin:/bin" "${unset_env[@]}" sh -c "unset $required; exec sh '$here/entrypoint.sh'" \
     >"$work/out" 2>"$work/err" || status=$?
@@ -271,38 +271,38 @@ if [[ -z $relay ]]; then
   done
 fi
 if [[ -n $relay ]] && "$relay" --version >/dev/null 2>&1; then
-  # `room --help` names every flag the persistent room reads; the entrypoint's
+  # `workspace --help` names every flag the persistent workspace reads; the entrypoint's
   # arguments must be among them. `--help` answers without starting anything.
-  "$relay" room --help >"$work/room-help" 2>&1
+  "$relay" workspace --help >"$work/workspace-help" 2>&1
   # The arguments the entrypoint hands the host for eu1's environment.
   lounge \
-    TILO_ROOMS_NAME=Lounge \
-    TILO_ROOMS_SITE_ORIGINS='https://tilo.sh,https://tilo.so' \
-    TILO_ROOMS_CHAT_CHANNELS='general,feedback' \
-    TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
-    TILO_ROOMS_SEED_APPS='so.tilo.chat' \
-    TILO_ROOMS_AUTHOR_APPS='so.tilo.chat' \
-    TILO_ROOMS_REFOUND='so.tilo.browser-desktop:desktop' \
-    TILO_ROOMS_LAYOUT=shared \
-    TILO_ROOMS_LIVE=0.0.0.0:9881 \
-    TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
-    TILO_ROOMS_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
-    TILO_ROOMS_DISCORD_CLIENT_ID=1559266815148953650 \
-    TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
+    TILO_WORKSPACES_NAME=Lounge \
+    TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh,https://tilo.so' \
+    TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
+    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
+    TILO_WORKSPACES_SEED_APPS='so.tilo.chat' \
+    TILO_WORKSPACES_AUTHOR_APPS='so.tilo.chat' \
+    TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop' \
+    TILO_WORKSPACES_LAYOUT=shared \
+    TILO_WORKSPACES_LIVE=0.0.0.0:9881 \
+    TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
+    TILO_WORKSPACES_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
+    TILO_WORKSPACES_DISCORD_CLIENT_ID=1559266815148953650 \
+    TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
     >"$work/real-args" || fail "the deployment did not start against the real relay"
-  # Every argument that is a flag (starts with `--`) must be one `room --help`
+  # Every argument that is a flag (starts with `--`) must be one `workspace --help`
   # lists.
   while IFS= read -r argument; do
     case $argument in
       --*)
         name=${argument%%=*}
-        grep -Eq -- "(^|[[:space:]])${name}([[:space:]]|=|$)" "$work/room-help" \
-          || fail "the entrypoint passes $name, which tilo-relay room has no flag for"
+        grep -Eq -- "(^|[[:space:]])${name}([[:space:]]|=|$)" "$work/workspace-help" \
+          || fail "the entrypoint passes $name, which tilo-relay workspace has no flag for"
         ;;
     esac
   done <"$work/real-args"
   [[ $(grep -c -- '^--' "$work/real-args") -gt 0 ]] || fail "the entrypoint passed no flags to the real relay"
-  echo "ok: every flag the entrypoint passes is one tilo-relay room reads ($relay)"
+  echo "ok: every flag the entrypoint passes is one tilo-relay workspace reads ($relay)"
 else
   echo "skipped: no built tilo-relay (TILO_RELAY_BIN) to check the entrypoint's flags against"
 fi

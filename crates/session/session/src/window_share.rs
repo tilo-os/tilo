@@ -1166,7 +1166,7 @@ impl WindowShares {
                 // Who asks and whose input it is is the device that sent it, as its route
                 // authenticated it, whatever the message says of itself.
                 NeighbourMsg::SurfaceViewRequest {
-                    room: workspace,
+                    workspace,
                     views,
                     decode,
                     ..
@@ -1788,7 +1788,7 @@ impl WindowShares {
             };
             let ask = NeighbourMsg::SurfaceViewRequest {
                 peer: sync.peer(),
-                room: workspace.clone(),
+                workspace: workspace.clone(),
                 views: views
                     .iter()
                     .map(|tab| SurfaceView {

@@ -40,12 +40,12 @@ its own session with the relay:
 - The relay admits a grant as its person's agent in exactly the workspaces its
   scope reaches where it redeemed its person's invitation, holds it to an
   agent's role (Editor at most), and lets it govern, invite or administer
-  nothing (`tilo_room_host::workspace_access`). Its certificate's expiry and
+  nothing (`tilo_workspace_host::workspace_access`). Its certificate's expiry and
   its person's revocations, a minted grant's issuer included, are checked at
   every handshake.
 - A grant reaching all workspaces enters through the site's door to its home
   workspace, as the person's page does, and asks the relay there for the
-  person's own workspace (`room.create-own`); a minted grant's parent asks for
+  person's own workspace (`workspace.create-own`); a minted grant's parent asks for
   its invitation, and the minted grant never enters the home workspace
   (`docs/architecture/workspace-api.md`).
 
@@ -82,7 +82,7 @@ What it reaches:
 
 The relay must be a persistent host, which keeps workspaces of people's own
 for anyone who asks, and run its workspaces' records (its agents, or
-`--room-records`).
+`--workspace-records`).
 
 - **Sign-in.** `TILO_API_WEB_ENTRY` must serve `/sign-in`: given
   `audience`, `challenge`, `return`, `pending`, `client`, `grant_key`,

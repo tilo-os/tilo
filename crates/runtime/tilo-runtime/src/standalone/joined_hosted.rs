@@ -1,7 +1,7 @@
 //! The profile's own workspace, placed on the workspace host this runtime runs.
 //!
 //! The runtime runs the same workspace host every device runs
-//! ([`HostMode::Device`](tilo_room_host::host::HostMode::Device)), in
+//! ([`HostMode::Device`](tilo_workspace_host::host::HostMode::Device)), in
 //! process: the host creates the profile's workspace and issues this device the
 //! invitation its replica redeems ([`WorkspaceHost::place_own_workspace`]), and from
 //! then on the workspace is one of the workspaces this profile joined, its link
@@ -24,7 +24,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
 use tilo_peer_state::owner::session::Reach;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use tilo_room_host::host::WorkspaceHost;
+use tilo_workspace_host::host::WorkspaceHost;
 
 /// How long a write waits for the workspace's session and for its host to keep it.
 const KEPT_WITHIN: Duration = Duration::from_secs(10);
@@ -74,7 +74,7 @@ impl Joined {
             .map_err(|_| "this profile runs one workspace host".into())
     }
 
-    fn room_host(&self) -> Option<&Arc<WorkspaceHost>> {
+    fn workspace_host(&self) -> Option<&Arc<WorkspaceHost>> {
         self.own_host.get().map(|own| &own.host)
     }
 
@@ -95,9 +95,9 @@ impl Joined {
             return Ok(());
         }
         let invitation = self
-            .room_host()
+            .workspace_host()
             .ok_or("this profile runs no workspace host")?
-            .place_own_room(&workspace.to_string(), name, &self.custody.device_cert)
+            .place_own_workspace(&workspace.to_string(), name, &self.custody.device_cert)
             .await?;
         if self.enroll(&invitation).await? != workspace {
             return Err("this device's host placed another workspace".into());
@@ -131,7 +131,7 @@ impl Joined {
         Reach {
             endpoint: self.endpoint.clone(),
             own_host: self
-                .room_host()
+                .workspace_host()
                 .map(|host| Arc::clone(host) as Arc<dyn tilo_peer_state::owner::session::OwnHost>),
         }
     }
@@ -327,7 +327,7 @@ impl Joined {
         record: &str,
     ) -> Result<Vec<u8>, String> {
         let host = self
-            .room_host()
+            .workspace_host()
             .ok_or("this profile runs no workspace host")?;
         let ws = workspace;
         let link = host

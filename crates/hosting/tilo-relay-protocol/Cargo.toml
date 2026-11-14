@@ -3,7 +3,7 @@ name = "tilo-relay-protocol"
 version = "0.1.0"
 edition = "2024"
 publish = true
-description = "Shared value types of the Tilo host + relay: the handshake and wire messages, mesh roles and placement, relay configuration, home-peer registrations, room shard ids and the metrics snapshot."
+description = "Shared value types of the Tilo host + relay: the handshake and wire messages, mesh roles and placement, relay configuration, home-peer registrations, workspace shard ids and the metrics snapshot."
 license = "MIT OR Apache-2.0"
 repository.workspace = true
 homepage.workspace = true
@@ -36,7 +36,7 @@ postcard = { workspace = true, features = ["alloc"] }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The peer protocol version the handshake carries and checks.
 neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
-# Agent and bot delegations and room shard ids, re-exported unchanged.
+# Agent and bot delegations and workspace shard ids, re-exported unchanged.
 tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" }
 blake3.workspace = true
 hex.workspace = true

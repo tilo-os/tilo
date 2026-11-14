@@ -216,10 +216,7 @@ mod tests {
         let workspace = peer.workspace_id().to_owned();
         peer.receive_from(
             crate::TransportOrigin::RetainedRelayDelta(member.device_public_key),
-            crate::NeighbourMsg::SyncResp {
-                changes,
-                room: workspace,
-            },
+            crate::NeighbourMsg::SyncResp { changes, workspace },
             now,
         )?;
         assert_eq!(peer.governance().workspace_hosts().len(), 1);

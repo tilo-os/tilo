@@ -89,7 +89,7 @@ impl RelayAgentLink {
     /// Bring agent `device`'s place on the rosters of the governed workspaces in
     /// line with the register, off the caller's thread. `cert` is the
     /// agent's certificate when it was just approved or restored.
-    fn reconcile_rooms(&self, device: [u8; 32], cert: Option<DeviceCert>) {
+    fn reconcile_workspaces(&self, device: [u8; 32], cert: Option<DeviceCert>) {
         if let Some(workspaces) = self.workspaces.clone() {
             self.runtime.spawn(async move {
                 workspaces.reconcile_agent(device, cert.as_ref()).await;
@@ -135,7 +135,7 @@ impl AgentHostLink for RelayAgentLink {
     fn register(&self, cert: &DeviceCert, delegation: &Delegation) -> Result<(), String> {
         crate::daemon::register_agent_in(&self.agents, &self.user_public_key, cert, delegation)?;
         // The governed workspaces it names put it on their rosters.
-        self.reconcile_rooms(delegation.device_public_key, Some(cert.clone()));
+        self.reconcile_workspaces(delegation.device_public_key, Some(cert.clone()));
         Ok(())
     }
 
@@ -143,7 +143,7 @@ impl AgentHostLink for RelayAgentLink {
         self.agents.write_recover().insert(device_public_key, None);
         crate::authority_epoch::bump();
         // Governed workspaces take it off their channels and refuse its writes.
-        self.reconcile_rooms(device_public_key, None);
+        self.reconcile_workspaces(device_public_key, None);
     }
 
     fn when_admitted(&self, cert: &DeviceCert, delegation: &Delegation, done: AdmissionDone) {

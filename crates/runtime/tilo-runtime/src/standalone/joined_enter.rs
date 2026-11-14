@@ -6,15 +6,15 @@
 //! the first time the relay asks about a workspace the member does not hold
 //! yet, the member asks the relay to enter it:
 //!
-//! 1. it asks the relay's own `room.enter`
-//!    ([`ENTER_ROOM`](tilo_relay_session::workspaces::ENTER_ROOM)) over a
+//! 1. it asks the relay's own `workspace.enter`
+//!    ([`ENTER_WORKSPACE`](tilo_relay_session::workspaces::ENTER_WORKSPACE)) over a
 //!    session of its own, as the device its custody certifies;
 //! 2. it redeems the invitation the relay answers with
 //!    ([`super::Joined::join`]), which makes the workspace one it holds and
 //!    syncs from then on.
 //!
 //! What admits the member is the relay's own decision, never the ask. The
-//! relay answers `room.enter` for the workspaces it governs, to a device of
+//! relay answers `workspace.enter` for the workspaces it governs, to a device of
 //! its own person, with an invitation that names that person only. So a
 //! device of another person asking the member about a workspace it does not
 //! hold gets nothing from it: the invitation is not for its person, and once

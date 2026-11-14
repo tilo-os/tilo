@@ -197,10 +197,7 @@ fn refusal_of_tampered_admission(
     let refused = peer
         .receive_from(
             TransportOrigin::RelayDelta(editor_key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp {
-                changes,
-                room: workspace,
-            },
+            NeighbourMsg::SyncResp { changes, workspace },
             now,
         )
         .unwrap_err()

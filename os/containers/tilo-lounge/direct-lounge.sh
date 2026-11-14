@@ -5,7 +5,7 @@
 # in minutes; the image's own test (test-image.sh) boots the built image.
 #
 # Sourced, not run: `start_lounge BUNDLE WORK` leaves the Lounge Ready and the
-# site served, and sets `relay_origin`, `site_origin`, `room`, `log` and
+# site served, and sets `relay_origin`, `site_origin`, `workspace`, `log` and
 # `owner_socket` (the socket the operator declares owners through).
 # `restart_lounge` stops the Lounge alone and starts it again on the volume it
 # kept, the site left serving, as a deployment's restart does. It needs node,
@@ -45,30 +45,30 @@ run_lounge() {
   env -i HOME="$lounge_home" PATH="$lounge_bin:/usr/bin:/bin" \
     TILO_SOURCE_REVISION=direct-lounge \
     TILO_SECRETS_DIR="$lounge_volume/secrets" \
-    TILO_ROOMS_STATE="$lounge_volume" \
-    TILO_ROOMS_PERSISTENT=lounge \
-    TILO_ROOMS_NAME=Lounge \
-    TILO_ROOMS_DESCRIPTION='The Tilo community: chat, notes and a shared desktop' \
-    TILO_ROOMS_DEFAULT_ROLE=editor \
-    TILO_ROOMS_ADMISSION="${LOUNGE_ADMISSION:-open}" \
-    TILO_ROOMS_WAIT_LIST_MAX="${LOUNGE_WAIT_LIST_MAX:-}" \
-    TILO_ROOMS_CONTACT="${LOUNGE_CONTACT:-}" \
-    TILO_ROOMS_MAIL_FROM="${LOUNGE_MAIL_FROM:-}" \
-    TILO_ROOMS_RESEND_KEY_FILE="${LOUNGE_RESEND_KEY_FILE:-}" \
-    TILO_ROOMS_RESEND_URL="${LOUNGE_RESEND_URL:-}" \
-    TILO_ROOMS_MAIL_TEMPLATES="${LOUNGE_MAIL_TEMPLATES:-}" \
-    TILO_ROOMS_RELAY_ORIGIN="$relay_origin" \
-    TILO_ROOMS_LIVE="127.0.0.1:$lounge_live_port" \
-    TILO_ROOMS_RELAY_PLAIN="127.0.0.1:$lounge_plain_port" \
-    TILO_ROOMS_HTTP="127.0.0.1:$lounge_http_port" \
-    TILO_ROOMS_WEB="127.0.0.1:$lounge_web_port" \
-    TILO_ROOMS_WEB_ENTRY="$site_origin/" \
-    TILO_ROOMS_SITE_ORIGINS="$site_origin" \
-    TILO_ROOMS_ROOT_FILE="$lounge_volume/secrets/room-root" \
-    TILO_ROOMS_FETCH_PROXY=0 \
-    TILO_ROOMS_CHAT_CHANNELS=general \
-    TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
-    TILO_ROOMS_PERSON_STORAGE_GB=10 \
+    TILO_WORKSPACES_STATE="$lounge_volume" \
+    TILO_WORKSPACES_PERSISTENT=lounge \
+    TILO_WORKSPACES_NAME=Lounge \
+    TILO_WORKSPACES_DESCRIPTION='The Tilo community: chat, notes and a shared desktop' \
+    TILO_WORKSPACES_DEFAULT_ROLE=editor \
+    TILO_WORKSPACES_ADMISSION="${LOUNGE_ADMISSION:-open}" \
+    TILO_WORKSPACES_WAIT_LIST_MAX="${LOUNGE_WAIT_LIST_MAX:-}" \
+    TILO_WORKSPACES_CONTACT="${LOUNGE_CONTACT:-}" \
+    TILO_WORKSPACES_MAIL_FROM="${LOUNGE_MAIL_FROM:-}" \
+    TILO_WORKSPACES_RESEND_KEY_FILE="${LOUNGE_RESEND_KEY_FILE:-}" \
+    TILO_WORKSPACES_RESEND_URL="${LOUNGE_RESEND_URL:-}" \
+    TILO_WORKSPACES_MAIL_TEMPLATES="${LOUNGE_MAIL_TEMPLATES:-}" \
+    TILO_WORKSPACES_RELAY_ORIGIN="$relay_origin" \
+    TILO_WORKSPACES_LIVE="127.0.0.1:$lounge_live_port" \
+    TILO_WORKSPACES_RELAY_PLAIN="127.0.0.1:$lounge_plain_port" \
+    TILO_WORKSPACES_HTTP="127.0.0.1:$lounge_http_port" \
+    TILO_WORKSPACES_WEB="127.0.0.1:$lounge_web_port" \
+    TILO_WORKSPACES_WEB_ENTRY="$site_origin/" \
+    TILO_WORKSPACES_SITE_ORIGINS="$site_origin" \
+    TILO_WORKSPACES_ROOT_FILE="$lounge_volume/secrets/workspace-root" \
+    TILO_WORKSPACES_FETCH_PROXY=0 \
+    TILO_WORKSPACES_CHAT_CHANNELS=general \
+    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
+    TILO_WORKSPACES_PERSON_STORAGE_GB=10 \
     sh "$lounge_here/entrypoint.sh" >> "$log" 2>&1 &
   lounge_pid=$!
   lounge_pids+=("$lounge_pid")
@@ -111,8 +111,8 @@ start_lounge() {
   # root among the operator's secrets.
   local volume=$work/volume
   mkdir -p "$volume/secrets" "$work/bin"
-  printf 'a%.0s' $(seq 64) > "$volume/secrets/room-root"
-  chmod 600 "$volume/secrets/room-root"
+  printf 'a%.0s' $(seq 64) > "$volume/secrets/workspace-root"
+  chmod 600 "$volume/secrets/workspace-root"
   owner_socket=$volume/lounge/operator.sock
   # The relay as the image carries it: the product's font catalog beside the
   # program, which is where a Tilo binary finds it outside the image (its apps
@@ -123,8 +123,8 @@ start_lounge() {
   lounge_volume=$volume lounge_bin=$work/bin lounge_home=$work
   run_lounge
   await_lounge
-  room=$(cat "$volume/lounge/room-id" 2>/dev/null) || lounge_fail 'the Lounge kept no workspace id'
-  echo "ok: the Lounge is Ready ($room, $((SECONDS - started))s)"
+  workspace=$(cat "$volume/lounge/workspace-id" 2>/dev/null) || lounge_fail 'the Lounge kept no workspace id'
+  echo "ok: the Lounge is Ready ($workspace, $((SECONDS - started))s)"
 
   # Who the host is, as the operator hands it to the web entry
   # (TILO_WEB_HOME_HOST_INFO), so the page dials it without asking it first.
@@ -133,7 +133,7 @@ start_lounge() {
     || lounge_fail 'the relay did not say who it is (tilo-relay page-host)'
   node "$lounge_here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
     "$relay_origin" "http://127.0.0.1:$lounge_plain_port" Lounge \
-    "$relay_origin/peer/v1/directory/$room/" "$site_port" "$info" c_feedback >> "$site_log" 2>&1 &
+    "$relay_origin/peer/v1/directory/$workspace/" "$site_port" "$info" c_feedback >> "$site_log" 2>&1 &
   local site_pid=$!
   lounge_pids+=("$site_pid")
   for _ in $(seq 300); do
@@ -156,6 +156,6 @@ restart_lounge() {
   lounge_pids=("${kept[@]}")
   run_lounge
   await_lounge
-  [[ $(cat "$lounge_volume/lounge/room-id") == "$room" ]] || lounge_fail 'a restart on the same volume served a different workspace'
-  echo "ok: the Lounge started again on its own volume ($room, $((SECONDS - started))s)"
+  [[ $(cat "$lounge_volume/lounge/workspace-id") == "$workspace" ]] || lounge_fail 'a restart on the same volume served a different workspace'
+  echo "ok: the Lounge started again on its own volume ($workspace, $((SECONDS - started))s)"
 }

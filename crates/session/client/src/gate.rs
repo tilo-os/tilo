@@ -170,7 +170,7 @@ mod tests {
             (
                 NeighbourMsg::SyncReq {
                     since: Vec::new(),
-                    room: WORKSPACE.into(),
+                    workspace: WORKSPACE.into(),
                     invite_id: None,
                     nonce: 0,
                 },
@@ -179,7 +179,7 @@ mod tests {
             (
                 NeighbourMsg::SyncResp {
                     changes: Vec::new(),
-                    room: WORKSPACE.into(),
+                    workspace: WORKSPACE.into(),
                 },
                 Some(change()),
             ),
@@ -436,7 +436,7 @@ mod tests {
             (
                 NeighbourMsg::SurfaceViewRequest {
                     peer: 1,
-                    room: WORKSPACE.into(),
+                    workspace: WORKSPACE.into(),
                     views: vec![neighbour_wire::SurfaceView {
                         tab: 1,
                         width: 16,

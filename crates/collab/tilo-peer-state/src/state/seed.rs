@@ -66,7 +66,7 @@ pub fn seed_workspace(
     let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(
         authority.device_public_key.to_vec(),
     ));
-    doc.put(ROOT, "room", workspace).map_err(err)?;
+    doc.put(ROOT, "workspace", workspace).map_err(err)?;
     doc.put(ROOT, "name", "Shared browser workspace")
         .map_err(err)?;
     doc.put(ROOT, "owner", hex::encode(authority.user_public_key))

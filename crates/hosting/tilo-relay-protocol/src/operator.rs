@@ -1,5 +1,5 @@
 //! The JSON-lines protocol between a workspace's operator and the
-//! `tilo-relay room` child it runs for it — a short-lived workspace, or one
+//! `tilo-relay workspace` child it runs for it — a short-lived workspace, or one
 //! persistent workspace.
 //!
 //! The service writes one [`OperatorCommand`] per line to the child's stdin.
@@ -39,7 +39,7 @@ pub fn hex32(text: &str) -> Option<[u8; 32]> {
 }
 
 /// Prefix of every protocol line on the child's stdout.
-pub const LINE_PREFIX: &str = "tilo-room-operator ";
+pub const LINE_PREFIX: &str = "tilo-workspace-operator ";
 
 /// How long the child holds an admitted pairing code with no matching
 /// certification request before it answers [`RefusalReason::NoMatchingRequest`].
@@ -152,7 +152,6 @@ pub enum OperatorEvent {
         /// Page origins allowed to call the workspace cross-origin.
         allowed_origins: Vec<String>,
         /// The governed workspace's UUID; `None` for a short-lived workspace.
-        #[serde(rename = "room")]
         workspace: Option<String>,
     },
     /// The browser that displayed `pairing_code` was certified.
@@ -281,11 +280,11 @@ pub enum OperatorEvent {
     /// The deployment's own routes answer: the health check at `GET /mode`,
     /// the avatars bots publish at `/avatars/<name>` and Discord's sign-in
     /// callback, on the plain listener `--http` names. Sent after
-    /// [`OperatorEvent::Started`], and only by a room started with one, so a
-    /// deployment reaches the address the room bound rather than one it
+    /// [`OperatorEvent::Started`], and only by a workspace started with one, so a
+    /// deployment reaches the address the workspace bound rather than one it
     /// guessed.
     DeploymentRoutes {
-        /// `http://host:port` of the listener the room bound.
+        /// `http://host:port` of the listener the workspace bound.
         origin: String,
     },
 }
@@ -344,7 +343,7 @@ impl RefusalReason {
             Self::AmbiguousCode => {
                 "more than one device showed this pairing code; reload the page and try again"
             }
-            Self::PolicyDenied => "the room refused to certify this device",
+            Self::PolicyDenied => "the workspace refused to certify this device",
         }
     }
 }
@@ -353,10 +352,10 @@ impl RefusalReason {
 #[derive(Debug, thiserror::Error)]
 pub enum LineError {
     /// A stdout line without [`LINE_PREFIX`].
-    #[error("not a room operator line")]
+    #[error("not a workspace operator line")]
     NotProtocol,
     /// A line that does not decode.
-    #[error("malformed room operator line: {0}")]
+    #[error("malformed workspace operator line: {0}")]
     Malformed(#[from] serde_json::Error),
 }
 
@@ -438,7 +437,7 @@ mod tests {
                 plain_origin: Some("http://localhost:9543".into()),
                 user_public_key: "ab".repeat(32),
                 certificate_sha256: None,
-                allowed_origins: vec!["https://rooms.example".into()],
+                allowed_origins: vec!["https://workspaces.example".into()],
                 workspace: None,
             },
             OperatorEvent::MemberCertified {
@@ -465,7 +464,7 @@ mod tests {
         vec![
             OperatorEvent::Started {
                 version: VERSION,
-                origin: "https://rooms.example".into(),
+                origin: "https://workspaces.example".into(),
                 plain_origin: None,
                 user_public_key: "ab".repeat(32),
                 certificate_sha256: None,
@@ -587,7 +586,7 @@ mod tests {
                     online: Vec::new(),
                 }
                 .to_line(),
-                "tilo-room-operator {\"event\":\"online\",\"people\":7}"
+                "tilo-workspace-operator {\"event\":\"online\",\"people\":7}"
             );
             let declare = OperatorCommand::DeclareOwner {
                 user_public_key: "ef".repeat(32),
@@ -650,7 +649,7 @@ mod tests {
                 }
                 .to_line(),
                 format!(
-                    "tilo-room-operator {{\"event\":\"standing\",\"request\":\"{}\",\"standing\":\"pending\"}}",
+                    "tilo-workspace-operator {{\"event\":\"standing\",\"request\":\"{}\",\"standing\":\"pending\"}}",
                     "12".repeat(32)
                 )
             );
@@ -673,7 +672,7 @@ mod tests {
             };
             assert_eq!(OperatorEvent::from_line(&event.to_line()).unwrap(), event);
             let old = format!(
-                "tilo-room-operator {{\"event\":\"unlisted\",\"request\":\"{}\"}}",
+                "tilo-workspace-operator {{\"event\":\"unlisted\",\"request\":\"{}\"}}",
                 "12".repeat(32)
             );
             assert_eq!(
@@ -732,7 +731,7 @@ mod tests {
                     reason: RefusalReason::AmbiguousCode,
                 }
                 .to_line(),
-                "tilo-room-operator {\"event\":\"admit_refused\",\"pairing_code\":\"012345\",\"reason\":\"ambiguous_code\"}"
+                "tilo-workspace-operator {\"event\":\"admit_refused\",\"pairing_code\":\"012345\",\"reason\":\"ambiguous_code\"}"
             );
         }
 

@@ -375,7 +375,7 @@ mod tests {
             retention(
                 &NeighbourMsg::SyncResp {
                     changes: vec![vec![1]],
-                    room: "workspace".into(),
+                    workspace: "workspace".into(),
                 },
                 true,
             ),
@@ -385,7 +385,7 @@ mod tests {
             retention(
                 &NeighbourMsg::SyncResp {
                     changes: vec![vec![1]],
-                    room: "workspace".into(),
+                    workspace: "workspace".into(),
                 },
                 false,
             ),
@@ -439,7 +439,7 @@ mod tests {
         let (channel, _) = retention(
             &NeighbourMsg::SyncResp {
                 changes: Vec::new(),
-                room: String::new(),
+                workspace: String::new(),
             },
             false,
         )

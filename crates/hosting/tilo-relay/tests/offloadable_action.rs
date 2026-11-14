@@ -507,7 +507,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
 /// job is refused where it is sent, and the offer a full host answers says so.
 #[tokio::test]
 async fn a_host_at_its_capacity_takes_no_second_job() {
-    use tilo_room_host::workspaces::HostJobs as _;
+    use tilo_workspace_host::workspaces::HostJobs as _;
     let desk = TestUser::fresh("capacity host").enrol("desk", DeviceCapabilities::primary());
     let root = tempfile::tempdir().unwrap();
     let content = Arc::new(Media::default());
@@ -565,7 +565,7 @@ async fn a_host_at_its_capacity_takes_no_second_job() {
 /// run, and runs the action itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_host_refuses_a_job_it_does_not_hold_the_inputs_for() {
-    use tilo_room_host::workspaces::HostJobs as _;
+    use tilo_workspace_host::workspaces::HostJobs as _;
     let desk = TestUser::fresh("job host").enrol("desk", DeviceCapabilities::primary());
     let root = tempfile::tempdir().unwrap();
     let (package, _) = installed_package(&root.path().join("host"), PACKAGE, ENTRYPOINT);

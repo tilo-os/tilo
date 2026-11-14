@@ -152,7 +152,7 @@ async fn a_workspace_change_sent_without_its_parent_is_applied() {
     assert!(!changes.is_empty(), "the child is sent");
     a.send(NeighbourMsg::SyncResp {
         changes,
-        room: WORKSPACE.into(),
+        workspace: WORKSPACE.into(),
     })
     .unwrap();
 

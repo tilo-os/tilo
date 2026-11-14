@@ -281,10 +281,10 @@ impl StatePeer {
     /// permission: the document itself when it is held in the clear; an encrypted record's
     /// retained sealed history opened through the embedding owner's channel keys (`open`) onto
     /// what `kept` opened of it before, once that history is known to cover every admitted write.
-    /// What it opens is at most `maximum` bytes: a sealed record reads in the room its caller
+    /// What it opens is at most `maximum` bytes: a sealed record reads in the workspace its caller
     /// allows, as one held in the clear does. Its sealed history is bounded where it is admitted
     /// (`MAX_SEALED_BYTES` of writes after a compaction set of at most
-    /// `MAX_COMPACTION_SET_BYTES`), so the room a caller allows covers a record whatever its history
+    /// `MAX_COMPACTION_SET_BYTES`), so the workspace a caller allows covers a record whatever its history
     /// holds; a fixed bound of the capture's own refused a late joiner's record for good while
     /// every caller allowed several times its size.
     ///

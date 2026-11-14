@@ -75,9 +75,7 @@ pub struct GrantRequest {
     /// Cursor colour `#rrggbb`; the host picks one when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
-    /// Workspace uuids. The field keeps the key `rooms`, every build before
-    /// the rename wrote, and the bot host reads.
-    #[serde(rename = "rooms")]
+    /// Workspace uuids.
     pub workspaces: Vec<String>,
     /// App ids; empty is every app.
     #[serde(default)]
@@ -212,7 +210,6 @@ pub struct AgentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "room")]
     pub workspace: Option<String>,
     /// Newest first is not implied; tasks in the order they were given.
     pub tasks: Vec<AgentTask>,
@@ -232,8 +229,7 @@ pub struct AgentGrant {
     pub id: String,
     /// Display name.
     pub label: String,
-    /// The workspace uuids it covers; the field keeps the key `rooms`.
-    #[serde(rename = "rooms")]
+    /// The workspace uuids it covers.
     pub workspaces: Vec<String>,
     /// Apps it covers; empty is every app.
     pub apps: Vec<String>,

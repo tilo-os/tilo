@@ -287,7 +287,7 @@ impl StatePeer {
             }
             NeighbourMsg::SyncResp {
                 changes,
-                room: received,
+                workspace: received,
             } => self.receive_workspace_changes(source, &received, &changes, now, strict_report),
             message @ NeighbourMsg::AppDocument { .. } => {
                 if self.core.workspace_doc.is_none()

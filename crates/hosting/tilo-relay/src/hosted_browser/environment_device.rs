@@ -3,7 +3,7 @@
 //! streams, and its own windows shared with the workspace.
 //!
 //! The device holds none of the workspace's keys and writes nothing of the
-//! workspace's governance (`tilo_room_host::environment`). This host certified
+//! workspace's governance (`tilo_workspace_host::environment`). This host certified
 //! it and holds the workspace's keys, so this host answers it, and only it:
 //!
 //! - its media keys are derived from the workspace's media channel at its
@@ -11,7 +11,7 @@
 //!   ([`tilo_live::frame::Stream::OWN`]), and sealed to its device key, so
 //!   whatever carries the answer between here and the VM reads none of it;
 //! - a window it shares is written as the workspace's governor writes a web
-//!   page's share ([`tilo_room_host::workspaces::Workspaces::share_resource`]),
+//!   page's share ([`tilo_workspace_host::workspaces::Workspaces::share_resource`]),
 //!   after checking the window's id was minted under the asking device's own
 //!   salt: a confined device shares its own windows and nobody else's.
 
@@ -39,7 +39,7 @@ struct Asked {
     workspace: String,
     /// The workspaces this host governs, when it governs any: where their
     /// keys and governance are.
-    workspaces: Option<tilo_room_host::workspaces::Workspaces>,
+    workspaces: Option<tilo_workspace_host::workspaces::Workspaces>,
 }
 
 impl HostedBrowsers {
@@ -125,7 +125,7 @@ impl Asked {
         let keys = self
             .workspaces
             .as_ref()
-            .and_then(tilo_room_host::workspaces::Workspaces::device_keys)
+            .and_then(tilo_workspace_host::workspaces::Workspaces::device_keys)
             .ok_or_else(|| ActionHostError::Unavailable {
                 reason: "this host holds no workspace's keys".to_owned(),
             })?;
@@ -149,7 +149,7 @@ impl Asked {
         }
         let id = window_share_id(window.tab);
         let refused =
-            |error: tilo_room_host::workspaces::CollaborationError| ActionHostError::Refused {
+            |error: tilo_workspace_host::workspaces::CollaborationError| ActionHostError::Refused {
                 reason: error.to_string(),
             };
         let workspaces = self
@@ -178,7 +178,7 @@ impl Asked {
 /// host's workspace keys) derive them at the current epoch, sealed to
 /// `device`.
 async fn lend(
-    keys: &dyn tilo_room_host::workspaces::GroupKeys,
+    keys: &dyn tilo_workspace_host::workspaces::GroupKeys,
     workspace: &str,
     device: [u8; 32],
 ) -> Result<serde_json::Value, ActionHostError> {
@@ -227,7 +227,7 @@ mod tests {
 
     use key_group::{ContentKeys, KeyGroup, MemberKey};
     use tilo_live::frame::Stream;
-    use tilo_room_host::workspaces::{GroupKeys, GroupKeysAnswerFuture};
+    use tilo_workspace_host::workspaces::{GroupKeys, GroupKeysAnswerFuture};
 
     const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 

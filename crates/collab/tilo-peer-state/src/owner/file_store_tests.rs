@@ -553,7 +553,7 @@ async fn a_split_record_a_release_wrote_comes_up_with_its_files_kept_beside() {
         assert_eq!(&kept, bytes);
         let now: serde_json::Value =
             serde_json::from_slice(&std::fs::read(parts_of(&path).join(name)).unwrap()).unwrap();
-        assert_eq!(now["version"], 4);
+        assert_eq!(now["version"], crate::owner::record::WORKSPACE_VERSION);
         assert!(now.get("room").is_none());
     }
 

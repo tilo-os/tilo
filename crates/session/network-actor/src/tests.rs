@@ -975,7 +975,7 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
                     ws: WorkspaceId::from_u128(47),
                     msg: NeighbourMsg::SurfaceViewRequest {
                         peer: crate::behaviour::peer_liveness_handle(&a_id),
-                        room: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
+                        workspace: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
                         views: vec![neighbour_wire::SurfaceView {
                             tab: 7,
                             width: 800,
@@ -1242,7 +1242,7 @@ fn a_viewers_input_through_the_host_reaches_this_device_as_its_own() {
     }
     let ask = NeighbourMsg::SurfaceViewRequest {
         peer: 1,
-        room: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
+        workspace: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
         views: Vec::new(),
         decode: Vec::new(),
     };

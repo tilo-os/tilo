@@ -156,7 +156,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
 }
 
 /// Start a host for `root`'s person on `host`'s device as tilo.sh's relay
-/// runs (`--room-records`): no agents, its workspaces' records served to
+/// runs (`--workspace-records`): no agents, its workspaces' records served to
 /// their devices, each action run in the record's own app worker here,
 /// whether or not a page of the person's is open. Its apps are
 /// `catalogue`'s.

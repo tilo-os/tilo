@@ -218,7 +218,7 @@ fn delivery_admission_metadata_and_unsupported_families_have_no_operation_receip
     assert_eq!(report.primary(), &InputDisposition::MetadataOnly);
     let request = NeighbourMsg::SyncReq {
         since: vec![],
-        room: receiver.workspace_id().into(),
+        workspace: receiver.workspace_id().into(),
         invite_id: None,
         nonce: 0,
     };

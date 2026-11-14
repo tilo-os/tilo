@@ -66,8 +66,8 @@ pub fn grant_label(client: &str, audience: &str) -> String {
     };
     let host = cut(host(audience), MAX_CERTIFICATION_LABEL_BYTES / 2);
     let suffix = format!(" via {host}");
-    let room = MAX_CERTIFICATION_LABEL_BYTES.saturating_sub(suffix.len());
-    let who = cut(who.trim(), room);
+    let workspace = MAX_CERTIFICATION_LABEL_BYTES.saturating_sub(suffix.len());
+    let who = cut(who.trim(), workspace);
     if who.is_empty() {
         suffix.trim_start().to_owned()
     } else {

@@ -108,7 +108,7 @@ fn ns(at: SystemTime) -> u64 {
 /// `starting`, a host or a relay starting on one of these fixtures'
 /// endpoints, awaited past its wait for a relay. Each starts only after its
 /// endpoint had `tilo_endpoint_reachability::RELAY_WAIT` to reach a relay
-/// (`tilo_room_host::workspaces::Workspaces::open`, `tilo_relay`'s start), and
+/// (`tilo_workspace_host::workspaces::Workspaces::open`, `tilo_relay`'s start), and
 /// these endpoints have none to reach. A test on a runtime whose clock it can
 /// hold holds it over the start: the same whole wait runs on that clock, which
 /// passes it when nothing else can run instead of five seconds later. The
@@ -180,12 +180,12 @@ impl Joined {
         workspace: WorkspaceId,
     ) -> (Arc<Self>, tempfile::TempDir) {
         let (joined, directory) = Self::test_empty().await;
-        let host = past_the_relay_wait(Box::pin(tilo_room_host::host::WorkspaceHost::open(
-            tilo_room_host::host::HostConfig::new(
-                directory.path().join("room-host"),
+        let host = past_the_relay_wait(Box::pin(tilo_workspace_host::host::WorkspaceHost::open(
+            tilo_workspace_host::host::HostConfig::new(
+                directory.path().join("workspace-host"),
                 tilo_relay_protocol::WorkSetting::none(),
             ),
-            tilo_room_host::host::HostIdentity {
+            tilo_workspace_host::host::HostIdentity {
                 user_public_key: joined.custody.device_cert.user_public_key,
                 device_signing_key: native_key(&joined.custody),
                 device_cert: joined.custody.device_cert.clone(),
@@ -1165,7 +1165,11 @@ fn the_workspaces_the_desktop_session_enrolled_are_refused() {
             .path()
             .join(super::super::workspace::DESKTOP_WORKSPACE),
     );
-    std::fs::write(&record, br#"{"revision": 1, "rooms": {}, "pending": {}}"#).unwrap();
+    std::fs::write(
+        &record,
+        br#"{"revision": 1, "workspaces": {}, "pending": {}}"#,
+    )
+    .unwrap();
     assert!(desktop_enrolled(directory.path()).unwrap().is_empty());
     std::fs::write(&record, b"not an owner record").unwrap();
     assert!(

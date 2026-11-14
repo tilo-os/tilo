@@ -128,14 +128,14 @@ pub struct PeerStatus {
     /// The members each joined workspace's governance lists, by workspace, by
     /// person id: what someone no longer among them made on the workspace's
     /// desktop is released ([`tilo_desktop_model::ownership::released`]).
-    pub room_members: BTreeMap<String, BTreeSet<String>>,
+    pub workspace_members: BTreeMap<String, BTreeSet<String>>,
     /// Whose each member device of a joined workspace is, by workspace: device (hex) to person
     /// (root key, hex), as the workspace's governance admitted them. Who is here is shown by
     /// person from it, so someone the live plane never certified to this page is still theirs.
-    pub room_devices: BTreeMap<String, BTreeMap<String, String>>,
+    pub workspace_devices: BTreeMap<String, BTreeMap<String, String>>,
     /// When each of a joined workspace's people was admitted, by workspace, by person id: the
     /// order people who share a name are numbered in, as the workspace's roster numbers them.
-    pub room_joined: BTreeMap<String, BTreeMap<String, u64>>,
+    pub workspace_joined: BTreeMap<String, BTreeMap<String, u64>>,
     /// What the host answered the entry this session asked for
     /// (its door entry), once it did.
     pub entry: Option<Entry>,
@@ -158,9 +158,9 @@ impl PeerStatus {
             device,
             generation: 0,
             key_state: String::new(),
-            room_members: BTreeMap::new(),
-            room_devices: BTreeMap::new(),
-            room_joined: BTreeMap::new(),
+            workspace_members: BTreeMap::new(),
+            workspace_devices: BTreeMap::new(),
+            workspace_joined: BTreeMap::new(),
             entry: None,
         }
     }
@@ -544,13 +544,13 @@ impl Link {
         self.reports.status()
     }
 
-    /// Whose each member device of `workspace` is, as [`PeerStatus::room_devices`] says: device
+    /// Whose each member device of `workspace` is, as [`PeerStatus::workspace_devices`] says: device
     /// (hex) to person (root key, hex), read without copying the rest of the status. Empty until
     /// the workspace's governance admitted its members.
     #[must_use]
-    pub fn room_devices(&self, workspace: &str) -> BTreeMap<String, String> {
+    pub fn workspace_devices(&self, workspace: &str) -> BTreeMap<String, String> {
         self.reports
-            .read(|status| status.room_devices.get(workspace).cloned())
+            .read(|status| status.workspace_devices.get(workspace).cloned())
             .unwrap_or_default()
     }
 

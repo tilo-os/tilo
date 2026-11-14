@@ -136,19 +136,19 @@ impl Page {
             .into_iter()
             .filter_map(|event| match event {
                 Event::Voice(VoiceEvent::Granted { grant, .. }) => Some(
-                    json!({"room": self.workspace, "kind": "granted", "grant": grant_json(&grant)}),
+                    json!({"workspace": self.workspace, "kind": "granted", "grant": grant_json(&grant)}),
                 ),
                 Event::Voice(VoiceEvent::CallResult { request, result, .. }) => {
                     Some(match result {
-                        Ok(state) => json!({"room": self.workspace, "kind": "callResult", "request": hex::encode(request), "call": {
+                        Ok(state) => json!({"workspace": self.workspace, "kind": "callResult", "request": hex::encode(request), "call": {
                             "call": hex::encode(state.call), "epoch": state.epoch, "active": state.active,
                             "allowed": {"publish": state.allowed.publish, "subscribe": state.allowed.subscribe},
                         }}),
-                        Err(error) => json!({"room": self.workspace, "kind": "callResult", "request": hex::encode(request), "error": error}),
+                        Err(error) => json!({"workspace": self.workspace, "kind": "callResult", "request": hex::encode(request), "error": error}),
                     })
                 }
                 Event::Voice(VoiceEvent::Ended { call, reason, .. }) => Some(
-                    json!({"room": self.workspace, "kind": "ended", "call": hex::encode(call), "reason": reason}),
+                    json!({"workspace": self.workspace, "kind": "ended", "call": hex::encode(call), "reason": reason}),
                 ),
                 Event::CallPicture {
                     from,
@@ -157,7 +157,7 @@ impl Page {
                     object,
                     ..
                 } => Some(json!({
-                    "room": self.workspace, "kind": "picture", "from": hex::encode(from),
+                    "workspace": self.workspace, "kind": "picture", "from": hex::encode(from),
                     "source": source_name(source), "keyframe": keyframe, "object": hex::encode(object),
                 })),
                 Event::CallDemand {
@@ -171,16 +171,16 @@ impl Page {
                         }
                     }
                     Some(json!({
-                        "room": self.workspace, "kind": "demand", "wanted": by_source,
+                        "workspace": self.workspace, "kind": "demand", "wanted": by_source,
                         "keyframes": keyframes.into_iter().map(source_name).collect::<Vec<_>>(),
                     }))
                 }
                 Event::Voice(VoiceEvent::Calls { result, .. }) => Some(match result {
-                    Ok(calls) => json!({"room": self.workspace, "kind": "calls", "calls": calls.iter().map(|call| json!({
+                    Ok(calls) => json!({"workspace": self.workspace, "kind": "calls", "calls": calls.iter().map(|call| json!({
                         "call": hex::encode(call.state.call), "epoch": call.state.epoch, "active": call.state.active,
                         "app": call.app_id, "record": call.record_id, "channel": call.channel_id,
                     })).collect::<Vec<_>>()}),
-                    Err(error) => json!({"room": self.workspace, "kind": "calls", "error": error}),
+                    Err(error) => json!({"workspace": self.workspace, "kind": "calls", "error": error}),
                 }),
                 _ => None,
             })
@@ -378,7 +378,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
         if path == "/api/call" {
             return text(call_id.clone());
         }
-        if path == "/api/room" {
+        if path == "/api/workspace" {
             return text(workspace_cluster.clone());
         }
         // The chat's voice channel the governed call is on: its id is the

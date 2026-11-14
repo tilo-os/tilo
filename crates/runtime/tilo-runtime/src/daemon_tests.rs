@@ -667,7 +667,7 @@ tilo_test_env::scenario! {
             "/tmp/profile",
             "--run-app",
             "so.tilo.photos",
-            "--room",
+            "--workspace",
             workspace,
             "--",
             "/bin/true",
@@ -681,7 +681,7 @@ tilo_test_env::scenario! {
                 "/tmp/profile",
                 "--run-app",
                 "so.tilo.photos",
-                "--room",
+                "--workspace",
                 "not-a-workspace",
                 "--",
                 "/bin/true",
@@ -691,12 +691,12 @@ tilo_test_env::scenario! {
     }
 
     phase the_status_probe_reads_the_field_name_it_had;
-    // The status probe answers the served workspace as `room` and reads
+    // The status probe answers the served workspace as `workspace` and reads
     // `workspace` as the same.
     {
         let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
         let old: super::Status = serde_json::from_str(&format!(
-            "{{\"version\":1,\"pid\":42,\"room\":\"{workspace}\"}}"
+            "{{\"version\":1,\"pid\":42,\"workspace\":\"{workspace}\"}}"
         ))
         .unwrap();
         assert_eq!(old.workspace, workspace);
@@ -705,9 +705,9 @@ tilo_test_env::scenario! {
         ))
         .unwrap();
         assert_eq!(new.workspace, old.workspace);
-        // Launchers and scripts read the answer's `room`.
+        // Launchers and scripts read the answer's `workspace`.
         assert_eq!(
-            serde_json::to_value(&new).unwrap()["room"],
+            serde_json::to_value(&new).unwrap()["workspace"],
             serde_json::json!(workspace)
         );
     }

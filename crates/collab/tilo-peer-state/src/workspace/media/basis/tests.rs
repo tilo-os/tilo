@@ -294,7 +294,7 @@ fn historical_basis(
     let bytes = canonical_bytes(&(owner_key, members, grants, roster, rows, revocations))
         .map_err(|_| MediaPolicyError::Malformed)?;
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"tilo-room-media-auth-basis-v1\0");
+    hasher.update(b"tilo-workspace-media-auth-basis-v1\0");
     hasher.update(&bytes);
     Ok(*hasher.finalize().as_bytes())
 }
@@ -313,7 +313,7 @@ fn media_basis_hashes_the_delegation_an_older_row_carries() {
     let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
     row.workspace_delegations = vec![WorkspaceDelegation {
         version: 1,
-        room: "0f0e0d0c-0b0a-4908-8706-050403020100".into(),
+        workspace: "0f0e0d0c-0b0a-4908-8706-050403020100".into(),
         workspace_id: 7,
         authority_device_public_key: row.device_cert.device_public_key,
         delegate: row.device_cert.clone(),

@@ -1,10 +1,10 @@
 //! This device's own workspace host: the same host a relay runs
-//! (`room_host::WorkspaceHost`), in this process, serving the workspaces placed
+//! (`workspace_host::WorkspaceHost`), in this process, serving the workspaces placed
 //! on this device.
 //!
 //! The actor's router is built before any workspace is hosted, so it carries the
 //! host's protocols from the start as deferred handlers
-//! (`room_host::deferred_protocols`): they refuse every connection
+//! (`workspace_host::deferred_protocols`): they refuse every connection
 //! until a host is installed, then hand each to it. Nothing runs for them
 //! before then. The host itself opens only once this device hosts a workspace
 //! (the shell's `embedded_host`).
@@ -17,11 +17,11 @@
 //! process keeps no relay up and arms no timer.
 use std::sync::{Arc, Mutex, PoisonError};
 
-/// The ALPN handlers a host serves, for the actor's router.
-pub use room_host::Protocols;
-use room_host::{HostSlot, WorkspaceHost};
 /// Where the workspace host lives: the one place its path is named.
-pub use tilo_room_host::host as room_host;
+pub use tilo_workspace_host::host as workspace_host;
+/// The ALPN handlers a host serves, for the actor's router.
+pub use workspace_host::Protocols;
+use workspace_host::{HostSlot, WorkspaceHost};
 
 /// This device's workspace host, once it is open: shared by the network (which
 /// opens it) and the actor (which joins its workspaces through it).
@@ -46,7 +46,7 @@ impl LocalHost {
     /// is, for the router.
     #[must_use]
     pub fn deferred() -> (Self, Protocols) {
-        let (slot, protocols) = room_host::deferred_protocols();
+        let (slot, protocols) = workspace_host::deferred_protocols();
         (
             Self(Arc::new(Inner {
                 slot,

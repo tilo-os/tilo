@@ -10,7 +10,7 @@ import {createVoiceControls} from './web/voice-controls.mjs';
 import {createBrowserAudio} from './web/voice-audio.mjs';
 
 const who = new URL(location.href).searchParams.get('who');
-const workspace = await (await fetch('/api/room')).text();
+const workspace = await (await fetch('/api/workspace')).text();
 // The device this page's frames name: the host that bridges it into the call.
 const device = await (await fetch('/api/host')).text();
 const api = (path, method = 'GET') => fetch(`/api/${who}/${path}`, {method, cache: 'no-store'});

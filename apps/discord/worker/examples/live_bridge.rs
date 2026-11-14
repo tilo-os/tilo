@@ -13,7 +13,7 @@
 //! ```
 //!
 //! The workspace is linked to the server as a hosted workspace links it
-//! (`tilo_relay::room_bots::discord`), and the worker runs with the settings
+//! (`tilo_relay::workspace_bots::discord`), and the worker runs with the settings
 //! that link gives it.
 //!
 //! The token file has a `DISCORD_TOKEN=` line; the token goes to the worker
@@ -44,10 +44,10 @@ use serde_json::{Value, json};
 use tilo_agent_participant::AppCatalogue;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
 use tilo_net::Method;
-use tilo_relay::room_bots::discord::{self, DiscordLink};
-use tilo_relay::room_bots::installed::{self, BotRunner};
-use tilo_relay::room_bots::membership::{HostRootCertifier, keep_member};
-use tilo_relay::room_bots::workspace_record;
+use tilo_relay::workspace_bots::discord::{self, DiscordLink};
+use tilo_relay::workspace_bots::installed::{self, BotRunner};
+use tilo_relay::workspace_bots::membership::{HostRootCertifier, keep_member};
+use tilo_relay::workspace_bots::workspace_record;
 use tilo_relay::workspaces::Workspaces;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use ui::tilo_actions::ActionContext;

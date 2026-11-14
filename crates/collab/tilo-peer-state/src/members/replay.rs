@@ -472,11 +472,11 @@ fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp, ledger: &mut
     true
 }
 
-/// [`replay`] of the workspace `doc` declares itself (its `room` row).
+/// [`replay`] of the workspace `doc` declares itself (its `workspace` row).
 #[must_use]
 pub fn replay_declared(doc: &AutoCommit) -> WorkspacePolicy {
     let workspace = doc
-        .get(ROOT, "room")
+        .get(ROOT, "workspace")
         .ok()
         .flatten()
         .and_then(|(value, _)| value.into_string().ok())

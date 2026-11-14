@@ -25,14 +25,14 @@ use crate::workload::Fleet;
 /// Bounds a relay process that does not answer: only a hang reaches it.
 const ANSWER: Duration = Duration::from_secs(120);
 
-/// What the relay process needs to start: its identity and its rooms.
+/// What the relay process needs to start: its identity and its workspaces.
 #[derive(Serialize, Deserialize)]
 pub struct Setup {
     pub state_root: PathBuf,
     pub user_public_key: [u8; 32],
     pub relay_secret_key: [u8; 32],
     pub relay_cert: DeviceCert,
-    /// Each room's workspace id and the device keys of its members.
+    /// Each workspace's id and the device keys of its members.
     pub workspaces: Vec<(collab_types::WorkspaceId, Vec<[u8; 32]>)>,
 }
 
@@ -254,7 +254,7 @@ async fn serve_relay() -> anyhow::Result<()> {
     )
     .await?;
     for (id, members) in setup.workspaces {
-        // The rooms are the relay owner's; their governor admits exactly
+        // The workspaces are the relay owner's; their governor admits exactly
         // the load's devices.
         relay
             .replace_governed_workspace_access(

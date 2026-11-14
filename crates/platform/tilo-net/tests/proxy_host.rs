@@ -15,7 +15,8 @@ use bytes::Bytes;
 use http_body_util::{BodyExt as _, Full};
 use test_http::{Reply, Responder};
 use tilo_net::proxy::host::{
-    Budgets, Caller, Config, Destinations, FetchProxy, Lookup, MEDIA_PIECE, Rate, RateLimits, Room,
+    Budgets, Caller, Config, Destinations, FetchProxy, Lookup, MEDIA_PIECE, Rate, RateLimits,
+    Workspace,
 };
 use tilo_net::proxy::{ERROR_HEADER, FINAL_URL_HEADER, MARKER_HEADER, Proxy};
 
@@ -461,12 +462,16 @@ async fn a_media_element_streams_through_the_query_form_a_piece_at_a_time() {
     );
 }
 
-fn budgeted(visitor_bytes: Option<u64>, room_bytes: Option<u64>, window: Duration) -> FetchProxy {
+fn budgeted(
+    visitor_bytes: Option<u64>,
+    workspace_bytes: Option<u64>,
+    window: Duration,
+) -> FetchProxy {
     local(Config {
         budgets: Budgets {
             window,
             visitor_bytes,
-            room_bytes,
+            workspace_bytes,
         },
         ..Config::default()
     })
@@ -510,7 +515,7 @@ async fn everyone_in_a_workspace_shares_its_budget() {
     let target = Responder::handle(|_| Some(Reply::status(200).body(vec![b'r'; 1500])));
     let proxy = budgeted(None, Some(3000), Duration::from_secs(3600));
     let url = format!("{}/piece", target.url());
-    let studio = [Room(1)];
+    let studio = [Workspace(1)];
     for device in 1..=2u8 {
         let response = proxy
             .serve_in(Caller([device; 32]), &studio, request("GET", &url, b""))
@@ -535,13 +540,13 @@ async fn everyone_in_a_workspace_shares_its_budget() {
     let refused = proxy
         .serve_in(
             Caller([4; 32]),
-            &[Room(2), Room(1)],
+            &[Workspace(2), Workspace(1)],
             request("GET", &url, b""),
         )
         .await;
     assert_eq!(refused.headers()[ERROR_HEADER], "over-budget");
     let response = proxy
-        .serve_in(Caller([3; 32]), &[Room(2)], request("GET", &url, b""))
+        .serve_in(Caller([3; 32]), &[Workspace(2)], request("GET", &url, b""))
         .await;
     assert_eq!(response.status(), 200);
 }

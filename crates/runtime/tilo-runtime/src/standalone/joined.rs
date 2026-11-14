@@ -38,7 +38,7 @@ pub(super) use hosted::RecordCreation;
 
 /// The record of every joined workspace, in the profile: the file profiles
 /// already keep it in.
-pub(super) const JOINED_WORKSPACES: &str = "joined-rooms.json";
+pub(super) const JOINED_WORKSPACES: &str = "joined-workspaces.json";
 
 #[path = "joined_enter.rs"]
 pub(in crate::standalone) mod enter;
@@ -153,8 +153,8 @@ impl Joined {
             own_host: std::sync::OnceLock::new(),
             this: this.clone(),
         });
-        for room in joined.owner.workspaces() {
-            joined.hold_session(room);
+        for workspace in joined.owner.workspaces() {
+            joined.hold_session(workspace);
         }
         Ok(joined)
     }
@@ -328,7 +328,10 @@ impl Joined {
                 .person_id()
                 .ok_or("the device acts for no person")?
                 .to_owned();
-            let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
+            let document = view
+                .peer()
+                .admitted_workspace()
+                .ok_or("no admitted workspace")?;
             let mut workspace = Workspace::new(workspace, String::new());
             tilo_peer_state::workspace::adopt_workspace(&mut workspace, document, &[]);
             workspace.sandbox = view.peer().governance().governed_sandbox()?;
@@ -710,17 +713,18 @@ impl Joined {
 impl OwnerCommitService for Joined {
     /// Every workspace this profile joined, and the workspaces the desktop session
     /// governs here, whose writes are refused.
-    fn requires_workspace(&self, room: &str) -> bool {
-        WorkspaceId::parse(room)
-            .is_some_and(|room| self.owner.contains_workspace(room) || self.refused.contains(&room))
+    fn requires_workspace(&self, workspace: &str) -> bool {
+        WorkspaceId::parse(workspace).is_some_and(|workspace| {
+            self.owner.contains_workspace(workspace) || self.refused.contains(&workspace)
+        })
     }
 
     /// A workspace hosted here keeps its effect receipts in the profile's own
     /// workspace record.
-    fn records_effects(&self, room: &str) -> bool {
-        WorkspaceId::parse(room).is_some_and(|room| {
-            self.owner.contains_workspace(room) && !self.hosted_here(room)
-                || self.refused.contains(&room)
+    fn records_effects(&self, workspace: &str) -> bool {
+        WorkspaceId::parse(workspace).is_some_and(|workspace| {
+            self.owner.contains_workspace(workspace) && !self.hosted_here(workspace)
+                || self.refused.contains(&workspace)
         })
     }
 

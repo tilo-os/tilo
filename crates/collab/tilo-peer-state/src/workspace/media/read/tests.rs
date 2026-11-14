@@ -41,7 +41,11 @@ fn policy() -> WorkspaceMediaV1 {
 fn workspace(bytes: Option<Vec<u8>>) -> AutoCommit {
     let mut workspace = AutoCommit::new();
     workspace
-        .put(ROOT, "room", uuid::Uuid::from_bytes([1; 16]).to_string())
+        .put(
+            ROOT,
+            "workspace",
+            uuid::Uuid::from_bytes([1; 16]).to_string(),
+        )
         .unwrap();
     if let Some(bytes) = bytes {
         workspace
@@ -72,7 +76,7 @@ fn media_reader_matches_legacy_absence_malformed_binding_and_canonical_rejection
                     .unwrap();
             }
             3 => {
-                doc.put(ROOT, "room", "wrong workspace").unwrap();
+                doc.put(ROOT, "workspace", "wrong workspace").unwrap();
             }
             4 => {
                 let mut tail = bytes.clone();
@@ -300,7 +304,7 @@ fn historical_parse(doc: &AutoCommit) -> Result<Option<WorkspaceMediaV1>, MediaP
         return Err(MediaPolicyError::Malformed);
     }
     let workspaces = doc
-        .get_all(ROOT, "room")
+        .get_all(ROOT, "workspace")
         .map_err(|_| MediaPolicyError::Malformed)?;
     let expected = uuid::Uuid::from_bytes(policy.workspace).to_string();
     if workspaces.is_empty() || workspaces.iter().any(|(value, _)| !matches!(value, Value::Scalar(value) if matches!(value.as_ref(), ScalarValue::Str(workspace) if workspace.as_str() == expected))) {

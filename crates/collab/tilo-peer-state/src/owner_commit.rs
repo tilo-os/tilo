@@ -117,10 +117,7 @@ pub enum CommitTarget {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {
-    /// The workspace this binding commits in. Queued publications written
-    /// before the engine's vocabulary named the workspace carry `room`; the
-    /// key stays so they still read back.
-    #[serde(rename = "room")]
+    /// The workspace this binding commits in.
     pub workspace: String,
     pub target: CommitTarget,
     pub request_digest: [u8; 32],

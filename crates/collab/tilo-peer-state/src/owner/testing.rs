@@ -523,7 +523,7 @@ pub fn late_admission_at(now: SystemTime) -> LateAdmission {
             .unwrap()
     );
     let admitting = NeighbourMsg::SyncResp {
-        room: peer.workspace_id().to_owned(),
+        workspace: peer.workspace_id().to_owned(),
         changes: peer.workspace_changes_since(&before),
     };
     let bootstrap = join::JoinBootstrap {

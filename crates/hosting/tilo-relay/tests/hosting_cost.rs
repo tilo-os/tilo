@@ -54,7 +54,7 @@ use tilo_relay::WorkspaceId;
 
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000625";
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(625);
-/// Four routes, as in a room with four open documents.
+/// Four routes, as in a workspace with four open documents.
 const ROUTES: [(&str, &str); 4] = [
     ("so.tilo.word-processor", "tab:0000000000000001"),
     ("so.tilo.notes", "tab:0000000000000002"),
@@ -355,7 +355,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     ))
     .await;
 
-    // The author's room state: four ~10 kB text documents.
+    // The author's workspace state: four ~10 kB text documents.
     let now = SystemTime::now();
     let certificates = vec![author.cert.clone(), coding.cert.clone()];
     let mut owner = StatePeer::new(
@@ -481,7 +481,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let warm = warm.unwrap();
 
     // The relay's egress counters account for exactly the frames the
-    // subscriber read: live fan-out in total and for this room, and the
+    // subscriber read: live fan-out in total and for this workspace, and the
     // subscriber's own session.
     let egress_after = metrics.snapshot();
     let wire_bytes: u64 = coded_frame_bytes.iter().sum();
@@ -490,16 +490,16 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         wire_bytes,
         "live egress must count every fanned-out keystroke frame, once",
     );
-    let room_live = |snapshot: &tilo_relay::metrics::MetricsSnapshot| {
+    let workspace_live = |snapshot: &tilo_relay::metrics::MetricsSnapshot| {
         snapshot
             .workspaces
             .get(&WORKSPACE)
-            .map_or(0, |room| room.bytes_sent_live)
+            .map_or(0, |workspace| workspace.bytes_sent_live)
     };
     assert_eq!(
-        room_live(&egress_after) - room_live(&egress_before),
+        workspace_live(&egress_after) - workspace_live(&egress_before),
         wire_bytes,
-        "the room's live egress is the same frames",
+        "the workspace's live egress is the same frames",
     );
     let session = session_bytes(&metrics, coding.device_pubkey()) - session_bytes_before;
     assert!(

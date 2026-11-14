@@ -9,17 +9,14 @@ pub(crate) mod format;
 
 /// The layout of a workspace's entry this build writes ([`StoredWorkspace`]):
 /// the workspace named once, by its id. The entries the 0.1 releases wrote
-/// are versions 2 and 3, read through [`format`].
-pub(crate) const WORKSPACE_VERSION: u32 = 4;
+/// are versions 2 and 3, and version 4 is the layout before this one, all read
+/// through [`format`].
+pub(crate) const WORKSPACE_VERSION: u32 = 5;
 
 /// Native-only state-file envelope. Its fields cannot be authored by UI callers.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NativeAuthorityStorage {
     pub(crate) revision: u64,
-    /// A state file outlives an image update and is read by whatever build the
-    /// update left, so the map is written under the key it was first written
-    /// under; a file written while it was named for the workspace still reads.
-    #[serde(rename = "rooms", alias = "workspaces")]
     pub(crate) workspaces: BTreeMap<WorkspaceId, StoredWorkspace>,
     pub(crate) pending: BTreeMap<WorkspaceId, StoredPendingEnrollment>,
 }
@@ -69,11 +66,10 @@ pub(crate) struct StoredWorkspace {
     /// The workspace this device holds.
     pub workspace: WorkspaceId,
     /// The host this workspace's commits are ordered by: a device of its owner,
-    /// this device itself for a workspace its own host keeps. Written under
-    /// `room_host`, the key builds before the vocabulary change wrote (and
-    /// older ones under `governor`); a file written while the field was named
-    /// for the workspace reads as the same host.
-    #[serde(rename = "room_host", alias = "governor", alias = "workspace_host")]
+    /// this device itself for a workspace its own host keeps. A file written
+    /// before the key was named for the workspace spells it `room_host`
+    /// ([`format::FORMAT`]'s version 4).
+    #[serde(rename = "workspace_host")]
     pub workspace_host: DeviceCert,
     pub device: DeviceCert,
     /// How this device joined the workspace its host governs. A workspace it founded

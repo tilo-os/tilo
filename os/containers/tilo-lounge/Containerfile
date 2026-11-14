@@ -34,7 +34,7 @@ COPY bin/ /usr/local/bin/
 # into its content plane at start: history written by an older version than this
 # build runs is decided with the surface it was written with.
 COPY surfaces/ /usr/local/share/tilo/surfaces/
-# Bot programs the deployment installs by path (TILO_ROOMS_BOTS) and the app
+# Bot programs the deployment installs by path (TILO_WORKSPACES_BOTS) and the app
 # components they run lay text out from a container, which has no system
 # fonts: the product catalog sits where a Tilo binary looks for it.
 COPY bots/ /usr/local/share/tilo/bots/
@@ -50,11 +50,11 @@ USER 10001
 # grants those hold. They are the relay's own variables, so the deployment may
 # still raise them without a new image.
 ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
-    TILO_ROOMS_STATE=/run/tilo-rooms \
-    TILO_SECRETS_DIR=/run/tilo-rooms/secrets \
+    TILO_WORKSPACES_STATE=/run/tilo-workspaces \
+    TILO_SECRETS_DIR=/run/tilo-workspaces/secrets \
     TILO_RELAY_MAX_WEB_SESSIONS=2164 \
     TILO_RELAY_MAX_HANDSHAKES=1024 \
-    TILO_RELAY_MAX_ROOM_GRANTS=34624
+    TILO_RELAY_MAX_WORKSPACE_GRANTS=34624
 # 8790: the deployment routes (/mode, /avatars, /discord/callback, plain HTTP
 #       behind the ingress).
 # 9780: the relay's plain listener the ingress forwards the workspace's own

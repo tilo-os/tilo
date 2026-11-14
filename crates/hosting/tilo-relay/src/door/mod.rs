@@ -4,12 +4,12 @@
 //! them (`<door>wait-list`, `…/remove`, `…/confirm`, `…/standing`).
 //!
 //! The addresses themselves are the workspace's own, kept beside its record
-//! by its host (`tilo_room_host::workspaces::wait_list`); this is the door in
+//! by its host (`tilo_workspace_host::workspaces::wait_list`); this is the door in
 //! front of it: the client address's windows ([`limits`]), the link the door
 //! page opens, and the outbox that keeps a mail until the mail service takes
 //! it ([`outbox`], [`mail`]).
 //!
-//! It was the room service's, beside the relay; the relay answers it itself
+//! It was the workspace service's, beside the relay; the relay answers it itself
 //! now, on the same routes and with the same words, so a door page of either
 //! build reads the same answers.
 
@@ -31,9 +31,9 @@ use limits::{IpHasher, JoinLimits, JoinRates};
 use mail::DoorMail;
 
 /// How the door sends mail: the sender, its Resend API key's file and where
-/// mail is posted (`TILO_ROOMS_MAIL_FROM`, `TILO_ROOMS_RESEND_KEY_FILE`,
-/// `TILO_ROOMS_RESEND_URL`), and the directory the words are read from
-/// (`TILO_ROOMS_MAIL_TEMPLATES`), or `None` for the ones built in.
+/// mail is posted (`TILO_WORKSPACES_MAIL_FROM`, `TILO_WORKSPACES_RESEND_KEY_FILE`,
+/// `TILO_WORKSPACES_RESEND_URL`), and the directory the words are read from
+/// (`TILO_WORKSPACES_MAIL_TEMPLATES`), or `None` for the ones built in.
 #[derive(Clone, Debug)]
 pub struct MailConfig {
     pub from: String,
@@ -46,8 +46,8 @@ pub struct MailConfig {
 const RESEND_URL: &str = "https://api.resend.com/emails";
 
 impl MailConfig {
-    /// The mail `TILO_ROOMS_MAIL_FROM` with `TILO_ROOMS_RESEND_KEY_FILE`
-    /// describes, if the deployment set them: both or neither, as the room
+    /// The mail `TILO_WORKSPACES_MAIL_FROM` with `TILO_WORKSPACES_RESEND_KEY_FILE`
+    /// describes, if the deployment set them: both or neither, as the workspace
     /// service's door required.
     ///
     /// # Errors
@@ -61,27 +61,27 @@ impl MailConfig {
                 .filter(|value| !value.is_empty())
         };
         let (from, key) = match (
-            set("TILO_ROOMS_MAIL_FROM"),
-            set("TILO_ROOMS_RESEND_KEY_FILE"),
+            set("TILO_WORKSPACES_MAIL_FROM"),
+            set("TILO_WORKSPACES_RESEND_KEY_FILE"),
         ) {
             (Some(from), Some(key)) => (from, key),
             (None, None) => return Ok(None),
             _ => anyhow::bail!(
-                "TILO_ROOMS_MAIL_FROM and TILO_ROOMS_RESEND_KEY_FILE are set together, or neither"
+                "TILO_WORKSPACES_MAIL_FROM and TILO_WORKSPACES_RESEND_KEY_FILE are set together, or neither"
             ),
         };
-        let resend_url = set("TILO_ROOMS_RESEND_URL").unwrap_or_else(|| RESEND_URL.to_owned());
+        let resend_url = set("TILO_WORKSPACES_RESEND_URL").unwrap_or_else(|| RESEND_URL.to_owned());
         anyhow::ensure!(
             resend_url.starts_with("https://")
                 || resend_url.starts_with("http://127.0.0.1")
                 || resend_url.starts_with("http://localhost"),
-            "TILO_ROOMS_RESEND_URL is an https URL (a loopback http one for a local stack)"
+            "TILO_WORKSPACES_RESEND_URL is an https URL (a loopback http one for a local stack)"
         );
         Ok(Some(Self {
             from,
             resend_key_file: key.into(),
             resend_url,
-            templates: set("TILO_ROOMS_MAIL_TEMPLATES").map(std::path::PathBuf::from),
+            templates: set("TILO_WORKSPACES_MAIL_TEMPLATES").map(std::path::PathBuf::from),
         }))
     }
 }
@@ -93,13 +93,13 @@ impl MailConfig {
 pub struct WaitListSettings {
     /// How many addresses the workspace keeps.
     pub max: usize,
-    /// Where someone asks to be taken off the list (`TILO_ROOMS_CONTACT`).
+    /// Where someone asks to be taken off the list (`TILO_WORKSPACES_CONTACT`).
     pub contact: Option<String>,
     /// The door's page, which its mails' links open.
     pub entry: Option<String>,
     /// How the door sends mail, when the deployment configured it.
     pub mail: Option<MailConfig>,
-    /// The local review mode (`TILO_ROOMS_LOCAL`), where the door's page may
+    /// The local review mode (`TILO_WORKSPACES_LOCAL`), where the door's page may
     /// be a plain `http` loopback address.
     pub local: bool,
 }
@@ -115,7 +115,7 @@ impl WaitListSettings {
     pub fn from_env(max: usize, entry: Option<String>, local: bool) -> anyhow::Result<Self> {
         Ok(Self {
             max,
-            contact: std::env::var("TILO_ROOMS_CONTACT")
+            contact: std::env::var("TILO_WORKSPACES_CONTACT")
                 .ok()
                 .map(|contact| contact.trim().to_owned())
                 .filter(|contact| !contact.is_empty()),
@@ -298,7 +298,7 @@ impl WaitListDoor {
             }
             (None, Some(_)) => {
                 tracing::warn!(
-                    "TILO_ROOMS_MAIL_FROM names a sender, but the door has no page to mail \
+                    "TILO_WORKSPACES_MAIL_FROM names a sender, but the door has no page to mail \
                      invitations on: the wait list lists addresses at once"
                 );
                 None

@@ -373,7 +373,7 @@ mod tests {
         peer.receive_from(
             TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
             NeighbourMsg::SyncResp {
-                room: WORKSPACE.into(),
+                workspace: WORKSPACE.into(),
                 changes,
             },
             tilo_clock::wall(),

@@ -392,8 +392,8 @@ async fn expired_agent_delegation_cannot_invoke_host() {
     let host = user.enrol("home", DeviceCapabilities::member());
     let host_key = host.device_pubkey();
     let agent = user.enrol("agent", DeviceCapabilities::member());
-    let room = "6f1c2a3e-2b7d-4c55-9a0e-5d1f00c0ffee";
-    let ws = tilo_relay::WorkspaceId::parse(room).unwrap();
+    let workspace = "6f1c2a3e-2b7d-4c55-9a0e-5d1f00c0ffee";
+    let ws = tilo_relay::WorkspaceId::parse(workspace).unwrap();
     let actions = Arc::new(RecordingHost::default());
     let relay = Box::pin(spawn_relay_serving_apps(
         &user,
@@ -438,7 +438,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
             "Helper",
             [0x7c, 0x3a, 0xed],
             DelegateScope {
-                workspaces: vec![WorkspaceId::parse(room).unwrap()],
+                workspaces: vec![WorkspaceId::parse(workspace).unwrap()],
                 apps: Vec::new(),
             },
             issued,

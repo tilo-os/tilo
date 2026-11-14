@@ -67,7 +67,7 @@ ed25519-dalek.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 futures-util.workspace = true
-# The endpoint joined rooms sync over, keyed by this device's key.
+# The endpoint joined workspaces sync over, keyed by this device's key.
 iroh.workspace = true
 # The relays that endpoint uses, as the person set them, held back until
 # something needs this device reachable.
@@ -110,17 +110,17 @@ tilo-host-search = { path = "../../platform/tilo-host-search" }
 # work: whether it runs the app, and how it is powered.
 tilo-power-mgmt = { path = "../../system/power" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-# The neighbour wire messages joined rooms exchange.
+# The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
-# The room host every device runs, which the profile's own room is placed on.
-tilo-room-host = { path = "../../hosting/tilo-room-host" }
+# The workspace host every device runs, which the profile's own workspace is placed on.
+tilo-workspace-host = { path = "../../hosting/tilo-workspace-host" }
 # The content store app surfaces are read from.
 tilo-content = { path = "../../system/content" }
 # The apps' store: the device content store when the launcher handed one over.
 tilo-content-device = { path = "../../system/content-device" }
 # The workspace store this device holds for the workspaces it belongs to, and
 # the admission door it answers with: the engine's own membership.
-# The relay session a joined room syncs through.
+# The relay session a joined workspace syncs through.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 # A workspace host's signed address, which a key enters a workspace at.
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
@@ -128,7 +128,7 @@ tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # The offload route a session's action door places offloadable actions
 # through: the compute session with the home relay, placement and the
-# room-scoped route (`tilo_relay::offload`). Its tests also start real relays.
+# workspace-scoped route (`tilo_relay::offload`). Its tests also start real relays.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-rt.workspace = true
 # `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
@@ -170,9 +170,9 @@ tilo-secrets = { path = "../../platform/tilo-secrets" }
 runtime-portal = { path = "../runtime-portal" }
 # The channel fixtures owner tests seal writes with.
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
-# The join protocol a runtime joins rooms over.
+# The join protocol a runtime joins workspaces over.
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
-# The governor whose rooms a runtime joins.
+# The governor whose workspaces a runtime joins.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path verifies.
 ed25519-dalek.workspace = true

@@ -130,7 +130,7 @@ fn canonical_owner<R: PrivateRead>(
         Ok(())
     })?;
     let mut matches_workspace = false;
-    let workspace_count = read.all(&read.root(), "room", |value| {
+    let workspace_count = read.all(&read.root(), "workspace", |value| {
         matches_workspace = matches!(value,WorkspaceValue::Str(value) if value==workspace);
         Ok(())
     })?;

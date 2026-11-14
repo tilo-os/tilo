@@ -175,7 +175,7 @@ on one. Each page's channel state (`peer.channelDiagnostics()`) is saved as
 ## The first visit, with a real agent
 
 `crates/browser/tilo-web-desktop/scripts/agent-shell.mjs` walks the first
-visit a person makes on a hosted Tilo, on this machine: a `tilo-relay room`
+visit a person makes on a hosted Tilo, on this machine: a `tilo-relay workspace`
 host with a workspace of its own for each person, the site in front of it (the
 desktop bundle with a deployment's `entry.json`), and a first visit in headless
 Chrome. It presses "Set up with your agent", reads the code out of the prompt

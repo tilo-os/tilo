@@ -15,7 +15,7 @@
 // so the page dials that host as named; an empty HOST_INFO is only for a site
 // whose host is not there to ask. FEEDBACK is the id of the Chat channel the
 // workspace keeps for problem reports (`c_feedback` for a workspace started
-// with TILO_ROOMS_FEEDBACK_CHANNEL=feedback), as the web entry image names it
+// with TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback), as the web entry image names it
 // from TILO_WEB_HOME_FEEDBACK: a page whose entry names none offers no Report
 // a problem.
 // Prints {"url": "https://127.0.0.1:<port>"} once it listens.

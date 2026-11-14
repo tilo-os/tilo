@@ -52,7 +52,7 @@ def review(link: str) -> dict:
         return {"error": f"the reviewer did not get in: {ran.stderr[-1500:]}"}
     person = json.loads(ran.stdout.strip().splitlines()[-1])
     followed = person.get("followed") or {}
-    workspace = followed.get("room") or followed.get("scope")
+    workspace = followed.get("workspace") or followed.get("scope")
     role = asyncio.run(role_in(person["key"], workspace))
     return {"key": person["key"], "person": None, "joined": {"workspace": workspace, "role": role}}
 

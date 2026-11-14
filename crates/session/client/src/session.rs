@@ -186,7 +186,7 @@ pub(crate) type Completion = crate::Answer<Result<(), String>>;
 /// none ([`Cmd::SealLive`]).
 pub(crate) type LiveCompletion = crate::Answer<Option<Vec<u8>>>;
 /// Where the host's answer to a workspace administration request goes ([`Cmd::Administer`]).
-pub(crate) type RoomsCompletion =
+pub(crate) type WorkspacesCompletion =
     crate::Answer<Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>>;
 #[derive(Debug, PartialEq, Eq)]
 enum Admission {
@@ -329,8 +329,8 @@ fn session_task(
         delivered: BTreeMap::new(),
         received: BTreeSet::new(),
         voice: crate::voice::Participations::default(),
-        rooms_pending: BTreeMap::new(),
-        rooms_next: 0,
+        workspaces_pending: BTreeMap::new(),
+        workspaces_next: 0,
         agent_runs_pending: BTreeMap::new(),
         agent_runs_next: 0,
         agent_run: None,
@@ -515,9 +515,9 @@ struct Task {
     voice: crate::voice::Participations,
     /// The workspace administration this session asked its host and has not
     /// been answered yet, by the id it asked with.
-    rooms_pending: BTreeMap<u64, RoomsCompletion>,
+    workspaces_pending: BTreeMap<u64, WorkspacesCompletion>,
     /// The id the next administration request is asked with.
-    rooms_next: u64,
+    workspaces_next: u64,
     /// The agent runs this session declared and the host has not answered yet, by the
     /// id they asked with.
     agent_runs_pending: BTreeMap<u64, AgentRunCompletion>,
@@ -1762,15 +1762,15 @@ impl Task {
     fn administer(
         &mut self,
         request: &tilo_relay_protocol::workspaces::WorkspacesRequest,
-        done: RoomsCompletion,
+        done: WorkspacesCompletion,
         client: Option<&RelayClient>,
     ) {
         let Some(client) = client else {
             let _ = done.send(Err("not connected to the host".into()));
             return;
         };
-        let request_id = self.rooms_next;
-        self.rooms_next = self.rooms_next.wrapping_add(1);
+        let request_id = self.workspaces_next;
+        self.workspaces_next = self.workspaces_next.wrapping_add(1);
         let frame = match postcard::to_stdvec(request) {
             Ok(frame) => frame,
             Err(error) => {
@@ -1778,19 +1778,19 @@ impl Task {
                 return;
             }
         };
-        self.rooms_pending.insert(request_id, done);
+        self.workspaces_pending.insert(request_id, done);
         if client
             .send(Envelope::WorkspacesRequest { request_id, frame })
             .is_err()
-            && let Some(done) = self.rooms_pending.remove(&request_id)
+            && let Some(done) = self.workspaces_pending.remove(&request_id)
         {
             let _ = done.send(Err("the host's session closed".into()));
         }
     }
 
     /// The host answered administration request `request_id`.
-    fn rooms_reply(&mut self, request_id: u64, frame: &[u8]) {
-        if let Some(done) = self.rooms_pending.remove(&request_id) {
+    fn workspaces_reply(&mut self, request_id: u64, frame: &[u8]) {
+        if let Some(done) = self.workspaces_pending.remove(&request_id) {
             let _ = done.send(answered(frame));
         }
     }
@@ -1798,7 +1798,7 @@ impl Task {
     /// The session ended with requests the host never answered: each is
     /// answered here, so nothing waits on a connection that is gone.
     fn requests_lost(&mut self) {
-        for (_, done) in std::mem::take(&mut self.rooms_pending) {
+        for (_, done) in std::mem::take(&mut self.workspaces_pending) {
             let _ = done.send(Err("the session ended before the host answered".into()));
         }
         for (_, done) in std::mem::take(&mut self.agent_runs_pending) {

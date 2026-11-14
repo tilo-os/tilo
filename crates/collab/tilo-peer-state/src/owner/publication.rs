@@ -763,7 +763,7 @@ pub(crate) fn add_member_changes(
     }
     let message = NeighbourMsg::SyncResp {
         changes: joined,
-        room: view.workspace.to_string(),
+        workspace: view.workspace.to_string(),
     };
     let bytes = encode(&message, MAX_BYTES)?;
     let _ = live;
@@ -1264,7 +1264,7 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
         return validate_member_changes(view, entry);
     }
     let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
-    if !matches!(&message, NeighbourMsg::SyncResp { room, .. } if room == &view.record.workspace.to_string())
+    if !matches!(&message, NeighbourMsg::SyncResp { workspace, .. } if workspace == &view.record.workspace.to_string())
         || encode(&view.peer.workspace_message(), MAX_BYTES)? != entry.bytes
         || entry.id != *blake3::hash(&entry.bytes).as_bytes()
         || entry.incremental
@@ -1337,10 +1337,10 @@ fn validate_member_changes(
     entry: &StoredOutgoing,
 ) -> Result<(), String> {
     let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
-    let NeighbourMsg::SyncResp { changes, room } = &message else {
+    let NeighbourMsg::SyncResp { changes, workspace } = &message else {
         return Err("native membership publication is not a workspace delta".into());
     };
-    if room != &view.record.workspace.to_string()
+    if workspace != &view.record.workspace.to_string()
         || encode(&message, MAX_BYTES)? != entry.bytes
         || entry.id != *blake3::hash(&entry.bytes).as_bytes()
     {
@@ -2705,7 +2705,7 @@ mod encoding_tests {
             id: [7; 32],
             bytes,
             binding: CommitBinding {
-                workspace: "room".into(),
+                workspace: "workspace".into(),
                 target: crate::owner_commit::CommitTarget::Document {
                     app: "so.tilo.code".into(),
                     record: "a".into(),

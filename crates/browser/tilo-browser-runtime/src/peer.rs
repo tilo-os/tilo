@@ -277,12 +277,12 @@ impl PeerStore for DurablePeerStore {
             .map_err(|error| error.to_string())
     }
 
-    fn load_rooms(&self) -> Option<Vec<u8>> {
+    fn load_workspaces(&self) -> Option<Vec<u8>> {
         use durable_store::DurableStore as _;
         Some(self.store.read(&self.workspaces_key).ok()??.bytes)
     }
 
-    fn save_rooms(&self, bytes: &[u8]) -> Result<(), String> {
+    fn save_workspaces(&self, bytes: &[u8]) -> Result<(), String> {
         use durable_store::DurableStore as _;
         self.store
             .write(
@@ -294,7 +294,7 @@ impl PeerStore for DurablePeerStore {
             .map_err(|error| error.to_string())
     }
 
-    fn save_rooms_run(&self, name: &str, bytes: Option<&[u8]>) -> Result<(), String> {
+    fn save_workspaces_run(&self, name: &str, bytes: Option<&[u8]>) -> Result<(), String> {
         use durable_store::DurableStore as _;
         // The store forgets no key: a run let go keeps its key, empty.
         self.store
@@ -307,7 +307,7 @@ impl PeerStore for DurablePeerStore {
             .map_err(|error| error.to_string())
     }
 
-    fn load_rooms_run(&self, name: &str) -> Option<Vec<u8>> {
+    fn load_workspaces_run(&self, name: &str) -> Option<Vec<u8>> {
         use durable_store::DurableStore as _;
         Some(self.store.read(&self.run_key(name)).ok()??.bytes).filter(|bytes| !bytes.is_empty())
     }

@@ -101,10 +101,7 @@ impl StatePeer {
         let outcome = self
             .receive_from(
                 TransportOrigin::RelayDelta(key.device_public_key()),
-                NeighbourMsg::SyncResp {
-                    changes,
-                    room: workspace,
-                },
+                NeighbourMsg::SyncResp { changes, workspace },
                 now,
             )
             .map_err(|error| error.to_string())?;

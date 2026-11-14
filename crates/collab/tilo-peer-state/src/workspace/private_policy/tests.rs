@@ -44,7 +44,7 @@ fn fixture() -> crate::StatePeer {
     peer.receive_from(
         crate::TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
         crate::NeighbourMsg::SyncResp {
-            room: peer.workspace_id().into(),
+            workspace: peer.workspace_id().into(),
             changes,
         },
         now,

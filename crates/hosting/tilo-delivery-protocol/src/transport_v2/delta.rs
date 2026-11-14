@@ -291,7 +291,7 @@ pub fn encode_coded_delta(
         slot: u16,
         segments: &'a [DeltaSegment],
     }
-    // Workspace for the length prefix, written once the length is known.
+    // Room for the length prefix, written once the length is known.
     let mut out = vec![0, 0, 0, 0, CODED_DELTA_KIND];
     out = postcard::to_extend(&Fields { slot, segments }, out)?;
     let payload = out.len().saturating_sub(4);
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn authors_and_rooms_take_their_own_slots() {
+    fn authors_and_workspaces_take_their_own_slots() {
         let mut encoder = DeltaEncoder::default();
         let mut reader = DeltaSlots::default();
         let mut seen = std::collections::HashSet::new();

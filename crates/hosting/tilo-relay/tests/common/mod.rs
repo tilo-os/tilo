@@ -233,7 +233,7 @@ pub fn start_relay_serving(
     })
 }
 
-/// Make `members` the room's member devices, as the room's governor does:
+/// Make `members` the workspace's member devices, as the workspace's governor does:
 /// the devices are all the relay owner's.
 pub async fn admit_members(
     relay: &Relay,

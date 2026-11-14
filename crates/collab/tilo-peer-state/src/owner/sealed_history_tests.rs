@@ -445,7 +445,7 @@ async fn writes_past_a_full_sealed_history_land_after_its_compaction() {
         "every change reads"
     );
     assert!(held() <= 256, "the history stays within its bound");
-    // Custody sends the compaction before the writes it made room for.
+    // Custody sends the compaction before the writes it made workspace for.
     let sent = drain(owner, workspace, now, &mut 0).await;
     let compaction = sent
         .iter()

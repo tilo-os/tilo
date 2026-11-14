@@ -1,13 +1,13 @@
 //! Tenant isolation on one hosted relay.
 //!
-//! A hosted relay governs rooms for people who share nothing but the host:
-//! two tenants, each its own governed room with its own members. These
-//! tests stand the real relay up with two such rooms and drive every door a
+//! A hosted relay governs workspaces for people who share nothing but the host:
+//! two tenants, each its own governed workspace with its own members. These
+//! tests stand the real relay up with two such workspaces and drive every door a
 //! member, an agent or a compute client has, asserting that one tenant
 //! cannot read, write, enumerate, administer or invoke anything in the
-//! other's room, that an agent holds only what its delegation names and
+//! other's workspace, that an agent holds only what its delegation names and
 //! never governs, and that a removed member loses access at once. Each
-//! refusal is checked against the other room's state afterwards, so a door
+//! refusal is checked against the other workspace's state afterwards, so a door
 //! that answered "no" but acted anyway still fails.
 //!
 //! The suite is the `tenant_isolation::` module of the relay's `it` target.
@@ -38,8 +38,9 @@ use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::{
-    CREATE_ROOM, ENTER_ROOM, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssueInvitationRequest,
-    IssuedInvitation, LIST_ROOMS, RemoveMemberRequest, WorkspaceSummary, Workspaces,
+    CREATE_WORKSPACE, ENTER_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
+    IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, RemoveMemberRequest,
+    WorkspaceSummary, Workspaces,
 };
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
@@ -96,23 +97,23 @@ async fn subscribed(relay: &Relay, device: &TestDevice, workspace_id: WorkspaceI
             subscribe(&client, workspace_id).await,
             Some(Envelope::Ready { .. })
         ),
-        "the room admits its own member"
+        "the workspace admits its own member"
     );
     client
 }
 
-/// Admit `member`'s person to `room` as `role`, through an invitation the
+/// Admit `member`'s person to `workspace` as `role`, through an invitation the
 /// relay's own device issues and `member`'s device redeems.
-async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, room: &str, role: Role) {
-    let issued = invitation(relay.workspaces().unwrap(), host, room, role, member).await;
+async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, workspace: &str, role: Role) {
+    let issued = invitation(relay.workspaces().unwrap(), host, workspace, role, member).await;
     redeem(member, &issued).await.unwrap();
 }
 
-/// An invitation to `room` for `recipient`'s person, issued by `host`.
+/// An invitation to `workspace` for `recipient`'s person, issued by `host`.
 async fn invitation(
     workspaces: &Workspaces,
     host: &TestDevice,
-    room: &str,
+    workspace: &str,
     role: Role,
     recipient: &TestDevice,
 ) -> IssuedInvitation {
@@ -120,7 +121,7 @@ async fn invitation(
     getrandom::fill(&mut request_id).unwrap();
     workspaces
         .issue(
-            room,
+            workspace,
             &host.cert,
             IssueInvitationRequest {
                 request_id,
@@ -160,28 +161,28 @@ async fn redeem(device: &TestDevice, issued: &IssuedInvitation) -> Result<(), St
         .map_err(|error| error.to_string())
 }
 
-/// What a room's governance holds, as far as any door could change it.
-async fn governance(workspaces: &Workspaces, host: &TestDevice, room: &str) -> String {
-    let (generation, members) = workspaces.membership(room).await.unwrap();
-    let pending = workspaces.pending(room, &host.cert).await.unwrap();
-    let summary = workspaces.summary(room).await.unwrap();
+/// What a workspace's governance holds, as far as any door could change it.
+async fn governance(workspaces: &Workspaces, host: &TestDevice, workspace: &str) -> String {
+    let (generation, members) = workspaces.membership(workspace).await.unwrap();
+    let pending = workspaces.pending(workspace, &host.cert).await.unwrap();
+    let summary = workspaces.summary(workspace).await.unwrap();
     format!("{generation} {members:?} {pending:?} {:?}", summary.members)
 }
 
-/// `device` asks the relay to remove `victim` from `room`: it must be
+/// `device` asks the relay to remove `victim` from `workspace`: it must be
 /// refused.
 async fn removal_refused(
     who: &str,
     device: &TestDevice,
     relay: &Relay,
-    room: &WorkspaceSummary,
+    workspace: &WorkspaceSummary,
     victim: [u8; 32],
 ) {
     let answer = relay
         .workspaces()
         .unwrap()
         .remove_member(
-            &room.workspace,
+            &workspace.workspace,
             &device.cert,
             RemoveMemberRequest {
                 request_id: [0xA4; 32],
@@ -192,7 +193,7 @@ async fn removal_refused(
     assert!(
         answer.is_err(),
         "{who} must be refused removing a member of {}",
-        room.name
+        workspace.name
     );
 }
 
@@ -325,12 +326,12 @@ async fn action_answer(client: &RelayClient) -> RemoteActionMessage {
     .await
 }
 
-fn invite_action(room: &str) -> RemoteActionMessage {
+fn invite_action(workspace: &str) -> RemoteActionMessage {
     let mut argument = serde_json::Map::new();
     argument.insert("role".into(), "viewer".into());
     RemoteActionMessage::Invoke(InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget::workspace_governance(room, "invite"),
+        target: RemoteActionTarget::workspace_governance(workspace, "invite"),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,
@@ -370,7 +371,7 @@ async fn governance_resources(
         .collect()
 }
 
-/// A hosted relay with two tenants' rooms: Acme, where Ann invites, and
+/// A hosted relay with two tenants' workspaces: Acme, where Ann invites, and
 /// Globex, where Bob edits and an invitation for Carol waits.
 struct TwoTenants {
     state: tempfile::TempDir,
@@ -417,9 +418,9 @@ impl TwoTenants {
         let globex = workspaces.create("Globex").await.unwrap();
         assert_ne!(acme.workspace_id, globex.workspace_id);
 
-        // Ann invites in Acme: the owner grants her the room's `invite`
+        // Ann invites in Acme: the owner grants her the workspace's `invite`
         // governance action, as an owner hands a member a part of running
-        // their room.
+        // their workspace.
         admit(&relay, &host, &ann_laptop, &acme.workspace, Role::Editor).await;
         let who = hex::encode(ann.user_pk);
         let grant = Grant::new(
@@ -431,7 +432,7 @@ impl TwoTenants {
             Grantee::person(hex::encode(provider.user_pk)),
         );
         workspaces
-            .put_room_grants(&acme.workspace, &host.cert, [0x11; 32], vec![grant])
+            .put_workspace_grants(&acme.workspace, &host.cert, [0x11; 32], vec![grant])
             .await
             .unwrap();
         admit(&relay, &host, &bob_phone, &globex.workspace, Role::Editor).await;
@@ -469,7 +470,7 @@ impl TwoTenants {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
+async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
     // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
     // tenants' people, their devices and two governed workspaces.
     let t = Box::pin(TwoTenants::start()).await;
@@ -477,7 +478,7 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
     let before = t.globex_governance().await;
     let ann = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
 
-    // Positive control: Ann governs her own room through the same actions.
+    // Positive control: Ann governs her own workspace through the same actions.
     let own = invocation(
         WORKSPACE_GOVERNANCE_PROVIDER,
         workspace_governance_resource(&t.acme.workspace),
@@ -488,11 +489,11 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
     let own = action_answer(&ann).await;
     assert!(
         completed(&own),
-        "Ann lists her own room's invitations: {own:?}"
+        "Ann lists her own workspace's invitations: {own:?}"
     );
 
     // Globex's governance, the host's own operations on Globex and a
-    // member's own business there: every one rejected, from Ann's room.
+    // member's own business there: every one rejected, from Ann's workspace.
     let globex = t.globex.workspace.as_str();
     let probes = [
         (
@@ -521,21 +522,21 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
         ),
         (
             HOST_ACTIONS_PROVIDER,
-            HOST_ROOMS_RESOURCE.to_owned(),
-            LIST_ROOMS,
+            HOST_WORKSPACES_RESOURCE.to_owned(),
+            LIST_WORKSPACES,
             serde_json::json!({}),
         ),
         (
             HOST_ACTIONS_PROVIDER,
-            HOST_ROOMS_RESOURCE.to_owned(),
-            CREATE_ROOM,
+            HOST_WORKSPACES_RESOURCE.to_owned(),
+            CREATE_WORKSPACE,
             serde_json::json!({ "name": "Squatter" }),
         ),
         (
             HOST_ACTIONS_PROVIDER,
-            HOST_ROOMS_RESOURCE.to_owned(),
-            ENTER_ROOM,
-            serde_json::json!({ "room": globex }),
+            HOST_WORKSPACES_RESOURCE.to_owned(),
+            ENTER_WORKSPACE,
+            serde_json::json!({ "workspace": globex }),
         ),
     ];
     for (provider, resource, action, argument) in probes {
@@ -564,7 +565,7 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
 
     // Nothing of that changed Globex.
     assert_eq!(t.globex_governance().await, before);
-    assert_eq!(workspaces.list().await.len(), 2, "no room was created");
+    assert_eq!(workspaces.list().await.len(), 2, "no workspace was created");
 
     // An invitation Globex issued to someone else admits nobody else.
     assert!(
@@ -580,7 +581,7 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room() {
+async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_workspace() {
     // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
     // tenants' people, their devices and two governed workspaces.
     let t = Box::pin(TwoTenants::start()).await;
@@ -599,7 +600,7 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room(
     );
     drop(ann_probe);
 
-    // Writing: a delta Ann addresses to Globex from her own room's session
+    // Writing: a delta Ann addresses to Globex from her own workspace's session
     // reaches no Globex member and is persisted nowhere on the relay. (The
     // relay may end the session that sent it; that is a refusal too.)
     let marker = b"acme-writes-into-globex-7f3c";
@@ -627,14 +628,14 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room(
     );
     drop(ann_writer);
 
-    // Invoking: Ann's catalogue in her own room lists Acme's governance and
-    // nothing of Globex's, and invoking Globex's invite from her room does
+    // Invoking: Ann's catalogue in her own workspace lists Acme's governance and
+    // nothing of Globex's, and invoking Globex's invite from her workspace does
     // nothing.
     let ann_in_acme = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
     let resources = governance_resources(&ann_in_acme, &t.host, t.acme.workspace_id).await;
     assert!(
         resources.contains(&workspace_governance_resource(&t.acme.workspace)),
-        "Ann's own room offers her its governance: {resources:?}"
+        "Ann's own workspace offers her its governance: {resources:?}"
     );
     assert!(
         !resources.contains(&workspace_governance_resource(&t.globex.workspace)),
@@ -809,7 +810,7 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
+async fn an_agent_never_governs_and_reaches_no_workspace_outside_its_delegation() {
     // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
     // tenants' people, their devices and two governed workspaces.
     let t = Box::pin(TwoTenants::start()).await;
@@ -840,8 +841,8 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
         .register_agent(&agent.cert, delegation)
         .await
         .unwrap();
-    // Registering the agent puts it on the roster of the room its delegation
-    // names, which is the roster's business and no one else's: the room the
+    // Registering the agent puts it on the roster of the workspace its delegation
+    // names, which is the roster's business and no one else's: the workspace the
     // delegation does not name never hears of it.
     let acme_joined = governance(&t.workspaces(), &t.host, &t.acme.workspace).await;
     if cfg!(feature = "agents") {
@@ -857,19 +858,19 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
         );
     }
 
-    // An agent governs nothing, not even the room it is delegated, and it
+    // An agent governs nothing, not even the workspace it is delegated, and it
     // is no host person: the one decision every door asks refuses it
-    // removing anyone, the host's operations and either room's governance.
+    // removing anyone, the host's operations and either workspace's governance.
     removal_refused("the agent", &agent, &t.relay, &t.acme, t.ann.user_pk).await;
     removal_refused("the agent", &agent, &t.relay, &t.globex, t.bob.user_pk).await;
     let workspaces = t.workspaces();
-    for room in [&t.acme.workspace, &t.globex.workspace] {
+    for workspace in [&t.acme.workspace, &t.globex.workspace] {
         let expires_at_ns = tilo_clock::unix_now_ns()
             .checked_add(600_000_000_000)
             .unwrap();
         let issued = workspaces
             .issue(
-                room,
+                workspace,
                 &agent.cert,
                 IssueInvitationRequest {
                     request_id: [0xB1; 32],
@@ -881,17 +882,17 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
                 },
             )
             .await;
-        assert!(issued.is_err(), "the agent invited into {room}");
+        assert!(issued.is_err(), "the agent invited into {workspace}");
         let administrator = workspaces
-            .set_member_administrator(room, &agent.cert, [0xB2; 32], t.ann.user_pk, None)
+            .set_member_administrator(workspace, &agent.cert, [0xB2; 32], t.ann.user_pk, None)
             .await;
         assert!(
             administrator.is_err(),
-            "the agent made an administrator in {room}"
+            "the agent made an administrator in {workspace}"
         );
         let removed = workspaces
             .remove_member(
-                room,
+                workspace,
                 &agent.cert,
                 RemoveMemberRequest {
                     request_id: [0xB3; 32],
@@ -899,7 +900,10 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
                 },
             )
             .await;
-        assert!(removed.is_err(), "the agent removed a member of {room}");
+        assert!(
+            removed.is_err(),
+            "the agent removed a member of {workspace}"
+        );
     }
     assert_eq!(t.globex_governance().await, before);
     assert_eq!(
@@ -909,17 +913,17 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
     assert_eq!(
         t.workspaces().list().await.len(),
         2,
-        "the agent created a room"
+        "the agent created a workspace"
     );
 
-    // Outside its delegation it is not admitted to a room at all.
+    // Outside its delegation it is not admitted to a workspace at all.
     let probe = connect(&t.relay, &agent).await;
     assert!(
         matches!(
             subscribe(&probe, t.globex.workspace_id).await,
             Some(Envelope::NotAuthorised { .. }) | None
         ),
-        "the agent reads a room its delegation does not name"
+        "the agent reads a workspace its delegation does not name"
     );
     t.relay.shutdown().await;
 }

@@ -40,9 +40,9 @@ trap cleanup EXIT
 # The relay this stack runs places on it: the host's member device is
 # certified by the relay's owner root, and reaches the relay at its own
 # device. The stack's relay leaves both; this check starts no relay.
-mkdir -p "$state/secrets" "$state/rooms/lounge/relay"
-head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$state/secrets/room-root-lounge"
-(umask 077 && head -c 32 /dev/urandom > "$state/rooms/lounge/relay/host-device.key")
+mkdir -p "$state/secrets" "$state/workspaces/lounge/relay"
+head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$state/secrets/workspace-root-lounge"
+(umask 077 && head -c 32 /dev/urandom > "$state/workspaces/lounge/relay/host-device.key")
 
 say "loading $archive"
 podman load -i "$archive" > "$state/load.log" 2>&1 || { cat "$state/load.log" >&2; die "podman load $archive"; }

@@ -248,7 +248,7 @@ mod batch_tests {
     #[test]
     fn duplicate_batch_routes_leave_governance_unchanged() {
         let coverage = Coverage {
-            workspace: "room".into(),
+            workspace: "workspace".into(),
             app: "app".into(),
             record: "record".into(),
             payload_hash: [1; 32],

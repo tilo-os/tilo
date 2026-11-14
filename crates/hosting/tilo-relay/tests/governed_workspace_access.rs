@@ -51,7 +51,7 @@ fn retained_delta(body: &[u8]) -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
+async fn governed_access_removes_a_live_person_without_widening_other_workspaces() {
     let provider = TestUser::fresh("Provider");
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
@@ -124,7 +124,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         Some(Envelope::Ready { .. })
     ));
     // Charlie's device may host workspaces of his own; here it is the member
-    // device his room authority names, so it takes part like any other.
+    // device his workspace authority names, so it takes part like any other.
     let charlie_client = connect(&relay, charlie_device).await.unwrap();
     assert!(matches!(
         subscribe(&charlie_client, WorkspaceId::from_u128(701)).await,
@@ -189,9 +189,9 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         "explicitly refused retained delta must not reach durable state"
     );
 
-    // Alice stays globally handshake-admitted through room 702, but the
-    // periodic audit then closes her room-701 stream and that global admission
-    // cannot reopen room 701.
+    // Alice stays globally handshake-admitted through workspace 702, but the
+    // periodic audit then closes her workspace-701 stream and that global admission
+    // cannot reopen workspace 701.
     assert!(
         tilo_test_env::within("alice_client to close", alice_client.recv())
             .await
@@ -245,14 +245,14 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
             .is_none()
     );
 
-    let alice_room_b = connect(
+    let alice_workspace_b = connect(
         &relay,
-        alice.enrol("alice-room-b", DeviceCapabilities::primary()),
+        alice.enrol("alice-workspace-b", DeviceCapabilities::primary()),
     )
     .await
     .unwrap();
     assert!(matches!(
-        subscribe(&alice_room_b, WorkspaceId::from_u128(702)).await,
+        subscribe(&alice_workspace_b, WorkspaceId::from_u128(702)).await,
         Some(Envelope::NotAuthorised { .. })
     ));
 
@@ -268,7 +268,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     assert!(alice_reconnect.recv().await.is_none());
 
     drop(alice_client);
-    drop(alice_room_b);
+    drop(alice_workspace_b);
     drop(alice_reconnect);
     drop(bob_client);
     relay.shutdown().await;
@@ -287,10 +287,10 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     )
     .await
     .unwrap();
-    // A relay holds no list of rooms of its own: on start, each room's
+    // A relay holds no list of workspaces of its own: on start, each workspace's
     // governance restates who it admits, as the governor and a hosting
     // member do when they resume.
-    for (room, devices, roots) in [
+    for (workspace, devices, roots) in [
         (
             WorkspaceId::from_u128(701),
             vec![bob_key],
@@ -304,7 +304,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     ] {
         restarted
             .replace_governed_workspace_access(
-                room,
+                workspace,
                 true,
                 GovernedAccess {
                     member_devices: devices,
@@ -333,7 +333,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         alice.enrol("alice-after-restart", DeviceCapabilities::primary()),
     )
     .await
-    .expect("room 702 keeps Alice's root in the handshake union");
+    .expect("workspace 702 keeps Alice's root in the handshake union");
     assert!(matches!(
         subscribe(&alice_after_restart, WorkspaceId::from_u128(701)).await,
         Some(Envelope::NotAuthorised { .. })

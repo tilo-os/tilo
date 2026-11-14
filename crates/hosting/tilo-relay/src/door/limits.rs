@@ -1,6 +1,6 @@
 //! Who is asking at the door's wait list: a keyed hash of the client address
 //! (no raw address is ever kept) and the per-address windows of the wait
-//! list's acts. Taken from the room service's own limits, whose joins the
+//! list's acts. Taken from the workspace service's own limits, whose joins the
 //! relay's directory door answers itself.
 
 use hmac::{Hmac, KeyInit, Mac};

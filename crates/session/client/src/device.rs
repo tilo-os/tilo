@@ -15,8 +15,8 @@ use tilo_relay_client::login::Admission;
 use tilo_relay_client::login::{Door, SignIn};
 use tilo_relay_client::{CertifyError, DeviceSigner};
 use tilo_relay_session::workspaces::{
-    CREATE_OWN_ROOM, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, KEEP_PERSONAL,
-    LIST_PERSONAL, PersonalList, WorkspaceLabels, WorkspaceListing,
+    CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
+    KEEP_PERSONAL, LIST_PERSONAL, PersonalList, WorkspaceLabels, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 use web_time::Duration as Wait;
@@ -299,7 +299,7 @@ impl Device {
             return Ok(id);
         }
         let mut named = Map::new();
-        named.insert("room".to_owned(), Value::String(workspace.to_owned()));
+        named.insert("workspace".to_owned(), Value::String(workspace.to_owned()));
         let asked = match self.own_workspace(named, &self.label).await {
             Ok((listing, invitation)) if listing.workspace == workspace => {
                 self.redeem(&invitation, shown_as).await?;
@@ -345,7 +345,7 @@ impl Device {
     }
 
     /// The person's own workspace on the host, and the invitation into it: its `name` makes
-    /// another, or the `room` it must be.
+    /// another, or the `workspace` it must be.
     ///
     /// # Errors
     /// The host did not answer, refused, or answered no invitation.
@@ -354,7 +354,9 @@ impl Device {
         arguments: Map<String, Value>,
         caller: &str,
     ) -> Result<(WorkspaceListing, Vec<u8>), HostRefusal> {
-        let output = self.host_action(CREATE_OWN_ROOM, arguments, caller).await?;
+        let output = self
+            .host_action(CREATE_OWN_WORKSPACE, arguments, caller)
+            .await?;
         let malformed = |why: String| {
             HostRefusal::malformed(format!(
                 "The host made no workspace of the person's own: {why}"
@@ -371,7 +373,7 @@ impl Device {
     }
 
     /// Have this device in the person's own workspace on the host: the host makes it the first time, or answers the one the person has (another
-    /// for each `name` they give; the one called `room`, a UUID, when it says, made under that name
+    /// for each `name` they give; the one called `workspace`, a UUID, when it says, made under that name
     /// for a person who has none yet), and this very device redeems the invitation into it, so the
     /// key this session holds is the one that opens it next. One the person did not name is named
     /// in this device's language. A workspace `entered` says this device is
@@ -383,7 +385,7 @@ impl Device {
     pub async fn enter_own_workspace(
         &self,
         name: Option<&str>,
-        room: Option<&str>,
+        workspace: Option<&str>,
         shown_as: &str,
         entered: impl FnOnce(&str) -> bool,
     ) -> Result<WorkspaceListing, HostRefusal> {
@@ -391,8 +393,8 @@ impl Device {
         if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
             arguments.insert("name".to_owned(), Value::String(name.to_owned()));
         }
-        if let Some(room) = room {
-            arguments.insert("room".to_owned(), Value::String(room.to_owned()));
+        if let Some(workspace) = workspace {
+            arguments.insert("workspace".to_owned(), Value::String(workspace.to_owned()));
         }
         // The host names a workspace the person did not, so it is told the language they read.
         arguments.insert(
@@ -470,7 +472,7 @@ impl Device {
     ) -> Result<Value, HostRefusal> {
         let target = RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(HOST_ROOMS_RESOURCE, action),
+            address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, action),
         };
         self.ask_host(HOST_ITSELF, target, arguments, caller).await
     }

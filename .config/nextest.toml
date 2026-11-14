@@ -82,7 +82,7 @@ filter = "package(tilo-session) or package(tilo-quick-settings)"
 setup = "session-siblings"
 
 # The session's room-service test starts the relay as the Lounge image does
-# (`tilo-relay room --persistent` with its deployment routes), a program of
+# (`tilo-relay workspace --persistent` with its deployment routes), a program of
 # another package: the feature `agents` is what gives it that subcommand.
 [scripts.setup.lounge-siblings]
 command = [
@@ -102,7 +102,7 @@ setup = "lounge-siblings"
 
 # The browser peer's Lounge test starts the same room service the deployment
 # runs, so it is built the same way: a program of another package, with the
-# feature `agents` that gives it the `room` subcommand.
+# feature `agents` that gives it the `workspace` subcommand.
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)"
