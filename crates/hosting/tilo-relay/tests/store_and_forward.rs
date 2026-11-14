@@ -1,6 +1,6 @@
 //! Store-and-forward: a delta authored while peer B is offline
 //! must be queued on the relay's disk under
-//! `workspaces/<id>/pending/<hex(pubkey_B)>/`, then delivered on
+//! `workspaces/<workspace id>/pending/<hex(pubkey_B)>/`, then delivered on
 //! B's next Subscribe.
 //!
 //! Timeline:
@@ -83,8 +83,13 @@ async fn a_publishes_two_offline_deltas(
     }
     // The writes land asynchronously on the relay's persistence turn: wait
     // for them rather than for a fixed time.
+    let deadline = tilo_test_env::hang_deadline();
     let mut queued = queued_deltas(pending_dir);
     while queued < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "deltas should reach B's queue on disk: {queued} queued"
+        );
         tokio::time::sleep(Duration::from_millis(25)).await;
         queued = queued_deltas(pending_dir);
     }
@@ -169,12 +174,12 @@ async fn offline_peer_gets_queued_deltas_on_reconnect() {
     let addr = relay.relay.node_addr();
 
     // Verify the deltas landed on disk under
-    // <state>/workspaces/5/pending/<hex(b)>/.
+    // <state>/workspaces/<id>/pending/<hex(b)>/.
     let b_hex = hex::encode(b.device_pubkey());
     let pending_dir = relay
         .state_root
         .join("workspaces")
-        .join("5")
+        .join(WORKSPACE.to_string())
         .join("pending")
         .join(&b_hex);
     a_publishes_two_offline_deltas(addr.clone(), &user, &a, &pending_dir).await;
@@ -184,8 +189,14 @@ async fn offline_peer_gets_queued_deltas_on_reconnect() {
 
     // The pending entries retire on the relay's persistence turn after
     // delivery, so they may still be on disk as B reads Ready. Wait for the
-    // queue to drain; one that never drains hangs and nextest reports it.
+    // queue to drain, naming what stayed if it does not.
+    let deadline = tilo_test_env::hang_deadline();
     while queued_deltas(&pending_dir) != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "delivered deltas should retire from the queue: {} left",
+            queued_deltas(&pending_dir)
+        );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
