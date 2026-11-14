@@ -54,11 +54,11 @@ fn until(session: &mut Session, done: impl FnMut(&mut Session) -> bool) {
     crate::common::until(session, "the shell's answer", done);
 }
 
-/// Choose the style the switch lists as `label` (its doc line, or its view's name when it names
-/// none) the way a person does: open the bar's style menu and press the style there.
+/// Choose the style `style` (`so.tilo.shell:frames`) the way the bar's switch does: the shell's
+/// `show_style` action, which every row of its menu runs.
 #[track_caller]
-fn choose(session: &mut Session, label: &str) {
-    crate::common::show_preset(session, label);
+fn choose(session: &mut Session, style: &str) {
+    crate::common::show_preset(session, style);
 }
 
 /// A scratch directory a test writes a style package into, removed when the test ends.
@@ -138,7 +138,7 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
         "the shell stands on its display: {:?}",
         session.shell_parts()
     );
-    choose(&mut session, "Frames");
+    choose(&mut session, "so.tilo.shell:frames");
     until(&mut session, |session| {
         session
             .accessible_labels()
@@ -269,7 +269,7 @@ fn a_style_whose_package_does_not_load_shows_the_strips_and_a_notice_and_keeps_t
     until(&mut session, |session| {
         style_state(session, "atest.broken:broken").is_some()
     });
-    choose(&mut session, "A broken style of the desk");
+    choose(&mut session, "atest.broken:broken");
     let (_, reason) = crate::common::wait_for(
         &mut session,
         "the broken style to be marked not loading",
@@ -422,7 +422,7 @@ fn a_style_whose_view_traps_shows_the_strips_and_a_notice() {
     until(&mut session, |session| {
         style_state(session, "atest.trapping:trapping").is_some()
     });
-    choose(&mut session, "A trapping style of the desk");
+    choose(&mut session, "atest.trapping:trapping");
     let (_, reason) = crate::common::wait_for(
         &mut session,
         "the trapping style to be marked not loading",
@@ -463,7 +463,7 @@ fn a_fixed_style_package_brings_the_style_back_live() {
     until(&mut session, |session| {
         style_state(session, "atest.trapping:trapping").is_some()
     });
-    choose(&mut session, "A trapping style of the desk");
+    choose(&mut session, "atest.trapping:trapping");
     crate::common::wait_for(
         &mut session,
         "the trapping style to be marked not loading",
@@ -588,7 +588,7 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
     // The style's own setting, the action its settings control runs: the dock to the leading
     // edge, through the shell's record the desk reads.
     session
-        .run_shell_setting("dock_on", vec![serde_json::json!("left")])
+        .run_shell_action("dock_on", vec![serde_json::json!("left")])
         .unwrap_or_else(|why| panic!("the dock moves to the leading edge: {why}"));
     let after = crate::common::wait_for(&mut session, "the dock on the leading edge", |session| {
         let held = crate::common::on_screen(session, "Dock")?;
@@ -606,7 +606,7 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
 /// to the leading edge with the calls a Settings control runs, and the desk draws it there.
 ///
 /// This fails without the change: the settings were reached only through the shell's own
-/// `run_shell_setting` (a test's back door, not a broker action every caller has), so the REPL
+/// `run_shell_action` (a test's back door, not a broker action every caller has), so the REPL
 /// could switch the style but not change what the style shows.
 #[test]
 fn the_repl_moves_the_desktops_dock_by_the_styles_own_action() {

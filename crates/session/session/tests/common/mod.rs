@@ -339,38 +339,51 @@ pub fn preset_menu(session: &Session) -> Option<String> {
         .find(|label| label.starts_with("Showing ") && on_screen(session, label).is_some())
 }
 
-/// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") from the desk's own bar: open the preset
-/// menu the bar carries and press the preset it offers.
-/// A press that arrives before the menu stands where the desk lays it out dismisses the menu
-/// instead of choosing from it, as it does for a person who presses again to get the row they aimed
-/// at. So the wait presses again — asking the bar for the menu when a press closed it — until the
-/// desk shows the preset, and a desk that never does is reported with what the bar said instead.
-pub fn show_preset(session: &mut Session, preset: &str) {
-    let shown = format!("Showing {preset}");
-    // Turns since the last press: the menu opens on the turn after its own button's press, and
-    // closes on the turn after a row's, so the wait reads the desk's answer before it presses
-    // again.
-    let mut since = usize::MAX;
-    wait_for(
+/// The words the desk lists the style `style` (`so.tilo.shell:frames`) under: its doc line, or its
+/// view's name when its author wrote none, as the bar's switch and Settings both name it.
+fn style_label(session: &Session, style: &str) -> Option<String> {
+    let found = styles(session)
+        .into_iter()
+        .find(|found| found.style == style)?;
+    [found.line, found.name, found.package]
+        .into_iter()
+        .find(|words| !words.is_empty())
+}
+
+/// Whether the desk's switch says it shows the style listed `label`: its words are the style's,
+/// with the sentence its own language puts them in around them.
+fn switch_says(session: &Session, label: &str) -> bool {
+    session.accessible_labels().into_iter().any(|words| {
+        words != label && words.ends_with(label) && on_screen(session, &words).is_some()
+    })
+}
+
+/// Show the style `style` (`so.tilo.shell:frames`) on the desk, as the bar's switch does: the
+/// shell's own `show_style` action, which every row of its menu runs, named by the style's id
+/// rather than by the words the person's language gives it.
+pub fn show_preset(session: &mut Session, style: &str) {
+    // The desk's own words for it, read from the styles it lists: what its switch names the style
+    // by, in whatever language the person reads.
+    let label = wait_for(
         session,
-        format!("the desk to show the {preset} preset"),
-        |session| {
-            if preset_menu(session).as_deref() == Some(shown.as_str()) {
-                return Some(());
-            }
-            if since < 4 {
-                since = since.saturating_add(1);
-                return None;
-            }
-            if on_screen(session, preset).is_some() {
-                press(session, preset);
-            } else if let Some(menu) = preset_menu(session) {
-                press(session, &menu);
-            }
-            since = 0;
-            None
-        },
+        format!("the desk to list the {style} style"),
+        |session| style_label(session, style),
     );
+    // A session whose shell has no display runs no action of it: the bar that names the style is
+    // drawn before the style is asked for.
+    wait_for(session, "the shell to draw", |session| {
+        (!session.shell_parts().is_empty()).then_some(())
+    });
+    // A desk already showing it says so, and refuses to show it again in the person's language:
+    // what the switch names decides it.
+    if !switch_says(session, &label) {
+        session
+            .run_shell_action("show_style", vec![Value::from(style)])
+            .unwrap_or_else(|why| panic!("the desk shows {style}: {why}"));
+    }
+    wait_for(session, format!("the desk to show {style}"), |session| {
+        switch_says(session, &label).then_some(())
+    });
 }
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
@@ -666,10 +679,9 @@ pub fn seeded_session_at(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    show_preset(&mut session, "Frames");
-    until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
-    });
+    // The desk shows the Frames canvas once its switch says so: what the canvas's own controls
+    // are called is the person's language's, so a fixture reads the style, not their words.
+    show_preset(&mut session, "so.tilo.shell:frames");
     session
 }
 

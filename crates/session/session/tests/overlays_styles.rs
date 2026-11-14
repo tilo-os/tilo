@@ -151,26 +151,24 @@ fn type_text(session: &mut Session, text: &str) {
     }
 }
 
-/// Show the style `style` (`strips`, `frames`, `spaces`, `desktop`), the way a person does: the
-/// three canvas presets through the bar's own switch (`show_preset`), and the desktop through the
-/// chrome's `apply(windows_desktop)` preset, which draws the traditional desktop. Frames until the
-/// desk has drawn it and placed its bar.
+/// Show the style `style` (`strips`, `frames`, `spaces`, `desktop`), as the bar's switch does: the
+/// three canvas styles through the shell's own `show_style` (`show_preset`), and the desktop through
+/// the chrome's `apply(windows_desktop)` preset, which draws the traditional desktop. Frames until
+/// the desk has drawn it and placed its bar.
 fn show_style(session: &mut Session, style: &str) {
     if style == "desktop" {
         session
-            .run_shell_setting("apply", vec![Value::from("windows_desktop")])
+            .run_shell_action("apply", vec![Value::from("windows_desktop")])
             .unwrap_or_else(|why| panic!("the desk shows {style}: {why}"));
         until(session, |session| {
             crate::common::preset_menu(session).is_none()
         });
     } else {
-        let label = match style {
-            "strips" => "Strips",
-            "frames" => "Frames",
-            "spaces" => "Spaces",
+        let named = match style {
+            "strips" | "frames" | "spaces" => format!("so.tilo.shell:{style}"),
             other => panic!("no such style {other}"),
         };
-        crate::common::show_preset(session, label);
+        crate::common::show_preset(session, &named);
     }
     // Frames for the new style's views to run and place their controls.
     for _ in 0..30 {

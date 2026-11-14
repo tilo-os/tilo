@@ -51,8 +51,9 @@ fn apps_at(home: &tilo_test_env::TestHome, launcher: PathBuf) -> Rc<Apps> {
     Rc::new(Apps::with_launcher(environment, None, Some(launcher)))
 }
 
-/// A session showing `preset`, its apps started through `launcher`.
-fn session(preset: &str, apps: &Rc<Apps>) -> Session {
+/// A session showing the desk style `style` (`so.tilo.shell:strips`), its apps started through
+/// `launcher`.
+fn session(style: &str, apps: &Rc<Apps>) -> Session {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -70,7 +71,7 @@ fn session(preset: &str, apps: &Rc<Apps>) -> Session {
         )],
     )
     .expect("a session");
-    crate::common::show_preset(&mut session, preset);
+    crate::common::show_preset(&mut session, style);
     session
 }
 
@@ -83,7 +84,7 @@ fn an_opened_app_is_handed_to_the_launcher() {
     let handed = home.home().join("handed");
     let launcher = launcher_recording(&home, &handed);
     let apps = apps_at(&home, launcher.path().to_owned());
-    let mut session = session("Strips", &apps);
+    let mut session = session("so.tilo.shell:strips", &apps);
 
     apps.open(&tilo_app_launch::Launch::Package {
         app: NOTES.to_owned(),

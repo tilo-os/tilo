@@ -59,7 +59,7 @@ fn note_ids(session: &Session) -> Vec<String> {
 fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
     if preset == "Desktop" {
         session
-            .run_shell_setting("apply", vec![Value::from("windows_desktop")])
+            .run_shell_action("apply", vec![Value::from("windows_desktop")])
             .unwrap_or_else(|why| panic!("the desk shows {preset}: {why}"));
     } else {
         let mut repl = Repl::connect(&root.join("agent.sock"));

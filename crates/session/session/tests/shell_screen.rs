@@ -2,8 +2,8 @@
 //! arrangement root stands over every display, its bar, its dock and the person's arrangement as
 //! their preset shows it, every window drawn in its place's well.
 //! A note goes onto the canvas through the arrangement's published `place` , as an agent puts it
-//! there. The preset changes through the shell's own `show_preset` , which the preset switch over
-//! the arrangement runs. What stands on screen is read from what the shell lays out for assistive
+//! there. The style changes through the shell's own `show_style`, which every row of the bar's
+//! switch runs. What stands on screen is read from what the shell lays out for assistive
 //! technology, never from pixels.
 
 #![cfg(target_os = "linux")]
@@ -125,7 +125,7 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
         on_screen(&session, CANVAS_ENTRY).is_none(),
         "the strips stand first, not the canvas"
     );
-    show_preset(&mut session, "Frames");
+    show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });
@@ -340,7 +340,7 @@ fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_scree
             );
         }
         // The framed canvas: the switch and the canvas's entry stand apart too.
-        show_preset(&mut session, "Frames");
+        show_preset(&mut session, "so.tilo.shell:frames");
         until(&mut session, "the canvas's entry", |session| {
             within(session, CANVAS_ENTRY, width, height).is_some()
         });
@@ -930,7 +930,7 @@ fn an_app_the_desk_opens_stands_on_the_framed_canvas() {
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
-    show_preset(&mut session, "Frames");
+    show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas's entry", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });
@@ -1127,7 +1127,7 @@ fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
     });
-    show_preset(&mut session, "Frames");
+    show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });

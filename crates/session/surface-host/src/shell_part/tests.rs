@@ -1313,7 +1313,7 @@ fn the_bars_people_stay_who_is_here_across_a_commit() {
         }
         // The bar's body is set: a commit of the shell's own record, as pressing the setting
         // in the shell's settings does.
-        part.run_setting(
+        part.run_action(
             "set_bar_finish",
             vec![serde_json::json!(if count == 1 {
                 "translucent"
@@ -1504,7 +1504,7 @@ fn the_desks_preset_reaches_the_screen() {
         "the desk shows the strips: {labels:?}"
     );
 
-    part.run_setting("apply", vec![serde_json::json!("windows_desktop")])
+    part.run_action("apply", vec![serde_json::json!("windows_desktop")])
         .unwrap_or_else(|why| panic!("apply: {why}"));
     for _ in 0..6 {
         part.prepare_frame();

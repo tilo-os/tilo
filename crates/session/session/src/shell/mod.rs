@@ -775,13 +775,14 @@ impl Shell {
         });
     }
 
-    /// Run `setting` of the shell's own record, as its settings' controls do.
-    pub(crate) fn run_setting(&self, setting: &str, arguments: Vec<Value>) -> Result<(), String> {
+    /// Run the shell's action `action` with `arguments`, as pressing its control in the shell's
+    /// own views does.
+    pub(crate) fn run_action(&self, action: &str, arguments: Vec<Value>) -> Result<(), String> {
         let (_, part) = self
             .parts
             .first()
             .ok_or_else(|| "the shell has no display".to_owned())?;
-        part.borrow_mut().run_setting(setting, arguments)
+        part.borrow_mut().run_action(action, arguments)
     }
 
     /// How much work the shell did since the session started, over every display: its view turns
@@ -1635,18 +1636,19 @@ impl crate::Session {
         self.shell.as_ref().map(Shell::parts).unwrap_or_default()
     }
 
-    /// Run `setting` of the shell's own record with `arguments`, as pressing its control in
-    /// the shell's settings does: `set_bar_finish` with `["translucent"]` makes the bar the
-    /// theme's glass and `["solid"]` its calm ground, and `apply` takes a whole preset.
+    /// Run the shell's action `action` with `arguments`, as pressing its control in the shell's
+    /// own views does: `set_bar_finish` with `["translucent"]` makes the bar the theme's glass
+    /// and `["solid"]` its calm ground, `apply` takes a whole preset, and `show_style` shows the
+    /// desk through the style it names (`"so.tilo.shell:frames"`).
     ///
     /// # Errors
-    /// The shell does not run, it declares no such setting, an argument does not hold the
-    /// type the setting declares, or the setting refused.
-    pub fn run_shell_setting(&self, setting: &str, arguments: Vec<Value>) -> Result<(), String> {
+    /// The shell does not run, it declares no such action, an argument does not hold the type
+    /// the action declares, or the action refused.
+    pub fn run_shell_action(&self, action: &str, arguments: Vec<Value>) -> Result<(), String> {
         self.shell
             .as_ref()
             .ok_or_else(|| "the shell does not run".to_owned())?
-            .run_setting(setting, arguments)
+            .run_action(action, arguments)
     }
 }
 

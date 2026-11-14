@@ -371,7 +371,7 @@ fn a_bar_flush_with_the_display_paints_its_edges_its_own_colour() {
     until(&mut session, |session| !session.shell_parts().is_empty());
     // The translucent style is where the glass rim shows.
     session
-        .run_shell_setting("set_bar_finish", vec![serde_json::json!("translucent")])
+        .run_shell_action("set_bar_finish", vec![serde_json::json!("translucent")])
         .expect("the bar takes the theme's glass");
     for _ in 0..120 {
         session.settle_services();

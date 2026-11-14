@@ -2557,7 +2557,7 @@ fn the_bar_draws_the_material_of_the_style_the_person_chose() {
     settle(&mut session);
     let calm = keep(&mut session, "shell-bar-calm");
     session
-        .run_shell_setting("set_bar_finish", vec![serde_json::json!("translucent")])
+        .run_shell_action("set_bar_finish", vec![serde_json::json!("translucent")])
         .expect("the bar takes the theme's glass");
     settle(&mut session);
     let glass = keep(&mut session, "shell-bar-glass");
@@ -2583,7 +2583,7 @@ fn the_bar_draws_the_material_of_the_style_the_person_chose() {
         "the desk under the bar is the same in both styles: one view, not two"
     );
     session
-        .run_shell_setting("set_bar_finish", vec![serde_json::json!("solid")])
+        .run_shell_action("set_bar_finish", vec![serde_json::json!("solid")])
         .expect("and back to the calm ground");
     settle(&mut session);
     let back = keep(&mut session, "shell-bar-calm-again");
@@ -2725,7 +2725,7 @@ fn the_bar_draws_inside_every_width_style_and_appearance() {
                         "solid"
                     };
                     session
-                        .run_shell_setting("set_bar_finish", vec![serde_json::json!(finish)])
+                        .run_shell_action("set_bar_finish", vec![serde_json::json!(finish)])
                         .expect("the bar takes the style");
                     settle(&mut session);
                     let shot = keep(

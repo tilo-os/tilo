@@ -122,7 +122,7 @@ fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (S
         &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("session");
-    crate::common::show_preset(&mut session, "Frames");
+    crate::common::show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });

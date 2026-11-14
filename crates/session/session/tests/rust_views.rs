@@ -124,7 +124,7 @@ fn session(root: &std::path::Path) -> Session {
             ..Options::default()
         },
     );
-    crate::common::show_preset(&mut session, "Frames");
+    crate::common::show_preset(&mut session, "so.tilo.shell:frames");
     crate::common::until(&mut session, "the canvas", |session| {
         crate::common::on_screen(session, crate::common::CANVAS_ENTRY).is_some()
     });

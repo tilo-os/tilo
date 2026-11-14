@@ -48,7 +48,7 @@ fn the_session_writes_its_file_access_list_for_the_files_daemon() {
     // A desk change that grants nothing new does not rewrite the list: the daemon signs every list
     // it reads into a new revision.
     let before = std::fs::read(&acl).unwrap();
-    crate::common::show_preset(&mut session, "Frames");
+    crate::common::show_preset(&mut session, "so.tilo.shell:frames");
     for _ in 0..5 {
         session.step(Duration::from_millis(1)).unwrap();
     }

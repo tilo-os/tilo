@@ -62,7 +62,7 @@ fn session(root: &std::path::Path) -> Session {
         )],
     )
     .expect("session");
-    crate::common::show_preset(&mut session, "Frames");
+    crate::common::show_preset(&mut session, "so.tilo.shell:frames");
     crate::common::until(&mut session, "the canvas", |session| {
         crate::common::on_screen(session, crate::common::CANVAS_ENTRY).is_some()
     });
@@ -493,7 +493,7 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     // against the point it was let go at, so it turns the grid off — what the person's own
     // "Snap places to a grid" toggle does — and the place then stands at that exact point.
     session
-        .run_shell_setting("set_frames_snap", vec![serde_json::json!(false)])
+        .run_shell_action("set_frames_snap", vec![serde_json::json!(false)])
         .expect("the Frames grid turns off");
     crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(SHARED)

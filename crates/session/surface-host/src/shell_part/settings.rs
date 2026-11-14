@@ -1,24 +1,24 @@
-//! The shell's own settings, run from the session: the bar's material, its finish and the
-//! rest of the `Shell` record's choices, as pressing their controls in the shell's settings
-//! does.
+//! The shell's own actions, run from the session: the desk style it shows, the bar's material,
+//! its finish and the rest of its records' choices, as pressing their controls in its views does.
 
 use std::collections::BTreeMap;
 
 use serde_json::Value as Json;
 use tilolang_tilo::runtime::Value;
+use tilolang_tilo::runtime::meta::NamedRootMeta;
 
-use super::{SHELL_RECORD, ShellPart};
+use super::ShellPart;
 
 impl ShellPart {
-    /// Run `setting` of the shell's own record (`root shell: Shell`) with `arguments`, as
-    /// pressing its control in the shell's settings does: a choice of the record takes the
-    /// name of its case (`set_bar_finish` with `["translucent"]`), the rest the JSON a
-    /// reading writes.
+    /// Run the shell's action `action` with `arguments`, as pressing its control in the shell's
+    /// views does: the action's record comes first, the record a root of the shell's package is
+    /// (`root shell: Shell`, `root viewing: Viewing`), and a choice of that record takes the name
+    /// of its case (`set_bar_finish` with `["translucent"]`), the rest the JSON a reading writes.
     ///
     /// # Errors
-    /// The part's package does not run, it declares no such setting, an argument does not
-    /// hold the type the setting declares, or the setting refused.
-    pub fn run_setting(&mut self, setting: &str, arguments: Vec<Json>) -> Result<(), String> {
+    /// The part's package does not run, it declares no such action, the action's record is not
+    /// made, an argument does not hold the type the action declares, or the action refused.
+    pub fn run_action(&mut self, action: &str, arguments: Vec<Json>) -> Result<(), String> {
         let host = self
             .instance
             .host()
@@ -28,20 +28,30 @@ impl ShellPart {
             .package(&app)
             .ok_or_else(|| format!("`{app}` has no package"))?;
         let meta = &package.meta;
-        let root = meta
-            .named_roots
-            .iter()
-            .find(|root| root.name == SHELL_RECORD)
-            .ok_or_else(|| format!("`{app}` declares no `{SHELL_RECORD}` record"))?;
-        let record = host
-            .root_record(&app, &root.ty)
-            .map_err(|error| format!("the shell's record is not made: {error:?}"))?;
         let declared = meta
             .actions
             .iter()
-            .find(|declared| declared.name == setting)
-            .ok_or_else(|| format!("`{app}` declares no `{setting}`"))?;
-        // The record the setting changes comes first, as the settings' own presses run it.
+            .find(|declared| declared.name == action)
+            .ok_or_else(|| format!("`{app}` declares no `{action}`"))?;
+        // The record the action changes is its first parameter's, and comes first as its own
+        // presses pass it. A parameter names its type as it is written, and a root by the id its
+        // type is declared under, so the type is read between them.
+        let root = declared
+            .params
+            .first()
+            .and_then(
+                |param| match tilolang_tilo::runtime::meta::parse_ty(&param.ty, &meta.app) {
+                    Ok(tilolang_tilo::runtime::meta::Ty::Record(key)) => meta
+                        .named_roots
+                        .iter()
+                        .find(|root| Self::root_type(meta, root) == key.name.as_str()),
+                    _ => None,
+                },
+            )
+            .ok_or_else(|| format!("`{app}` declares no record `{action}` acts on"))?;
+        let record = host
+            .root_record(&app, &root.ty)
+            .map_err(|error| format!("the shell's `{}` is not made: {error:?}", root.name))?;
         let mut values = vec![Value::resource(&record)];
         for (param, argument) in declared.params.iter().skip(1).zip(arguments) {
             values.push(Self::case_value(meta, &param.ty, &argument)?);
@@ -54,15 +64,15 @@ impl ShellPart {
         match outcome {
             tilolang_tilo::runtime::InvokeOutcome::Done(_) => {}
             tilolang_tilo::runtime::InvokeOutcome::Suggested(_) => {
-                return Err(format!("`{setting}` waits for a person's approval"));
+                return Err(format!("`{action}` waits for a person's approval"));
             }
             tilolang_tilo::runtime::InvokeOutcome::Denied => {
-                return Err(format!("`{setting}` is not allowed"));
+                return Err(format!("`{action}` is not allowed"));
             }
         }
         // The runtime committed the record's change under a ticket: the part applies it to the
         // record its views read, as it does a change a press in the shell made, so the next
-        // turn draws the shell as the setting left it. The tickets are taken here rather than
+        // turn draws the shell as the action left it. The tickets are taken here rather than
         // handed to the part's door, since the door's queue is what a press of the shell's own
         // views answers, and the part answers nothing on the person's behalf outside it.
         self.apply_committed(&host, first);
@@ -71,7 +81,7 @@ impl ShellPart {
     }
 
     /// Apply everything the runtime committed since the part last took it — a test's own
-    /// invocations, which no setting ran — to the record this part's views read, as a press in
+    /// invocations, which no action ran — to the record this part's views read, as a press in
     /// the shell's views has the part apply what it committed.
     #[cfg(test)]
     pub fn apply_committed_for_test(&mut self) {
@@ -94,7 +104,7 @@ impl ShellPart {
             };
             match result {
                 Ok(()) => applied = true,
-                Err(why) => tracing::error!(why, "a shell setting could not be applied"),
+                Err(why) => tracing::error!(why, "a shell action's change could not be applied"),
             }
         }
         if !applied {
@@ -105,6 +115,18 @@ impl ShellPart {
         // committed, since both write the record the parts share.
         self.record.borrow_mut().commit();
         self.work.committing = self.work.committing.saturating_add(at.elapsed());
+    }
+
+    /// The name of the type the root `root` of `meta` is made of: the type it is declared under,
+    /// or the id its root names when the package declares no such type.
+    fn root_type<'a>(
+        meta: &'a tilolang_tilo::tilolang::PackageMeta,
+        root: &'a NamedRootMeta,
+    ) -> &'a str {
+        meta.types
+            .iter()
+            .find(|ty| ty.id == root.ty)
+            .map_or(root.ty.as_str(), |ty| ty.name.as_str())
     }
 
     /// `argument` as an argument of a parameter of type `ty`: a choice takes the name of its

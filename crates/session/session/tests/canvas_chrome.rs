@@ -46,7 +46,7 @@ fn session(root: &std::path::Path) -> Session {
         agent_door: Some(root.join("agent.sock")),
         ..Options::default()
     });
-    show_preset(&mut session, "Frames");
+    show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });

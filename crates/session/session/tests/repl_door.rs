@@ -143,7 +143,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     reading_an_action_says_how_it_is_called(session, repl);
 
     // The framed canvas, as the person shows it.
-    show_preset(session, "Frames");
+    show_preset(session, "so.tilo.shell:frames");
     until(session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });
@@ -439,9 +439,18 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
     // The apps come from the run's store, which the session reads as a device reads its own.
     let root = private_home();
     let mut session = seeded_session(root.path());
-    until(&mut session, "the notebook's German label", |session| {
-        !labelled(session, "Notizen").is_empty()
+    let mut said = Vec::new();
+    let german = crate::common::wait_maybe(&mut session, |session| {
+        said = everything(session)
+            .into_iter()
+            .map(|resource| resource.label)
+            .collect();
+        (!labelled(session, "Notizen").is_empty()).then_some(())
     });
+    assert!(
+        german.is_some(),
+        "the notebook is labelled in German: {said:?}"
+    );
     let nouns: Vec<tilo_actions::Noun> = everything(&session)
         .into_iter()
         .filter_map(|resource| resource.resource_type.map(|kind| kind.noun))
@@ -625,7 +634,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         admit_repl: vec![program],
         ..Options::default()
     });
-    show_preset(&mut session, "Frames");
+    show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });
@@ -700,7 +709,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
         admit_repl: vec![program],
         ..Options::default()
     });
-    show_preset(&mut session, "Frames");
+    show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });
@@ -1097,7 +1106,7 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
         admit_repl: vec![program],
         ..Options::default()
     });
-    show_preset(&mut session, "Frames");
+    show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });
@@ -1181,7 +1190,7 @@ fn the_repl_finds_what_place_found_places() {
         admit_repl: vec![program],
         ..Options::default()
     });
-    show_preset(&mut session, "Frames");
+    show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });
