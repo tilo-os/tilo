@@ -13,6 +13,52 @@ tilo files put ./contracts -w jane-doe --to docs   # docs/contracts/…, the fol
 The upload puts the bytes in the workspace and writes the file into the tree, at the folder `--to` names,
 under the names they have here. The same name put again takes the new content, as a copy over a file does.
 
+## Your workspace's folder on your computer
+
+`tilo login` makes the computer one of your devices and gives the workspace a folder in your home, named
+after it: `~/Acme` for a workspace called Acme. It is cloud storage with history built in. Files show
+up at once and download when opened; copy a tree in and it syncs:
+
+```sh
+tilo login K7Q-MX2P            # …"Its files are in /home/ada/Acme, kept in sync both ways"
+cp -r ~/Documents/contracts ~/Acme/
+echo "- call the notary" >> ~/Acme/todo.md
+```
+
+A small service (a systemd user unit; `tilo folders stop` stops it, and `tilo status` says how it
+stands) keeps the folders mounted: the same filesystem Tilo mounts at `/var/workspace`, synced through
+the workspace's host like everything else. On a computer without FUSE the folder is a plain one synced
+both ways.
+
+`tilo folders` manages them:
+
+| Command | Does |
+| :--- | :--- |
+| `tilo folders` | each folder, whether it is in sync, and how much of it is on this computer |
+| `tilo folders add "Book club" [path]` | gives another of your workspaces a folder here |
+| `tilo folders remove Acme` | removes the folder from this computer; the files stay in the workspace |
+| `tilo folders move Acme ~/work/acme` | shows it somewhere else |
+| `tilo folders pause Acme` / `resume Acme` | stops syncing for a while; changes made here wait |
+| `tilo folders keep ~/Acme/contracts` | keeps files on this computer, to open offline |
+| `tilo folders free ~/Acme/videos` | frees their space; they come back when opened |
+| `tilo folders auto --joined on` | gives workspaces you join a folder too (your own get one by default) |
+
+Every command takes `--json`. A member who may only read the workspace gets a read-only folder.
+
+## Who wrote it
+
+Every change in the folder is named for who made it, the same way on Tilo and on any other computer:
+
+- an agent session, such as Claude Code or Codex, by the session's title (never your prompts): Claude
+  Code's own edits, and the commands it runs;
+- a Tilo app, by its name;
+- another program, by its desktop entry's name;
+- otherwise you, at that device.
+
+Your device vouches for the label: the change is signed by the device, for you, and coworkers see which
+device said so. A program can read the same from the file itself: its `user.tilo.history` attribute lists
+each version with who wrote it.
+
 ## Upload once, name it by its hash
 
 An upload answers a reference that starts `tilo.content:` — for bytes you upload, the hash of those bytes:

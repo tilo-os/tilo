@@ -320,6 +320,12 @@ files folder, the one synced between its devices and collaborators
 (`/var/workspace` on a Tilo Linux session); for any other workspace `W`, its
 tree in that folder, `/var/workspace/.workspaces/W`
 ([`tilo_paths::workspace_tree`](../../crates/platform/tilo-paths/src/lib.rs)).
+That folder is the workspace's one folder: the same tree the Files app shows
+on the workspace's page and `tilo login` mounts at `~/<workspace>` on any
+other computer, served by the same filesystem (`crates/system/fs`, QuickFS)
+and synced the same way. A write to it from a shell here is named for who
+made it like any other: the person, an agent session whose commands it runs,
+an app ([`tilo_fs::writer`](../../crates/system/fs/src/writer.rs)).
 The filesystem daemon serves one namespace per device, and its access checks
 (`FsPath` grants, scoped by path prefix) cover each tree as they cover any
 folder. It is not a directory per environment: every environment of the
