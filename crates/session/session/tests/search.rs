@@ -1013,9 +1013,10 @@ fn open_search(session: &Session) -> Option<ResourceSpec> {
     find(&session.resources(), SEARCH_RESOURCE)
 }
 
-/// Whether the desk publishes the open search as over: no source has still to answer for the query
-/// and its rows are cut to the card. The search says it is still searching in its detail until
-/// then.
+/// Whether the desk publishes the open search as over: the rows it shows are the search's answer
+/// for the query, cut to the card. A source that answers after the frame that typed still owes
+/// rows then ([`tilo_desktop_surface::DesktopHandle::search_expecting`]), so this says the search
+/// has stopped filling in, not that every source has answered.
 fn search_settled(search: &ResourceSpec) -> bool {
     search
         .presentation
@@ -1024,10 +1025,18 @@ fn search_settled(search: &ResourceSpec) -> bool {
         .is_none()
 }
 
-/// Step until the open search is over: it names `query` when one is given,
-/// and is no longer filling in.
+/// Step until the open search is over: it names `query` when one is given, every source that owes
+/// a row has answered, and it is no longer filling in.
+///
+/// The desk shows each source's rows when it answers, so a search that has rows is not yet a
+/// search that has *every* row: the first frame holds the sources that answer on the frame, and
+/// the rest arrive from the workers after it. What waits here waits for the rows still expected,
+/// not only for the rows already shown.
 fn await_search(session: &mut Session, query: Option<&str>) {
     let over = crate::common::wait_maybe(session, |session| {
+        if session.handle().search_expecting() {
+            return None;
+        }
         open_search(session)
             .is_some_and(|search| {
                 search_settled(&search) && query.is_none_or(|query| search.label == query)
