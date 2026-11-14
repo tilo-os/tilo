@@ -1553,3 +1553,139 @@ fn the_page_of_a_window_nobody_shared_reaches_nobody_who_asks_for_it() {
         watcher.texts(tab)
     );
 }
+
+/// Whether `session`'s desk names the share of the window in `tab` in its workspace's governance.
+fn names_the_share(session: &Session, tab: u64) -> bool {
+    session.handle().read(|tree| {
+        tree.workspaces[0]
+            .policy
+            .grants
+            .iter()
+            .any(|grant| is_of_share(grant, &window_share_id(tab)))
+    })
+}
+
+/// A window's page shared a second time is drawn on the watching desk again. The order is the one
+/// two machines took: the window is shared and drawn there, its share is stopped, the tab that
+/// lists the window says it is not shared, and the window is shared again. The second share is
+/// announced in the very bytes of the first, and the watching desk takes that announcement as it
+/// took the first: it asks the plane for the page again and draws it. Between two machines the
+/// second announcement was dropped on its way as a copy of the first, which is the network's to
+/// carry and is tested there; here the test carries what the devices say to each other, so this is
+/// what the shares do with a second announcement that arrives.
+#[test]
+fn a_page_shared_again_after_its_share_stopped_is_drawn_again() {
+    const HOST: u8 = 0xe2;
+    let mut two = Two::sharing([HOST, 0xe3]);
+    let tab = two.tab;
+    let host_key = hex::encode(device(HOST).as_bytes());
+    let drawn = |two: &Two| {
+        two.tile()
+            .is_some_and(|tile| tile.page && tile.standing == Standing::Pictured)
+            && two
+                .received()
+                .is_some_and(|stream| stream["pictured"] == true)
+            && two
+                .shared()
+                .is_some_and(|shared| shared["streaming"] == true)
+    };
+    // How the watching desk's reading says the window stands while nothing of it is shown.
+    let stands = |two: &Two| -> Option<String> {
+        let wanted = two.tab.to_string();
+        rows(&shares(&two.viewer.session), "hosted")
+            .iter()
+            .find(|hosted| hosted["tab"].as_str() == Some(wanted.as_str()))
+            .and_then(|hosted| hosted["standing"].as_str().map(str::to_owned))
+    };
+
+    // Shared, shown and drawn.
+    assert!(
+        two.within(LINK, true, drawn),
+        "the page was not drawn on the watching desk the first time it was shared:{}",
+        two.said()
+    );
+    let first = two.received().expect("the first share's announcement");
+
+    // Stopped: the sharing device names no share, and the watching desk, once the workspace's
+    // governance says so there too, holds nothing of the window, asks the plane for nothing and
+    // says in the window's tab that it is not shared.
+    two.host
+        .session
+        .invoke(
+            SHARES_RESOURCE,
+            "stop",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the share is stopped");
+    assert!(
+        two.within(LINK, false, |two| {
+            two.shared().is_none() && !names_the_share(&two.host.session, two.tab)
+        }),
+        "the sharing device still names the share it stopped:{}",
+        two.said()
+    );
+    carry_governance(&two.host.session, &two.viewer.session);
+    assert!(
+        two.within(LINK, false, |two| {
+            // A device in a workspace goes on saying who it is; one that fell silent is forgotten.
+            heard(&two.viewer, HOST, "Framework");
+            two.received().is_none()
+                && two.asked().is_empty()
+                && stands(two).as_deref() == Some("not-shared")
+        }),
+        "the watching desk does not say the window is not shared once its share ended: it reads \
+         {:?} and asks the plane for {:?}:{}",
+        stands(&two),
+        two.asked(),
+        two.said()
+    );
+    assert!(
+        two.viewer.session.handle().peer_surface_tabs().is_empty(),
+        "no tile of the share that ended is left on the watching desk"
+    );
+    assert_eq!(
+        hosted(&two.viewer.session, tab).as_deref(),
+        Some(host_key.as_str()),
+        "the watching desk still lists the window as one that runs on its host"
+    );
+
+    // Shared again: announced as it was the first time, asked for as its page, and drawn.
+    share(&mut two.host, APP, tab);
+    assert!(
+        two.within(LINK, false, |two| {
+            two.shared().is_some() && names_the_share(&two.host.session, two.tab)
+        }),
+        "the window was not shared a second time:{}",
+        two.said()
+    );
+    carry_governance(&two.host.session, &two.viewer.session);
+    assert!(
+        two.within(LINK, false, |two| {
+            heard(&two.viewer, HOST, "Framework");
+            two.received()
+                .is_some_and(|stream| stream["codec"].as_str() == Some(CODEC))
+                && two.asked() == [Track::Page(two.tab)]
+        }),
+        "the second share's page was not announced to the watching device, or it does not ask \
+         the plane for it: it asks for {:?}:{}",
+        two.asked(),
+        two.said()
+    );
+    let second = two.received().expect("the second share's announcement");
+    for said in ["surface", "from", "app_id", "width", "height", "codec"] {
+        assert_eq!(
+            first[said], second[said],
+            "the second share is announced as the first was"
+        );
+    }
+    assert!(
+        two.within(LINK, true, drawn),
+        "the page shared a second time was not drawn on the watching desk:{}",
+        two.said()
+    );
+    assert_eq!(
+        two.viewer.session.handle().peer_surface_tabs(),
+        vec![tab],
+        "the page is drawn in the tab the desk lists the window in"
+    );
+}
