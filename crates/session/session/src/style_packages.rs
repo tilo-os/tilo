@@ -454,8 +454,9 @@ fn write_copy(dir: &Path, view: &ShippedView) -> Result<(), String> {
     Ok(())
 }
 
-/// The source of the person's style package: its `app` header, its use of the shell, and the one
-/// view, named after the shipped style's own.
+/// The source of the person's style package: its `app` header, its use of the shell and of the
+/// device the shell's template reads (`use so.tilo.device as device`, as the shell's own files
+/// have it), and the one view, named after the shipped style's own.
 fn style_source(view: &ShippedView) -> String {
     format!(
         "app {COPY_ID} \"{COPY_TITLE}\"\n\
@@ -463,6 +464,7 @@ fn style_source(view: &ShippedView) -> String {
          // Make it mine: the shipped `{package}:{name}` as the person's own style. Edit it, then\n\
          // install it: the desk draws what this file says.\n\
          use {package} as shell\n\
+         use so.tilo.device as device\n\
          \n\
          /// {line}\n\
          view {name}(a: shell.Arrangement) {{\n\
