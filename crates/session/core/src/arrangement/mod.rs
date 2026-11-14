@@ -945,7 +945,7 @@ impl Arrangement {
         // note is the person's to make.
         // At a click its width is its own, as far as the room to the edge of what the person sees
         // allows: it stands at the point, in view (canvas.md §7, "Everything stays in view").
-        let (width, height) = size.unwrap_or((width_in_view(at.0, DEFAULT_WIDTH, seen), 0));
+        let (width, height) = size.unwrap_or_else(|| (width_in_view(at.0, DEFAULT_WIDTH, seen), 0));
         let surface = self.surface_at_strip(strip)?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
