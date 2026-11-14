@@ -355,7 +355,7 @@ fn came_from(session: &Session, name: &str) -> Vec<CameFrom> {
     let said = |agent: &Value, field: &str| agent[field].as_str().unwrap_or_default().to_owned();
     let mut from: Vec<CameFrom> = agent_sessions(session)
         .into_iter()
-        .filter(|agent| agent["seat"] == true && agent["name"] == name)
+        .filter(|agent| agent["stoppable"] == true && agent["name"] == name)
         .map(|agent| (said(&agent, "device"), said(&agent, "device_name")))
         .collect();
     from.sort();
