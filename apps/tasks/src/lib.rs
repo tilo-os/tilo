@@ -28,6 +28,7 @@ pub const APP_TITLE: &str = "Tasks";
 
 mod board;
 mod filter;
+mod import_inbox;
 mod issue;
 mod list;
 pub mod locales;
@@ -138,6 +139,11 @@ impl ResourceApp for App {
         (1240, 780)
     }
 
+    /// Issues a migration brought from Linear join the tracker when it opens.
+    fn import_record(context: &ui::application::HostContext) -> Result<(), String> {
+        crate::import_inbox::import(context)
+    }
+
     #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         sample::SCENARIOS
@@ -147,8 +153,12 @@ impl ResourceApp for App {
     /// the tracker it reached as the record's start, and its views after.
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut ui::framework::Fixture<Tracker>) {
-        if fixture.scenario().is_some() {
-            fixture.start(sample::tracker(fixture.person()));
+        match fixture.scenario() {
+            Some("migrated" | "migrated-issue") => {
+                fixture.start(sample::migrated(fixture.person()));
+            }
+            Some(_) => fixture.start(sample::tracker(fixture.person())),
+            None => {}
         }
     }
 

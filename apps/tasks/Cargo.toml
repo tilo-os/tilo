@@ -23,6 +23,9 @@ samples = []
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 serde_json.workspace = true
+# The import inbox a migration leaves in the app's data area, and the record it adds to.
+automerge.workspace = true
+tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The record the app draws: its types, verbs and typed action arguments,

@@ -16858,6 +16858,8 @@ dependencies = [
  "tasks",
  "tasks-model",
  "tilo-app",
+ "tilo-automerge-fork",
+ "tilo-files",
  "tilo-rich-text",
  "tilo-test-env",
  "workspace-hack",
