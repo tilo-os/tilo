@@ -39,13 +39,7 @@ pub(crate) struct Kept {
     pub model: Option<String>,
 }
 
-/// An agent a workspace's record lists, as a box that sends a message addresses it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Listed {
-    pub workspace: String,
-    pub id: String,
-    pub name: String,
-}
+pub(crate) use crate::search::ListedAgent as Listed;
 
 /// Who keeps each of the workspaces' agents, and what each may spend today,
 /// as the pass read their records.

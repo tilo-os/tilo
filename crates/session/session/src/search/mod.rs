@@ -257,7 +257,7 @@ pub struct SessionSearch {
     #[cfg(target_os = "linux")]
     agents: RefCell<Option<Vec<crate::agents::Kept>>>,
     /// Every agent each workspace's record lists, whoever keeps it: whom a message can go to.
-    listed_agents: RefCell<Vec<crate::agents::Listed>>,
+    listed_agents: RefCell<Vec<ListedAgent>>,
     /// How often who is here or what the agents' records list moved: what a box that reads whom a
     /// message can go to is told again for.
     recipients_moved: Cell<u64>,
@@ -486,7 +486,7 @@ impl SessionSearch {
 
     /// Record every agent each workspace's record lists, whoever keeps it: what a box that sends
     /// a message addresses besides the people present and what the apps published.
-    pub(crate) fn set_listed_agents(&self, agents: &[crate::agents::Listed]) {
+    pub(crate) fn set_listed_agents(&self, agents: &[ListedAgent]) {
         if *self.listed_agents.borrow() == agents {
             return;
         }
@@ -2523,4 +2523,12 @@ mod tests {
             "the one index also answers the search over everything"
         );
     }
+}
+
+/// An agent a workspace's record lists, as a box that sends a message addresses it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ListedAgent {
+    pub workspace: String,
+    pub id: String,
+    pub name: String,
 }
