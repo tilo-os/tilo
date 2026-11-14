@@ -1448,7 +1448,7 @@ fn a_window_groups_new_tab_lists_the_applications_and_opens_the_one_chosen_there
     let (strip, group, tabs) = before[0];
     let plus = shell.new_tab_control();
     shell.driver.click_at(plus.x, plus.y);
-    shell.settle();
+    shell.settle_search();
     assert!(shell.handle.search_open());
     assert!(
         host.scopes.borrow().is_empty(),
@@ -1493,7 +1493,9 @@ fn search_over_the_workspace_asks_the_host_and_opens_an_app_as_its_own_window() 
     shell
         .handle
         .open_search(Scope::Workspace, Some("quarterly".into()));
-    shell.settle();
+    // A source answers on a worker: the rows are the search's once each has
+    // answered, not four frames in.
+    shell.settle_search();
     assert_eq!(*host.scopes.borrow(), [Scope::Workspace]);
     let (_, rows) = shell.handle.search_rows();
     assert!(
@@ -1504,7 +1506,7 @@ fn search_over_the_workspace_asks_the_host_and_opens_an_app_as_its_own_window() 
     shell
         .handle
         .open_search(Scope::Workspace, Some("notes".into()));
-    shell.settle();
+    shell.settle_search();
     shell.key_search(NamedKey::Enter);
     assert_eq!(
         *host.scopes.borrow(),
