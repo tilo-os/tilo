@@ -7366,17 +7366,6 @@ impl AppBrokerState {
             .unwrap_or_default();
         let agents = Self::named_agent_members(agents, listed);
         let self_id = Self::member_id(admitted);
-        // An agent's row is named by the record; a person by the name they announced.
-        let self_name = match admitted.agent_id.as_deref() {
-            Some(agent) => agents
-                .iter()
-                .find(|(named, _, _)| named == agent)
-                .map_or_else(|| agent.to_owned(), |(_, name, _)| name.clone()),
-            None => admitted
-                .display_handle
-                .clone()
-                .unwrap_or_else(|| admitted.principal_id.clone()),
-        };
         let mut mine: Option<collab_types::Member> = None;
         let mut members =
             Vec::with_capacity(agents.len().saturating_add(people.len()).saturating_add(1));
@@ -7402,13 +7391,21 @@ impl AppBrokerState {
                 members.push(row);
             }
         }
+        // The person is called what the workspace's member list calls them, as everyone else
+        // is, unless their session announced a name of its own; never by their key. An agent's
+        // row is named by the record of the workspace's agents.
         let mut me = mine.unwrap_or_else(|| {
             collab_types::Member::of_person(
-                &collab_types::Person::new(admitted.principal_id.clone(), self_name.clone()),
+                &collab_types::Person::new(
+                    admitted.principal_id.clone(),
+                    admitted.agent_id.clone().unwrap_or_default(),
+                ),
                 None,
             )
         });
-        me.name = self_name;
+        if let Some(handle) = &admitted.display_handle {
+            me.name.clone_from(handle);
+        }
         members.push(me.claiming_self());
         if members.iter().filter(|row| row.is_self).count() != 1 {
             return Err("native context has no exact authenticated self member".into());
@@ -13295,6 +13292,63 @@ pub mod tests {
                 "the workspace keeps no agent of that id"
             );
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
+        struct NativeWorkspace(String);
+        impl crate::services::WorkspaceMemberships for NativeWorkspace {
+            fn requires_workspace(&self, workspace: &str) -> bool {
+                workspace == self.0
+            }
+
+            fn execute(
+                &self,
+                _: tilo_peer_state::owner_commit::OwnerCommitRequest,
+            ) -> tilo_peer_state::owner_commit::CommitFuture {
+                Box::pin(async { Err("roster fixture never commits owner state".into()) })
+            }
+        }
+
+        let root = SigningKey::from_bytes(&[47; 32]);
+        let person = person_id_for_root(root.verifying_key().to_bytes());
+        let mut workspace = crate::test_support::Workspace::new(
+            crate::test_support::WorkspaceId::from_u128(47),
+            "Studio",
+        );
+        workspace.set_owner(person.clone());
+        workspace.members.push(collab_types::Member::of_person(
+            &collab_types::Person::new(person, "Ada"),
+            None,
+        ));
+        let workspace_id = workspace.id().to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let route = CrdtRoute::record("so.tilo.lang.chat", &workspace_id, "main");
+        // A connection that announced no name of its own, as an app's window or a tilolang
+        // host's instance connects.
+        let admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
+        assert_eq!(admitted.display_handle, None);
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = AppBrokerState::new_configured(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared().authority()),
+            None,
+            None,
+            HostServices {
+                workspace_memberships: Some(Arc::new(NativeWorkspace(workspace_id))),
+                ..Default::default()
+            },
+        );
+        fanout.attach_app_broker(state.clone());
+        let roster = state.native_membership_roster(&route, &admitted).unwrap();
+        let me = roster
+            .iter()
+            .find(|row| row.is_self)
+            .expect("the person's own row");
+        assert_eq!(me.name, "Ada", "never their key: {roster:?}");
     }
 
     #[tokio::test(flavor = "current_thread")]
