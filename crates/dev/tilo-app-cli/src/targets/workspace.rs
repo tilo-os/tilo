@@ -360,6 +360,10 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn one_page_at_a_time_opens_an_apps_record;
 
         phase one_page_opens_an_apps_record_and_everyone_else_waits_for_it;

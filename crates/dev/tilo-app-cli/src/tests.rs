@@ -746,6 +746,10 @@ tilo_test_env::scenario! {
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn generated_components_keep_their_registry_models_and_translations;
 
     phase component_registry_returns_the_last_registration_directly;
@@ -5522,6 +5526,10 @@ fn ui_path_accepts_either_sdk_crate() {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn in_place_reload_is_planned_staged_and_given_a_runtime_host;
 
     phase staging_a_reload_library_keeps_only_the_current_and_previous;
@@ -5774,6 +5782,10 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn the_dev_loop_restarts_only_for_source_edits_it_watches;
 
     phase source_snapshot_sees_source_edits_and_leaves_build_output_out;
@@ -6000,6 +6012,10 @@ fn every_example_is_what_new_renders_for_it() {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn the_portability_lint_reports_platform_code_by_the_apps_platforms;
 
     phase portability_lint_reports_shipped_platform_code_with_remedies;
