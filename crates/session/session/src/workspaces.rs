@@ -1250,6 +1250,9 @@ impl crate::Shared {
                         outcome = "enrolled",
                         "join: the host admitted this device and the workspace is held here"
                     );
+                    // The workspace's live plane opens now, not when a key of some workspace
+                    // next moves here.
+                    sync.workspace_arrived();
                     // The slot is made now, once the host admitted this
                     // device: the person lands in the workspace they joined,
                     // and the desk a refused join left is the desk it found.

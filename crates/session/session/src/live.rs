@@ -1031,6 +1031,18 @@ impl Live {
         self.shared.readopt.notify_one();
     }
 
+    /// This device came to hold another workspace: its host admitted this device, as the person's
+    /// list or an invitation brought it. The workspace is given its reconciler now, which asks
+    /// for its keys and joins its relay.
+    ///
+    /// Nothing else says so. The channel service announces a workspace's keys once this device
+    /// asked for them, and the plane is what asks: until something else moved a key of some
+    /// workspace here, a workspace taken in while the session ran had no plane, and said nothing
+    /// of it.
+    pub(crate) fn workspace_arrived(&self) {
+        self.shared.readopt.notify_one();
+    }
+
     /// Run for the rest of the session on `endpoint` : this device's relay role, for the workspaces
     /// that name it, and one plane per workspace it holds.
     pub(crate) fn attach(&mut self, endpoint: Endpoint) {
@@ -1203,7 +1215,8 @@ fn run(
         let mut keyed = keys.generation();
         let mut known = BTreeSet::new();
         adopt(&shared, &endpoint, &serving, &mut known);
-        // A workspace this session joins later opens its plane the same way: its channel keys
+        // A workspace this session joins later opens its plane the same way: the session says
+        // when its host admitted this device ([`Live::workspace_arrived`]), its channel keys
         // arriving is announced by the channel service, and the workspace list is read again then.
         // Each workspace's own reconciler settles it again when a plane of it ended, or when no
         // relay took this device in ([`reconcile`]).
