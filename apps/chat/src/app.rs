@@ -55,11 +55,6 @@ pub(crate) const HUDDLE_VIDEO: (f64, f64, f64, f64) = (0.505, 0.300, 0.250, 0.23
 /// the workspace they belong to by this one scope.
 pub(crate) const WORKSPACE_SCOPE: &str = "workspace";
 
-/// The scope a call continuation stored before the workspace was called by
-/// its name carries. It is only ever read: a call stored then resumes all the
-/// same.
-pub(crate) const LEGACY_WORKSPACE_SCOPE: &str = "room";
-
 /// Which composer currently owns keystrokes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Focus {
