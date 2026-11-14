@@ -161,6 +161,12 @@ fn discord(source: &str, payload: &Value) -> Value {
     json!({"app_id": crate::APP_ID, "source": source, "id": "e1", "at_ms": 0, "payload": payload})
 }
 
+/// Who made a change, as the program's `event` input carries it: its acting
+/// tree, where a person acting for themselves is a member of their own.
+fn actor(person: &str) -> Value {
+    json!({"by": {"member": {"person": person}}})
+}
+
 tilo_test_env::scenario! {
     fn what_happens_in_tilo_is_planned_for_discord;
 
@@ -182,7 +188,7 @@ tilo_test_env::scenario! {
             "kind": CHAT_KIND,
             "did": verb("post"),
             "item": {"kind": "channels", "id": "c1"},
-            "actor": {"id": "u_ada"},
+            "actor": actor("u_ada"),
             "arguments": {"channel": "c1", "text": "hello"},
         });
         let plan = planned(&guild(), &event);
@@ -204,7 +210,7 @@ tilo_test_env::scenario! {
             "kind": CHAT_KIND,
             "did": verb("share-window"),
             "item": {"kind": "channels", "id": "c1"},
-            "actor": {"id": "u_ada"},
+            "actor": actor("u_ada"),
             "arguments": {"channel": "c1"},
         });
         let plan = planned(&guild(), &shared);
@@ -234,7 +240,7 @@ tilo_test_env::scenario! {
                 "kind": CHAT_KIND,
                 "did": verb("share-open"),
                 "item": {"kind": "messages", "id": "m1"},
-                "actor": {"id": "u_ada"},
+                "actor": actor("u_ada"),
                 "arguments": {"open": open},
             });
             let plan = planned(&sent, &event);
@@ -366,7 +372,7 @@ tilo_test_env::scenario! {
             "kind": CHAT_KIND,
             "did": verb(SUBMIT_FEEDBACK),
             "item": {"kind": "channels", "id": "c1"},
-            "actor": {"id": "u_ada"},
+            "actor": actor("u_ada"),
             "arguments": {"channel": "c1", "submission": {"id": "r1"}},
         });
         let planned = read_with_report(&guild(), &event);

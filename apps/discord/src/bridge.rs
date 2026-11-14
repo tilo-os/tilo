@@ -16,6 +16,7 @@ use discord_wire::event::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
+use ui::tilo_actions::Acting;
 
 use crate::inbound::{self, InboundPlan};
 use crate::outbound::{self, Context};
@@ -309,10 +310,7 @@ fn posted(
     }
     let channel = channel_of(item, event);
     let text = event.pointer("/arguments/text").and_then(Value::as_str);
-    let author = event
-        .pointer("/actor/id")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let author = actor_key(event);
     tilo::messages(chat)
         .into_iter()
         .rev()
@@ -323,6 +321,16 @@ fn posted(
                 && guild.mapping(MappedKind::Message, &message.id).is_none()
         })
         .map(|message| message.id)
+}
+
+/// Who made the change an event describes, spelled as a message's author is:
+/// the key of the change's actor in its acting tree (a person's root public
+/// key, `agent:<id>`, `bot:<id>`).
+fn actor_key(event: &Value) -> String {
+    event
+        .get("actor")
+        .and_then(|actor| serde_json::from_value::<Acting>(actor.clone()).ok())
+        .map_or_else(String::new, |acting| acting.by.key())
 }
 
 fn payload<T: serde::de::DeserializeOwned>(payload: &Value) -> Option<T> {
@@ -574,8 +582,9 @@ fn workspace_change(plan: &mut BridgePlan, guild: &Guild, verb: &str, event: &Va
 fn guild_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, event: &Value) {
     if verb == "complete-link" {
         // A person took a link offer: the `/link` it answered says so.
-        if let Some(person) = event.pointer("/actor/id").and_then(Value::as_str) {
-            inbound_plan(plan, inbound::plan_linked(read.guild, read.chat, person));
+        let person = actor_key(event);
+        if !person.is_empty() {
+            inbound_plan(plan, inbound::plan_linked(read.guild, read.chat, &person));
         }
         return;
     }
