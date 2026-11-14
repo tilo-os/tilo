@@ -10,7 +10,7 @@ use std::rc::Rc;
 use settings_store::hardware::ShortcutConfig;
 use tilo_desktop::shortcuts::{Shared, page_chord, shortcut_chord_from_event};
 use tilo_sheets::Presentation;
-use tilo_sheets::shortcut_guide::{self, Ask, Caught, Guide, GuideEffect, State};
+use tilo_sheets::shortcut_guide::{self, Ask, Caught, Guide, GuideEffect, KeysPressed, State};
 
 use ui::winit::event::{ElementState, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
@@ -26,10 +26,12 @@ pub(crate) struct PageGuide {
     presentation: Presentation,
     /// The guide as it was last built into a sheet.
     built: Option<Guide>,
+    /// The keys are a Mac's.
+    mac: bool,
 }
 
 impl PageGuide {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(mac: bool) -> Self {
         let table: Shared = Rc::new(std::cell::RefCell::new(ShortcutConfig::load()));
         let state = Rc::new(State::new(
             Rc::clone(&table),
@@ -41,6 +43,7 @@ impl PageGuide {
             state,
             presentation: Presentation::default(),
             built: None,
+            mac,
         }
     }
 
@@ -97,6 +100,12 @@ impl PageGuide {
     /// Answer what the guide asked, and show it as it stands.
     fn follow(&mut self, show: &mut dyn FnMut(Option<ui::widget::Element>), missing: bool) -> bool {
         let mut changed = false;
+        // The chords that reach this page: an app window's, or a tab's.
+        self.state.set_keys(if crate::display_mode::app_window() {
+            KeysPressed::InstalledWindow { mac: self.mac }
+        } else {
+            KeysPressed::BrowserTab { mac: self.mac }
+        });
         self.state.follow();
         if self.state.up() {
             let guide = self.state.shaped();

@@ -401,6 +401,10 @@ grep -q '^cache-control: no-cache' <(head_of /) || fail "/ must revalidate"
 # Safari's home-screen icon sits beside the entry pages, as their links and
 # Safari's own unasked lookup expect.
 grep -q '^content-type: image/png' <(head_of /apple-touch-icon.png) || fail "/apple-touch-icon.png must be served as a PNG"
+# The web app manifest, which makes the site installable as an app window,
+# and the icon it names sit there too.
+[[ $(get /manifest.json | json start_url) == ./ ]] || fail "/manifest.json must name the site as its start"
+grep -q '^content-type: image/svg+xml' <(head_of /icon.svg) || fail "/icon.svg must be served as an SVG"
 # Every answer pins the host to HTTPS, the entry pages and the versioned
 # files alike, and never reaches past it to the workspace hosts beneath.
 for path in / /entry.json "/v/$version/entry-page.mjs"; do
@@ -423,7 +427,8 @@ verify_version() {
   listed=$(get "/v/$1/build.json" | python3 -c '
 import json, sys
 for name, digest in json.load(sys.stdin)["files"].items():
-    if name not in ("index.html", "app/index.html", "sign-in.html", "apple-touch-icon.png"):
+    if name not in ("index.html", "app/index.html", "sign-in.html", "apple-touch-icon.png",
+                    "manifest.json", "icon.svg"):
         print(digest, name)')
   [[ $(wc -l <<<"$listed") -gt 1 ]] || fail "v/$1/build.json lists no files"
   # -g: font names carry [ ], which curl would otherwise read as a glob.

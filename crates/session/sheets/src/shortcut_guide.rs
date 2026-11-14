@@ -212,8 +212,31 @@ pub struct State {
     listening: RefCell<Option<String>>,
     caught: RefCell<Vec<Caught>>,
     message: RefCell<Option<String>>,
+    /// Where the keys are pressed, which decides the chords the guide offers.
+    keys: Cell<KeysPressed>,
     /// What the guide was last shaped from, and that guide.
     built: RefCell<Option<(GuideKey, Guide)>>,
+}
+
+/// Where the person presses the keys the guide explains.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeysPressed {
+    /// Tilo's own session: every chord reaches the desktop.
+    #[default]
+    Native,
+    /// A page in a browser tab: Super is often the system's, and Ctrl+W,
+    /// Ctrl+T, Ctrl+N and Ctrl+Tab are the browser's own, so the page's
+    /// stand-in for Super (Alt+Shift, Ctrl+Option on a Mac) is offered first.
+    BrowserTab {
+        /// The keys are a Mac's.
+        mac: bool,
+    },
+    /// A page installed as an app window: the browser hands it Ctrl+W, Ctrl+T
+    /// and Ctrl+N, which close, open and duplicate windows as in any app.
+    InstalledWindow {
+        /// The keys are a Mac's.
+        mac: bool,
+    },
 }
 
 /// The state a [`State`] shapes its guide from: a guide is built again only
@@ -223,6 +246,7 @@ type GuideKey = (
     Option<String>,
     Option<String>,
     Option<ui::ControllerFamily>,
+    KeysPressed,
 );
 
 impl State {
@@ -241,6 +265,11 @@ impl State {
             controller,
             ..Self::default()
         }
+    }
+
+    /// The keys are pressed `keys`: the guide offers the chords that work there.
+    pub fn set_keys(&self, keys: KeysPressed) {
+        self.keys.set(keys);
     }
 
     /// Whether the guide is up.
@@ -348,13 +377,14 @@ impl State {
             self.listening(),
             self.message.borrow().clone(),
             self.controller.get(),
+            self.keys.get(),
         );
         if let Some((built, guide)) = self.built.borrow().as_ref()
             && built == &shown
         {
             return guide.clone();
         }
-        let mut guide = keyboard_guide(&shown.0);
+        let mut guide = keyboard_guide_for(&shown.0, shown.4);
         guide.listening.clone_from(&shown.1);
         guide.message.clone_from(&shown.2);
         // A controller in hand is explained by its own buttons, drawn with the
@@ -891,6 +921,121 @@ fn touch(column: Column) -> Column {
 /// guide never promises a default the person has rebound.
 #[must_use]
 pub fn keyboard_guide(table: &ShortcutConfig) -> Guide {
+    keyboard_guide_for(table, KeysPressed::Native)
+}
+
+/// [`keyboard_guide`] for keys pressed `keys`: in a browser tab each chord
+/// holding Super is offered with the page's stand-in first and a note says
+/// which keys are the browser's; in an installed window the close, new and
+/// duplicate window rows also offer Ctrl+W, Ctrl+N and Ctrl+T.
+#[must_use]
+pub fn keyboard_guide_for(table: &ShortcutConfig, keys: KeysPressed) -> Guide {
+    let mut guide = native_keyboard_guide(table);
+    match keys {
+        KeysPressed::Native => {}
+        KeysPressed::BrowserTab { mac } => {
+            let entries = catalogue(table);
+            guide.essentials =
+                essentials_with(table, &entries, |_, chords| with_stand_in(chords, mac));
+            for pair in &mut guide.pairs {
+                for shortcut in [&mut pair.previous, &mut pair.next] {
+                    let chord = ShortcutAction::from_id(&shortcut.action)
+                        .and_then(|action| table.bindings.get(&action));
+                    if let Some(chord) = chord.and_then(|chord| stand_in(chord, mac)) {
+                        shortcut.keys = keycaps(&chord);
+                    }
+                }
+            }
+            guide.notes.push(browser_keys_note(mac));
+        }
+        KeysPressed::InstalledWindow { mac } => {
+            let entries = catalogue(table);
+            guide.essentials = essentials_with(table, &entries, |id, chords| {
+                let mut chords = chords.to_vec();
+                if let Some(chord) = app_window_chord(id, mac) {
+                    chords.insert(0, chord);
+                }
+                chords.dedup();
+                chords
+            });
+        }
+    }
+    guide
+}
+
+/// The page's stand-in for Super in `chord`: Alt+Shift, or Ctrl+Option on a
+/// Mac; `None` for a chord without Super.
+fn stand_in(chord: &KeyChord, mac: bool) -> Option<KeyChord> {
+    if !chord.modifiers.contains("Super") {
+        return None;
+    }
+    let mut modifiers = chord.modifiers.clone();
+    modifiers.remove("Super");
+    let added: [&str; 2] = if mac {
+        ["Ctrl", "Alt"]
+    } else {
+        ["Alt", "Shift"]
+    };
+    modifiers.extend(added.into_iter().map(String::from));
+    Some(KeyChord {
+        modifiers,
+        key: chord.key.clone(),
+    })
+}
+
+/// `chords` with each chord holding Super offered as the page's stand-in
+/// first, then as itself.
+fn with_stand_in(chords: &[KeyChord], mac: bool) -> Vec<KeyChord> {
+    let mut offered: Vec<KeyChord> = chords
+        .iter()
+        .filter_map(|chord| stand_in(chord, mac))
+        .collect();
+    for chord in chords {
+        if !offered.contains(chord) {
+            offered.push(chord.clone());
+        }
+    }
+    offered
+}
+
+/// The chord an app window gives the fixed shortcut `id`: Ctrl+W closes the
+/// window in front, Ctrl+N opens a new one and Ctrl+T another of the same
+/// app; a Mac's Cmd is Super, which the table holds already.
+fn app_window_chord(id: &str, mac: bool) -> Option<KeyChord> {
+    if mac {
+        return None;
+    }
+    let key = match id {
+        "fixed-close-tab" => "w",
+        "fixed-new-window" => "n",
+        "fixed-duplicate-tab" => "t",
+        _ => return None,
+    };
+    Some(KeyChord {
+        modifiers: std::iter::once("Ctrl".to_owned()).collect(),
+        key: key.to_owned(),
+    })
+}
+
+/// What a browser tab does with the keys a person reaches for first, and the
+/// way out: installing Tilo as an app.
+fn browser_keys_note(mac: bool) -> String {
+    let chord = |text: &str| {
+        KeyChord::parse(text).map_or_else(|_| text.to_owned(), |chord| chord_text(&chord))
+    };
+    let primary = if mac { "Cmd" } else { "Ctrl" };
+    crate::t_args(
+        "guide-browser-keys",
+        &[
+            ("close", chord(&format!("{primary}+W")).into()),
+            ("new", chord(&format!("{primary}+T")).into()),
+            ("window", chord(&format!("{primary}+N")).into()),
+            ("switch", chord("Ctrl+Tab").into()),
+        ],
+    )
+}
+
+fn native_keyboard_guide(table: &ShortcutConfig) -> Guide {
     let defaults = ShortcutConfig::default();
     let entries = catalogue(table);
     Guide {
@@ -1047,6 +1192,16 @@ fn essentials(
     table: &ShortcutConfig,
     entries: &[ShortcutEntry],
 ) -> Vec<Vec<(String, Vec<KeyboardBinding>)>> {
+    essentials_with(table, entries, |_, chords| chords.to_vec())
+}
+
+/// [`essentials`], each catalogue row's chords offered as `offer` gives them
+/// for the row's id.
+fn essentials_with(
+    table: &ShortcutConfig,
+    entries: &[ShortcutEntry],
+    offer: impl Fn(&str, &[KeyChord]) -> Vec<KeyChord>,
+) -> Vec<Vec<(String, Vec<KeyboardBinding>)>> {
     let mut groups: Vec<Vec<(String, Vec<KeyboardBinding>)>> = ESSENTIALS
         .iter()
         .map(|group| {
@@ -1056,7 +1211,7 @@ fn essentials(
                 .map(|entry| {
                     (
                         t(&entry.label_key),
-                        entry.chords.iter().map(keycaps).collect(),
+                        offer(entry.id, &entry.chords).iter().map(keycaps).collect(),
                     )
                 })
                 .collect()
@@ -1412,6 +1567,41 @@ mod tests {
                 guide.notes.iter().all(|note| !note.contains("Deploy")),
                 "no note joins the published chord onto other copy"
             );
+        }
+
+        phase a_browser_tab_offers_the_keys_that_reach_the_page;
+        // In a browser tab the stand-in comes first, Super still shown after
+        // it, and a note names the keys the browser keeps; an installed window
+        // closes, opens and duplicates windows with Ctrl as any app does.
+        {
+            let table = ShortcutConfig::default();
+            let close = fixed_shortcut_name("fixed-close-tab");
+            let native = essential(&keyboard_guide(&table), &close);
+            let tab = keyboard_guide_for(&table, KeysPressed::BrowserTab { mac: false });
+            let offered = essential(&tab, &close);
+            assert_eq!(
+                offered.first(),
+                Some(&keycaps(&KeyChord::parse("Alt+Shift+W").unwrap())),
+                "the stand-in first"
+            );
+            assert!(native.iter().all(|chord| offered.contains(chord)), "Super still offered");
+            assert_eq!(
+                tab.notes[..tab.notes.len().saturating_sub(1)],
+                keyboard_guide(&table).notes[..],
+                "one note more: the browser's keys"
+            );
+            let mac = keyboard_guide_for(&table, KeysPressed::BrowserTab { mac: true });
+            assert_eq!(
+                essential(&mac, &close).first(),
+                Some(&keycaps(&KeyChord::parse("Ctrl+Alt+W").unwrap())),
+                "Ctrl+Option on a Mac"
+            );
+            let installed = keyboard_guide_for(&table, KeysPressed::InstalledWindow { mac: false });
+            assert_eq!(
+                essential(&installed, &close).first(),
+                Some(&keycaps(&KeyChord::parse("Ctrl+W").unwrap()))
+            );
+            assert_eq!(installed.notes, keyboard_guide(&table).notes, "no browser note in an app window");
         }
     }
 

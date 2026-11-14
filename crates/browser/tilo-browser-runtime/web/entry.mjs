@@ -21,6 +21,8 @@ import {admit} from './admission.mjs';
 import {wireFetchProxy} from './fetch-proxy.mjs';
 import {takeLinkSecrets} from './link-secrets.mjs';
 import {UNAVAILABLE, openTarget} from './open-target.mjs';
+import {followDisplayMode} from './app-window.mjs';
+import {createLeaveGuard} from './leave-guard.mjs';
 import {startRouter} from './router.mjs';
 import {createTabAttention} from './tab-attention.mjs';
 import {sealedHandle, sealedLink} from './sealed-link.mjs';
@@ -78,10 +80,12 @@ function hostname(site) {
 }
 
 /** `onStatus` that also titles the tab after the workspace in front
- * (`tab`, `tab-attention.mjs`). */
-function titled(tab, forward) {
+ * (`tab`, `tab-attention.mjs`) and tells `guard` what this browser has yet to
+ * save (`leave-guard.mjs`). */
+function titled(tab, guard, forward) {
   return status => {
     tab.setWorkspace(status?.workspaceName);
+    if (typeof status?.pendingWrites === 'number') guard.update({pendingWrites: status.pendingWrites});
     forward?.(status);
   };
 }
@@ -381,6 +385,8 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   say(loading);
   onStep('open');
   const link = await linked;
+  // An installed app window is handed the keys a tab's browser keeps.
+  followDisplayMode({runtime: await loaded, window});
   // The address names what opened, not the damaged part the page left out.
   if (damaged) window.history.replaceState(window.history.state, '', link.format(route));
   if (peer && route.target.scope.kind === 'room' && (sealedAdmitted || !route.target.scope.room)) {
@@ -415,13 +421,18 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // What the tab says while the person is elsewhere: the workspace, and what
   // needs them there.
   const tab = createTabAttention({window});
+  // Closing the tab asks first only while that would cut work short.
+  const guard = createLeaveGuard({window});
+  const unsent = () => guard.update({outgoingPending: peer?.getSnapshot?.()?.outgoingPending ?? 0});
+  peer?.subscribe?.(unsent);
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop, directory: deps.directory?.() ?? null,
     diagnostics: {...(workspaceName ? {workspaceName} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
       ...(entry.layout ? {layout: entry.layout} : {}),
       ...(linkOffer ? {linkOffer} : {}),
       ...(invite ? {invite} : {}), ...diagnostics},
-    onStatus: titled(tab, diagnostics.onStatus), onAttention: attention => tab.update(attention)});
+    onStatus: titled(tab, guard, diagnostics.onStatus),
+    onAttention: attention => { tab.update(attention); guard.update({jobs: attention.working ?? []}); }});
   // `show` reads the router it was given, so the address can name what a
   // link opened once it is shown.
   let router;

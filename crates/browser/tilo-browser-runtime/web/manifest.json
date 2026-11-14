@@ -1,0 +1,19 @@
+{
+  "id": "./",
+  "name": "Tilo",
+  "short_name": "Tilo",
+  "description": "Your workspace, its apps and the people and agents in it",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#2a3fd1",
+  "theme_color": "#2a3fd1",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -130,6 +130,7 @@ guide-unassigned = Nicht belegt
 guide-unassigned-inline = nicht belegt
 guide-strip-jump = Direkt zu einer Leiste mit { $first } … { $last }; Leiste 1 ist die oberste
 guide-app-tab-chords = { $next }, { $previous } und { $reopen } gehen zuerst an die App; die Tab-Kürzel des Desktops hier wirken immer
+guide-browser-keys = In einem Browser-Tab gehören { $close }, { $new }, { $window } und { $switch } dem Browser; nutze die Tasten hier oder installiere Tilo als App, dann wirken sie in Tilo
 guide-published-heading = Deine Tastenkürzel
 
 ## Die Kürzelnamen des Katalogs, die der Leitfaden auflistet

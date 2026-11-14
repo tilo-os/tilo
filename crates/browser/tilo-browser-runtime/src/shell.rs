@@ -365,7 +365,7 @@ fn hints_and_guide(
 ) {
     let hints = tilo_desktop::control_hints::HintsFeed::default();
     hints.set_record(settings_store::control_hints::LEARNED.get());
-    let guide = crate::over_page::OverPage::new(PageGuide::new());
+    let guide = crate::over_page::OverPage::new(PageGuide::new(top.mac()));
     let mut top = top;
     top.set_hints_feed(hints.clone());
     // The desk answers the person's chords, as the guide shows them.
@@ -2004,6 +2004,8 @@ impl Widget for BrowserShell {
         if self.window_menu_event(event, ctx, window_menu) {
             return;
         }
+        // An app window is handed the keys a tab's browser keeps for itself.
+        self.top.set_app_window(crate::display_mode::app_window());
         // Alt+Shift+Tab's walk comes before anything on the page, as Alt+Tab's does on a desktop:
         // while it is up every key is its own.
         if let WindowEvent::KeyboardInput { event: key, .. } = event

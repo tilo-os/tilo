@@ -128,6 +128,8 @@ mod desktop;
 #[cfg(target_arch = "wasm32")]
 mod directory;
 #[cfg(target_arch = "wasm32")]
+mod display_mode;
+#[cfg(target_arch = "wasm32")]
 mod dom_code;
 #[cfg(target_arch = "wasm32")]
 pub use dom_code::{DOM_CODE, DomCode, builtin_dom};

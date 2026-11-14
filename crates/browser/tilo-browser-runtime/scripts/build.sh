@@ -4,6 +4,8 @@
 #   *.mjs, index.html   page host and the desktop entry page
 #   app/index.html      the full-tab app entry page (web-routing.md)
 #   apple-touch-icon.png  the entry pages' home-screen icon (Safari takes no SVG)
+#   manifest.json, icon.svg  the web app manifest that makes the site
+#                       installable as an app window, and its icon
 #   locales/            the entry pages' arrival lines (web/arrival.mjs)
 #   fonts/, fonts.json  canonical product fonts, their manifest and licences
 #   data/, data.json    application data fetched on request (desktop bundle:
@@ -483,6 +485,7 @@ find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' -exec cp {} "$o
 cp "$crate/web/index.html" "$out/index.html"
 cp "$crate/web/sign-in.html" "$out/sign-in.html"
 cp "$crate/web/apple-touch-icon.png" "$out/apple-touch-icon.png"
+cp "$crate/web/manifest.json" "$crate/web/icon.svg" "$out/"
 mkdir -p "$out/locales"
 cp "$crate"/web/locales/*.ftl "$out/locales/"
 mkdir -p "$out/app"

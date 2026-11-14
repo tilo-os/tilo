@@ -131,6 +131,7 @@ guide-unassigned = Unassigned
 guide-unassigned-inline = unassigned
 guide-strip-jump = Go straight to a strip with { $first } … { $last }; strip 1 is the top one
 guide-app-tab-chords = { $next }, { $previous } and { $reopen } go to the app first; the desktop’s tab shortcuts here always work
+guide-browser-keys = In a browser tab, { $close }, { $new }, { $window } and { $switch } belong to the browser; use the keys shown here, or install Tilo as an app and they work in Tilo
 guide-published-heading = Your shortcuts
 
 ## The catalogue's shortcut names, which the guide lists

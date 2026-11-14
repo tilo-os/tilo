@@ -9,7 +9,9 @@ Only the pages stay at the top — the two entry pages (`index.html`,
 `app/index.html`) and the sign-in page (`sign-in.html`, where a service's
 sign-in link lands) — revalidated on every visit and pointing into that
 directory, and beside them their home-screen icon (`apple-touch-icon.png`),
-where Safari also looks for it unasked; every other file is found relative to
+where Safari also looks for it unasked, and the web app manifest that makes the
+site installable (`manifest.json`, with its icon), whose `start_url` and
+`scope` are the site's own; every other file is found relative to
 its module (`import.meta.url`), so it follows. The entry configuration
 (`entry.json`) is written when the container starts.
 
@@ -135,7 +137,8 @@ pages = {page: entry for page, entry in pages.items() if (assets / page).is_file
 # The files served at the top, beside which the pages are written: the pages
 # themselves (their `src` in a fragment is not a file) and the icon Safari
 # looks for there. Everything else the bundle holds is served under `v/`.
-top_level = frozenset({*pages, 'apple-touch-icon.png'})
+HOME_SCREEN = ('apple-touch-icon.png', 'manifest.json', 'icon.svg')
+top_level = frozenset({*pages, *HOME_SCREEN})
 graphs = {}
 for entry in dict.fromkeys(pages.values()):
     start = pathlib.PurePosixPath(entry).name
@@ -190,6 +193,8 @@ for page, entry in pages.items():
     (assets / page).unlink()
 if (assets / 'app').is_dir():
     (assets / 'app').rmdir()
-(assets / 'apple-touch-icon.png').rename(site / 'apple-touch-icon.png')
+for name in HOME_SCREEN:
+    if (assets / name).is_file():
+        (assets / name).rename(site / name)
 (site / 'version.json').write_text(json.dumps({'version': version, 'revision': build['revision']}) + '\n')
 print(version)

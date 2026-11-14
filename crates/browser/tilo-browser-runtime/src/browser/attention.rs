@@ -72,7 +72,8 @@ pub(super) fn forget(id: u64) {
     LISTENERS.with_borrow_mut(|listeners| listeners.remove(&id));
 }
 
-/// What the tab says: `unread`, the notices the person has not seen (the desk's bell count);
+/// What the tab says, and what closing it would cut short: `working`, the titles of the jobs
+/// running on the desk; `unread`, the notices the person has not seen (the desk's bell count);
 /// `waiting`, the agents waiting for the person to answer them, by the name their client goes
 /// by ("Claude Code"); and `finished`, the agents whose finishing the person has not seen yet,
 /// each with its notice's `id`, so the page tells apart one it already showed in view.
@@ -98,6 +99,8 @@ fn attention(desktop: &Desktop) -> serde_json::Value {
         "unread": notifications.unread(),
         "waiting": crate::agent_questions::waiting_agents(),
         "finished": finished,
+        // What leaving the tab now would cut short: the jobs on the desk (a file going up).
+        "working": ui::jobs::running().iter().map(|job| job.title().to_owned()).collect::<Vec<_>>(),
     })
 }
 

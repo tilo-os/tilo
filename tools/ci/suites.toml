@@ -645,6 +645,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/failure-screen.test.mjs",
   "crates/browser/tilo-browser-runtime/web/router.test.mjs",
   "crates/browser/tilo-browser-runtime/web/tab-attention.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/leave-guard.test.mjs",
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",

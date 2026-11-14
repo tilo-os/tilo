@@ -83,6 +83,8 @@ class Layout(unittest.TestCase):
             module.write_text(text)
         (bundle / 'pkg/tilo_browser_runtime_bg.wasm').write_bytes(b'\0asm')
         (bundle / 'apple-touch-icon.png').write_bytes(b'\x89PNG')
+        (bundle / 'manifest.json').write_text('{"start_url": "./"}')
+        (bundle / 'icon.svg').write_text('<svg/>')
         (bundle / 'TiloSans.ttf').write_bytes(b'\0\1\0\0')
         files = {}
         for path in sorted(bundle.rglob('*')):

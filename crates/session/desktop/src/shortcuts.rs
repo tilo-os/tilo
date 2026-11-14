@@ -201,6 +201,26 @@ pub fn page_fixed_action(
     }
 }
 
+/// The fixed action a key press asks for in a page installed as an app window, beyond
+/// [`page_fixed_action`]: the browser hands such a window the keys it keeps for itself in a tab,
+/// and Ctrl+W, Ctrl+T and Ctrl+N close, duplicate and open windows there as in any app. A Mac's Cmd
+/// is Super, which the table answers already.
+pub fn app_window_fixed_action(
+    physical_key: PhysicalKey,
+    modifiers: Modifiers,
+    mac: bool,
+) -> Option<FixedAction> {
+    if mac || modifiers.state() != ModifiersState::CONTROL {
+        return None;
+    }
+    match physical_key {
+        PhysicalKey::Code(winit::keyboard::KeyCode::KeyW) => Some(FixedAction::CloseTab),
+        PhysicalKey::Code(winit::keyboard::KeyCode::KeyT) => Some(FixedAction::DuplicateTab),
+        PhysicalKey::Code(winit::keyboard::KeyCode::KeyN) => Some(FixedAction::NewWindow),
+        _ => None,
+    }
+}
+
 /// The key and modifiers [`page_shortcut_action`] looks up, or `None` when neither Super nor the
 /// stand-in is held.
 pub fn page_chord(
@@ -413,6 +433,34 @@ mod tests {
                     "{state:?}"
                 );
             }
+        }
+
+        phase an_app_window_closes_opens_and_duplicates_windows_with_ctrl;
+        // Installed as an app, the page is handed Ctrl+W, Ctrl+T and Ctrl+N; in a tab the browser
+        // keeps them, and a Mac's Cmd is Super already.
+        {
+            let app = |code: KeyCode, state: ModifiersState, mac: bool| {
+                app_window_fixed_action(PhysicalKey::Code(code), state.into(), mac)
+            };
+            assert_eq!(
+                app(KeyCode::KeyW, ModifiersState::CONTROL, false),
+                Some(FixedAction::CloseTab)
+            );
+            assert_eq!(
+                app(KeyCode::KeyT, ModifiersState::CONTROL, false),
+                Some(FixedAction::DuplicateTab)
+            );
+            assert_eq!(
+                app(KeyCode::KeyN, ModifiersState::CONTROL, false),
+                Some(FixedAction::NewWindow)
+            );
+            assert_eq!(
+                app(KeyCode::KeyW, ModifiersState::CONTROL | ModifiersState::SHIFT, false),
+                None,
+                "Ctrl+Shift+W is another chord"
+            );
+            assert_eq!(app(KeyCode::KeyW, ModifiersState::CONTROL, true), None);
+            assert_eq!(app(KeyCode::KeyA, ModifiersState::CONTROL, false), None);
         }
 
         phase the_page_runs_the_fixed_chords_as_the_native_shell_does;

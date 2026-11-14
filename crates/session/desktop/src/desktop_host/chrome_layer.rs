@@ -37,7 +37,7 @@ use crate::overlays::{Overlays, Slot};
 use crate::overview::workspace_cards;
 use crate::overview_panel::{OverviewDesk, OverviewPanel, OverviewPick};
 use crate::search_overlay::SearchOverlay;
-use crate::shortcuts::{page_fixed_action, page_shortcut_action};
+use crate::shortcuts::{app_window_fixed_action, page_fixed_action, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
 use crate::super_peek::SuperPeek;
@@ -47,6 +47,13 @@ use crate::window_switcher::{Switcher, SwitcherAsk};
 use crate::workspace_menu::{
     MenuPlace, WorkspaceAction, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
 };
+
+/// Where a page host is shown: in a browser tab, or installed as an app window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PageWindow {
+    Tab,
+    App,
+}
 
 /// What lies above the windows: the top bar, the strip ribbon and rail,
 /// the overview panel and the menus the bar opens; and the desktop's
@@ -99,6 +106,9 @@ pub struct DesktopChrome {
     shortcuts: crate::shortcuts::Shared,
     /// Chords read the host's stand-in for Super as a Mac's.
     mac: bool,
+    /// Where a page host is shown: an app window is handed Ctrl+W, Ctrl+T and
+    /// Ctrl+N, which a tab's browser keeps ([`app_window_fixed_action`]).
+    page_window: PageWindow,
     /// The pointer, in logical pixels.
     cursor: Option<Point>,
     /// The area under the bar, as last laid out.
@@ -251,6 +261,7 @@ impl DesktopChrome {
             rules,
             shortcuts: crate::shortcuts::Shared::default(),
             mac,
+            page_window: PageWindow::Tab,
             cursor: None,
             content: Rect::ZERO,
             rect: Rect::ZERO,
@@ -1586,6 +1597,22 @@ impl DesktopChrome {
         });
     }
 
+    /// Whether chords are read with a Mac's keys.
+    #[must_use]
+    pub fn mac(&self) -> bool {
+        self.mac
+    }
+
+    /// The host is a page installed as an app window, or a page in a browser
+    /// tab: an app window also takes Ctrl+W, Ctrl+T and Ctrl+N as any app does.
+    pub fn set_app_window(&mut self, app_window: bool) {
+        self.page_window = if app_window {
+            PageWindow::App
+        } else {
+            PageWindow::Tab
+        };
+    }
+
     /// A desktop chord, applied; false when `event` is not one. The chord is looked up in the
     /// desktop's one shortcut table, with a host's stand-in for Super counting as Super
     /// ([`page_shortcut_action`] and [`page_fixed_action`]).
@@ -1597,9 +1624,12 @@ impl DesktopChrome {
         // each runs the verb its menu row, its palette row and an agent's invocation name, and the
         // ones the desk has no part in are asked of the page. The desk claims the press either way,
         // so the browser's own key for it is not run too.
-        if let Some(action) =
+        let app_window = (self.page_window == PageWindow::App)
+            .then(|| app_window_fixed_action(event.physical_key, *modifiers, self.mac))
+            .flatten();
+        if let Some(action) = app_window.or_else(|| {
             page_fixed_action(&event.logical_key, event.physical_key, *modifiers, self.mac)
-        {
+        }) {
             self.fixed_shortcut(action);
             return true;
         }
