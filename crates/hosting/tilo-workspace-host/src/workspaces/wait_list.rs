@@ -604,6 +604,14 @@ impl super::Workspaces {
         self.inner.door.mail.set((door.to_owned(), sender)).ok()?;
         Some(receiver)
     }
+
+    /// The page the workspace's door mails from, when it mails at all: a link
+    /// an invitation is mailed at leads there
+    /// ([`tilo_relay_protocol::workspaces::invitation_on_door`]).
+    #[must_use]
+    pub fn mail_door(&self) -> Option<String> {
+        self.inner.door.mail.get().map(|(door, _)| door.clone())
+    }
 }
 
 impl super::GovernedWorkspace {

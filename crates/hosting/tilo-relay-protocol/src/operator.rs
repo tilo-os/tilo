@@ -131,6 +131,16 @@ pub enum OperatorCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// Take the people a released relay kept into this workspace
+    /// ([`crate::release_people::People`], as `tilo-relay release-people
+    /// export` read them from that release's state). Their addresses go on the
+    /// wait list as the door keeps them, and each person is invited through
+    /// the door, mailed where the address is known. The child answers
+    /// [`OperatorEvent::PeopleImported`].
+    ImportPeople {
+        /// What the earlier release kept.
+        people: crate::release_people::People,
+    },
 }
 
 /// What the workspace relay reports to the workspace service.
@@ -166,6 +176,11 @@ pub enum OperatorEvent {
     OwnerDeclared {
         /// The person's user root key (hex).
         user_public_key: String,
+    },
+    /// An [`OperatorCommand::ImportPeople`] was done.
+    PeopleImported {
+        /// The addresses now on the wait list and one invitation per person.
+        imported: crate::release_people::Imported,
     },
     /// Nobody became an owner.
     OwnerRefused {
@@ -363,7 +378,7 @@ impl OperatorCommand {
     /// The command as one stdin line, newline included.
     #[must_use]
     pub fn to_line(&self) -> String {
-        // Every variant is plain strings, which always serialise.
+        // Every variant is plain data, which always serialises.
         let mut line = serde_json::to_string(self).unwrap_or_default();
         line.push('\n');
         line
@@ -384,7 +399,7 @@ impl OperatorEvent {
     /// (`println!` adds it).
     #[must_use]
     pub fn to_line(&self) -> String {
-        // Every variant is plain strings and numbers, which always serialise.
+        // Every variant is plain data, which always serialises.
         format!(
             "{LINE_PREFIX}{}",
             serde_json::to_string(self).unwrap_or_default()
