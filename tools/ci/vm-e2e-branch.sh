@@ -65,6 +65,8 @@ hold=${T_INPUT_HOLD:-0}
 # `t test e2e-branch --test boot` stops after the boxes' first boot and its checks.
 extra=()
 [[ ${T_TEST_FILTER:-} != *boot* ]] || extra+=(--boot-only)
+# `t test e2e-branch --test sync` reboots box and a and edits each way six times more after S12.
+[[ ${T_TEST_FILTER:-} != *sync* ]] || extra+=(--sync-rounds 6)
 status=0
 as_user env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
   python3 scripts/vm-e2e/branch.py --disk "$base" --commit "$commit" --tilo-vm /usr/local/bin/tilo-vm \

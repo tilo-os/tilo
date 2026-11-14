@@ -1233,6 +1233,8 @@ def main() -> int:
     ap.add_argument("--tilo-vm", default="tilo-vm")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--hold", type=int, default=0, help="seconds to keep the VMs up after the steps")
+    ap.add_argument("--sync-rounds", type=int, default=0,
+                    help="after S12, reboot box and a and edit each way this many times more")
     ap.add_argument("--boot-only", action="store_true",
                     help="stop after the boxes' first boot and its checks (S01-S07)")
     args = ap.parse_args()
@@ -1314,6 +1316,14 @@ def steps(run: Run, args) -> None:
             edit_shows_on(run, ws, "a", SOURCE, "S11")))
         run.step("S12", "after the reboot, an edit on box shows on a", lambda f: f.update(
             edit_shows_on(run, ws, SOURCE, "a", "S12")))
+        # `t test e2e-branch --test sync`: the reboot and both edits again, round after round,
+        # until one direction misses (S09 and S11 each did, once in a while).
+        for n in range(1, args.sync_rounds + 1):
+            run.step(f"S10-{n}", f"round {n}: box and a reboot", reboot, run, (SOURCE, "a"))
+            run.step(f"S11-{n}", f"round {n}: an edit on a shows on box", lambda f, n=n: f.update(
+                edit_shows_on(run, ws, "a", SOURCE, f"S11-{n}")))
+            run.step(f"S12-{n}", f"round {n}: an edit on box shows on a", lambda f, n=n: f.update(
+                edit_shows_on(run, ws, SOURCE, "a", f"S12-{n}")))
     if not together:
         run.step("S05-b", "b boots again, with a stopped to make room", boot_later, run)
         judge(("b",))

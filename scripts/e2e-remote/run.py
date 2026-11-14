@@ -48,6 +48,9 @@ GUEST_AGENT = HERE / "guest" / "agent.py"
 GUEST_DIR = ".cache/e2e-remote"
 MARK = "E2E-MCP "
 SLOT = "me"
+# What the boxes' sessions log of the agent door, its remote side and the questions it asks.
+DOOR_LOG = ("info,tilo_session::agent_door=debug,tilo_session::remote_door=debug,"
+            "tilo_session::questions=debug,tilo_session::agent_door::seats=debug")
 # Each box: guest memory and CPUs. Three fit beside each other in the micro-VM.
 # A and B run side by side; C runs beside B once A has stopped. A box takes 3 GiB: with less its
 # first login's onboarding does not come up (1.6 GiB boxes never showed it). A micro-VM t booked
@@ -257,9 +260,9 @@ class Run:
         kept = [l for l in text.splitlines() if not any(n in l for n in noise)]
         self.write(f"logs-{box.letter}.txt", "\n".join(kept))
         # A failed run keeps no outputs: what matters of it goes to the log.
-        telling = ("agent door", "agent_door", "remote_door", "lan:", "onboarding", "identity",
-                   "personal", "ERROR", "WARN", "panicked", "refused", "branch")
-        excerpt = ([l for l in kept if any(t in l for t in telling)][-80:]
+        telling = ("agent door", "agent_door", "remote_door", "questions", "lan:", "onboarding",
+                   "identity", "personal", "ERROR", "WARN", "panicked", "refused", "branch")
+        excerpt = ([l for l in kept if any(t in l for t in telling)][-200:]
                    + ["  (its last lines)"] + kept[-40:])
         print(f"--- {box.name}: {len(excerpt)} lines of its session's log ---", flush=True)
         for line in excerpt:
@@ -417,12 +420,21 @@ class Run:
                     timeout=900)
         a.vm.vm_cmd("start", a.name, timeout=900)
         self.running.add("a")
+        self.log_door(a)
         self.make_person(a, res)
         self.ready(a, 300)
         status = self.identity(a)
         res.facts["identity"] = status
         if not (status.get("this_device") or {}).get("device"):
             raise Failed(f"A's person has no certified device after onboarding: {status}")
+
+    def log_door(self, box: Box) -> None:
+        """Have `box` 's session log its agent door and questions at debug from its next start
+        on; B, branched from A, inherits it. Read back only when a step fails."""
+        box.vm.root_exec(
+            f"d=/etc/systemd/system/tilo-vm-session@{SLOT}.service.d; mkdir -p $d && "
+            f"printf '[Service]\\nEnvironment=RUST_LOG={DOOR_LOG}\\n' > $d/90-e2e-door-log.conf && "
+            "systemctl daemon-reload", timeout=60, check=False)
 
     def make_person(self, box: Box, res: Result) -> None:
         """The box's person, made by its first login's onboarding. On a slow box onboarding may
@@ -604,7 +616,8 @@ class Run:
         # What E07's agent asked after B's Stop is withdrawn once it is gone: no sheet stands on B
         # before this agent comes, so a sheet afterwards is this agent's.
         if wait_until(lambda: not self.sheet_targets(b), 60, 1.0) is None:
-            raise Failed("a question about an agent that left still stands on B's desk")
+            names = [t.get("name") for t in self.targets(b)]
+            raise Failed(f"a question about an agent that left still stands on B's desk: {names}")
         res.facts["setting"] = self.set_accept(b, True)
         ready, go = f"$HOME/{GUEST_DIR}/work-ready", f"$HOME/{GUEST_DIR}/work-go"
         a.vm.exec(f'rm -f "{ready}" "{go}"')
@@ -614,7 +627,9 @@ class Run:
         seated = wait_until(lambda: [s for s in self.seated(b) if s.get("seat")], 90, 1.0)
         res.facts["seated"] = seated
         if self.sheet_targets(b):
-            raise Failed("B asked its person although its setting lets the person's devices in")
+            names = [t.get("name") for t in self.targets(b)]
+            raise Failed("B asked its person although its setting lets the person's devices in; "
+                         f"its screen names {names}")
         wait_until(lambda: "yes" in a.vm.exec(f'test -e "{ready}" && echo yes || echo no'), 120, 1.0)
         a.vm.exec(f'touch "{go}"')
         t = self.finish(thread, holder)
