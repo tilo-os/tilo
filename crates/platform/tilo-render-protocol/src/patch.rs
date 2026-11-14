@@ -45,7 +45,7 @@ pub mod unix;
 pub mod validate;
 
 /// The version both ends name. A newer end must still read this one's messages.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
 /// Whether a node of `kind` is a virtual list on the wire: a `ui.VirtualList` or a
 /// `ui.TreeView`, whose rows the app sends apart from the tree ([`ToUi::Rows`]) as the list
@@ -748,15 +748,6 @@ pub enum ToApp {
     },
     /// An input method is composing in the focused control, or stopped.
     Composing(bool),
-    /// What the window calls the room's participants now: `me` for the person at the window,
-    /// and each of `others` by id; and the person each participant `persons` pairs is a device
-    /// of, by id. An app whose instance runs out of the window's process names people, and finds
-    /// the members a workspace's policy names, only by these.
-    Names {
-        me: String,
-        others: Vec<(String, String)>,
-        persons: Vec<(String, String)>,
-    },
     /// The view of `lane` has `width` by `height` of the window, in `rem` (the body text size
     /// after the person's setting): what its `space` reads (layout.md, "Responding to space").
     Space {

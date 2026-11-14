@@ -345,7 +345,7 @@ pub struct Instance {
     opening: bool,
     platform: Rc<dyn Platform>,
     names: Rc<dyn NameHost>,
-    /// What the window said it calls people, which `names` reads first.
+    /// What the workspace's member list calls people, which `names` reads first.
     told: Rc<crate::names::Told>,
     host: Rc<RefCell<Option<Host>>>,
     /// The chunks of the record the frame before the host opened handed over: the store reads and
@@ -366,15 +366,9 @@ pub struct Instance {
     lenses: HashMap<String, Vec<(Principal, bool, bool)>>,
     lenses_changed: bool,
     /// The person and the workspace's policy the runtime's members were last read from.
-    members_from: Option<(
-        String,
-        tilo_action_policy::WorkspacePolicy,
-        crate::members::People,
-    )>,
-    /// How the policy's people are the runtime's principals, as presence pairs them.
-    people: crate::members::People,
-    /// The person's environment moved: their language, their formats, or what the window calls
-    /// someone. What a view shows of any of them is shown again, and what it sent is sent again.
+    members_from: Option<(String, tilo_action_policy::WorkspacePolicy)>,
+    /// The person's environment moved: their language, their formats, or what the member list
+    /// calls someone. What a view shows of any of them is shown again, and what it sent is sent again.
     person_changed: bool,
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
@@ -464,7 +458,6 @@ impl Instance {
         names: Rc<dyn NameHost>,
         transport: Box<dyn Transport>,
     ) -> Self {
-        let people = crate::members::People::new(&config.me, []);
         let told = Rc::new(crate::names::Told::new(&config.me, names));
         Self {
             app: config.app,
@@ -491,7 +484,6 @@ impl Instance {
             lenses: HashMap::new(),
             lenses_changed: false,
             members_from: None,
-            people,
             person_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
@@ -1505,8 +1497,8 @@ impl Instance {
     }
 
     /// Take in what the window tells of itself and of the person at it, which runs nothing
-    /// there and then: where the keyboard is, whether an input method composes, what it calls
-    /// people, the space a view has, and the undos and redos asked for, which the one who runs
+    /// there and then: where the keyboard is, whether an input method composes, the space a
+    /// view has, and the undos and redos asked for, which the one who runs
     /// the instance carries out on the record ([`Self::take_history`]).
     fn window_told(&mut self, told: ToApp) {
         match told {
@@ -1524,19 +1516,6 @@ impl Instance {
             ToApp::Redo => self.history.push(HistoryAsk::Redo),
             ToApp::Focus { at } => self.focus = at,
             ToApp::Composing(composing) => self.composing = composing,
-            ToApp::Names {
-                me,
-                others,
-                persons,
-            } => {
-                // Both are taken, whichever changed.
-                let named = self.told.tell(me, others);
-                let people = crate::members::People::new(&self.me, persons);
-                if named || people != self.people {
-                    self.people = people;
-                    self.person_changed = true;
-                }
-            }
             ToApp::Space {
                 lane,
                 width,
@@ -1643,7 +1622,6 @@ impl Instance {
             | ToApp::Redo
             | ToApp::Focus { .. }
             | ToApp::Composing(_)
-            | ToApp::Names { .. }
             | ToApp::Space { .. }) => {
                 self.window_told(told);
                 Ok(())
@@ -2421,7 +2399,7 @@ impl Instance {
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
         let settled = self.settle_outbox();
-        // The person's environment — their language, their formats, what the window calls
+        // The person's environment — their language, their formats, what the member list calls
         // someone — changed: the boundaries that show what only the window knows run again, and
         // no other.
         let person = std::mem::take(&mut self.person_changed);
@@ -2467,34 +2445,29 @@ impl Instance {
         let Some(standing) = standing else {
             return false;
         };
-        let seen = self
-            .members_from
-            .as_ref()
-            .is_some_and(|(person, policy, people)| {
-                *person == standing.person_id().unwrap_or_default()
-                    && *policy == *standing.policy
-                    && *people == self.people
-            });
+        let seen = self.members_from.as_ref().is_some_and(|(person, policy)| {
+            *person == standing.person_id().unwrap_or_default() && *policy == *standing.policy
+        });
         if seen {
             return false;
         }
         host.runtime().set_members(
-            crate::members::members_of(&standing, &self.people),
-            Some(crate::members::reads_of(&standing, &self.people, &host)),
+            crate::members::members_of(&standing, &self.me),
+            Some(crate::members::reads_of(&standing, &self.me, &host)),
         );
         self.members_from = Some((
             standing.person_id().unwrap_or_default().to_owned(),
             std::sync::Arc::unwrap_or_clone(standing.policy),
-            self.people.clone(),
         ));
         true
     }
 
-    /// Which person each participant presence reports is a device of, `(participant,
-    /// person)`, where the workspace's host paired them: the policy's people are the runtime's
-    /// principals by it.
-    pub fn set_persons(&mut self, pairs: impl IntoIterator<Item = (String, String)>) {
-        self.people = crate::members::People::new(&self.me, pairs);
+    /// What the workspace calls the person `me` and each of `others` by id now, as its member
+    /// list says: the views show people by these.
+    pub fn name_people(&mut self, me: String, others: Vec<(String, String)>) {
+        if self.told.tell(me, others) {
+            self.person_changed = true;
+        }
     }
 
     /// Send the window the tree of `lane` again as patches, read anew.

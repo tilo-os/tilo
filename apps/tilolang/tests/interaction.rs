@@ -34,8 +34,8 @@ fn settle(app: &mut TestApp<TlApp>) {
 }
 
 /// The rects of the widgets named `widget`, in tree order.
-fn rects_of(app: &mut TestApp<TlApp>, widget: &str) -> Vec<[f64; 4]> {
-    let snapshot = app.harness().inspection();
+pub(crate) fn rects_of(window: &ui::headless::FrameHarness, widget: &str) -> Vec<[f64; 4]> {
+    let snapshot = window.inspection();
     let all = snapshot.root.nodes();
     all.into_iter()
         .filter(|node| node.widget == widget)
@@ -84,13 +84,13 @@ fn shows(app: &mut TestApp<TlApp>, text: &str) -> bool {
     })
 }
 
-fn center(rect: [f64; 4]) -> (f64, f64) {
+pub(crate) fn center(rect: [f64; 4]) -> (f64, f64) {
     (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0)
 }
 
 /// The last message's row.
 fn last_message(app: &mut TestApp<TlApp>) -> [f64; 4] {
-    if let Some(rect) = rects_of(app, "SwipeRow").last() {
+    if let Some(rect) = rects_of(app.harness(), "SwipeRow").last() {
         return *rect;
     }
     let snapshot = app.harness().inspection();
@@ -166,255 +166,21 @@ fn a_swipe_past_the_threshold_runs_the_action_in_the_app() {
 }
 
 /// The composer's centre.
-fn composer(app: &mut TestApp<TlApp>) -> (f64, f64) {
-    let inputs = rects_of(app, "RichInput");
+pub(crate) fn composer(window: &ui::headless::FrameHarness) -> (f64, f64) {
+    let inputs = rects_of(window, "RichInput");
     center(*inputs.last().expect("the transcript has its composer"))
 }
 
-/// The workspace's people, as its roster names them to every window in it.
-fn in_the_workspace(app: &mut TestApp<TlApp>) {
-    let mut presence = ui::presence::PresenceCtx::default();
-    for (id, name) in [("u_mia", "Mia"), ("u_leo", "Leo")] {
-        presence
-            .names
-            .insert(ui::permissions::UserId(id.to_owned()), name.to_owned());
-    }
-    app.harness().set_presence_context(presence);
-    app.harness().relayout();
-}
-
 /// The composer's send button: the button on the composer's line.
-fn send_button(app: &mut TestApp<TlApp>) -> (f64, f64) {
-    let (_, y) = composer(app);
-    let buttons = rects_of(app, "Button");
+pub(crate) fn send_button(window: &ui::headless::FrameHarness) -> (f64, f64) {
+    let (_, y) = composer(window);
+    let buttons = rects_of(window, "Button");
     let line = buttons
         .iter()
         .find(|rect| (center(**rect).1 - y).abs() < rect[3])
         .copied()
         .expect("the composer has its send button");
     center(line)
-}
-
-/// The open completion drawer's rows, as assistive technology reads them.
-fn drawer_rows(app: &mut TestApp<TlApp>) -> Vec<String> {
-    fn find(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
-        if node.role == ui::a11y::Role::ListBox {
-            for row in &node.children {
-                if let Some(name) = &row.name {
-                    out.push(name.clone());
-                }
-            }
-            return;
-        }
-        for child in &node.children {
-            find(child, out);
-        }
-    }
-    let snapshot = app.harness().inspection();
-    let all = snapshot.root.nodes();
-    let mut out = Vec::new();
-    for node in all.into_iter().filter(|node| node.widget == "RichInput") {
-        if let Some(access) = &node.semantics {
-            find(access, &mut out);
-        }
-    }
-    out
-}
-
-/// Whether `access` or anything under it says `text` in its name or value.
-fn says(access: &ui::a11y::AccessNode, text: &str) -> bool {
-    access
-        .name
-        .as_deref()
-        .is_some_and(|name| name.contains(text))
-        || access
-            .value
-            .as_deref()
-            .is_some_and(|value| value.contains(text))
-        || access.children.iter().any(|child| says(child, text))
-}
-
-/// Everything `access` and what is under it say, in order.
-fn texts(access: &ui::a11y::AccessNode, out: &mut String) {
-    for part in [&access.name, &access.value].into_iter().flatten() {
-        out.push_str(part);
-        out.push(' ');
-    }
-    for child in &access.children {
-        texts(child, out);
-    }
-}
-
-/// Whether some node in the window says `text` in its name or value.
-fn reads(app: &mut TestApp<TlApp>, text: &str) -> bool {
-    let snapshot = app.harness().inspection();
-    let all = snapshot.root.nodes();
-    all.iter().any(|node| {
-        node.semantics
-            .as_ref()
-            .is_some_and(|access| says(access, text))
-    })
-}
-
-/// What the composer holds.
-fn draft(app: &mut TestApp<TlApp>) -> String {
-    let snapshot = app.harness().inspection();
-    let all = snapshot.root.nodes();
-    all.iter()
-        .rev()
-        .find(|node| node.widget == "RichInput")
-        .and_then(|node| node.semantics.as_ref())
-        .and_then(|access| access.value.clone())
-        .unwrap_or_default()
-}
-
-/// The workspace's membership as its policy records it: the person at the window owns it, Mia
-/// edits, Leo views, and the agent `planner` was admitted. Zoe is in the workspace's roster, but no
-/// member.
-fn members_of_the_workspace(app: &mut TestApp<TlApp>) {
-    use ui::permissions::policy::{self, Grantee, Role};
-    let me = app
-        .permissions()
-        .standing()
-        .person_id()
-        .unwrap_or_default()
-        .to_owned();
-    let id = app.permissions().standing().workspace().to_owned();
-    let mut policy = policy::WorkspacePolicy::new(&id, &me);
-    policy.members.insert("u_mia".to_owned(), Role::Editor);
-    policy.members.insert("u_leo".to_owned(), Role::Viewer);
-    policy.grants.push(policy::Grant::new(
-        "agent-member:planner",
-        Grantee::agent("planner"),
-        policy::TreePath::workspace(&id),
-        policy::KindSet::READ_UNDOABLE,
-        policy::Answer::Allow,
-        Grantee::person(&me),
-    ));
-    let standing = policy::Standing::person(policy, me);
-    app.set_permissions(ui::permissions::PermissionContext::from_standing(standing));
-    let mut presence = ui::presence::PresenceCtx::default();
-    // Mia is here from her laptop, which the workspace's host paired with her person; Leo is named
-    // as himself.
-    for (id, name) in [
-        ("mia-laptop", "Mia"),
-        ("u_leo", "Leo"),
-        ("u_zoe", "Zoe"),
-        ("agent:planner", "Planner"),
-    ] {
-        presence
-            .names
-            .insert(ui::permissions::UserId(id.to_owned()), name.to_owned());
-    }
-    presence.set_participant_kind(
-        ui::permissions::UserId("agent:planner".to_owned()),
-        ui::presence::ParticipantKind::Agent,
-    );
-    presence.set_persons([(
-        ui::permissions::UserId("mia-laptop".to_owned()),
-        ui::permissions::UserId("u_mia".to_owned()),
-    )]);
-    app.harness().set_presence_context(presence);
-    settle(app);
-}
-
-#[test]
-fn the_composers_drawer_offers_the_members_of_the_conversation() {
-    let _settled = ui::motion::testing::settled();
-    let mut app = staged(DESKTOP);
-    members_of_the_workspace(&mut app);
-    let (x, y) = composer(&mut app);
-    app.harness().click_at(x, y);
-    app.harness().type_text("@");
-    app.harness().relayout();
-    let people = drawer_rows(&mut app);
-    // Who spoke in the conversation first (its scenario's people), then its members.
-    let members = people.iter().position(|row| row == "Members").map_or_else(
-        || panic!("the members have their header: {people:?}"),
-        |at| &people[at + 1..],
-    );
-    assert!(
-        people
-            .first()
-            .is_some_and(|row| row == "In this conversation"),
-        "{people:?}"
-    );
-    for member in ["Mia", "Leo"] {
-        assert!(
-            members.iter().any(|row| row.contains(member)),
-            "{member} is a member and is offered: {people:?}"
-        );
-    }
-    assert!(
-        !people.iter().any(|row| row.contains("Zoe")),
-        "who is in the roster but no member is not offered: {people:?}"
-    );
-    // The drawer shows its first rows; typing finds the rest.
-    app.harness().type_text("pla");
-    app.harness().relayout();
-    let found = drawer_rows(&mut app);
-    assert!(
-        found.len() == 1 && found[0].contains("Planner"),
-        "the admitted agent is a member too: {found:?}"
-    );
-    app.harness().key("Enter");
-    settle(&mut app);
-    // An agent's mention reads as one: `@Planner · Agent`.
-    let draft = draft(&mut app);
-    assert!(draft.starts_with("@Planner"), "{draft:?}");
-}
-
-#[test]
-fn the_composers_drawer_offers_the_workspaces_people_and_writes_a_mention_that_is_sent() {
-    let _settled = ui::motion::testing::settled();
-    let mut app = staged(DESKTOP);
-    in_the_workspace(&mut app);
-    let (x, y) = composer(&mut app);
-    app.harness().click_at(x, y);
-    app.harness().type_text("thanks @");
-    app.harness().relayout();
-    let people = drawer_rows(&mut app);
-    assert!(
-        people.iter().any(|row| row == "Mia") && people.iter().any(|row| row == "Leo"),
-        "the trigger opens the workspace's people, with nothing declared by the view: {people:?}"
-    );
-    app.harness().type_text("mi");
-    // No settling: the drawer narrows in the window.
-    app.harness().relayout();
-    assert_eq!(drawer_rows(&mut app), ["Mia"]);
-    app.harness().key("Enter");
-    settle(&mut app);
-    assert_eq!(draft(&mut app), "thanks @Mia ");
-    assert!(
-        drawer_rows(&mut app).is_empty(),
-        "the pick closed the drawer"
-    );
-    app.harness().type_text("for the build");
-    settle(&mut app);
-    let (bx, by) = send_button(&mut app);
-    app.harness().click_at(bx, by);
-    settle(&mut app);
-    assert!(
-        reads(&mut app, "for the build"),
-        "the message was sent: {:?}",
-        all_names(&mut app)
-    );
-    let sent = {
-        let snapshot = app.harness().inspection();
-        let all = snapshot.root.nodes();
-        all.iter()
-            .rev()
-            .find(|node| node.widget == "BlockEditor")
-            .and_then(|node| node.semantics.clone())
-            .expect("the sent message shows its rich text")
-    };
-    let mut said = String::new();
-    texts(&sent, &mut said);
-    assert!(
-        said.contains("Mia") && said.contains("for the build"),
-        "the sent message holds its mention, read as the person: {said:?}"
-    );
-    assert_eq!(draft(&mut app), "", "and the draft cleared");
 }
 
 #[test]
@@ -461,8 +227,7 @@ fn shots() {
             settle(&mut app);
             // The composer's drawer: opened by its trigger, narrowed while typing, saying
             // nothing matches, and the picked mention sent.
-            in_the_workspace(&mut app);
-            let (cx, cy) = composer(&mut app);
+            let (cx, cy) = composer(app.harness());
             app.harness().click_at(cx, cy);
             app.harness().type_text("thanks @");
             settle(&mut app);
@@ -477,7 +242,7 @@ fn shots() {
             settle(&mut app);
             app.harness().render_png(&name("drawer-no-match"));
             app.harness().key("Escape");
-            let (bx, by) = send_button(&mut app);
+            let (bx, by) = send_button(app.harness());
             app.harness().click_at(bx, by);
             settle(&mut app);
             app.harness().render_png(&name("sent-reference"));

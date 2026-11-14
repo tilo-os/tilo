@@ -1,7 +1,10 @@
-//! Where the people of a record are, and who of them is writing a message: presence, as it arrives
-//! on an instance's own connection and as the instance says it of its person there.
+//! Who the people of a record are, where they are, and who of them is writing a message: the
+//! workspace's member list and presence, as they arrive on an instance's own connection, and
+//! presence as the instance says it of its person there.
 //!
-//! The broker relays every participant's presence frame on the record's route to the other
+//! The broker hands every connection the workspace's member list (`CollabEvent::Context`): what
+//! the instance's views call each person, its own person among them, as a native app's window
+//! calls them. It relays every participant's presence frame on the record's route to the other
 //! connections on it. The instance's views read what this device heard as lenses
 //! (`lenses(c)`): who else is at each resource, and who is composing a message in the one the
 //! detail view shows, so a conversation says "… is typing" without reading a draft. What the
@@ -25,6 +28,8 @@ pub struct Presence {
     said_at: Option<PresenceKey>,
     /// Where the instance last said its person writes a message, while they do.
     said_composing: Option<PresenceKey>,
+    /// Whether the member list changed since the instance was last told what people are called.
+    renamed: bool,
 }
 
 impl Presence {
@@ -32,35 +37,72 @@ impl Presence {
     #[must_use]
     pub fn new(app: &str, me: &str) -> Self {
         let mut heard = PresenceCtx::default();
-        // Frames of the person's own other windows are theirs, never someone else here.
-        heard.set_self_participant(UserId(me.to_owned()), me.to_owned());
+        // Frames of the person's own other windows are theirs, never someone else here. Their
+        // name is the member list's to say.
+        heard.set_self_participant(UserId(me.to_owned()), "");
         Self {
             app: app.to_owned(),
             me: me.to_owned(),
             heard,
             said_at: None,
             said_composing: None,
+            renamed: true,
         }
     }
 
-    /// Take `event` when it is a presence frame the broker relayed. Whether it was one.
+    /// Take `event` when it is a presence frame the broker relayed, or the workspace's member
+    /// list. Whether it was a presence frame, which nothing else takes; the member list also
+    /// names the apps installed here, which the host reads.
     pub fn take(&mut self, event: &CollabEvent) -> bool {
-        let CollabEvent::RemotePresenceUpdate {
-            user_id,
-            key,
-            payload,
-        } = event
-        else {
-            return false;
-        };
-        self.heard
-            .apply_remote_presence(user_id.clone(), key.clone(), payload.clone());
-        true
+        match event {
+            CollabEvent::RemotePresenceUpdate {
+                user_id,
+                key,
+                payload,
+            } => {
+                self.heard
+                    .apply_remote_presence(user_id.clone(), key.clone(), payload.clone());
+                true
+            }
+            CollabEvent::Context { members, .. } => {
+                self.heard.apply_members(members.clone());
+                if self.heard.self_id().is_none() {
+                    // A list without the person: their own frames are still theirs.
+                    self.heard.set_self_participant(UserId(self.me.clone()), "");
+                }
+                self.renamed = true;
+                false
+            }
+            _ => false,
+        }
     }
 
-    /// Tell `instance` who else is at each resource of the app, and who is composing a message
-    /// in the resource its detail view shows.
+    /// How long until someone heard composing without a word since drops out: the host wakes
+    /// then, so "… is typing" from someone whose window vanished goes with nothing else
+    /// happening. `None` while nobody composes.
+    #[must_use]
+    pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        let ends = self.heard.composing_ends()?;
+        Some(ends.saturating_duration_since(ui::time::now()))
+    }
+
+    /// Tell `instance` what people are called, who else is at each resource of the app, and who
+    /// is composing a message in the resource its detail view shows.
     pub fn show(&mut self, instance: &mut Instance) {
+        if std::mem::take(&mut self.renamed) {
+            let me = self
+                .heard
+                .self_label()
+                .or_else(collaboration::local_identity::own_name)
+                .unwrap_or_default();
+            let others = self
+                .heard
+                .names
+                .keys()
+                .map(|user| (user.0.clone(), self.heard.display_name(user)))
+                .collect();
+            instance.name_people(me, others);
+        }
         let now = ui::time::now();
         self.heard.prune_composing(now);
         let composing: Vec<String> = instance.detail_target().map_or_else(Vec::new, |target| {

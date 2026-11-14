@@ -156,6 +156,9 @@ struct Opening {
     language: Option<String>,
     /// The item its window was asked to open on ([`InstanceRequest::reveal`]).
     reveal: Option<String>,
+    /// What its connection delivered while the route joined that the instance takes once it
+    /// runs: the workspace's member list, which the broker hands a connection once.
+    early: Vec<collaboration::CollabEvent>,
 }
 
 impl Opening {
@@ -480,6 +483,7 @@ impl TilolangHost {
             person_changed: false,
             language: None,
             reveal,
+            early: Vec::new(),
         });
         Ok(())
     }
@@ -511,6 +515,7 @@ impl TilolangHost {
             person_changed: false,
             language: None,
             reveal: None,
+            early: Vec::new(),
         });
     }
 
@@ -546,9 +551,9 @@ impl TilolangHost {
                     bundle,
                     mut manager,
                 } => {
-                    // Nothing is delivered on a route before it is joined: what does come is
-                    // said, as nothing answers it.
-                    said_early(&spec.app, manager.poll());
+                    // Nothing is delivered on a route before it is joined: a request that does
+                    // come is said, as nothing answers it. The rest waits for the instance.
+                    arrived_early(&spec.app, manager.poll(), &mut opening.early);
                     if let Some(refused) = manager.join_refusal() {
                         return Err(AdmitError::Join(refused.to_owned()));
                     }
@@ -765,6 +770,7 @@ impl TilolangHost {
             &self.formats,
             Arc::clone(&self.wake),
         );
+        hosted.arrived_early(std::mem::take(&mut opening.early));
         if opening.person_changed {
             hosted.person_changed();
             opening.person_changed = false;
@@ -1064,14 +1070,12 @@ impl TilolangHost {
         true
     }
 
-    /// How long until the time a view of some instance read (`today` in a query) next reads
-    /// differently: the host's wait ends then, and that turn runs again the views that read it.
-    /// `None` when no view read the time: the host waits for nothing but its descriptors.
+    /// How long until some instance shows something else with nothing arriving
+    /// ([`Hosted::wakes_in`]): the host's wait ends then, and that turn runs the views again.
+    /// `None` when none waits: the host waits for nothing but its descriptors.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
-        self.instances()
-            .filter_map(|hosted| hosted.instance().wakes_in())
-            .min()
+        self.instances().filter_map(Hosted::wakes_in).min()
     }
 
     /// The windows whose instances ended since this was last asked: closed, or never opened.
@@ -1130,8 +1134,12 @@ impl TilolangHost {
 }
 
 /// Say each request in `events`, which reached the instance of `app` before its route was
-/// joined: nothing answers it.
-fn said_early(app: &str, events: Vec<collaboration::CollabEvent>) {
+/// joined: nothing answers it. The rest is kept in `kept`, for the instance once it runs.
+fn arrived_early(
+    app: &str,
+    events: Vec<collaboration::CollabEvent>,
+    kept: &mut Vec<collaboration::CollabEvent>,
+) {
     for early in events {
         if matches!(
             early,
@@ -1144,6 +1152,8 @@ fn said_early(app: &str, events: Vec<collaboration::CollabEvent>) {
                 event = ?early,
                 "a request reached an instance before its route was joined"
             );
+        } else {
+            kept.push(early);
         }
     }
 }

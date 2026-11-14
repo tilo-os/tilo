@@ -29,7 +29,7 @@ fn control_named(app: &mut super::Session, name: &str) -> String {
 
 #[test]
 fn a_persons_click_on_a_button_runs_the_action_and_history_names_them() {
-    let mut app = super::Session::new("so.tilo.lang.counter", "ada", |_| {});
+    let mut app = super::Session::new("so.tilo.lang.counter", "ada");
     settle(&mut app);
     for _ in 0..3 {
         let plus = control_named(&mut app, "Increment");

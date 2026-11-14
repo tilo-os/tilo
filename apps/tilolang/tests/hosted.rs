@@ -80,6 +80,8 @@ mod history_undo;
 mod later_builds;
 #[path = "hosted/marks.rs"]
 mod marks;
+#[path = "hosted/members.rs"]
+mod members;
 #[path = "hosted/narrow.rs"]
 mod narrow;
 #[path = "hosted/personal.rs"]
@@ -399,6 +401,11 @@ pub(crate) struct Session {
     invoked: u64,
 }
 
+/// `person`'s instance of the app of `route`, at a desktop that speaks English.
+fn spec_of(route: &RouteSpec, person: &str) -> Spec {
+    Spec::new(&route.app_id, route.cluster_id.to_string(), 1, person).in_language("en-US")
+}
+
 /// Whether `host`'s instance reads the workspace's indexes: until then it shows the platform's
 /// loading state. An index being built answers from its first step, so this is reached before
 /// the whole workspace is read.
@@ -412,12 +419,12 @@ fn index_ready(host: &TilolangHost) -> bool {
 impl Session {
     /// A person at a Tasks window in the frame harness.
     fn tasks() -> Self {
-        Self::new(TASKS, "ada", |_| {})
+        Self::new(TASKS, "ada")
     }
 
     /// A person at a Notes window in the frame harness.
     fn notes() -> Self {
-        Self::new(NOTES, "ada", |_| {})
+        Self::new(NOTES, "ada")
     }
 
     /// `person` at a harness window of the app `app` drawn `viewport` logical pixels wide and
@@ -458,7 +465,7 @@ impl Session {
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
     /// frame harness making it.
     fn rich() -> Self {
-        Self::new(RICHBODY, "ada", |_| {})
+        Self::new(RICHBODY, "ada")
     }
 
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
@@ -485,20 +492,9 @@ impl Session {
         session
     }
 
-    /// `person` at a harness window of the app `app`, whose presence `present` sets up.
-    pub(crate) fn new(
-        app: &str,
-        person: &str,
-        present: impl FnOnce(&mut ui::presence::PresenceCtx),
-    ) -> Self {
-        Self::open(app, person, |hosted| {
-            let mut window = Window::in_harness(hosted);
-            window.harness().update_presence(|presence| {
-                present(presence);
-                true
-            });
-            window
-        })
+    /// `person` at a harness window of the app `app`.
+    pub(crate) fn new(app: &str, person: &str) -> Self {
+        Self::open(app, person, Window::in_harness)
     }
 
     /// `person` at a harness window of the app `app`, at a desktop that speaks `language`
@@ -564,6 +560,26 @@ impl Session {
         Self::launch(manager, route, spec, chunks, storage, wire, window)
     }
 
+    /// A person at a harness window of the instance `spec` names, of the app of `route`, over the
+    /// workspace record `chunks`, on a connection of `bus`: what they say of themselves reaches
+    /// the bus's other connections on the route, and the bus's member list names everyone.
+    /// Settled.
+    pub(crate) fn on_bus(
+        bus: &Rc<tilolang_host::testing::Bus>,
+        route: &RouteSpec,
+        spec: Spec,
+        chunks: tilolang_tilo::chunk::Chunks,
+    ) -> Self {
+        let broker = Broker::on(bus, route.clone(), &spec.person);
+        let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
+        let manager = CollaborationManager::with_peer_transport(broker);
+        let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
+        let mut session =
+            Self::launch(manager, route, spec, chunks, None, wire, Window::in_harness);
+        session.settle();
+        session
+    }
+
     /// A person at a Tasks window over the workspace record `chunks` (its own chunk and the
     /// chunks above it this replica holds), opened on `route`, whose package keeps what it
     /// keeps in `storage`: the indexes an earlier window of the same route left there are read,
@@ -619,7 +635,9 @@ impl Session {
             record_kind: None,
             handle: Some(spec.person.clone()),
         }));
-        let _ = manager.poll();
+        // What arrives while the route joins, the member list among it, the host takes once the
+        // instance runs.
+        let early = manager.poll();
         let record = InstanceRecord::of(
             chunks,
             manager,
@@ -631,7 +649,7 @@ impl Session {
         let app = spec.app.clone();
         let person = spec.person.clone();
         let bundle = package(package_of(&spec.app));
-        let (host, theirs) = tilolang_app::hosted::start(
+        let (mut host, theirs) = tilolang_app::hosted::start(
             spec,
             |_| Ok(record),
             bundle,
@@ -640,6 +658,10 @@ impl Session {
             woken.waker(),
         )
         .unwrap();
+        host.instances_mut()
+            .next()
+            .expect("the window's instance")
+            .arrived_early(early);
         Self {
             app,
             person,
@@ -1112,12 +1134,14 @@ fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() 
 }
 
 #[test]
-fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key() {
+fn who_edited_a_page_reads_as_the_name_the_member_list_calls_them_never_their_key() {
     // The person's id is their key, as a real workspace's ids are.
     let ada = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
-    let mut session = Session::new("so.tilo.lang.signed", ada, |presence| {
-        presence.set_self_participant(ui::permissions::UserId(ada.to_owned()), "Ada");
-    });
+    let bus = Rc::new(tilolang_host::testing::Bus::default());
+    bus.member(ada, "Ada");
+    let route = RouteSpec::app("so.tilo.lang.signed", uuid::Uuid::new_v4());
+    let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
+    let mut session = Session::on_bus(&bus, &route, spec_of(&route, ada), chunks);
     let root = session
         .hosted()
         .view()
@@ -1136,16 +1160,13 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
     // Each letter is a change of the record: the page reads the one that named them the editor.
     session.window.type_text("Plan");
     session.settle();
-    // The person's name changes, as a roster renames them: the page follows.
-    session.window.harness().update_presence(|presence| {
-        presence.set_self_participant(ui::permissions::UserId(ada.to_owned()), "Ada Lovelace");
-        true
-    });
+    // The workspace renames the person: the page follows.
+    bus.member(ada, "Ada Lovelace");
     session.settle();
     let shown = session.shown();
     assert!(
         shown.iter().any(|text| text == "Edited by Ada Lovelace"),
-        "the page names who edited it as the window does: {shown:?}"
+        "the page names who edited it as the member list does: {shown:?}"
     );
     assert!(
         !shown.iter().any(|text| text.contains("95522b97c3d1")),
@@ -1841,7 +1862,7 @@ fn a_task_checked_off_through_the_host_fills_its_box_over_frames() {
     use ui::time::testing::with_monotonic_time;
     use ui::winit::keyboard::NamedKey;
 
-    let mut session = Session::new(TASKS, "ada", |_| {});
+    let mut session = Session::new(TASKS, "ada");
     // A task, added through the entry the window shows.
     let mut entries = Vec::new();
     named(session.window.root(), "New task", &mut entries);

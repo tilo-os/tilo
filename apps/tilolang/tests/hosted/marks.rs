@@ -20,7 +20,7 @@ const NOTES: &str = "so.tilo.lang.notes";
 
 /// The Notes window with one note of Ada's and two the agent's run made, and the notebook.
 fn notes_after_a_run() -> (Session, String) {
-    let mut app = Session::new("so.tilo.lang.notes", "ada", |_| {});
+    let mut app = Session::new("so.tilo.lang.notes", "ada");
     settle(&mut app);
     let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
     let notebook = format!("tl:{NOTES}:{root}");

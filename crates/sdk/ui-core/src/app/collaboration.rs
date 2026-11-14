@@ -1262,50 +1262,7 @@ impl App {
     /// a locally-derived id is recognised in a workspace-keyed roster) and the
     /// host-assigned name; it never enters the roster itself.
     fn apply_collab_context(&mut self, members: Vec<crate::collaboration::Member>) {
-        let current = members
-            .iter()
-            .map(|participant| crate::permissions::UserId(participant.id.key()))
-            .collect::<std::collections::HashSet<_>>();
-        for departed in self.collaboration.context_participants.difference(&current) {
-            self.presence_ctx.unregister_peer(&departed.0);
-        }
-        for participant in &members {
-            self.presence_ctx.set_participant_kind(
-                crate::permissions::UserId(participant.id.key()),
-                !participant.id.is_person(),
-            );
-            self.presence_ctx.set_joined_at(
-                crate::permissions::UserId(participant.id.key()),
-                participant.joined_at,
-            );
-        }
-        if let Some(me) = members.iter().find(|c| c.is_self) {
-            self.presence_ctx
-                .set_self_participant(crate::permissions::UserId(me.id.key()), me.name.clone());
-            self.presence_ctx
-                .set_presence_hue(crate::permissions::UserId(me.id.key()), me.colour);
-        } else {
-            self.presence_ctx.clear_self_participant();
-        }
-        // Filtered to others: letting the self row through would put the
-        // local user in every list built from presence.
-        for c in members.into_iter().filter(|c| !c.is_self) {
-            let user = crate::permissions::UserId(c.id.key());
-            // Relabel only — the roster doesn't say where a peer's pointer
-            // is, so it must not mint one at the origin.
-            self.presence_ctx
-                .set_display_name(user.clone(), c.name.clone());
-            self.presence_ctx.set_presence_hue(user.clone(), c.colour);
-            self.presence_ctx.set_participant_kind(
-                user,
-                if c.id.is_person() {
-                    crate::presence::ParticipantKind::Person
-                } else {
-                    crate::presence::ParticipantKind::Agent
-                },
-            );
-        }
-        self.collaboration.context_participants = current;
+        self.presence_ctx.apply_members(members);
     }
 
     /// Bypasses the collab manager's socket/poll path — for tests using a

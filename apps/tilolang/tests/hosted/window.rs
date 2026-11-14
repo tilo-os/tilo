@@ -27,7 +27,7 @@ fn task() -> (ActionInvoker, ActionContext) {
 
 /// `app`'s window in the frame harness with the scenario `scenario` staged.
 fn staged(app: &str, scenario: &str) -> Session {
-    let mut session = Session::new(app, "ada", |_| {});
+    let mut session = Session::new(app, "ada");
     session.instance_mut().stage(scenario);
     session.settle();
     session
@@ -737,7 +737,7 @@ fn sections(node: &UiNode) -> Vec<(String, Vec<String>)> {
 /// categories, with the people to write to under a heading of their own.
 #[test]
 fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_its_category() {
-    let mut session = Session::new(CHAT, "ada", |_| {});
+    let mut session = Session::new(CHAT, "ada");
     let shell = composed(&mut session);
     assert_eq!(
         shell.props.get("nothing_listed"),

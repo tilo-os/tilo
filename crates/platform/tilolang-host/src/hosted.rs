@@ -851,6 +851,8 @@ pub struct Hosted {
     /// Who else is where in the record, as the connection hears it, and what the instance last
     /// said of its own person there.
     presence: Presence,
+    /// What the connection delivered before the instance ran, taken on its first frame.
+    early: Vec<CollabEvent>,
 }
 
 /// The wake scope a record's code runs in, the record's content store registered for it: an
@@ -937,7 +939,7 @@ impl Hosted {
                 sink: None,
             },
             Rc::new(platform),
-            // People by what the window calls them, once it said (`ToApp::Names`).
+            // People by what the workspace's member list calls them, once it arrived.
             Rc::new(tilolang_tilo::names::Unnamed),
             window,
         );
@@ -985,6 +987,7 @@ impl Hosted {
             personal,
             standing,
             presence,
+            early: Vec::new(),
         }
     }
 
@@ -1049,6 +1052,23 @@ impl Hosted {
     #[must_use]
     pub fn instance(&self) -> &Instance {
         &self.instance
+    }
+
+    /// Take `events`, which the connection delivered while its route joined, on the next frame,
+    /// before what arrives then: the workspace's member list, which the broker hands it once.
+    pub fn arrived_early(&mut self, events: Vec<CollabEvent>) {
+        self.early.extend(events);
+    }
+
+    /// How long until the instance shows something else with nothing arriving: the time a view
+    /// read moves on (its midnight), or someone heard writing a message goes quiet long enough to
+    /// stop reading as typing. `None` when neither waits.
+    #[must_use]
+    pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        [self.instance.wakes_in(), self.presence.wakes_in()]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// The workspace record the instance holds.
@@ -1119,7 +1139,7 @@ impl Hosted {
     /// run, and the surface published. Whether anything changed.
     pub fn turn(&mut self) -> bool {
         let _code = self.scope.enter();
-        let mut events = Vec::new();
+        let mut events = std::mem::take(&mut self.early);
         let mut changed = self
             .record
             .receive_and(&mut self.instance, |event| events.push(event));

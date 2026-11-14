@@ -35,7 +35,7 @@ impl tracing::Subscriber for Errors {
 
 #[test]
 fn a_new_note_reaches_another_replica_in_order_and_whole() {
-    let mut app = super::Session::new("so.tilo.lang.notes", "ada", |_| {});
+    let mut app = super::Session::new("so.tilo.lang.notes", "ada");
     settle(&mut app);
     let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
     let notebook = format!("tl:{NOTES}:{root}");

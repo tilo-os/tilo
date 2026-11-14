@@ -689,11 +689,6 @@ pub(super) struct CollaborationRuntime {
     /// What the primary route's end-to-end encrypted channel lets this
     /// device do, as last reported; `None` before the first report.
     pub(super) key_access: Option<crate::collaboration::KeyAccessState>,
-    /// Ids in the last complete collaboration Context snapshot. This is kept
-    /// separately from ephemeral pointer/caret presence so a replacement can
-    /// retire departed certified members without touching unrelated local
-    /// presentation state.
-    pub(super) context_participants: std::collections::HashSet<crate::permissions::UserId>,
     /// What the window's status line last said about the connection: a
     /// join held up, refused or lost changes it without changing the
     /// window's model.
@@ -713,7 +708,6 @@ impl CollaborationRuntime {
             snapshot_on_ready: false,
             history: crate::collaboration::DocumentHistory::default(),
             key_access: None,
-            context_participants: std::collections::HashSet::new(),
             shown_sync_status: None,
         }
     }

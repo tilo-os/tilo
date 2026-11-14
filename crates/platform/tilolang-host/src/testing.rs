@@ -1,7 +1,7 @@
 //! The broker's end of an instance's connections, for the host's tests and examples: a fake in
 //! place of the session's broker that admits the routes a connection joins, keeps what it sends
-//! where the test reads it, and relays a change and a presence frame to the connections joined on
-//! its route as the broker does.
+//! where the test reads it, relays a change and a presence frame to the connections joined on its
+//! route, and hands each connection the workspace's member list, as the broker does.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -35,13 +35,60 @@ pub struct Directory {
 }
 
 /// The connections of one workspace, as the broker holds them: a change sent on a route reaches
-/// the other connections joined on that route.
+/// the other connections joined on that route, and every connection is handed the workspace's
+/// member list when it joins and whenever the list changes.
 #[derive(Default)]
 pub struct Bus {
     joined: RefCell<Vec<(RouteSpec, String, Inbox)>>,
+    /// The workspace's members, by person id, with their names.
+    members: RefCell<Vec<(String, String)>>,
 }
 
 impl Bus {
+    /// The workspace has the member `person`, named `name`: every connection is told.
+    pub fn member(&self, person: &str, name: &str) {
+        {
+            let mut members = self.members.borrow_mut();
+            members.retain(|(held, _)| held != person);
+            members.push((person.to_owned(), name.to_owned()));
+        }
+        let joined: Vec<(String, Inbox)> = self
+            .joined
+            .borrow()
+            .iter()
+            .map(|(_, person, inbox)| (person.clone(), Rc::clone(inbox)))
+            .collect();
+        let mut told: Vec<Inbox> = Vec::new();
+        for (person, inbox) in joined {
+            if !told.iter().any(|done| Rc::ptr_eq(done, &inbox)) {
+                self.tell_members(&person, &inbox);
+                told.push(inbox);
+            }
+        }
+    }
+
+    /// Hands the connection of `person` at `inbox` the member list, its own row marked: nothing
+    /// while the workspace has no members.
+    fn tell_members(&self, person: &str, inbox: &Inbox) {
+        let members = self.members.borrow();
+        if members.is_empty() {
+            return;
+        }
+        let members = members
+            .iter()
+            .map(|(id, name)| {
+                let mut member = collaboration::Member::keyed(id, name.clone());
+                member.is_self = id == person;
+                member
+            })
+            .collect();
+        inbox.borrow_mut().push_back(CollabEvent::Context {
+            members,
+            permissions: Vec::new(),
+            apps: Vec::new(),
+        });
+    }
+
     fn join(&self, route: RouteSpec, person: String, inbox: Inbox) {
         let mut joined = self.joined.borrow_mut();
         if joined
@@ -220,6 +267,7 @@ impl PeerTransport for Broker {
                     self.person.clone(),
                     Rc::clone(&self.inbox),
                 );
+                self.bus.tell_members(&self.person, &self.inbox);
             }
             CollabRequest::Document {
                 mutation, commit, ..

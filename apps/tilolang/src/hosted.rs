@@ -367,8 +367,6 @@ pub struct HostedWindow {
     activation: std::cell::Cell<bool>,
     /// Shown until the patch connection arrives: the platform's loading state.
     waiting: ui::widget::Element,
-    /// What the window last told the instance it calls people (`ToApp::Names`).
-    told: Option<crate::names::Said>,
     /// The host running the window's instance in this process, without a session.
     in_process: Option<InProcess>,
 }
@@ -387,7 +385,6 @@ impl HostedWindow {
             drawn: false,
             activation: std::cell::Cell::new(false),
             waiting: Box::new(ui::widget::Spinner::new()),
-            told: None,
             in_process: None,
         };
         window.connect();
@@ -434,7 +431,6 @@ impl HostedWindow {
             drawn: false,
             activation: std::cell::Cell::new(false),
             waiting: Box::new(ui::widget::Spinner::new()),
-            told: None,
             in_process: None,
         }
     }
@@ -760,27 +756,6 @@ impl ui::widget::Decorator for HostedWindow {
             tilo_startup_metrics::mark("tilolang-first-draw-before-tree");
         }
         self.drawn = true;
-        // The instance runs in the host, which knows people only by id: it names them as the
-        // window does, told whenever that changes.
-        if let Some(connected) = &mut self.connected {
-            let said = crate::names::said(presence);
-            if self.told.as_ref() != Some(&said) {
-                let crate::names::Said {
-                    me,
-                    others,
-                    persons,
-                } = said.clone();
-                connected
-                    .view
-                    .tell(tilo_render_protocol::patch::ToApp::Names {
-                        me,
-                        others,
-                        persons,
-                    });
-                connected.view.flush();
-                self.told = Some(said);
-            }
-        }
         self.content_mut()
             .draw_child(scene, transform, text, theme, presence);
     }

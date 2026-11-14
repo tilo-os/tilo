@@ -1,9 +1,8 @@
 //! How a view names the workspace's participants.
 //!
-//! The record holds ids, the same on every replica; the window knows the names: what the workspace's
-//! roster calls each participant, and what this device calls its own person. An instance that
-//! runs in the window's process asks the window directly. One that runs elsewhere, in a
-//! tilolang host, names people by what its window told it last ([`Told`]).
+//! The record holds ids, the same on every replica; the workspace's member list knows the names:
+//! what it calls each participant, the instance's own person among them. A tilolang host names
+//! people by the list its instance's connection heard last ([`Told`]).
 //!
 //! Naming is by what a participant is ([`actor_name`]): a person by their name, an app by its own
 //! name, an agent by the name it goes by. A history row, a presence mark and a catch-up line say
@@ -65,15 +64,15 @@ impl NameHost for Unnamed {
     }
 }
 
-/// What the window said it calls the participants.
+/// What the member list calls the participants.
 #[derive(Default, PartialEq, Eq)]
 struct Said {
     me: Option<String>,
     others: HashMap<String, String>,
 }
 
-/// The names an instance shows people by: what its window told it ([`Told::tell`]) first, and
-/// what its embedder knows otherwise.
+/// The names an instance shows people by: what its host heard the member list call them
+/// ([`Told::tell`]) first, and what its embedder knows otherwise.
 pub struct Told {
     me: String,
     said: RefCell<Said>,
@@ -91,7 +90,7 @@ impl Told {
         }
     }
 
-    /// The window calls its person `me` and each of `others` by id now. Whether any name
+    /// The member list calls the person `me` and each of `others` by id now. Whether any name
     /// changed.
     pub fn tell(&self, me: String, others: Vec<(String, String)>) -> bool {
         let next = Said {
