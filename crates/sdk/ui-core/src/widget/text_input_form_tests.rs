@@ -778,9 +778,18 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     host.flush().unwrap();
     input.insert_word_boundary(" ");
     assert_eq!(input.value(), "teh ");
+    // An edit is a request the session answers: it refuses an ordinary app's reset, and the
+    // words stay as they were.
+    crate::personal_dictionary::edit(1, crate::personal_dictionary::Edit::Reset).unwrap();
     assert!(
-        crate::personal_dictionary::edit(1, crate::personal_dictionary::Edit::Reset).is_err(),
+        host.flush().is_err(),
         "ordinary apps may add explicit words but cannot reset the dictionary"
+    );
+    assert!(
+        crate::personal_dictionary::snapshot()
+            .unwrap()
+            .contains("teh", "en"),
+        "a refused reset leaves the words alone"
     );
     let mut ordinary = field("adress");
     ordinary.core.set_caret(ordinary.text.len());
