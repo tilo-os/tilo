@@ -697,6 +697,10 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn the_store_keeps_snapshots_and_listings_across_changes;
 
     phase readers_share_a_snapshot_until_the_mirror_changes;

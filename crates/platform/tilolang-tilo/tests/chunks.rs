@@ -127,6 +127,10 @@ fn held(host: &Host) -> Vec<(ChunkNo, usize, usize)> {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn a_resource_in_a_chunk_is_read_written_and_settled_there;
 
     phase a_record_split_over_two_chunks_reads_writes_and_syncs_each_resource_through_its_chunk;

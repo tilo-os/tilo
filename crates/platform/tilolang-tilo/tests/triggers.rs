@@ -240,6 +240,10 @@ fn remind_at(replica: &mut Replica, doc: &str, at: &str) {
 const PERIOD: i64 = 30 * 60;
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn a_trigger_runs_once_when_it_is_due;
 
     phase a_schedule_runs_once_a_period;

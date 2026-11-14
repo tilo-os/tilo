@@ -346,6 +346,10 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn the_lists_read_and_count_what_they_hold;
 
     phase inbox_today_and_upcoming_are_read_when_they_are_asked;

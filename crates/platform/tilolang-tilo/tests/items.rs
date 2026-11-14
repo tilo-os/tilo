@@ -581,6 +581,10 @@ fn call(r: &Workspace, name: &str, column: &str, card: &str) -> Value {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn concurrent_moves_and_removals_of_cards_converge;
 
     phase concurrent_moves_of_a_card_leave_it_where_the_last_put_it;

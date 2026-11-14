@@ -532,6 +532,10 @@ fn a_day_away_at_today() -> (Away, ViewInstance, UiNode) {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn a_day_away_reads_as_a_catch_up;
 
     phase a_day_away_names_in_its_header_who_changed_what;

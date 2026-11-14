@@ -46,6 +46,10 @@ fn suggested_workspace() -> (Replica, tilolang_runtime::ResourceRef) {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn what_the_outbox_holds_leaves_once;
 
     phase two_replicas_approving_the_same_suggestion_deliver_the_letter_once;

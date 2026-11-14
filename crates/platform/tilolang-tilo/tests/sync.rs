@@ -213,6 +213,10 @@ fn retype(grace: &mut Replica, meta: &tilolang_runtime::Meta, root: &str, item: 
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn the_runtimes_mirror_follows_a_peers_changes;
 
     phase a_peers_edit_of_one_item_reaches_the_runtime_as_that_items_field;

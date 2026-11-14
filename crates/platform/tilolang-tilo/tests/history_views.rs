@@ -407,6 +407,10 @@ fn a_history_entry_never_takes_back_the_making_and_keeps_older_changes_in_its_me
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn a_history_entry_reads_and_offers_what_was_done;
 
     phase the_newest_history_entry_offers_the_persons_own_change_undone_on_the_row;
