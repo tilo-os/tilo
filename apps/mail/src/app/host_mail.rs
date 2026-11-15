@@ -138,7 +138,7 @@ impl HostMail {
             InvokeArgument::None,
             None,
         ));
-        self.listed_at = Some(ui::time::Instant::now());
+        self.listed_at = Some(ui::time::now());
     }
 
     /// The accounts the host answered since the last read.
@@ -150,7 +150,7 @@ impl HostMail {
     /// added in another window shows here too. A window whose mail is this
     /// host's session asks it; one with its own account reads reaches the
     /// server itself, so nothing there waits on it.
-    #[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
+    #[cfg(any(test, not(feature = "live")))]
     pub(super) fn next_listing_at(&self) -> Option<ui::time::Instant> {
         self.listed_at.map(|at| at + ACCOUNTS_FRESH)
     }
@@ -164,7 +164,7 @@ impl HostMail {
     /// Ask the host to keep `config`'s account, with the sign-in it carries:
     /// the host proves it and seals it in the workspace's vault, and the
     /// next reading shows the account.
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(any(not(feature = "live"), test))]
     pub(super) fn add_account(&mut self, config: &crate::model::AccountConfig) {
         let adding = person_accounts::AddMailAccount {
             address: config.email.clone(),
@@ -311,7 +311,7 @@ impl HostMail {
             }
         } else if self
             .listed_at
-            .is_none_or(|at| at + ACCOUNTS_FRESH <= ui::time::Instant::now())
+            .is_none_or(|at| at + ACCOUNTS_FRESH <= ui::time::now())
         {
             self.ask_for_accounts();
         }

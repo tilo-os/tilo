@@ -44,11 +44,11 @@ pub fn check_sendable(
     from: &Addr,
     draft: &Draft,
 ) -> Result<(), String> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "live")]
     {
         build_mime(content, from, draft)?;
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "live"))]
     {
         // A page builds no MIME — the host it sends through does, with a
         // clock this page has not — but what it would carry is read here

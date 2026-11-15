@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "live")]
 use accounts::person::PersonAccounts;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, Publishes, ViewCx};
 use ui::portal::{FileFilter, PickRequest};
@@ -70,7 +70,7 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
             cx.shared_person::<tilo_contact_directory::ContactDirectory>();
         // A page keeps no accounts of its own: it reads the ones the host
         // that runs its workspace keeps, through the host's mail session.
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "live")]
         if let Some(accounts) = cx.shared_person::<PersonAccounts>() {
             window.follow_person_accounts(accounts);
         }

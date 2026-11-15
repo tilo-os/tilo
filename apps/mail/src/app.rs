@@ -243,7 +243,7 @@ pub struct MailApp {
     person_accounts: Option<(PersonRecord<PersonAccounts>, Option<u64>)>,
     /// The host's mail session, when this window runs in a page: the host
     /// that keeps the accounts reads and sends here.
-    #[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
+    #[cfg(any(test, not(feature = "live")))]
     host_mail: Option<host_mail::HostMail>,
     custody: Option<crate::custody::SecretRelease>,
     sender_pictures_seen: Option<(u64, Vec<String>)>,
@@ -619,7 +619,7 @@ impl MailApp {
             unsend: false,
             persisted_active_account: None,
             person_accounts: None,
-            #[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
+            #[cfg(any(test, not(feature = "live")))]
             host_mail: None,
             custody: None,
             sender_pictures_seen: None,
@@ -2853,7 +2853,7 @@ impl MailApp {
     }
 
     #[cfg_attr(
-        target_arch = "wasm32",
+        not(feature = "live"),
         allow(
             dead_code,
             reason = "a page reads the accounts the host keeps, not a record of its own"
@@ -3733,7 +3733,7 @@ impl Widget for MailApp {
         dyn ui::undo::UndoControl
     );
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        #[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
+        #[cfg(any(test, not(feature = "live")))]
         self.pump_host_mail();
         let (state, path) = ui::doc::document_ref(state, path);
         self.follow_document();
@@ -4259,12 +4259,12 @@ impl Widget for MailApp {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        #[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
+        #[cfg(any(test, not(feature = "live")))]
         let host_listing = self
             .host_mail
             .as_ref()
             .and_then(host_mail::HostMail::next_listing_at);
-        #[cfg(not(any(target_arch = "wasm32", test, not(feature = "live"))))]
+        #[cfg(not(any(test, not(feature = "live"))))]
         let host_listing = None;
         // Worker and native-picker completions are not animation. Keep their
         // deadline fixed until sync consumes a tick, even with reduced motion.
@@ -5471,7 +5471,7 @@ impl MailApp {
 mod checks;
 // The workspace-held mail a window in a page shows, and the engine a test
 // drives it with: a build without the live account engine loads it.
-#[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
+#[cfg(any(test, not(feature = "live")))]
 mod host_mail;
 mod person_accounts;
 mod server_outbox;

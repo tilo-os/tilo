@@ -67,14 +67,14 @@ impl MailApp {
     /// have it. A page has no store of its own: the host that keeps the
     /// account adds it there, with the sign-in it carries.
     #[cfg_attr(
-        not(any(target_arch = "wasm32", test)),
+        all(feature = "live", not(test)),
         allow(
             clippy::needless_pass_by_ref_mut,
             reason = "a page's window hands the account to its host, a device stores it here"
         )
     )]
     pub(super) fn add_account(&mut self, config: AccountConfig) {
-        #[cfg(any(target_arch = "wasm32", test))]
+        #[cfg(any(not(feature = "live"), test))]
         if let Some(host) = &mut self.host_mail {
             host.add_account(&config);
             return;
@@ -297,7 +297,7 @@ fn keep_released_secrets(
     }
 }
 
-#[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
+#[cfg(any(test, not(feature = "live")))]
 impl MailApp {
     /// Take what the host answered about the person's accounts and the
     /// window's asks, so the mailbox follows the store the host keeps.
