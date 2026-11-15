@@ -257,7 +257,7 @@ def strip_switcher(ctx, res):
     ctx.wait_state(lambda s: core.overlays(s).get("strips") is True, 5,
                    "the strips overlay after Super+S")
     card = next((r for n, r in core.target_map(ctx.vm.targets()).items()
-                 if "strip" in n.lower()), None)
+                 if n.startswith("strip_switcher.")), None)
     expect(card, "the open strips ribbon is addressable")
     res.metrics.update(strips=card)
     ctx.shot("W13-strips")
@@ -317,25 +317,24 @@ def _session_log_lines(ctx) -> int:
 
 def _launch_evidence(ctx, check_id: str, log_lines: int, card) -> str:
     """What the desktop did after a launch was asked for that did not arrive: every
-    window's tile, the overlays and notices, whether the card is still offered, and what
-    the session log said since; written in full beside the check, summarised for its
-    failure."""
+    window's tile, the overlays and whose pointer moved, whether the card is still offered,
+    and what the session log said since; written in full beside the check, summarised for
+    its failure."""
     st = ctx.state()
     tiles = [[core.tab_app(tab) for tab in group["tabs"]] for group in core.all_groups(st)]
     chrome = st.get("chrome", {})
-    notices = [n.get("title") for n in chrome.get("notifications", []) if isinstance(n, dict)]
     still = core.target_map(ctx.vm.targets()).get("launchpad:notes")
     said = ctx.vm.exec(
         f'tail -n +{log_lines + 1} "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
         '| grep -aiE "launchpad|notes|launch|refused|app tab request|placeholder|spawn|tilo::input_route" '
         '| tail -n 80 | cut -c1-400', check=False) or "the session log said nothing about it"
     ctx.write(f"{check_id}-launch-evidence.log", json.dumps(
-        {"tiles": tiles, "overlays": chrome.get("overlays"), "notices": notices,
+        {"tiles": tiles, "overlays": chrome.get("overlays"),
          "card_before": card, "card_after": still, "pointer": st.get("shared_input")}, indent=1,
         default=str) + "\n--- session log since the tap\n" + said)
     last = [line for line in said.splitlines() if line.strip()][-3:]
     return (f"tiles {tiles}; overlays open {[k for k, v in (chrome.get('overlays') or {}).items() if v]}; "
-            f"notices {notices}; card still offered at {still}; session log: {last}")
+            f"card still offered at {still}; session log: {last}")
 
 
 @check("W18", AREA, "Touch is not the mouse: a tap on a launchpad card opens its app, the cursor "
