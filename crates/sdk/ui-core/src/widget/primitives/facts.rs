@@ -31,6 +31,10 @@ pub enum FactMark {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fact {
     pub mark: Option<FactMark>,
+    /// What the value is, for a fact that is one field of a thing (`Goal`,
+    /// `Due`): the label reads dim before the value, never joined into it
+    /// with a separator.
+    pub label: Option<String>,
     pub text: String,
     pub priority: u8,
 }
@@ -40,7 +44,21 @@ impl Fact {
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             mark: None,
+            label: None,
             text: text.into(),
+            priority: 0,
+        }
+    }
+
+    /// A field of the thing shown, by its label and its value: a person reads
+    /// the label dim and the value itself, and a reader hears them as one
+    /// named field.
+    #[must_use]
+    pub fn field(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            mark: None,
+            label: Some(label.into()),
+            text: value.into(),
             priority: 0,
         }
     }
@@ -49,6 +67,7 @@ impl Fact {
     pub fn with_icon(icon: Icon, text: impl Into<String>) -> Self {
         Self {
             mark: Some(FactMark::Icon(icon)),
+            label: None,
             text: text.into(),
             priority: 0,
         }
@@ -59,8 +78,19 @@ impl Fact {
     pub fn dot(tone: Tone, text: impl Into<String>) -> Self {
         Self {
             mark: Some(FactMark::Dot(tone)),
+            label: None,
             text: text.into(),
             priority: 0,
+        }
+    }
+
+    /// What a reader hears: the field's label and its value, or the fact's
+    /// words alone.
+    #[must_use]
+    pub fn spoken(&self) -> String {
+        match &self.label {
+            Some(label) => format!("{label}: {}", self.text),
+            None => self.text.clone(),
         }
     }
 
@@ -76,6 +106,8 @@ struct FactsMetrics {
     icon: f64,
     dot: f64,
     icon_gap: f64,
+    /// The space between a field's label and its value.
+    label_gap: f64,
     gap: f64,
 }
 
@@ -87,6 +119,7 @@ impl FactsMetrics {
             icon: f64::from(theme.tokens.metrics.icon_sm),
             dot: f64::from(theme.tokens.spacing.s2),
             icon_gap: f64::from(rhythm.tight),
+            label_gap: f64::from(rhythm.tight),
             gap: f64::from(rhythm.sibling),
         }
     }
@@ -101,7 +134,10 @@ impl FactsMetrics {
 
     fn fact_width(&self, fact: &Fact, text: &mut TextRenderer) -> f64 {
         let label = f64::from(text.measure_style(&fact.text, None, &self.style).0);
-        self.mark_width(fact.mark) + label
+        let named = fact.label.as_ref().map_or(0.0, |label| {
+            f64::from(text.measure_style(label, None, &self.style).0) + self.label_gap
+        });
+        self.mark_width(fact.mark) + named + label
     }
 }
 
@@ -204,13 +240,34 @@ impl<'a> FactsFace<'a> {
                 }
                 None => {}
             }
+            if let Some(named) = &fact.label {
+                let spare = crate::num::f32_of_f64((rect.x1 - x).max(0.0));
+                let label = ctx.text.elide_to_width_style(named, spare, &m.style);
+                let w = f64::from(ctx.text.measure_style(&label, None, &m.style).0);
+                ctx.text.draw_style(
+                    ctx.scene,
+                    &label,
+                    ink,
+                    ctx.transform.pre_translate((x, cy - line / 2.0).into()),
+                    None,
+                    &m.style,
+                );
+                x += w + m.label_gap;
+            }
             let spare = crate::num::f32_of_f64((rect.x1 - x).max(0.0));
             let label = ctx.text.elide_to_width_style(&fact.text, spare, &m.style);
             let w = f64::from(ctx.text.measure_style(&label, None, &m.style).0);
+            // A field's value is the thing itself, in the ink a value reads
+            // in: the label beside it is what is dim.
+            let value_ink = if fact.label.is_some() {
+                theme.text_primary
+            } else {
+                ink
+            };
             ctx.text.draw_style(
                 ctx.scene,
                 &label,
-                ink,
+                value_ink,
                 ctx.transform.pre_translate((x, cy - line / 2.0).into()),
                 None,
                 &m.style,
@@ -223,7 +280,7 @@ impl<'a> FactsFace<'a> {
     /// What a screen reader says: every fact, in order, as separate items.
     #[must_use]
     pub fn spoken(&self) -> Vec<String> {
-        self.facts.iter().map(|f| f.text.clone()).collect()
+        self.facts.iter().map(Fact::spoken).collect()
     }
 }
 
@@ -242,7 +299,10 @@ impl Facts {
     pub fn set_facts(&mut self, facts: Vec<Fact>) {
         let same = self.items.len() == facts.len()
             && self.items.iter().zip(&facts).all(|(was, now)| {
-                was.mark == now.mark && was.text == now.text && was.priority == now.priority
+                was.mark == now.mark
+                    && was.label == now.label
+                    && was.text == now.text
+                    && was.priority == now.priority
             });
         if same {
             return;
@@ -347,7 +407,7 @@ impl Widget for Facts {
         let children = self
             .items
             .iter()
-            .map(|f| AccessNode::new(Role::StaticText).with_name(f.text.clone()))
+            .map(|f| AccessNode::new(Role::StaticText).with_name(f.spoken()))
             .collect();
         Some(AccessNode::new(Role::List).with_children(children))
     }
@@ -445,6 +505,27 @@ mod tests {
                 theme.tokens.colors.presence.hue(hue),
                 "it wears the presence colour of whoever it is about"
             );
+        }
+
+        // A field is its label and its value: read dim then in the value's own ink,
+        // measured as both, and spoken as the one field it is — never joined by a
+        // separator into one string.
+        phase a_field_is_its_label_and_its_value;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let m = FactsMetrics::of(&theme);
+            let goal = Fact::field("Goal", "tilo/tilo");
+            let face = FactsFace::new(std::slice::from_ref(&goal));
+            assert_eq!(face.spoken(), vec!["Goal: tilo/tilo"]);
+            let label = f64::from(text.measure_style("Goal", None, &m.style).0);
+            let value = f64::from(text.measure_style("tilo/tilo", None, &m.style).0);
+            assert!(
+                (face.natural_width(&mut text, &theme) - (label + m.label_gap + value)).abs()
+                    < 0.01,
+                "the field is measured as its label, its gap and its value"
+            );
+            assert_eq!(Fact::text("3.4 MB").spoken(), "3.4 MB", "a plain fact says itself");
         }
 
         phase facts_are_separate_items_with_no_separator_glyph;

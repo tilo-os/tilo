@@ -7224,10 +7224,17 @@
       "props": [
         {
           "name": "text",
-          "doc": "The fact, in a few words: \"3 MB\".",
+          "doc": "The fact, in a few words: \"3 MB\", or the value of the field it names.",
           "type": "text",
           "required": true,
           "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "What the value is, for a fact that is one field of a thing (`Goal`, `Due`): the label reads dim before the value.",
+          "type": {
+            "option": "text"
+          }
         },
         {
           "name": "icon",

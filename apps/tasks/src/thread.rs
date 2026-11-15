@@ -27,7 +27,7 @@ impl Row {
     fn of(issue: &Issue, people: &ui::framework::People) -> Option<Self> {
         let (_, last) = issue.comments.iter().last()?;
         let speaker = people
-            .byline(
+            .provenance(
                 &last.author,
                 &last.author_name,
                 last.at_ms,

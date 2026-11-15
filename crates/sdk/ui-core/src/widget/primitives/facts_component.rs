@@ -20,9 +20,12 @@ pub struct FactsProps {
 #[derive(Component, Default)]
 #[component(name = "Fact", role = "ListItem", label = "text")]
 pub struct FactProps {
-    /// The fact, in a few words: "3 MB".
+    /// The fact, in a few words: "3 MB", or the value of the field it names.
     #[component(required, positional)]
     pub text: String,
+    /// What the value is, for a fact that is one field of a thing (`Goal`,
+    /// `Due`): the label reads dim before the value.
+    pub label: Option<String>,
     /// A glyph before it, from the icon set.
     pub icon: Option<Icon>,
     /// How long it stays where the row is narrow: a higher one stays longer, and of equal ones
@@ -36,6 +39,7 @@ impl From<FactProps> for Fact {
     fn from(props: FactProps) -> Self {
         Self {
             mark: props.icon.map(FactMark::Icon),
+            label: props.label,
             text: props.text,
             priority: u8::try_from(props.priority.clamp(0, 255)).unwrap_or(u8::MAX),
         }

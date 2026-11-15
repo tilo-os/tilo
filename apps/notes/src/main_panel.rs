@@ -382,9 +382,9 @@ pub struct MainPanel {
     page_id: Option<PageId>,
     date_index: crate::metadata::NoteDateIndex,
     dates: crate::metadata::NoteDates,
-    /// Where the note was first written, as its header says it, when it was
-    /// moved here from another tool.
-    origin: Option<String>,
+    /// Where the note was first written, as its header shows it, when it
+    /// was moved here from another tool.
+    origin: Option<ui::framework::Provenance>,
     /// The wall clock the dates are read against, when a test holds it: the
     /// thread driving the app is not the thread that draws it.
     clock: Option<ui::time::SystemTime>,
@@ -937,10 +937,11 @@ impl MainPanel {
 
     /// Show where the selected note was first written, when it was moved
     /// here from another tool (`None`: it was written here).
-    pub fn set_origin(&mut self, origin: Option<String>) {
+    pub fn set_origin(&mut self, origin: Option<ui::framework::Provenance>) {
         if self.origin != origin {
             self.origin = origin;
-            self.refresh_captions();
+            self.header.set_provenance(self.origin.clone());
+            self.header_changed();
         }
     }
 
@@ -982,11 +983,9 @@ impl MainPanel {
         if !self.parent_path.is_empty() {
             lines.push(self.parent_path_label());
         }
-        // A note moved here reads as its original author's, on its day there;
-        // its history here still says who moved it.
-        if let Some(origin) = &self.origin {
-            lines.push(origin.clone());
-        }
+        // A note moved here reads as its original author's, on its day there,
+        // in the header's provenance row; its history here still says who
+        // moved it.
         let now = self.clock.map_or_else(ui::clock::local_now, |at| {
             chrono::DateTime::<chrono::Local>::from(ui::time::to_std(at))
         });

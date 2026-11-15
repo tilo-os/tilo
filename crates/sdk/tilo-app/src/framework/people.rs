@@ -69,20 +69,6 @@ pub struct Actor {
     pub agent: bool,
 }
 
-/// Who wrote an item and when, as a view shows it ([`People::byline`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Byline {
-    /// Its author here, when it was written here; none for an item moved
-    /// from elsewhere, whose author is a name, not a participant.
-    pub actor: Option<Actor>,
-    /// Its author's name, as the byline shows it.
-    pub name: String,
-    /// The byline as a line reads it: `Jane Doe in Jira, 3 Mar 2025`.
-    pub text: String,
-    /// When it shows it was written, in milliseconds since the epoch.
-    pub at_ms: i64,
-}
-
 impl People {
     pub(crate) fn new(me: Option<&str>) -> Self {
         Self {
@@ -188,68 +174,6 @@ impl People {
             kept.trim().clone_into(&mut actor.name);
         }
         actor
-    }
-
-    /// Who wrote an item and when, as a view shows it. An item moved here
-    /// from elsewhere is by its original author, in the tool it came from,
-    /// on the day it was written there (`Jane Doe in Jira, 3 Mar 2025`);
-    /// any other by its author here, named as [`Self::actor_kept`] names
-    /// them, on the day it was written here. The record's own history keeps
-    /// who moved it.
-    pub fn byline(
-        &self,
-        author: &str,
-        kept: &str,
-        at_ms: i64,
-        origin: Option<&tilo_resource::Origin>,
-    ) -> Byline {
-        let date = |ms: i64| {
-            let days = i32::try_from(ms.div_euclid(86_400_000)).unwrap_or_default();
-            ui_core::format::NaiveDate::from_num_days_from_ce_opt(days.saturating_add(719_163))
-                .map(|day| ui_core::format::Formats::current().date(day))
-                .unwrap_or_default()
-        };
-        if let Some(origin) = origin {
-            let at_ms = origin.created_ms.unwrap_or(at_ms);
-            let day = date(at_ms);
-            return Byline {
-                actor: None,
-                name: origin.author.clone(),
-                text: match origin.reference.as_deref() {
-                    Some(reference) => crate::copy_catalogue::t_args(
-                        "byline-moved-named",
-                        &[
-                            ("name", origin.author.clone().into()),
-                            ("source", origin.source.clone().into()),
-                            ("reference", reference.to_owned().into()),
-                            ("date", day.into()),
-                        ],
-                    ),
-                    None => crate::copy_catalogue::t_args(
-                        "byline-moved",
-                        &[
-                            ("name", origin.author.clone().into()),
-                            ("source", origin.source.clone().into()),
-                            ("date", day.into()),
-                        ],
-                    ),
-                },
-                at_ms,
-            };
-        }
-        let actor = self.actor_kept(author, kept);
-        Byline {
-            text: crate::copy_catalogue::t_args(
-                "byline-here",
-                &[
-                    ("name", actor.name.clone().into()),
-                    ("date", date(at_ms).into()),
-                ],
-            ),
-            name: actor.name.clone(),
-            actor: Some(actor),
-            at_ms,
-        }
     }
 
     /// Whether another person is in the workspace with this window now.
@@ -558,59 +482,5 @@ mod tests {
             );
             assert_eq!(people.actor("bob").name, "Bob", "a bare id reads the same");
         }
-    }
-}
-
-#[cfg(test)]
-mod byline_tests {
-    use super::People;
-
-    #[test]
-    fn a_byline_names_the_original_author_or_the_name_an_agent_acted_under() {
-        let people = People::named(Some("ada"), &[("ada", "Ada")]);
-        let origin = tilo_resource::Origin {
-            author: "Jane Doe".into(),
-            handle: Some("jane".into()),
-            source: "Jira".into(),
-            url: None,
-            reference: None,
-            created_ms: Some(1_741_000_000_000),
-            updated_ms: None,
-        };
-        let moved = people.byline(
-            "agent:grant-a8a42b74",
-            "Company mover",
-            1_900_000_000_000,
-            Some(&origin),
-        );
-        assert_eq!(moved.name, "Jane Doe");
-        assert!(
-            moved.text.starts_with("Jane Doe in Jira, "),
-            "{}",
-            moved.text
-        );
-        assert!(moved.text.contains("2025"), "{}", moved.text);
-        assert_eq!(moved.at_ms, 1_741_000_000_000);
-        let named = tilo_resource::Origin {
-            reference: Some("ENG-12".into()),
-            ..origin
-        };
-        let named = people.byline("agent:grant-a8a42b74", "", 0, Some(&named));
-        assert!(
-            named.text.starts_with("Jane Doe in Jira (ENG-12), "),
-            "the name it had there reads beside the tool: {}",
-            named.text
-        );
-
-        let agent = people.byline(
-            "agent:grant-a8a42b74",
-            "Company mover",
-            1_900_000_000_000,
-            None,
-        );
-        assert_eq!(agent.name, "Company mover", "never the agent's key");
-        assert!(!agent.text.contains("grant"), "{}", agent.text);
-        assert_eq!(people.byline("ada", "", 0, None).name, "Ada");
-        assert_eq!(people.actor("outside:Jane Doe").name, "Jane Doe");
     }
 }

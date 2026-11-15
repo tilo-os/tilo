@@ -36,6 +36,9 @@ pub struct NoteHeader {
     /// The reactions to the note, under its tags.
     reactions: Option<NoteReactions>,
     backlinks: Vec<BacklinkChip>,
+    /// Where the note was first written, when it was moved here: its author
+    /// there, the tool it came from and the day, each its own element.
+    provenance: Option<ui::framework::Provenance>,
     captions: Vec<String>,
     /// What the built caption lines read when they sync: a line's words can
     /// change (the edit time turning over a minute) without rebuilding the
@@ -88,6 +91,17 @@ impl NoteHeader {
     /// The reactions shown, if any.
     pub fn reactions(&self) -> Option<&NoteReactions> {
         self.reactions.as_ref()
+    }
+
+    /// Show where the note was first written, when it was moved here
+    /// (`None`: it was written here). Returns whether the header changed.
+    pub fn set_provenance(&mut self, provenance: Option<ui::framework::Provenance>) -> bool {
+        let changed = self.provenance != provenance;
+        if changed {
+            self.provenance = provenance;
+            self.stale = true;
+        }
+        changed
     }
 
     /// Show these incoming links. Returns whether the header changed.
@@ -143,6 +157,7 @@ impl NoteHeader {
         self.tags.is_empty()
             && self.reactions.is_none()
             && self.backlinks.is_empty()
+            && self.provenance.is_none()
             && self.captions.is_empty()
     }
 
@@ -230,6 +245,9 @@ impl NoteHeader {
         }
         if let Some(reactions) = &self.reactions {
             top = top.push(Box::new(self.reaction_strip(reactions)));
+        }
+        if let Some(provenance) = &self.provenance {
+            top = top.push(provenance.row("notes.note-origin"));
         }
         self.shown_captions.replace(self.captions.clone());
         for index in 0..self.captions.len() {

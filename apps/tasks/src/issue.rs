@@ -14,7 +14,7 @@ use crate::model::{
 use tilo_rich_text::RichTextFieldViews;
 use ui::prelude::*;
 use ui::tilo_resource::NonBlank;
-use ui::widget::{Avatar, AvatarSize, Badge, ButtonRole, ChipStyle, Fact, Facts, Stack, Tone};
+use ui::widget::{Badge, ButtonRole, ChipStyle, Fact, Facts, Stack, Tone};
 
 use crate::{Nav, reference, tr, tr_with};
 
@@ -198,7 +198,9 @@ fn assignee_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
 
 /// Who wrote the issue and when, what it works towards, how urgent it is,
 /// how much work it is, when it is wanted and the files attached to it:
-/// each a fact a person reads, never a control.
+/// each its own field a person reads, never a control and never one
+/// sentence joined with separators. Who wrote it is the shared provenance
+/// row: the author's chip, the tool it came from, and the day.
 fn plan(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let planned = cx.value({
         let id = id.clone();
@@ -206,19 +208,15 @@ fn plan(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     });
     let people = cx.people();
     cx.switch(&planned, move |_cx, planned| {
-        let mut facts = Vec::new();
-        let byline = people.byline(
+        let written = people.provenance(
             &planned.author,
             &planned.author_name,
             planned.created_ms,
             planned.origin.as_ref(),
         );
-        facts.push(Fact::text(tr_with(
-            "tasks-fact-written",
-            &[("byline", &byline.text)],
-        )));
+        let mut facts = Vec::new();
         if let Some(label) = &planned.goal {
-            facts.push(Fact::text(tr_with("tasks-fact-goal", &[("goal", label)])));
+            facts.push(Fact::field(tr("tasks-field-goal"), label));
         }
         let priority = Priority::of_level(planned.priority);
         if priority != Priority::None {
@@ -242,7 +240,15 @@ fn plan(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         if let Some(due) = &planned.due {
             facts.push(Fact::text(tr_with("tasks-fact-due", &[("date", due)])));
         }
-        Box::new(Facts::new(facts)) as Element
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .push(written.row("tasks-issue-written"));
+        if !facts.is_empty() {
+            column = column.push(Box::new(Facts::new(facts)));
+        }
+        Box::new(column) as Element
     })
 }
 
@@ -605,23 +611,17 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
 fn message_row(cx: &ViewCx<Tracker>, people: &ui::framework::People, message: &Message) -> Element {
     // A comment moved from another tracker reads as its author's there, on
     // its day there; any other as its author's here, by the name they acted
-    // under where the workspace names them not.
-    let byline = people.byline(
+    // under where the workspace names them not. Who, where and when are the
+    // shared provenance row's own fields.
+    let written = people.provenance(
         &message.author,
         &message.author_name,
         message.at_ms,
         message.origin.as_ref(),
     );
-    let face = byline
-        .actor
-        .as_ref()
-        .map_or_else(|| byline.name.clone(), |actor| actor.id.clone());
     let mut heading = Row::new()
         .with_rhythm(ui::tokens::Rhythm::Tight)
-        .push(Box::new(
-            Avatar::person(&byline.name, &face).size(AvatarSize::Small),
-        ))
-        .push(Box::new(Text::new(&byline.text).strong()));
+        .push(written.row("tasks-message-written"));
     match message.kind {
         MessageKind::Comment => {}
         MessageKind::ToRun => {

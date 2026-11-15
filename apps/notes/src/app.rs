@@ -1038,16 +1038,16 @@ impl NotesApp {
     /// The reactions to the selected note, as its header shows them: every
     /// reaction it has, and an add button while the person may react and
     /// someone else shares the notebook (alone, nobody would see one).
-    /// Where the selected note was first written, as its header says it,
-    /// when it was moved here from another tool: `Jane Doe in Notion,
-    /// 3 Mar 2025`.
-    fn selected_origin(&self) -> Option<String> {
+    /// Where the selected note was first written, as its header shows it,
+    /// when it was moved here from another tool: its author there, the tool
+    /// it came from and the day, each its own field.
+    fn selected_origin(&self) -> Option<ui::framework::Provenance> {
         let page = self.workspace.selected()?;
         let notebook = self.live.as_ref()?.get();
         let note = notebook.pages.get(&crate::notebook::page_id(page))?;
         let origin = note.origin.as_ref()?;
         let people = self.people.as_ref()?;
-        Some(people.byline("", "", 0, Some(origin)).text)
+        Some(people.provenance("", "", 0, Some(origin)))
     }
 
     fn selected_reactions(&self) -> Option<crate::main_panel::NoteReactions> {

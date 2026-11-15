@@ -92,10 +92,13 @@ feedback-compose-remove-recording = Remove recording
 feedback-compose-toggle = Show or hide part
 tilo-feedback-draft = Feedback
 
-## Who wrote an item and when
-# An item moved from another tool: its author there, the tool, and the day it was written there.
-byline-moved = { $name } in { $source }, { $date }
-# The same, for an item the tool named (ENG-12): its name there after the tool.
-byline-moved-named = { $name } in { $source } ({ $reference }), { $date }
+## Who wrote an item and when, as one description for a reader
+# The fields the page draws are its author chip, its source and its day.
 # An item written here: its author and the day.
-byline-here = { $name }, { $date }
+provenance-written-here = Written by { $name } on { $date }
+# An item moved from another tool: its author there, the tool, and the day it was written there.
+provenance-written-there = Written by { $name } in { $source } on { $date }
+# The same, for an item the tool named (ENG-12): its name there after the tool.
+provenance-written-there-named = Written by { $name } in { $source } ({ $reference }) on { $date }
+# The tool an item came from, with the name it had there.
+provenance-source-named = { $source } ({ $reference })
