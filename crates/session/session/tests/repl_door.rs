@@ -234,7 +234,7 @@ fn a_repl_named_when_the_session_starts_is_admitted_without_asking() {
 /// a copy of it: an image ships `so.tilo.shell` only as the session's built-in stand-in, and
 /// `docs/designs/app-language/shell.md` §6 makes it the package the session shows, so a program
 /// written for a person's device works on the image's. The REPL shows the frames through it, and
-/// the desk draws them.
+/// the shell draws them.
 ///
 /// This fails on a build whose door compiles programs against the installed packages alone: the
 /// image's store holds no shell, and the program is refused as an unknown name.

@@ -1,5 +1,5 @@
 //! A page names its workspace through its host's workspaces door, as its
-//! desk does when someone renames the workspace: the answer and every list of
+//! shell does when someone renames the workspace: the answer and every list of
 //! the workspace read the one name, which the workspace's governance keeps.
 
 #![allow(

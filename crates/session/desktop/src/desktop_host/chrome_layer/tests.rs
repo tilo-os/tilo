@@ -167,7 +167,7 @@ fn a_workspace_put_on_the_shell_in_the_background_leaves_the_person_where_they_a
     assert_eq!(front, arrived, "a person who joins a workspace lands in it");
 }
 
-/// Naming the workspace in front takes the name onto the desk and asks the
+/// Naming the workspace in front takes the name onto the shell and asks the
 /// host to write it where the workspace keeps it, so every other device and
 /// list of it names it the same.
 #[test]

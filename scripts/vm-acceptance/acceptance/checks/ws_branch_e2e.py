@@ -657,7 +657,7 @@ def branch_said(ctx, name: str, workspace: str) -> dict:
         except VmError:
             toasts = []
         shown += [json.dumps(t)[:1500] for t in toasts if name in json.dumps(t)][-3:]
-        # Anywhere in the desk's state: the notice's body, one missing part a line.
+        # Anywhere in the shell's state: the notice's body, one missing part a line.
         try:
             state = ctx.state()
         except VmError:

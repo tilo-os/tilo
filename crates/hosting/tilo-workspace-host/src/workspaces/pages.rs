@@ -353,7 +353,7 @@ impl Workspaces {
     }
 
     /// A page's rename of `workspace` to `name`, as its device's person: the
-    /// workspace's owner or a moderator, as the desk's own menu offers it. The
+    /// workspace's owner or a moderator, as the shell's own menu offers it. The
     /// workspace's own governance is where the name lives, so the host writes
     /// it there (its records follow) and answers with the workspace as it is
     /// after.
