@@ -448,105 +448,41 @@ fn a_card_under_the_pointer_is_chosen_on_sight_and_a_press_goes_there() {
     key(&mut session, KEY_LEFTALT, false);
 }
 
-tilo_test_env::scenario! {
-    fn the_switchers_panel_answers_the_pointer_and_shows_the_walk;
-
-    phase the_panels_keys_are_read_under_its_windows;
-    // The keys the walk answers to stand under the cards, in the person's own words, and a reader
-    // hears them after the windows: the same hints the panel draws.
-    {
-        let _settled = ui::motion::testing::settled();
-        let mut session = session();
-        hold_alt_tab(&mut session);
-        let root = session
-            .window_switcher()
-            .accessibility()
-            .expect("the panel reads");
-        let keys = root
-            .children
-            .iter()
-            .find(|child| child.role == ui::a11y::Role::StaticText)
-            .expect("the keys are read under the windows");
-        assert_eq!(
-            keys.name.as_deref(),
-            Some("Alt + Tab: Walk, Enter: Go there, Esc: Stay"),
-            "the walk's keys, in the person's words"
-        );
-    }
-
-    phase the_walked_card_wears_the_accent_at_its_edge;
-    // The card the walk reached wears the person's colour at its edge, and the cards it passed do not:
-    // which window Alt+Tab would go to reads at a glance, whatever the theme.
-    {
-        let _settled = ui::motion::testing::settled();
-        let mut session = session();
-        hold_alt_tab(&mut session);
-        until(&mut session, "the panel draws its cards", |session| {
-            !session.window_switcher().card_rects().is_empty()
-        });
-        let view = panel(&session).expect("the panel is up");
-        let frame = shot(&mut session, "switcher-ring");
-        let ring = ui::theme::Theme::dark().border_focus.to_rgba8();
-        let ring = [ring.r, ring.g, ring.b];
-        let cards = session.window_switcher().card_rects();
-        let chosen = cards
-            .iter()
-            .find(|(at, _)| *at == view.selected)
-            .expect("the reached card is drawn");
-        let nearest = |card: Rect| nearest_edge_pixel(&frame, card, ring);
-        assert!(
-            nearest(chosen.1) <= 24,
-            "the reached card's edge is the person's colour: {ring:?} against {}",
-            nearest(chosen.1)
-        );
-        for (at, card) in &cards {
-            if *at == view.selected {
-                continue;
-            }
-            assert!(
-                nearest(*card) > 60,
-                "card {at} the walk passed is not ringed: {} from {ring:?}",
-                nearest(*card)
-            );
-        }
-    }
-
-    phase a_press_off_the_panel_ends_the_walk_where_it_stood;
-    // A press off the panel is no press on the window behind it: the walk ends where it stood.
-    {
-        let _settled = ui::motion::testing::settled();
-        let mut session = session();
-        session
-            .step(Duration::from_millis(300))
-            .expect("the shell settles");
-        hold_alt_tab(&mut session);
-        move_to_card(&mut session, 1);
-        until(&mut session, "the walk reached another window", |session| {
-            front(session) == "Mail"
-        });
-        session
-            .compositor()
-            .input(InputEvent::PointerMotion { x: 5.0, y: 400.0 })
-            .expect("the pointer moves off the panel");
-        session
-            .compositor()
-            .input(InputEvent::PointerButton {
-                button: BTN_LEFT,
-                pressed: true,
-            })
-            .expect("the press reaches the session");
-        until(
-            &mut session,
-            "a press off the panel takes it down",
-            |session| panel(session).is_none(),
-        );
-        key(&mut session, KEY_LEFTALT, false);
-        assert_eq!(
-            front(&session),
-            "Notes",
-            "a press outside the panel switches nothing"
-        );
-    }
+/// A press off the panel is no press on the window behind it: the walk ends where it stood.
+#[test]
+fn a_press_off_the_panel_ends_the_walk_where_it_stood() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session
+        .step(Duration::from_millis(300))
+        .expect("the shell settles");
+    hold_alt_tab(&mut session);
+    move_to_card(&mut session, 1);
+    until(&mut session, "the walk reached another window", |session| {
+        front(session) == "Mail"
+    });
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: 5.0, y: 400.0 })
+        .expect("the pointer moves off the panel");
+    session
+        .compositor()
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: true,
+        })
+        .expect("the press reaches the session");
+    until(
+        &mut session,
+        "a press off the panel takes it down",
+        |session| panel(session).is_none(),
+    );
+    key(&mut session, KEY_LEFTALT, false);
+    assert_eq!(
+        front(&session),
+        "Notes",
+        "a press outside the panel switches nothing"
+    );
 }
 
 /// A workspace holding more windows than the display holds cards shows the page the walk has
@@ -629,6 +565,66 @@ fn a_workspace_too_full_for_cards_shows_the_page_the_walk_reached() {
     until(&mut session, "Enter goes to the last window", |session| {
         front(session) == "Window 13"
     });
+}
+
+/// The keys the walk answers to stand under the cards, in the person's own words, and a reader
+/// hears them after the windows: the same hints the panel draws.
+#[test]
+fn the_panels_keys_are_read_under_its_windows() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    hold_alt_tab(&mut session);
+    let root = session
+        .window_switcher()
+        .accessibility()
+        .expect("the panel reads");
+    let keys = root
+        .children
+        .iter()
+        .find(|child| child.role == ui::a11y::Role::StaticText)
+        .expect("the keys are read under the windows");
+    assert_eq!(
+        keys.name.as_deref(),
+        Some("Alt + Tab: Walk, Enter: Go there, Esc: Stay"),
+        "the walk's keys, in the person's words"
+    );
+}
+
+/// The card the walk reached wears the person's colour at its edge, and the cards it passed do not:
+/// which window Alt+Tab would go to reads at a glance, whatever the theme.
+#[test]
+fn the_walked_card_wears_the_accent_at_its_edge() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    hold_alt_tab(&mut session);
+    until(&mut session, "the panel draws its cards", |session| {
+        !session.window_switcher().card_rects().is_empty()
+    });
+    let view = panel(&session).expect("the panel is up");
+    let frame = shot(&mut session, "switcher-ring");
+    let ring = ui::theme::Theme::dark().border_focus.to_rgba8();
+    let ring = [ring.r, ring.g, ring.b];
+    let cards = session.window_switcher().card_rects();
+    let chosen = cards
+        .iter()
+        .find(|(at, _)| *at == view.selected)
+        .expect("the reached card is drawn");
+    let nearest = |card: Rect| nearest_edge_pixel(&frame, card, ring);
+    assert!(
+        nearest(chosen.1) <= 24,
+        "the reached card's edge is the person's colour: {ring:?} against {}",
+        nearest(chosen.1)
+    );
+    for (at, card) in &cards {
+        if *at == view.selected {
+            continue;
+        }
+        assert!(
+            nearest(*card) > 60,
+            "card {at} the walk passed is not ringed: {} from {ring:?}",
+            nearest(*card)
+        );
+    }
 }
 
 /// How far the frame's pixels along a card's top edge stand from `to` : the least of the rows the
