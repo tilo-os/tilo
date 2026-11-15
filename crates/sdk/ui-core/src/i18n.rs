@@ -632,6 +632,7 @@ fn resource_label(
     catalogue: Option<&'static tilo_resource::label::Catalogue>,
     key: &str,
     arguments: &[(&str, tilo_resource::label::Argument)],
+    fill: tilo_resource::label::Fill,
 ) -> Option<String> {
     if let Some(catalogue) = catalogue {
         declared_catalogue(catalogue).ensure();
@@ -641,6 +642,13 @@ fn resource_label(
         .iter()
         .map(|(name, value)| (*name, ArgValue::from(value)))
         .collect();
+    if fill == tilo_resource::label::Fill::Whole {
+        let mut fluent_args = FluentArgs::new();
+        for (name, value) in &arguments {
+            fluent_args.set(*name, value.to_fluent());
+        }
+        return I18nManager::lookup_complete(key, Some(&fluent_args));
+    }
     let said = I18nManager::format(key, &arguments);
     (said != key).then_some(said)
 }
@@ -2157,6 +2165,48 @@ mod tests {
                 "a message that names no variable is said as it stands"
             );
             assert_eq!(I18nManager::lookup_complete("no-such-message", None), None);
+        }
+
+        phase a_parameter_is_not_titled_by_a_sentence_that_needs_a_value;
+        // A parameter's title is looked up by convention (`<kind>-<param>`), a key a history sentence
+        // for the field it sets can hold too: a message only a value completes is not its title, and
+        // looking it up reports nothing.
+        {
+            let _restore = RestoreLookupState::capture();
+            install_plain(
+                "en-US",
+                "en-US",
+                &[(
+                    "en-US",
+                    "sheets-workbook-title = Named the workbook { $new }\n\
+                     sheets-workbook-set-title = Name the workbook\n\
+                     sheets-workbook-name = Name\n",
+                )],
+            );
+            let word = tilo_resource::label::Word {
+                key: "sheets-workbook-set-title",
+                source: "Name the workbook",
+                catalogue: None,
+                arguments: Vec::new(),
+            };
+            let params = tilo_resource::label::titled(
+                &word,
+                "sheets.workbook",
+                vec![
+                    tilo_actions::ActionParam::required("title", tilo_actions::ParamType::Text, ""),
+                    tilo_actions::ActionParam::required("name", tilo_actions::ParamType::Text, ""),
+                ],
+            );
+            let title = |param: &tilo_actions::ActionParam| {
+                param
+                    .schema
+                    .as_deref()
+                    .and_then(|schema| schema.get("title"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            };
+            assert_eq!(title(&params[0]), None, "a sentence that needs a value is no title");
+            assert_eq!(title(&params[1]).as_deref(), Some("Name"));
         }
 
         phase a_kept_plain_lookup_follows_catalogue_locale_and_pseudo_locale;

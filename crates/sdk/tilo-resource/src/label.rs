@@ -24,8 +24,25 @@ use std::sync::RwLock;
 
 /// How a host resolves a key in the language the person reads, its
 /// placeables filled with `arguments`, joining the [`Catalogue`] that holds
-/// it first when one is named; `None` when none of their catalogues holds it.
-pub type Resolver = fn(Option<&'static Catalogue>, &str, &[(&str, Argument)]) -> Option<String>;
+/// it first when one is named; `None` when none of their catalogues holds it
+/// as [`Fill`] asks.
+pub type Resolver =
+    fn(Option<&'static Catalogue>, &str, &[(&str, Argument)], Fill) -> Option<String>;
+
+/// What a resolution takes of a message whose placeables `arguments` leave
+/// unfilled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fill {
+    /// A declared [`Word`], whose arguments its build checked against the
+    /// source language: a catalogue that still names a value it lacks is
+    /// shown as best it can be, and the host reports it.
+    AsGiven,
+    /// A key derived by convention (a parameter's title, a kind's name):
+    /// another message can share it — a history sentence for the field a
+    /// parameter sets ("Named the workbook { $new }") — and one that takes a
+    /// value this lookup cannot give is not this key's word.
+    Whole,
+}
 
 /// The catalogue beside a crate, as a declaration of it names its words by:
 /// its source language embedded, its other languages read where language
@@ -65,7 +82,8 @@ impl Word {
     /// does).
     #[must_use]
     pub fn read(&self) -> String {
-        resolve(self.catalogue, self.key, &self.arguments).unwrap_or_else(|| self.source.to_owned())
+        resolve(self.catalogue, self.key, &self.arguments, Fill::AsGiven)
+            .unwrap_or_else(|| self.source.to_owned())
     }
 }
 
@@ -139,8 +157,13 @@ pub fn titled(
         .into_iter()
         .map(|param| {
             let name = message_key(param.name.as_ref());
-            let title = resolve(word.catalogue, &format!("{}-{name}", word.key), &[])
-                .or_else(|| resolve(word.catalogue, &format!("{scope}-{name}"), &[]));
+            let title = resolve(
+                word.catalogue,
+                &format!("{}-{name}", word.key),
+                &[],
+                Fill::Whole,
+            )
+            .or_else(|| resolve(word.catalogue, &format!("{scope}-{name}"), &[], Fill::Whole));
             match title {
                 Some(title) => param.titled(title),
                 None => param,
@@ -154,11 +177,12 @@ fn resolve(
     catalogue: Option<&'static Catalogue>,
     key: &str,
     arguments: &[(&str, Argument)],
+    fill: Fill,
 ) -> Option<String> {
     let resolver = *RESOLVER
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    resolver.and_then(|(resolve, _)| resolve(catalogue, key, arguments))
+    resolver.and_then(|(resolve, _)| resolve(catalogue, key, arguments, fill))
 }
 
 /// How a host resolves [`noun_key`] with the count `1` (one of it) or `2`
@@ -246,7 +270,7 @@ macro_rules! declared_catalogue {
 /// otherwise.
 #[must_use]
 pub fn localized(kind: &str, source: &str, catalogue: Option<&'static Catalogue>) -> String {
-    resolve(catalogue, &message_key(kind), &[]).unwrap_or_else(|| source.to_owned())
+    resolve(catalogue, &message_key(kind), &[], Fill::Whole).unwrap_or_else(|| source.to_owned())
 }
 
 /// [`localized`] of a resource that is being published under `label`: its
@@ -299,7 +323,12 @@ pub fn localized_noun(kind: &str, derived: tilo_actions::Noun) -> tilo_actions::
 mod tests {
     use super::*;
 
-    fn german(_: Option<&'static Catalogue>, key: &str, _: &[(&str, Argument)]) -> Option<String> {
+    fn german(
+        _: Option<&'static Catalogue>,
+        key: &str,
+        _: &[(&str, Argument)],
+        _: Fill,
+    ) -> Option<String> {
         (key == "add-app-question").then(|| "Zu den Apps hinzufügen".to_owned())
     }
 
@@ -331,6 +360,7 @@ mod tests {
                 _: Option<&'static Catalogue>,
                 key: &str,
                 arguments: &[(&str, Argument)],
+                _: Fill,
             ) -> Option<String> {
                 if key != "files-folder-rename-selected" {
                     return None;
