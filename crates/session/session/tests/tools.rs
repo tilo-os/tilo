@@ -241,121 +241,242 @@ fn launch_as(launches: &Launches, app: &str, workspace: &str) {
     launches.started(std::process::id(), app, workspace, false);
 }
 
-#[test]
-fn an_agent_opens_notes_in_a_workspace() {
-    let _settled = ui::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let records = home.home().join("starts");
-    packages(&mut home, &[(NOTES, "Notes")]);
-    let launcher = launcher(&home, &records);
-    let (mut session, opened) = session(&home, &launcher, None);
-    session.step(Duration::from_millis(1)).unwrap();
-    let workspace = front(&session);
+tilo_test_env::scenario! {
+    fn an_agents_tools_open_what_the_shell_shows;
 
-    // An agent asks the session's launcher for Notes in the workspace in front, from a thread that
-    // owns no part of the shell: the broker's launcher seam is the one path such an open takes.
-    let asked = {
-        let opened = Arc::clone(&opened);
-        let workspace = workspace.clone();
-        std::thread::spawn(move || opened.launch(NOTES, &workspace, None, &LaunchPlace::Focus))
-    };
-    until(&mut session, "the app runs", |_| {
-        starts(&records)
-            .iter()
-            .any(|(args, _, _)| args.contains(&format!("--app-id {NOTES}")))
-    });
-    asked
-        .join()
-        .expect("the asking thread")
-        .expect("the agent's launch is made");
+    phase an_agent_opens_notes_in_a_workspace;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let records = home.home().join("starts");
+        packages(&mut home, &[(NOTES, "Notes")]);
+        let launcher = launcher(&home, &records);
+        let (mut session, opened) = session(&home, &launcher, None);
+        session.step(Duration::from_millis(1)).unwrap();
+        let workspace = front(&session);
 
-    // The launch is the shell's own path: the app is planned into the workspace the agent named, by
-    // the pass that starts it, and written down as a launch of this session in that workspace.
-    let (args, _, pid) = started(&records, NOTES);
-    assert!(
-        args.contains(&format!("--workspace-id {}", workspace.id())),
-        "the app starts in the workspace the agent named"
-    );
-    assert_eq!(
-        opened.workspace_of(pid, NOTES).as_deref(),
-        Some(workspace.id().to_string().as_str()),
-        "the session recorded its launch in that workspace"
-    );
-    session
-        .desktop()
-        .with_policy(|policy| policy.map(window(11, NOTES)).unwrap());
-    until(
-        &mut session,
-        "the app's window is on the shell",
-        |session| groups(session) == vec![vec!["Notes".to_owned()]],
-    );
-}
+        // An agent asks the session's launcher for Notes in the workspace in front, from a thread that
+        // owns no part of the shell: the broker's launcher seam is the one path such an open takes.
+        let asked = {
+            let opened = Arc::clone(&opened);
+            let workspace = workspace.clone();
+            std::thread::spawn(move || opened.launch(NOTES, &workspace, None, &LaunchPlace::Focus))
+        };
+        until(&mut session, "the app runs", |_| {
+            starts(&records)
+                .iter()
+                .any(|(args, _, _)| args.contains(&format!("--app-id {NOTES}")))
+        });
+        asked
+            .join()
+            .expect("the asking thread")
+            .expect("the agent's launch is made");
 
-/// An agent whose `notes#open` asks for the place beside the view it works in, on a shell that
-/// already shows Notes: the person's own window comes forward, and nothing starts a second one.
-#[test]
-fn an_agents_open_brings_the_window_the_shell_already_shows_forward() {
-    let _settled = ui::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let records = home.home().join("starts");
-    packages(&mut home, &[(NOTES, "Notes"), (CLOCKS, "Clocks")]);
-    let launcher = launcher(&home, &records);
-    let (mut session, opened) = session(&home, &launcher, None);
-    session.step(Duration::from_millis(1)).unwrap();
-    let workspace = front(&session);
-
-    // The person's shell: Notes, and another app's window in front of it.
-    for (id, app) in [(11, NOTES), (12, CLOCKS)] {
+        // The launch is the shell's own path: the app is planned into the workspace the agent named, by
+        // the pass that starts it, and written down as a launch of this session in that workspace.
+        let (args, _, pid) = started(&records, NOTES);
+        assert!(
+            args.contains(&format!("--workspace-id {}", workspace.id())),
+            "the app starts in the workspace the agent named"
+        );
+        assert_eq!(
+            opened.workspace_of(pid, NOTES).as_deref(),
+            Some(workspace.id().to_string().as_str()),
+            "the session recorded its launch in that workspace"
+        );
         session
             .desktop()
-            .with_policy(|policy| policy.map(window(id, app)).unwrap());
+            .with_policy(|policy| policy.map(window(11, NOTES)).unwrap());
+        until(
+            &mut session,
+            "the app's window is on the shell",
+            |session| groups(session) == vec![vec!["Notes".to_owned()]],
+        );
     }
-    until(&mut session, "both windows are on the shell", |session| {
-        groups(session) == vec![vec!["Notes".to_owned()], vec!["Clocks".to_owned()]]
-    });
-    let clocks = session
-        .desktop()
-        .with_policy(|policy| policy.tab_of(12))
-        .expect("the tab the other app's window stands in");
-    session
-        .desktop()
-        .with_policy(|policy| policy.focus_tab(clocks));
-    until(&mut session, "the other app is in front", |session| {
-        in_front(session, "Clocks")
-    });
 
-    // The agent has worked in Notes, so its open asks for the place beside that view: the place is
-    // where a window of the app stands, not that there is another one.
-    let asked = {
-        let opened = Arc::clone(&opened);
-        let place = LaunchPlace::Beside {
-            app_id: NOTES.to_owned(),
+    phase an_agents_open_brings_the_window_the_shell_already_shows_forward;
+    // An agent whose `notes#open` asks for the place beside the view it works in, on a shell that
+    // already shows Notes: the person's own window comes forward, and nothing starts a second one.
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let records = home.home().join("starts");
+        packages(&mut home, &[(NOTES, "Notes"), (CLOCKS, "Clocks")]);
+        let launcher = launcher(&home, &records);
+        let (mut session, opened) = session(&home, &launcher, None);
+        session.step(Duration::from_millis(1)).unwrap();
+        let workspace = front(&session);
+
+        // The person's shell: Notes, and another app's window in front of it.
+        for (id, app) in [(11, NOTES), (12, CLOCKS)] {
+            session
+                .desktop()
+                .with_policy(|policy| policy.map(window(id, app)).unwrap());
+        }
+        until(&mut session, "both windows are on the shell", |session| {
+            groups(session) == vec![vec!["Notes".to_owned()], vec!["Clocks".to_owned()]]
+        });
+        let clocks = session
+            .desktop()
+            .with_policy(|policy| policy.tab_of(12))
+            .expect("the tab the other app's window stands in");
+        session
+            .desktop()
+            .with_policy(|policy| policy.focus_tab(clocks));
+        until(&mut session, "the other app is in front", |session| {
+            in_front(session, "Clocks")
+        });
+
+        // The agent has worked in Notes, so its open asks for the place beside that view: the place is
+        // where a window of the app stands, not that there is another one.
+        let asked = {
+            let opened = Arc::clone(&opened);
+            let place = LaunchPlace::Beside {
+                app_id: NOTES.to_owned(),
+            };
+            std::thread::spawn(move || opened.launch(NOTES, &workspace, None, &place))
         };
-        std::thread::spawn(move || opened.launch(NOTES, &workspace, None, &place))
-    };
-    // The pass that answers the ask is the shell's own: frames run until the window comes forward,
-    // and the asker is told once it is made.
-    until(
-        &mut session,
-        "the window the shell had comes forward",
-        |session| in_front(session, "Notes"),
-    );
-    asked
-        .join()
-        .expect("the asking thread")
-        .expect("the agent's open is made");
-    assert_eq!(
-        groups(&session),
-        vec![vec!["Notes".to_owned()], vec!["Clocks".to_owned()]],
-        "the app's window comes forward: no second window of it opens"
-    );
-    assert!(
-        !starts(&records)
+        // The pass that answers the ask is the shell's own: frames run until the window comes forward,
+        // and the asker is told once it is made.
+        until(
+            &mut session,
+            "the window the shell had comes forward",
+            |session| in_front(session, "Notes"),
+        );
+        asked
+            .join()
+            .expect("the asking thread")
+            .expect("the agent's open is made");
+        assert_eq!(
+            groups(&session),
+            vec![vec!["Notes".to_owned()], vec!["Clocks".to_owned()]],
+            "the app's window comes forward: no second window of it opens"
+        );
+        assert!(
+            !starts(&records)
+                .iter()
+                .any(|(args, _, _)| args.contains(&format!("--app-id {NOTES}"))),
+            "nothing starts the app again: {:?}",
+            starts(&records)
+        );
+    }
+
+    phase files_lists_the_drives_and_the_apps_it_may_open;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let records = home.home().join("starts");
+        packages(&mut home, &[(NOTES, "Notes")]);
+        let launcher = launcher(&home, &records);
+        let mount = home.home().join("Backup");
+        fs::create_dir_all(&mount).unwrap();
+        let drives = Rc::new(Drives::new(
+            Rc::new(Plugged(std::cell::RefCell::new(vec![Medium {
+                device: "/org/freedesktop/UDisks2/block_devices/sdb1".to_owned(),
+                label: Some("Backup".to_owned()),
+                size: 64 * 1024 * 1024 * 1024,
+                mount: mount.clone(),
+            }]))),
+            Notifications::default(),
+        ));
+        let (mut session, opened) = session(&home, &launcher, Some(drives));
+        session.step(Duration::from_millis(1)).unwrap();
+        let workspace = front(&session).id().to_string();
+        launch_as(&opened, FILES, &workspace);
+
+        let listed = ask(&home, &workspace, ToolIntent::Drives);
+        assert!(listed.accepted, "{}", listed.message);
+        assert_eq!(listed.drives.len(), 1, "one drive is plugged in");
+        assert_eq!(listed.drives[0].id, "sdb1");
+        assert_eq!(listed.drives[0].label, "Backup");
+        assert_eq!(
+            listed.drives[0].open_at.as_deref(),
+            Some(mount.to_str().unwrap()),
+            "the mounted folder is where Files opens it"
+        );
+
+        let apps = ask(&home, &workspace, ToolIntent::Applications);
+        assert!(apps.accepted, "{}", apps.message);
+        let notes = apps
+            .applications
             .iter()
-            .any(|(args, _, _)| args.contains(&format!("--app-id {NOTES}"))),
-        "nothing starts the app again: {:?}",
-        starts(&records)
-    );
+            .find(|app| app.id == NOTES)
+            .unwrap_or_else(|| panic!("the installed app is listed: {:?}", apps.applications));
+        assert_eq!(notes.name, "Notes");
+        assert_eq!(notes.removal, AppRemoval::Uninstall);
+        assert_eq!(notes.kind, AppKind::Tilo);
+
+        // The person's app list is Files' own: no other app is told it.
+        launch_as(&opened, NOTES, &workspace);
+        let refused = ask(&home, &workspace, ToolIntent::Applications);
+        assert!(
+            !refused.accepted,
+            "another app is not told the person's apps"
+        );
+        assert!(refused.applications.is_empty());
+    }
+
+    phase open_in_terminal_starts_a_terminal_at_the_folder;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let records = home.home().join("starts");
+        packages(&mut home, &[(TERMINAL, "Terminal")]);
+        let launcher = launcher(&home, &records);
+        let (mut session, opened) = session(&home, &launcher, None);
+        session.step(Duration::from_millis(1)).unwrap();
+        let workspace = front(&session).id().to_string();
+        launch_as(&opened, FILES, &workspace);
+        let folder = home.home().join("Documents");
+        fs::create_dir_all(&folder).unwrap();
+        let intent = ToolIntent::Terminal {
+            directory: Some(folder.display().to_string()),
+        };
+
+        // The request waits for the pass that starts it, so it is asked from the app's own thread while
+        // the session's loop runs.
+        let asked = {
+            let home = home.runtime().to_owned();
+            let workspace = workspace.clone();
+            let intent = intent.clone();
+            std::thread::spawn(move || {
+                let socket = home.join("tilo/services/tools.sock");
+                let mut stream =
+                    tilo_files::native::socket::connect(&socket).expect("the tools socket");
+                let request = ToolRequest {
+                    protocol: TOOL_PROTOCOL_VERSION,
+                    workspace_id: workspace,
+                    intent,
+                    on_behalf_of: None,
+                };
+                let mut line = serde_json::to_vec(&request).unwrap();
+                line.push(b'\n');
+                stream.write_all(&line).unwrap();
+                let mut reading = BufReader::new(stream);
+                let mut answer = String::new();
+                reading.read_line(&mut answer).unwrap();
+                serde_json::from_str::<ToolReply>(&answer).expect("a tool reply")
+            })
+        };
+        until(&mut session, "the terminal starts", |_| {
+            starts(&records)
+                .iter()
+                .any(|(args, _, _)| args.contains(&format!("--app-id {TERMINAL}")))
+        });
+        let reply = asked.join().expect("the asking thread");
+        assert!(reply.accepted, "{}", reply.message);
+
+        let (args, context, _) = started(&records, TERMINAL);
+        assert!(
+            args.contains(&format!("--workspace-id {workspace}")),
+            "the terminal opens in the workspace it was asked from"
+        );
+        assert_eq!(
+            serde_json::from_str::<ToolIntent>(&context).expect("the tool context"),
+            intent,
+            "the terminal is told which folder to start in"
+        );
+    }
 }
 
 /// Whether the window titled `title` stands in front of its row.
@@ -374,121 +495,4 @@ fn in_front(session: &Session, title: &str) -> bool {
                 .any(|group| group.id == *front && group.tabs.iter().any(|tab| tab.title == title))
         })
     })
-}
-
-#[test]
-fn files_lists_the_drives_and_the_apps_it_may_open() {
-    let _settled = ui::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let records = home.home().join("starts");
-    packages(&mut home, &[(NOTES, "Notes")]);
-    let launcher = launcher(&home, &records);
-    let mount = home.home().join("Backup");
-    fs::create_dir_all(&mount).unwrap();
-    let drives = Rc::new(Drives::new(
-        Rc::new(Plugged(std::cell::RefCell::new(vec![Medium {
-            device: "/org/freedesktop/UDisks2/block_devices/sdb1".to_owned(),
-            label: Some("Backup".to_owned()),
-            size: 64 * 1024 * 1024 * 1024,
-            mount: mount.clone(),
-        }]))),
-        Notifications::default(),
-    ));
-    let (mut session, opened) = session(&home, &launcher, Some(drives));
-    session.step(Duration::from_millis(1)).unwrap();
-    let workspace = front(&session).id().to_string();
-    launch_as(&opened, FILES, &workspace);
-
-    let listed = ask(&home, &workspace, ToolIntent::Drives);
-    assert!(listed.accepted, "{}", listed.message);
-    assert_eq!(listed.drives.len(), 1, "one drive is plugged in");
-    assert_eq!(listed.drives[0].id, "sdb1");
-    assert_eq!(listed.drives[0].label, "Backup");
-    assert_eq!(
-        listed.drives[0].open_at.as_deref(),
-        Some(mount.to_str().unwrap()),
-        "the mounted folder is where Files opens it"
-    );
-
-    let apps = ask(&home, &workspace, ToolIntent::Applications);
-    assert!(apps.accepted, "{}", apps.message);
-    let notes = apps
-        .applications
-        .iter()
-        .find(|app| app.id == NOTES)
-        .unwrap_or_else(|| panic!("the installed app is listed: {:?}", apps.applications));
-    assert_eq!(notes.name, "Notes");
-    assert_eq!(notes.removal, AppRemoval::Uninstall);
-    assert_eq!(notes.kind, AppKind::Tilo);
-
-    // The person's app list is Files' own: no other app is told it.
-    launch_as(&opened, NOTES, &workspace);
-    let refused = ask(&home, &workspace, ToolIntent::Applications);
-    assert!(
-        !refused.accepted,
-        "another app is not told the person's apps"
-    );
-    assert!(refused.applications.is_empty());
-}
-
-#[test]
-fn open_in_terminal_starts_a_terminal_at_the_folder() {
-    let _settled = ui::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let records = home.home().join("starts");
-    packages(&mut home, &[(TERMINAL, "Terminal")]);
-    let launcher = launcher(&home, &records);
-    let (mut session, opened) = session(&home, &launcher, None);
-    session.step(Duration::from_millis(1)).unwrap();
-    let workspace = front(&session).id().to_string();
-    launch_as(&opened, FILES, &workspace);
-    let folder = home.home().join("Documents");
-    fs::create_dir_all(&folder).unwrap();
-    let intent = ToolIntent::Terminal {
-        directory: Some(folder.display().to_string()),
-    };
-
-    // The request waits for the pass that starts it, so it is asked from the app's own thread while
-    // the session's loop runs.
-    let asked = {
-        let home = home.runtime().to_owned();
-        let workspace = workspace.clone();
-        let intent = intent.clone();
-        std::thread::spawn(move || {
-            let socket = home.join("tilo/services/tools.sock");
-            let mut stream =
-                tilo_files::native::socket::connect(&socket).expect("the tools socket");
-            let request = ToolRequest {
-                protocol: TOOL_PROTOCOL_VERSION,
-                workspace_id: workspace,
-                intent,
-                on_behalf_of: None,
-            };
-            let mut line = serde_json::to_vec(&request).unwrap();
-            line.push(b'\n');
-            stream.write_all(&line).unwrap();
-            let mut reading = BufReader::new(stream);
-            let mut answer = String::new();
-            reading.read_line(&mut answer).unwrap();
-            serde_json::from_str::<ToolReply>(&answer).expect("a tool reply")
-        })
-    };
-    until(&mut session, "the terminal starts", |_| {
-        starts(&records)
-            .iter()
-            .any(|(args, _, _)| args.contains(&format!("--app-id {TERMINAL}")))
-    });
-    let reply = asked.join().expect("the asking thread");
-    assert!(reply.accepted, "{}", reply.message);
-
-    let (args, context, _) = started(&records, TERMINAL);
-    assert!(
-        args.contains(&format!("--workspace-id {workspace}")),
-        "the terminal opens in the workspace it was asked from"
-    );
-    assert_eq!(
-        serde_json::from_str::<ToolIntent>(&context).expect("the tool context"),
-        intent,
-        "the terminal is told which folder to start in"
-    );
 }

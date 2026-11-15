@@ -367,30 +367,141 @@ fn a_window_becomes_a_tab_of_the_strip_and_shows_where_the_strip_lays_it_out() {
     );
 }
 
-#[test]
-fn the_top_bar_draws_above_the_shell_and_opens_the_overview_by_its_action() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    session.step(Duration::from_millis(1)).unwrap();
-    session.step(Duration::from_millis(1)).unwrap();
-    let names = session.accessible_labels();
-    assert!(!names.is_empty(), "the chrome names what it shows");
-    let frame = session.compositor().screenshot("HEADLESS-1").unwrap();
-    let band = (0..frame.width)
-        .step_by(4)
-        .filter_map(|x| frame.pixel(x, 12))
-        .collect::<std::collections::BTreeSet<_>>();
-    assert!(band.len() > 2, "the bar draws in its band: {names:?}");
+tilo_test_env::scenario! {
+    fn the_chromes_actions_reach_the_shell;
 
-    invoke(&mut session, CHROME_RESOURCE, "overview");
-    session.step(Duration::from_millis(1)).unwrap();
-    let open = session.accessible_labels();
-    assert_ne!(open, names, "the overview shows over the shell");
-    let shot = session.compositor().screenshot("HEADLESS-1").unwrap();
-    assert_ne!(
-        shot.rgba, frame.rgba,
-        "the overview changes what the screen shows"
-    );
+    phase the_top_bar_draws_above_the_shell_and_opens_the_overview_by_its_action;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session();
+        session.step(Duration::from_millis(1)).unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+        let names = session.accessible_labels();
+        assert!(!names.is_empty(), "the chrome names what it shows");
+        let frame = session.compositor().screenshot("HEADLESS-1").unwrap();
+        let band = (0..frame.width)
+            .step_by(4)
+            .filter_map(|x| frame.pixel(x, 12))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(band.len() > 2, "the bar draws in its band: {names:?}");
+
+        invoke(&mut session, CHROME_RESOURCE, "overview");
+        session.step(Duration::from_millis(1)).unwrap();
+        let open = session.accessible_labels();
+        assert_ne!(open, names, "the overview shows over the shell");
+        let shot = session.compositor().screenshot("HEADLESS-1").unwrap();
+        assert_ne!(
+            shot.rgba, frame.rgba,
+            "the overview changes what the screen shows"
+        );
+    }
+
+    phase the_power_menus_shortcut_opens_it;
+    // The power menu's shortcut puts it up: the chord, as a person presses it,
+    // reaches the menu the same verb opens.
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session();
+        session.step(Duration::from_millis(1)).unwrap();
+        invoke_with(
+            &mut session,
+            CHROME_RESOURCE,
+            "shortcut",
+            &serde_json::json!({"action": "power_menu"}),
+        );
+        let menu = session.power_menu().expect("the power menu");
+        assert!(
+            menu.presentation().is_open(),
+            "the shortcut puts the menu up"
+        );
+        assert!(!menu.rows().is_empty(), "with the person's choices");
+    }
+
+    phase stepping_past_an_end_says_which_end_it_is;
+    // Stepping past the first or the last workspace or strip says which end the person reached, rather
+    // than doing nothing.
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session();
+        session.step(Duration::from_millis(1)).unwrap();
+        invoke_with(
+            &mut session,
+            CHROME_RESOURCE,
+            "switch-workspace",
+            &serde_json::json!({"delta": 1}),
+        );
+        let said = session.accessible_labels().join("\n");
+        assert!(
+            said.contains("This is the last workspace"),
+            "stepping past the last workspace says so: {said}"
+        );
+        invoke_with(
+            &mut session,
+            CHROME_RESOURCE,
+            "switch-workspace",
+            &serde_json::json!({"delta": -1}),
+        );
+        let said = session.accessible_labels().join("\n");
+        assert!(
+            said.contains("This is the first workspace"),
+            "and past the first: {said}"
+        );
+        invoke_with(
+            &mut session,
+            CHROME_RESOURCE,
+            "step-strip",
+            &serde_json::json!({"steps": 1}),
+        );
+        let said = session.accessible_labels().join("\n");
+        assert!(
+            said.contains("This is the last strip"),
+            "stepping past the last strip says so: {said}"
+        );
+    }
+
+    phase the_desktop_names_and_moves_the_strips_the_overview_offers;
+    // Naming and moving strips, as the overview's strip rows ask.
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session();
+        session.step(Duration::from_millis(1)).unwrap();
+        add_strip(&session, "Second");
+        let second = strip_id(&session, "Second");
+        invoke_with(
+            &mut session,
+            CHROME_RESOURCE,
+            "rename",
+            &serde_json::json!({"strip": second, "name": "Later"}),
+        );
+        let (_, strips) = workspaces(&session).remove(0);
+        assert_eq!(
+            strips,
+            ["Strip 1", "Later"],
+            "the strip was renamed, and the one nobody named reads by its place"
+        );
+
+        invoke_with(
+            &mut session,
+            CHROME_RESOURCE,
+            "move-strip",
+            &serde_json::json!({"strip": "Later", "before": "Strip 1"}),
+        );
+        let (_, strips) = workspaces(&session).remove(0);
+        assert_eq!(
+            strips,
+            ["Later", "Strip 2"],
+            "the strip moved above the first, which nobody named now reads by where it stands"
+        );
+
+        invoke_with(
+            &mut session,
+            CHROME_RESOURCE,
+            "move-strip",
+            &serde_json::json!({"strip": "Later"}),
+        );
+        let (_, strips) = workspaces(&session).remove(0);
+        assert_eq!(strips, ["Strip 1", "Later"], "and to the bottom");
+    }
 }
 
 #[test]
@@ -786,100 +897,151 @@ fn displays_reading(session: &Session) -> tilo_session::displays::Reading {
     serde_json::from_value(published).expect("the reading reads back")
 }
 
-#[test]
-fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
-    let _settled = ui::motion::testing::settled();
-    let asked = Rc::new(RefCell::new(Vec::new()));
-    let wireless = Rc::new(RefCell::new(Vec::new()));
-    let dials = Dials::with(&[("HEADLESS-1", 0.5)]);
-    let mut session = crate::common::headless(Options {
-        // No quick settings app: the keys reach the services the resources belong to.
-        services: vec![
-            Box::new(Audio::speakers(Rc::clone(&asked))),
-            Box::new(Wire::on(Rc::clone(&wireless))),
-        ],
-        backlights: Some(Box::new(dials.clone())),
-        collab: false,
-        ..Options::default()
-    });
-    assert!(
-        !publishes(&session, tilo_session::QUICK_SETTINGS, "volume-up"),
-        "nothing shows the panel's effects here"
-    );
+tilo_test_env::scenario! {
+    fn the_machines_keys_reach_what_answers_them;
 
-    tap(&mut session, keys::MUTE);
-    tap(&mut session, keys::BRIGHTNESS_DOWN);
-    tap(&mut session, keys::WLAN);
-    pump(&mut session, &mut [], |_, _| {
-        asked.borrow().iter().any(|call| call == "toggle-muted")
-            && !wireless.borrow().is_empty()
-            && dials.asked("HEADLESS-1").len() == 1
-    });
-    assert_eq!(
-        *wireless.borrow(),
-        ["toggle-airplane-mode"],
-        "the wireless key is the connectivity service's"
-    );
-    assert_eq!(
-        *asked.borrow(),
-        ["toggle-muted"],
-        "the mute key is the audio service's"
-    );
-    assert_eq!(
-        dials.asked("HEADLESS-1"),
-        [40.0],
-        "the brightness key is the displays service's, one step down"
-    );
-    let reading = displays_reading(&session);
-    assert!(
-        reading.displays.iter().any(|display| {
-            display.connector == "HEADLESS-1"
-                && display
-                    .brightness
-                    .is_some_and(|brightness| (brightness - 0.4).abs() < 0.001)
-        }),
-        "the reading follows the change: {reading:?}"
-    );
+    phase the_volume_and_brightness_keys_work_with_no_quick_settings_panel;
+    {
+        let _settled = ui::motion::testing::settled();
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let wireless = Rc::new(RefCell::new(Vec::new()));
+        let dials = Dials::with(&[("HEADLESS-1", 0.5)]);
+        let mut session = crate::common::headless(Options {
+            // No quick settings app: the keys reach the services the resources belong to.
+            services: vec![
+                Box::new(Audio::speakers(Rc::clone(&asked))),
+                Box::new(Wire::on(Rc::clone(&wireless))),
+            ],
+            backlights: Some(Box::new(dials.clone())),
+            collab: false,
+            ..Options::default()
+        });
+        assert!(
+            !publishes(&session, tilo_session::QUICK_SETTINGS, "volume-up"),
+            "nothing shows the panel's effects here"
+        );
 
-    // A held key repeats into the service, as the panel's effect did.
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_millis(20),
-        rate: 100,
-    });
-    key(&mut session, keys::VOLUME_UP, true);
-    let repeats = |asked: &Rc<RefCell<Vec<String>>>| {
-        asked
+        tap(&mut session, keys::MUTE);
+        tap(&mut session, keys::BRIGHTNESS_DOWN);
+        tap(&mut session, keys::WLAN);
+        pump(&mut session, &mut [], |_, _| {
+            asked.borrow().iter().any(|call| call == "toggle-muted")
+                && !wireless.borrow().is_empty()
+                && dials.asked("HEADLESS-1").len() == 1
+        });
+        assert_eq!(
+            *wireless.borrow(),
+            ["toggle-airplane-mode"],
+            "the wireless key is the connectivity service's"
+        );
+        assert_eq!(
+            *asked.borrow(),
+            ["toggle-muted"],
+            "the mute key is the audio service's"
+        );
+        assert_eq!(
+            dials.asked("HEADLESS-1"),
+            [40.0],
+            "the brightness key is the displays service's, one step down"
+        );
+        let reading = displays_reading(&session);
+        assert!(
+            reading.displays.iter().any(|display| {
+                display.connector == "HEADLESS-1"
+                    && display
+                        .brightness
+                        .is_some_and(|brightness| (brightness - 0.4).abs() < 0.001)
+            }),
+            "the reading follows the change: {reading:?}"
+        );
+
+        // A held key repeats into the service, as the panel's effect did.
+        session.compositor().set_key_repeat(KeyRepeat {
+            delay: Duration::from_millis(20),
+            rate: 100,
+        });
+        key(&mut session, keys::VOLUME_UP, true);
+        let repeats = |asked: &Rc<RefCell<Vec<String>>>| {
+            asked
+                .borrow()
+                .iter()
+                .filter(|call| *call == "volume-up")
+                .count()
+        };
+        // The repeat is one per turn the compositor dispatches, however long a turnaround takes on a
+        // busy machine: the test holds the key until the sound has been raised more than once, rather
+        // than for a span of the host's clock.
+        crate::common::wait_for(&mut session, "a held volume key to ramp the sound", |_| {
+            (repeats(&asked) > 3).then_some(())
+        });
+        key(&mut session, keys::VOLUME_UP, false);
+        let louder = repeats(&asked);
+        assert!(louder > 3, "holding volume up ramps it: {louder}");
+        assert!(
+            session
+                .accessible_labels()
+                .iter()
+                .any(|label| label.contains("Muted")),
+            "the readout shows the sound as the service reads it, here muted: {:?}",
+            session.accessible_labels()
+        );
+        for _ in 0..5 {
+            session.step(Duration::from_millis(10)).unwrap();
+        }
+        let after = asked
             .borrow()
             .iter()
             .filter(|call| *call == "volume-up")
-            .count()
-    };
-    // The repeat is one per turn the compositor dispatches, however long a turnaround takes on a
-    // busy machine: the test holds the key until the sound has been raised more than once, rather
-    // than for a span of the host's clock.
-    crate::common::wait_for(&mut session, "a held volume key to ramp the sound", |_| {
-        (repeats(&asked) > 3).then_some(())
-    });
-    key(&mut session, keys::VOLUME_UP, false);
-    let louder = repeats(&asked);
-    assert!(louder > 3, "holding volume up ramps it: {louder}");
-    assert!(
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label.contains("Muted")),
-        "the readout shows the sound as the service reads it, here muted: {:?}",
-        session.accessible_labels()
-    );
-    for _ in 0..5 {
-        session.step(Duration::from_millis(10)).unwrap();
+            .count();
+        assert_eq!(after, louder, "the release stops the repeat");
     }
-    let after = asked
-        .borrow()
-        .iter()
-        .filter(|call| *call == "volume-up")
-        .count();
-    assert_eq!(after, louder, "the release stops the repeat");
+
+    phase the_play_key_reaches_whatever_publishes_the_player;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session();
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        session.publish(Rc::new(RefCell::new(Player {
+            asked: Rc::clone(&asked),
+        })));
+        assert!(publishes(&session, tilo_session::MEDIA, "play-pause"));
+        tap(&mut session, keys::PLAY_PAUSE);
+        assert_eq!(*asked.borrow(), ["play-pause"]);
+    }
+
+    phase the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session();
+        assert!(session.input_config().touchpad_enabled);
+        // The readout that answers the key stays up for a moment of its own, and a machine running a
+        // whole suite at once can spend that moment on the turn that pressed the key: the press and the
+        // read of what it says happen at one reading of the clock, so what is read is the readout the
+        // key raised.
+        ui::time::testing::with_monotonic_time(ui::time::now(), || {
+            tap(&mut session, keys::F21);
+            assert!(
+                !session.input_config().touchpad_enabled,
+                "the key turned it off"
+            );
+            assert!(
+                session
+                    .accessible_labels()
+                    .contains(&"Touchpad off".to_owned()),
+                "the readout says so: {:?}",
+                session.accessible_labels()
+            );
+        });
+        let mut on = serde_json::Map::new();
+        on.insert("on".into(), true.into());
+        session
+            .invoke(tilo_session::INPUT_RESOURCE, "toggle-touchpad", &on)
+            .unwrap();
+        assert!(
+            session.input_config().touchpad_enabled,
+            "the action turned it on"
+        );
+    }
 }
 
 /// A service the session runs in its process: it publishes what plays,
@@ -925,53 +1087,6 @@ impl Published for Player {
     }
 }
 
-#[test]
-fn the_play_key_reaches_whatever_publishes_the_player() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    let asked = Rc::new(RefCell::new(Vec::new()));
-    session.publish(Rc::new(RefCell::new(Player {
-        asked: Rc::clone(&asked),
-    })));
-    assert!(publishes(&session, tilo_session::MEDIA, "play-pause"));
-    tap(&mut session, keys::PLAY_PAUSE);
-    assert_eq!(*asked.borrow(), ["play-pause"]);
-}
-
-#[test]
-fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    assert!(session.input_config().touchpad_enabled);
-    // The readout that answers the key stays up for a moment of its own, and a machine running a
-    // whole suite at once can spend that moment on the turn that pressed the key: the press and the
-    // read of what it says happen at one reading of the clock, so what is read is the readout the
-    // key raised.
-    ui::time::testing::with_monotonic_time(ui::time::now(), || {
-        tap(&mut session, keys::F21);
-        assert!(
-            !session.input_config().touchpad_enabled,
-            "the key turned it off"
-        );
-        assert!(
-            session
-                .accessible_labels()
-                .contains(&"Touchpad off".to_owned()),
-            "the readout says so: {:?}",
-            session.accessible_labels()
-        );
-    });
-    let mut on = serde_json::Map::new();
-    on.insert("on".into(), true.into());
-    session
-        .invoke(tilo_session::INPUT_RESOURCE, "toggle-touchpad", &on)
-        .unwrap();
-    assert!(
-        session.input_config().touchpad_enabled,
-        "the action turned it on"
-    );
-}
-
 /// Unlocks with "sesame" only.
 struct Sesame;
 
@@ -1004,39 +1119,119 @@ fn taken_actions() -> Vec<tilo_session::SessionAction> {
     ACTIONS.with_borrow_mut(std::mem::take)
 }
 
-/// A session in a window of another desktop runs no idle timers: that desktop owns idle, blanking,
-/// locking and suspend.
-#[test]
-fn a_session_in_a_window_runs_no_idle_timers() {
-    let _settled = ui::motion::testing::settled();
-    let mut hosted = crate::common::headless(Options {
-        machine: tilo_session::Machine::Window,
-        ..Options::default()
-    });
-    assert_eq!(
-        hosted.compositor().idle_config(),
-        tilo_compositor::IdleConfig::never(),
-        "a session in a window starts with no idle timers"
-    );
-    // The settings the person's settings app applies reach every session;
-    // here they must not bring the timers back.
-    hosted
-        .compositor()
-        .set_idle_config(tilo_compositor::IdleConfig::default());
-    assert_eq!(
-        hosted.compositor().idle_config(),
-        tilo_compositor::IdleConfig::never(),
-        "the host desktop owns idle, whatever this session is told"
-    );
+tilo_test_env::scenario! {
+    fn the_session_answers_to_what_runs_it;
 
-    let mut own = session();
-    own.compositor()
-        .set_idle_config(tilo_compositor::IdleConfig::default());
-    assert_eq!(
-        own.compositor().idle_config(),
-        tilo_compositor::IdleConfig::default(),
-        "a session with displays of its own keeps its timers"
-    );
+    phase a_session_in_a_window_runs_no_idle_timers;
+    // A session in a window of another desktop runs no idle timers: that desktop owns idle, blanking,
+    // locking and suspend.
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut hosted = crate::common::headless(Options {
+            machine: tilo_session::Machine::Window,
+            ..Options::default()
+        });
+        assert_eq!(
+            hosted.compositor().idle_config(),
+            tilo_compositor::IdleConfig::never(),
+            "a session in a window starts with no idle timers"
+        );
+        // The settings the person's settings app applies reach every session;
+        // here they must not bring the timers back.
+        hosted
+            .compositor()
+            .set_idle_config(tilo_compositor::IdleConfig::default());
+        assert_eq!(
+            hosted.compositor().idle_config(),
+            tilo_compositor::IdleConfig::never(),
+            "the host desktop owns idle, whatever this session is told"
+        );
+
+        let mut own = session();
+        own.compositor()
+            .set_idle_config(tilo_compositor::IdleConfig::default());
+        assert_eq!(
+            own.compositor().idle_config(),
+            tilo_compositor::IdleConfig::default(),
+            "a session with displays of its own keeps its timers"
+        );
+    }
+
+    phase the_liveness_door_beside_the_control_socket_answers_a_heartbeat;
+    // Beside the development control socket, the session serves the liveness door: the loop answers a
+    // heartbeat asked from outside it, so a session whose loop has stopped can be told apart from a
+    // slow machine.
+    {
+        let _settled = ui::motion::testing::settled();
+        let directory = tempfile::tempdir().expect("a directory");
+        let control = directory.path().join("control.sock");
+        let mut session = crate::common::headless(Options {
+            collab: false,
+            test_control: Some(control.clone()),
+            ..Options::default()
+        });
+        let mut client = std::os::unix::net::UnixStream::connect(tilo_liveness::socket_path(&control))
+            .expect("the door is bound beside the control socket");
+        client
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("a read deadline");
+        client
+            .write_all(b"{\"op\":\"heartbeat\",\"budget_ms\":5000}\n")
+            .expect("the heartbeat is asked for");
+        let mut reader = std::io::BufReader::new(&mut client);
+        let mut answer = String::new();
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the door answers: {answer:?}"
+            );
+            session
+                .step(Duration::from_millis(1))
+                .expect("a turn of the session");
+            match std::io::BufRead::read_line(&mut reader, &mut answer) {
+                Ok(0) => panic!("the door hung up: {answer:?}"),
+                Ok(_) => break,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(error) => panic!("the door does not answer: {error}"),
+            }
+        }
+        assert!(
+            answer.contains("\"alive\""),
+            "the loop acknowledged the heartbeat: {answer}"
+        );
+    }
+
+    phase a_logout_asked_through_the_login_wrapper_ends_the_session;
+    // A logout asked through the login wrapper's channel — what the power menu and the session's
+    // services ask of it — ends the session in order: the wrapper tears the login down once this
+    // process is gone, and the request it already holds is not written again.
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let _settled = ui::motion::testing::settled();
+        let channel = tempfile::tempdir().expect("a channel");
+        std::fs::set_permissions(channel.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("the channel is this person's");
+        let request = channel.path().join("logout-request");
+        let mut environment = ScopedEnv::new();
+        environment.set("TILO_SESSION_LOGOUT_REQUEST", request.as_os_str());
+        let mut session = session();
+        assert!(!session.ended(), "the session runs on");
+        os_actions::request_logout().expect("the logout is asked for");
+        session
+            .step(Duration::from_millis(1))
+            .expect("a turn of the session");
+        assert!(session.ended(), "the asked logout ends the session");
+        assert!(
+            request.exists(),
+            "the wrapper's request stays for the wrapper to act on"
+        );
+    }
 }
 
 /// Every power choice a session in a window takes stays in that session: nothing reaches the
@@ -1117,82 +1312,6 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
     );
 }
 
-/// A logout asked through the login wrapper's channel — what the power menu and the session's
-/// services ask of it — ends the session in order: the wrapper tears the login down once this
-/// process is gone, and the request it already holds is not written again.
-#[test]
-fn a_logout_asked_through_the_login_wrapper_ends_the_session() {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let _settled = ui::motion::testing::settled();
-    let channel = tempfile::tempdir().expect("a channel");
-    std::fs::set_permissions(channel.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the channel is this person's");
-    let request = channel.path().join("logout-request");
-    let mut environment = ScopedEnv::new();
-    environment.set("TILO_SESSION_LOGOUT_REQUEST", request.as_os_str());
-    let mut session = session();
-    assert!(!session.ended(), "the session runs on");
-    os_actions::request_logout().expect("the logout is asked for");
-    session
-        .step(Duration::from_millis(1))
-        .expect("a turn of the session");
-    assert!(session.ended(), "the asked logout ends the session");
-    assert!(
-        request.exists(),
-        "the wrapper's request stays for the wrapper to act on"
-    );
-}
-
-/// Beside the development control socket, the session serves the liveness door: the loop answers a
-/// heartbeat asked from outside it, so a session whose loop has stopped can be told apart from a
-/// slow machine.
-#[test]
-fn the_liveness_door_beside_the_control_socket_answers_a_heartbeat() {
-    let _settled = ui::motion::testing::settled();
-    let directory = tempfile::tempdir().expect("a directory");
-    let control = directory.path().join("control.sock");
-    let mut session = crate::common::headless(Options {
-        collab: false,
-        test_control: Some(control.clone()),
-        ..Options::default()
-    });
-    let mut client = std::os::unix::net::UnixStream::connect(tilo_liveness::socket_path(&control))
-        .expect("the door is bound beside the control socket");
-    client
-        .set_read_timeout(Some(Duration::from_millis(50)))
-        .expect("a read deadline");
-    client
-        .write_all(b"{\"op\":\"heartbeat\",\"budget_ms\":5000}\n")
-        .expect("the heartbeat is asked for");
-    let mut reader = std::io::BufReader::new(&mut client);
-    let mut answer = String::new();
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the door answers: {answer:?}"
-        );
-        session
-            .step(Duration::from_millis(1))
-            .expect("a turn of the session");
-        match std::io::BufRead::read_line(&mut reader, &mut answer) {
-            Ok(0) => panic!("the door hung up: {answer:?}"),
-            Ok(_) => break,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(error) => panic!("the door does not answer: {error}"),
-        }
-    }
-    assert!(
-        answer.contains("\"alive\""),
-        "the loop acknowledged the heartbeat: {answer}"
-    );
-}
-
 /// A session that cannot check a password never locks: the lock screen could not be left again.
 /// Locking stays on offer where a password does unlock it.
 #[test]
@@ -1249,27 +1368,6 @@ fn the_power_menu_opens_by_its_published_verb() {
         !menu.rows().is_empty(),
         "and it offers the person's choices"
     );
-}
-
-/// The power menu's shortcut puts it up: the chord, as a person presses it,
-/// reaches the menu the same verb opens.
-#[test]
-fn the_power_menus_shortcut_opens_it() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    session.step(Duration::from_millis(1)).unwrap();
-    invoke_with(
-        &mut session,
-        CHROME_RESOURCE,
-        "shortcut",
-        &serde_json::json!({"action": "power_menu"}),
-    );
-    let menu = session.power_menu().expect("the power menu");
-    assert!(
-        menu.presentation().is_open(),
-        "the shortcut puts the menu up"
-    );
-    assert!(!menu.rows().is_empty(), "with the person's choices");
 }
 
 /// The session publishes the actions only it can carry out, with what each is called, so every
@@ -1435,52 +1533,113 @@ fn the_magnifier_zooms_the_screen_about_the_pointer_by_its_actions() {
     assert!((session.compositor().zoom() - 1.0).abs() < f64::EPSILON);
 }
 
-#[test]
-fn the_night_light_action_warms_the_displays_and_switches_back() {
-    let mut session = session();
-    assert_eq!(session.compositor().night_light(), None);
-    invoke(&mut session, tilo_session::NIGHT_LIGHT_RESOURCE, "toggle");
-    assert!(
-        session
-            .compositor()
-            .night_light()
-            .is_some_and(|kelvin| kelvin < 6_500)
-    );
-    session
-        .invoke(
-            tilo_session::NIGHT_LIGHT_RESOURCE,
-            "toggle",
-            &arguments(serde_json::json!({ "on": true })),
-        )
-        .unwrap();
-    session.step(Duration::from_millis(1)).unwrap();
-    assert!(session.compositor().night_light().is_some(), "on stays on");
-    invoke(&mut session, tilo_session::NIGHT_LIGHT_RESOURCE, "toggle");
-    assert_eq!(session.compositor().night_light(), None);
-}
+tilo_test_env::scenario! {
+    fn the_sessions_own_resources_answer_their_actions;
 
-#[test]
-fn the_night_light_warms_to_the_persons_warmth() {
-    let options = Options {
-        presentation: ui::headless::fixture_runner_inputs,
-        collab: false,
-        config: tilo_session::SessionConfig {
-            night_light: tilo_session::night_light::Preference {
-                on: true,
-                temperature: 2_400,
-                scheduled: false,
+    phase the_night_light_action_warms_the_displays_and_switches_back;
+    {
+        let mut session = session();
+        assert_eq!(session.compositor().night_light(), None);
+        invoke(&mut session, tilo_session::NIGHT_LIGHT_RESOURCE, "toggle");
+        assert!(
+            session
+                .compositor()
+                .night_light()
+                .is_some_and(|kelvin| kelvin < 6_500)
+        );
+        session
+            .invoke(
+                tilo_session::NIGHT_LIGHT_RESOURCE,
+                "toggle",
+                &arguments(serde_json::json!({ "on": true })),
+            )
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+        assert!(session.compositor().night_light().is_some(), "on stays on");
+        invoke(&mut session, tilo_session::NIGHT_LIGHT_RESOURCE, "toggle");
+        assert_eq!(session.compositor().night_light(), None);
+    }
+
+    phase the_night_light_warms_to_the_persons_warmth;
+    {
+        let options = Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
+            config: tilo_session::SessionConfig {
+                night_light: tilo_session::night_light::Preference {
+                    on: true,
+                    temperature: 2_400,
+                    scheduled: false,
+                },
+                ..tilo_session::SessionConfig::default()
             },
-            ..tilo_session::SessionConfig::default()
-        },
-        ..Options::default()
-    };
-    let mut session = Session::headless(options, &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)])
-        .expect("session");
-    assert_eq!(
-        session.compositor().night_light(),
-        Some(2_400),
-        "the warmth the person chose, not one the session picked"
-    );
+            ..Options::default()
+        };
+        let mut session = Session::headless(options, &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)])
+            .expect("session");
+        assert_eq!(
+            session.compositor().night_light(),
+            Some(2_400),
+            "the warmth the person chose, not one the session picked"
+        );
+    }
+
+    phase the_sound_is_the_audio_services_and_its_changes_are_the_services_actions;
+    // The sound the session offers is the audio service's, and every change the person makes is the
+    // service's own action: the session writes none of it.
+    {
+        let _settled = ui::motion::testing::settled();
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let mut session = crate::common::headless(Options {
+            services: vec![Box::new(Audio::speakers(Rc::clone(&asked)))],
+            ..Options::default()
+        });
+
+        // The sound the service reads is on offer from the moment it reads it.
+        pump(&mut session, &mut [], |session, _| {
+            offering(session, "set-volume").is_some()
+        });
+
+        // Each change is the service's action, with the value the person chose.
+        let sound = offering(&session, "set-volume").unwrap();
+        session
+            .invoke(
+                &sound,
+                "set-volume",
+                &arguments(serde_json::json!({ "level": 0.5 })),
+            )
+            .expect("set the volume");
+        session
+            .invoke(&sound, "toggle-muted", &serde_json::Map::new())
+            .expect("mute");
+        pump(&mut session, &mut [], |_, _| asked.borrow().len() == 2);
+        assert_eq!(
+            *asked.borrow(),
+            ["set-volume level=0.5", "toggle-muted"],
+            "each change is the service's, in the order made"
+        );
+
+        // The microphone's key is the service's too, and its answer on screen is the state the service
+        // reads rather than a guess.
+        tap(&mut session, keys::MICROPHONE_MUTE);
+        pump(&mut session, &mut [], |session, _| {
+            session
+                .accessible_labels()
+                .contains(&"Microphone muted".to_owned())
+        });
+        assert!(
+            asked.borrow().contains(&"toggle-input-muted".to_owned()),
+            "the key reaches the service: {:?}",
+            asked.borrow()
+        );
+        assert_eq!(
+            session
+                .read(tilo_audio_service::sound::SOUND)
+                .and_then(|sound| sound.get("output").cloned()),
+            Some(serde_json::json!(40)),
+            "the session reads the service's own sound"
+        );
+    }
 }
 
 fn active_workspace(session: &Session) -> Option<tilo_desktop_model::WorkspaceId> {
@@ -1608,63 +1767,6 @@ impl tilo_session::Service for Audio {
         Ok(tilo_service::Started::Accepted)
     }
 }
-/// The sound the session offers is the audio service's, and every change the person makes is the
-/// service's own action: the session writes none of it.
-#[test]
-fn the_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
-    let _settled = ui::motion::testing::settled();
-    let asked = Rc::new(RefCell::new(Vec::new()));
-    let mut session = crate::common::headless(Options {
-        services: vec![Box::new(Audio::speakers(Rc::clone(&asked)))],
-        ..Options::default()
-    });
-
-    // The sound the service reads is on offer from the moment it reads it.
-    pump(&mut session, &mut [], |session, _| {
-        offering(session, "set-volume").is_some()
-    });
-
-    // Each change is the service's action, with the value the person chose.
-    let sound = offering(&session, "set-volume").unwrap();
-    session
-        .invoke(
-            &sound,
-            "set-volume",
-            &arguments(serde_json::json!({ "level": 0.5 })),
-        )
-        .expect("set the volume");
-    session
-        .invoke(&sound, "toggle-muted", &serde_json::Map::new())
-        .expect("mute");
-    pump(&mut session, &mut [], |_, _| asked.borrow().len() == 2);
-    assert_eq!(
-        *asked.borrow(),
-        ["set-volume level=0.5", "toggle-muted"],
-        "each change is the service's, in the order made"
-    );
-
-    // The microphone's key is the service's too, and its answer on screen is the state the service
-    // reads rather than a guess.
-    tap(&mut session, keys::MICROPHONE_MUTE);
-    pump(&mut session, &mut [], |session, _| {
-        session
-            .accessible_labels()
-            .contains(&"Microphone muted".to_owned())
-    });
-    assert!(
-        asked.borrow().contains(&"toggle-input-muted".to_owned()),
-        "the key reaches the service: {:?}",
-        asked.borrow()
-    );
-    assert_eq!(
-        session
-            .read(tilo_audio_service::sound::SOUND)
-            .and_then(|sound| sound.get("output").cloned()),
-        Some(serde_json::json!(40)),
-        "the session reads the service's own sound"
-    );
-}
-
 #[test]
 fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done() {
     let _settled = ui::motion::testing::settled();
@@ -1739,44 +1841,149 @@ fn setup_lists_its_steps_by_name_and_a_press_by_name_takes_the_step() {
     assert!(!session.setup_up(), "skipping the tour finishes setup");
 }
 
-#[test]
-fn workspace_settings_renames_the_workspace_through_its_action() {
-    use tilo_sheets::Seat as _;
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    session.step(Duration::from_millis(1)).unwrap();
-    let seat = session
-        .workspace_settings()
-        .expect("workspace settings")
-        .clone();
-    seat.presentation().open(false);
-    session.step(Duration::from_millis(1)).unwrap();
-    let rename = WorkspaceSettingsEffect::RENAME.id;
-    let sheet = publishers(&session, rename)
-        .into_iter()
-        .find(|resource| resource.starts_with("workspace-settings"))
-        .expect("the open sheet publishes renaming");
-    session
-        .invoke(
-            &sheet,
-            rename,
-            &arguments(serde_json::json!({ "name": "Garden" })),
-        )
-        .expect("rename");
-    session.step(Duration::from_millis(1)).unwrap();
-    let name = session.handle().read(|tree| {
-        tree.active_workspace()
-            .map(|workspace| workspace.name.clone())
-    });
-    assert_eq!(name.as_deref(), Some("Garden"));
-    // The bar says the name the workspace has now: the person sees the rename where the next frame
-    // draws it.
-    session.step(Duration::from_millis(1)).unwrap();
-    let bar = session.accessible_labels().join("\n");
-    assert!(
-        bar.contains("Garden: workspaces, overview and strips"),
-        "the bar shows the name the workspace has now: {bar}"
-    );
+tilo_test_env::scenario! {
+    fn a_sheet_is_driven_through_its_published_actions;
+
+    phase workspace_settings_renames_the_workspace_through_its_action;
+    {
+        use tilo_sheets::Seat as _;
+        let _settled = ui::motion::testing::settled();
+        let mut session = session();
+        session.step(Duration::from_millis(1)).unwrap();
+        let seat = session
+            .workspace_settings()
+            .expect("workspace settings")
+            .clone();
+        seat.presentation().open(false);
+        session.step(Duration::from_millis(1)).unwrap();
+        let rename = WorkspaceSettingsEffect::RENAME.id;
+        let sheet = publishers(&session, rename)
+            .into_iter()
+            .find(|resource| resource.starts_with("workspace-settings"))
+            .expect("the open sheet publishes renaming");
+        session
+            .invoke(
+                &sheet,
+                rename,
+                &arguments(serde_json::json!({ "name": "Garden" })),
+            )
+            .expect("rename");
+        session.step(Duration::from_millis(1)).unwrap();
+        let name = session.handle().read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.name.clone())
+        });
+        assert_eq!(name.as_deref(), Some("Garden"));
+        // The bar says the name the workspace has now: the person sees the rename where the next frame
+        // draws it.
+        session.step(Duration::from_millis(1)).unwrap();
+        let bar = session.accessible_labels().join("\n");
+        assert!(
+            bar.contains("Garden: workspaces, overview and strips"),
+            "the bar shows the name the workspace has now: {bar}"
+        );
+    }
+
+    phase a_portal_question_is_answered_through_the_sheets_actions;
+    {
+        use tilo_sheets::Seat as _;
+        let _settled = ui::motion::testing::settled();
+        let mut session = session();
+        let seat = session.portal().expect("portal sheet").clone();
+        seat.presentation().open(false);
+        seat.show(Some(Dialog {
+            handle: "request-1".to_owned(),
+            title: "Share your screen?".to_owned(),
+            heading: "Meet".to_owned(),
+            detail: "Meet asks to record your screen".to_owned(),
+            body: Body::Choices(vec!["Whole screen".to_owned(), "One window".to_owned()]),
+            confirm_label: "Allow".to_owned(),
+            cancel_label: "Cancel".to_owned(),
+            ..Dialog::default()
+        }));
+        session.step(Duration::from_millis(1)).unwrap();
+        let select = PortalEffect::SELECT.id;
+        let sheet = publisher(&session, select).expect("the question publishes its answers");
+        session
+            .invoke(
+                &sheet,
+                select,
+                &arguments(serde_json::json!({ "handle": "request-1", "index": 1 })),
+            )
+            .expect("select");
+        session
+            .invoke(
+                &sheet,
+                PortalEffect::CONFIRM.id,
+                &arguments(serde_json::json!({ "handle": "request-1" })),
+            )
+            .expect("confirm");
+        let asked = seat.take_asked();
+        assert!(
+            asked.contains(&PortalEffect::Select {
+                handle: "request-1".to_owned(),
+                index: 1
+            }),
+            "the service reads what was chosen: {asked:?}"
+        );
+    }
+
+    phase the_file_chooser_answers_the_file_chosen_through_its_actions;
+    {
+        use tilo_sheets::Seat as _;
+        let _settled = ui::motion::testing::settled();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("beach.png"), b"bytes").unwrap();
+        let mut session = session();
+        let seat = session.file_picker().expect("file chooser").clone();
+        seat.presentation().open(true);
+        seat.ask(Some(FileRequest {
+            handle: "request-1".to_owned(),
+            title: "Choose a picture".to_owned(),
+            mode: FileMode::Open,
+            initial_dir: home.path().to_path_buf(),
+            roots: vec![home.path().to_path_buf()],
+            ..FileRequest::default()
+        }));
+        // The chooser reads the folder off the loop: choose once it has, so the step lands on the
+        // listing the person sees.
+        pump(&mut session, &mut [], |_, _| {
+            let listing = seat.listing();
+            !listing.reading
+                && listing
+                    .entries
+                    .iter()
+                    .any(|entry| entry.name == "beach.png")
+        });
+        let beach = home.path().join("beach.png");
+        let select = FilePickerEffect::SELECT.id;
+        let sheet = publisher(&session, select).expect("the chooser publishes choosing");
+        session
+            .invoke(
+                &sheet,
+                select,
+                &arguments(serde_json::json!({
+                    "handle": "request-1",
+                    "path": beach.to_string_lossy(),
+                })),
+            )
+            .expect("select");
+        // Choosing takes the choice at once; confirming checks it off the loop.
+        pump(&mut session, &mut [], |_, _| seat.listing().can_confirm);
+        session
+            .invoke(
+                &sheet,
+                FilePickerEffect::CONFIRM.id,
+                &arguments(serde_json::json!({ "handle": "request-1" })),
+            )
+            .expect("confirm");
+        let mut answer = None;
+        pump(&mut session, &mut [], |_, _| {
+            answer = answer.take().or_else(|| seat.take_answer());
+            answer.is_some()
+        });
+        assert_eq!(answer, Some(FileAnswer::Chosen(vec![beach])));
+    }
 }
 
 /// Workspace settings shows the tab the person picked, and moves the workspace among the ones this
@@ -1830,107 +2037,6 @@ fn workspace_settings_shows_a_tab_and_moves_the_workspace() {
         [names[1].clone(), names[0].clone()],
         "the workspace in front moved one place earlier"
     );
-}
-
-#[test]
-fn a_portal_question_is_answered_through_the_sheets_actions() {
-    use tilo_sheets::Seat as _;
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    let seat = session.portal().expect("portal sheet").clone();
-    seat.presentation().open(false);
-    seat.show(Some(Dialog {
-        handle: "request-1".to_owned(),
-        title: "Share your screen?".to_owned(),
-        heading: "Meet".to_owned(),
-        detail: "Meet asks to record your screen".to_owned(),
-        body: Body::Choices(vec!["Whole screen".to_owned(), "One window".to_owned()]),
-        confirm_label: "Allow".to_owned(),
-        cancel_label: "Cancel".to_owned(),
-        ..Dialog::default()
-    }));
-    session.step(Duration::from_millis(1)).unwrap();
-    let select = PortalEffect::SELECT.id;
-    let sheet = publisher(&session, select).expect("the question publishes its answers");
-    session
-        .invoke(
-            &sheet,
-            select,
-            &arguments(serde_json::json!({ "handle": "request-1", "index": 1 })),
-        )
-        .expect("select");
-    session
-        .invoke(
-            &sheet,
-            PortalEffect::CONFIRM.id,
-            &arguments(serde_json::json!({ "handle": "request-1" })),
-        )
-        .expect("confirm");
-    let asked = seat.take_asked();
-    assert!(
-        asked.contains(&PortalEffect::Select {
-            handle: "request-1".to_owned(),
-            index: 1
-        }),
-        "the service reads what was chosen: {asked:?}"
-    );
-}
-
-#[test]
-fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
-    use tilo_sheets::Seat as _;
-    let _settled = ui::motion::testing::settled();
-    let home = tempfile::tempdir().unwrap();
-    std::fs::write(home.path().join("beach.png"), b"bytes").unwrap();
-    let mut session = session();
-    let seat = session.file_picker().expect("file chooser").clone();
-    seat.presentation().open(true);
-    seat.ask(Some(FileRequest {
-        handle: "request-1".to_owned(),
-        title: "Choose a picture".to_owned(),
-        mode: FileMode::Open,
-        initial_dir: home.path().to_path_buf(),
-        roots: vec![home.path().to_path_buf()],
-        ..FileRequest::default()
-    }));
-    // The chooser reads the folder off the loop: choose once it has, so the step lands on the
-    // listing the person sees.
-    pump(&mut session, &mut [], |_, _| {
-        let listing = seat.listing();
-        !listing.reading
-            && listing
-                .entries
-                .iter()
-                .any(|entry| entry.name == "beach.png")
-    });
-    let beach = home.path().join("beach.png");
-    let select = FilePickerEffect::SELECT.id;
-    let sheet = publisher(&session, select).expect("the chooser publishes choosing");
-    session
-        .invoke(
-            &sheet,
-            select,
-            &arguments(serde_json::json!({
-                "handle": "request-1",
-                "path": beach.to_string_lossy(),
-            })),
-        )
-        .expect("select");
-    // Choosing takes the choice at once; confirming checks it off the loop.
-    pump(&mut session, &mut [], |_, _| seat.listing().can_confirm);
-    session
-        .invoke(
-            &sheet,
-            FilePickerEffect::CONFIRM.id,
-            &arguments(serde_json::json!({ "handle": "request-1" })),
-        )
-        .expect("confirm");
-    let mut answer = None;
-    pump(&mut session, &mut [], |_, _| {
-        answer = answer.take().or_else(|| seat.take_answer());
-        answer.is_some()
-    });
-    assert_eq!(answer, Some(FileAnswer::Chosen(vec![beach])));
 }
 
 /// A pixel of a picture, as R, G, B, A.
@@ -2342,48 +2448,6 @@ fn strips_holding(session: &Session, tab: u64) -> Vec<String> {
     })
 }
 
-/// Stepping past the first or the last workspace or strip says which end the person reached, rather
-/// than doing nothing.
-#[test]
-fn stepping_past_an_end_says_which_end_it_is() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    session.step(Duration::from_millis(1)).unwrap();
-    invoke_with(
-        &mut session,
-        CHROME_RESOURCE,
-        "switch-workspace",
-        &serde_json::json!({"delta": 1}),
-    );
-    let said = session.accessible_labels().join("\n");
-    assert!(
-        said.contains("This is the last workspace"),
-        "stepping past the last workspace says so: {said}"
-    );
-    invoke_with(
-        &mut session,
-        CHROME_RESOURCE,
-        "switch-workspace",
-        &serde_json::json!({"delta": -1}),
-    );
-    let said = session.accessible_labels().join("\n");
-    assert!(
-        said.contains("This is the first workspace"),
-        "and past the first: {said}"
-    );
-    invoke_with(
-        &mut session,
-        CHROME_RESOURCE,
-        "step-strip",
-        &serde_json::json!({"steps": 1}),
-    );
-    let said = session.accessible_labels().join("\n");
-    assert!(
-        said.contains("This is the last strip"),
-        "stepping past the last strip says so: {said}"
-    );
-}
-
 /// Leaving a workspace the person is not in takes it away and leaves them where they are.
 #[test]
 fn leaving_another_workspace_keeps_the_person_where_they_are() {
@@ -2543,50 +2607,6 @@ fn the_desktop_sends_a_window_where_the_overview_offers_to() {
     );
     let left = session.accessible_labels().join("\n");
     assert!(left.contains("You left"), "the person is told: {left}");
-}
-
-/// Naming and moving strips, as the overview's strip rows ask.
-#[test]
-fn the_desktop_names_and_moves_the_strips_the_overview_offers() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    session.step(Duration::from_millis(1)).unwrap();
-    add_strip(&session, "Second");
-    let second = strip_id(&session, "Second");
-    invoke_with(
-        &mut session,
-        CHROME_RESOURCE,
-        "rename",
-        &serde_json::json!({"strip": second, "name": "Later"}),
-    );
-    let (_, strips) = workspaces(&session).remove(0);
-    assert_eq!(
-        strips,
-        ["Strip 1", "Later"],
-        "the strip was renamed, and the one nobody named reads by its place"
-    );
-
-    invoke_with(
-        &mut session,
-        CHROME_RESOURCE,
-        "move-strip",
-        &serde_json::json!({"strip": "Later", "before": "Strip 1"}),
-    );
-    let (_, strips) = workspaces(&session).remove(0);
-    assert_eq!(
-        strips,
-        ["Later", "Strip 2"],
-        "the strip moved above the first, which nobody named now reads by where it stands"
-    );
-
-    invoke_with(
-        &mut session,
-        CHROME_RESOURCE,
-        "move-strip",
-        &serde_json::json!({"strip": "Later"}),
-    );
-    let (_, strips) = workspaces(&session).remove(0);
-    assert_eq!(strips, ["Strip 1", "Later"], "and to the bottom");
 }
 
 /// The picture the person chose is the shell's, kept beside the session for this device.

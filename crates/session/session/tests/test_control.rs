@@ -320,81 +320,85 @@ impl Drop for StartedSession {
     }
 }
 
-/// A stop of the session's whole process group signals every member, and a wrapper that was
-/// signalled with the group passes the signal on: the session is asked twice, and the second
-/// must not end it before it has put away what it mounted.
-#[test]
-fn a_session_stopped_with_its_whole_group_ends_cleanly_and_unmounts_what_it_mounted() {
-    let Some(mut session) = StartedSession::started() else {
-        return;
-    };
-    session.mint_identity();
-    session.signal_group(libc::SIGTERM);
-    // SAFETY: a pid and a signal number are all kill(2) reads.
-    let _ = unsafe {
-        libc::kill(
-            libc::pid_t::try_from(session.child.id()).expect("a pid fits a pid_t"),
-            libc::SIGTERM,
-        )
-    };
-    let status = session.child.wait().unwrap();
-    assert!(status.success(), "the session ends cleanly: {status:?}");
-    assert!(
-        !mounted(&session.documents),
-        "the files people choose for apps are unmounted"
-    );
-    assert!(
-        !session.control.exists(),
-        "the test-control socket is removed"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_session_stopped_from_outside_leaves_no_mount_behind;
 
-/// The person pressing interrupt again while the session ends means it: the signal's own action
-/// ends the process then, cleanup or not.
-#[test]
-fn a_second_sigint_ends_the_session_at_once() {
-    let Some(mut session) = StartedSession::started() else {
-        return;
-    };
-    session.mint_identity();
-    // Standard signals do not queue, so one sent before the session has read
-    // the last would arrive as the same one: interrupt it until it is gone.
-    let group = session.group();
-    // SAFETY: a pid and a signal number are all kill(2) reads.
-    while session.child.try_wait().unwrap().is_none() {
-        unsafe { libc::kill(group, libc::SIGINT) };
+    phase a_session_stopped_with_its_whole_group_ends_cleanly_and_unmounts_what_it_mounted;
+    // A stop of the session's whole process group signals every member, and a wrapper that was
+    // signalled with the group passes the signal on: the session is asked twice, and the second
+    // must not end it before it has put away what it mounted.
+    {
+        let Some(mut session) = StartedSession::started() else {
+            return;
+        };
+        session.mint_identity();
+        session.signal_group(libc::SIGTERM);
+        // SAFETY: a pid and a signal number are all kill(2) reads.
+        let _ = unsafe {
+            libc::kill(
+                libc::pid_t::try_from(session.child.id()).expect("a pid fits a pid_t"),
+                libc::SIGTERM,
+            )
+        };
+        let status = session.child.wait().unwrap();
+        assert!(status.success(), "the session ends cleanly: {status:?}");
+        assert!(
+            !mounted(&session.documents),
+            "the files people choose for apps are unmounted"
+        );
+        assert!(
+            !session.control.exists(),
+            "the test-control socket is removed"
+        );
     }
-    let status = session.child.wait().unwrap();
-    assert_eq!(status.signal(), Some(libc::SIGINT), "{status:?}");
-    tilo_test_env::wait_until("the killed session's mount to be removed", || {
-        !mounted(&session.documents)
-    });
-}
 
-/// A session killed outright leaves nothing of its mount behind: the process that watched it
-/// unmounts, and the next session can mount, and remove, the directory it used.
-#[test]
-fn a_session_killed_outright_leaves_no_mount_behind() {
-    let Some(mut session) = StartedSession::started() else {
-        return;
-    };
-    session.mint_identity();
-    session.signal_group(libc::SIGKILL);
-    let status = session.child.wait().unwrap();
-    assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
-    tilo_test_env::wait_until("the killed session's mount to be removed", || {
-        !mounted(&session.documents)
-    });
-    std::fs::remove_dir_all(session.runtime.path())
-        .expect("the runtime directory the killed session left is removed");
-    // The next session mounts there as any session does.
-    let again = tilo_documents::mount::mount(tilo_documents::Documents::new(), &session.documents)
-        .expect("a session mounts the documents where the killed one had them");
-    drop(again);
-    assert!(
-        !mounted(&session.documents),
-        "the documents are unmounted when their session drops them"
-    );
+    phase a_second_sigint_ends_the_session_at_once;
+    // The person pressing interrupt again while the session ends means it: the signal's own action
+    // ends the process then, cleanup or not.
+    {
+        let Some(mut session) = StartedSession::started() else {
+            return;
+        };
+        session.mint_identity();
+        // Standard signals do not queue, so one sent before the session has read
+        // the last would arrive as the same one: interrupt it until it is gone.
+        let group = session.group();
+        // SAFETY: a pid and a signal number are all kill(2) reads.
+        while session.child.try_wait().unwrap().is_none() {
+            unsafe { libc::kill(group, libc::SIGINT) };
+        }
+        let status = session.child.wait().unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGINT), "{status:?}");
+        tilo_test_env::wait_until("the killed session's mount to be removed", || {
+            !mounted(&session.documents)
+        });
+    }
+
+    phase a_session_killed_outright_leaves_no_mount_behind;
+    // A session killed outright leaves nothing of its mount behind: the process that watched it
+    // unmounts, and the next session can mount, and remove, the directory it used.
+    {
+        let Some(mut session) = StartedSession::started() else {
+            return;
+        };
+        session.mint_identity();
+        session.signal_group(libc::SIGKILL);
+        let status = session.child.wait().unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
+        tilo_test_env::wait_until("the killed session's mount to be removed", || {
+            !mounted(&session.documents)
+        });
+        std::fs::remove_dir_all(session.runtime.path())
+            .expect("the runtime directory the killed session left is removed");
+        // The next session mounts there as any session does.
+        let again = tilo_documents::mount::mount(tilo_documents::Documents::new(), &session.documents)
+            .expect("a session mounts the documents where the killed one had them");
+        drop(again);
+        assert!(
+            !mounted(&session.documents),
+            "the documents are unmounted when their session drops them"
+        );
+    }
 }
 
 /// How many pixels of `shot` in `rect` (logical, at scale 1) are as light as text on the
@@ -797,71 +801,75 @@ fn search(session: &Session) -> Option<tilo_actions::ResourceSpec> {
     find(&session.resources(), SEARCH_RESOURCE)
 }
 
-/// Letters typed through the socket land in the field the shell is listening through: the open
-/// search's query, not the window behind it.
-#[test]
-fn text_typed_through_the_socket_reaches_the_open_search() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let socket = root.path().join("test-control.sock");
-    let mut session = session_showing(shell(&[(20, "Alpha")]), &socket);
-    // A step of a headless session can take longer than a repeat waits; the text is typed once.
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session
-        .invoke(SHELL_RESOURCE, "search", &serde_json::Map::new())
-        .expect("the search opens");
-    assert!(
-        reached(&mut session, |session| search(session).is_some()),
-        "the search shows: {:?}",
-        session.accessible_labels()
-    );
+tilo_test_env::scenario! {
+    fn the_test_control_socket_drives_the_session_as_a_person_does;
 
-    let typed = ask(&mut session, &socket, &json!({"op": "type", "text": "cal"}));
-    assert_eq!(typed, json!({"ok": {}}), "the text is typed");
-    assert!(
-        reached(&mut session, |session| search(session)
-            .is_some_and(|search| search.label == "cal")),
-        "the query reads what was typed: {:?}",
-        search(&session).map(|search| search.label)
-    );
-}
+    phase text_typed_through_the_socket_reaches_the_open_search;
+    // Letters typed through the socket land in the field the shell is listening through: the open
+    // search's query, not the window behind it.
+    {
+        let _settled = ui::motion::testing::settled();
+        let root = private_home();
+        let socket = root.path().join("test-control.sock");
+        let mut session = session_showing(shell(&[(20, "Alpha")]), &socket);
+        // A step of a headless session can take longer than a repeat waits; the text is typed once.
+        session.compositor().set_key_repeat(KeyRepeat {
+            delay: Duration::from_secs(60),
+            rate: 0,
+        });
+        session
+            .invoke(SHELL_RESOURCE, "search", &serde_json::Map::new())
+            .expect("the search opens");
+        assert!(
+            reached(&mut session, |session| search(session).is_some()),
+            "the search shows: {:?}",
+            session.accessible_labels()
+        );
 
-/// A tab dragged through the socket from one window's bar to another's is the other window's,
-/// as the person's own drag makes it.
-#[test]
-fn a_drag_through_the_socket_moves_a_tab_into_another_group() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let socket = root.path().join("test-control.sock");
-    let mut session = session_showing(shell(&[(20, "Alpha"), (21, "Beta")]), &socket);
-    let targets = ask(&mut session, &socket, &json!({"op": "list_targets"}));
-    let beta = target_rect(&targets, "Beta")
-        .unwrap_or_else(|| panic!("the Beta pill stands somewhere: {targets}"));
-    let (from_x, from_y) = center(beta);
-    // The other window stands to the left, past the display's edge: the part of
-    // its bar that shows still takes the drop.
-    let dragged = ask(
-        &mut session,
-        &socket,
-        &json!({
-            "op": "drag",
-            "x_from": from_x,
-            "y_from": from_y,
-            "x_to": 100.0,
-            "y_to": from_y,
-        }),
-    );
-    assert_eq!(dragged, json!({"ok": {}}), "the drag is taken");
-    assert!(
-        reached(&mut session, |session| groups(session)
-            .iter()
-            .any(|(_, tabs)| tabs.contains(&20) && tabs.contains(&21))),
-        "the dragged tab shares the other window's group: {:?}",
-        groups(&session)
-    );
+        let typed = ask(&mut session, &socket, &json!({"op": "type", "text": "cal"}));
+        assert_eq!(typed, json!({"ok": {}}), "the text is typed");
+        assert!(
+            reached(&mut session, |session| search(session)
+                .is_some_and(|search| search.label == "cal")),
+            "the query reads what was typed: {:?}",
+            search(&session).map(|search| search.label)
+        );
+    }
+
+    phase a_drag_through_the_socket_moves_a_tab_into_another_group;
+    // A tab dragged through the socket from one window's bar to another's is the other window's,
+    // as the person's own drag makes it.
+    {
+        let _settled = ui::motion::testing::settled();
+        let root = private_home();
+        let socket = root.path().join("test-control.sock");
+        let mut session = session_showing(shell(&[(20, "Alpha"), (21, "Beta")]), &socket);
+        let targets = ask(&mut session, &socket, &json!({"op": "list_targets"}));
+        let beta = target_rect(&targets, "Beta")
+            .unwrap_or_else(|| panic!("the Beta pill stands somewhere: {targets}"));
+        let (from_x, from_y) = center(beta);
+        // The other window stands to the left, past the display's edge: the part of
+        // its bar that shows still takes the drop.
+        let dragged = ask(
+            &mut session,
+            &socket,
+            &json!({
+                "op": "drag",
+                "x_from": from_x,
+                "y_from": from_y,
+                "x_to": 100.0,
+                "y_to": from_y,
+            }),
+        );
+        assert_eq!(dragged, json!({"ok": {}}), "the drag is taken");
+        assert!(
+            reached(&mut session, |session| groups(session)
+                .iter()
+                .any(|(_, tabs)| tabs.contains(&20) && tabs.contains(&21))),
+            "the dragged tab shares the other window's group: {:?}",
+            groups(&session)
+        );
+    }
 }
 
 /// Where the window titled `title` stands on the screen, as `list_targets` reports it, and the

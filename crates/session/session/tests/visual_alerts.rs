@@ -129,64 +129,68 @@ fn frame(session: &mut Session) -> Screenshot {
     session.compositor().screenshot(DISPLAY).expect("a frame")
 }
 
-#[test]
-fn a_notice_lights_the_screen_edge_when_visual_alerts_are_on() {
-    let _settled = ui::motion::testing::settled();
-    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let (mut session, desktop) = session(true);
-    let plain = frame(&mut session);
-    let (edge, middle) = (edge_brightness(&plain), centre_brightness(&plain));
+tilo_test_env::scenario! {
+    fn a_notice_lights_the_screen_edge_only_when_visual_alerts_are_on;
 
-    let _sent = tilo_session::notices::announce_medium(desktop.notifications(), &plugged_in());
-    session.step(Duration::from_millis(1)).expect("a frame");
+    phase a_notice_lights_the_screen_edge_when_visual_alerts_are_on;
+    {
+        let _settled = ui::motion::testing::settled();
+        let _home = tilo_test_env::TestHome::new().expect("a home of its own");
+        let (mut session, desktop) = session(true);
+        let plain = frame(&mut session);
+        let (edge, middle) = (edge_brightness(&plain), centre_brightness(&plain));
 
-    let up = session.notices().log().active().to_vec();
-    assert_eq!(up.len(), 1, "the notice is up as a banner");
-    assert!(
-        up[0].title.contains("Backup"),
-        "the banner is the drive's notice: {}",
-        up[0].title
-    );
-    let lit = frame(&mut session);
-    assert!(
-        edge_brightness(&lit) > edge + 20.0,
-        "the display's edge lights up for it: {edge} then {}",
-        edge_brightness(&lit)
-    );
-    assert!(
-        (centre_brightness(&lit) - middle).abs() < 5.0,
-        "and the middle of the screen is left alone: {middle} then {}",
-        centre_brightness(&lit)
-    );
-}
+        let _sent = tilo_session::notices::announce_medium(desktop.notifications(), &plugged_in());
+        session.step(Duration::from_millis(1)).expect("a frame");
 
-#[test]
-fn nothing_lights_when_visual_alerts_are_off() {
-    let _settled = ui::motion::testing::settled();
-    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let (mut session, desktop) = session(false);
-    let plain = frame(&mut session);
-    let (edge, middle) = (edge_brightness(&plain), centre_brightness(&plain));
+        let up = session.notices().log().active().to_vec();
+        assert_eq!(up.len(), 1, "the notice is up as a banner");
+        assert!(
+            up[0].title.contains("Backup"),
+            "the banner is the drive's notice: {}",
+            up[0].title
+        );
+        let lit = frame(&mut session);
+        assert!(
+            edge_brightness(&lit) > edge + 20.0,
+            "the display's edge lights up for it: {edge} then {}",
+            edge_brightness(&lit)
+        );
+        assert!(
+            (centre_brightness(&lit) - middle).abs() < 5.0,
+            "and the middle of the screen is left alone: {middle} then {}",
+            centre_brightness(&lit)
+        );
+    }
 
-    let _sent = tilo_session::notices::announce_medium(desktop.notifications(), &plugged_in());
-    session.step(Duration::from_millis(1)).expect("a frame");
+    phase nothing_lights_when_visual_alerts_are_off;
+    {
+        let _settled = ui::motion::testing::settled();
+        let _home = tilo_test_env::TestHome::new().expect("a home of its own");
+        let (mut session, desktop) = session(false);
+        let plain = frame(&mut session);
+        let (edge, middle) = (edge_brightness(&plain), centre_brightness(&plain));
 
-    let up = session.notices().log().active().to_vec();
-    assert_eq!(up.len(), 1, "the notice is up as a banner");
-    assert!(
-        up[0].title.contains("Backup"),
-        "the banner is the drive's notice: {}",
-        up[0].title
-    );
-    let told = frame(&mut session);
-    assert!(
-        (edge_brightness(&told) - edge).abs() < 5.0,
-        "the display's edge does not light up: {edge} then {}",
-        edge_brightness(&told)
-    );
-    assert!(
-        (centre_brightness(&told) - middle).abs() < 5.0,
-        "and the shell is unchanged by it: {middle} then {}",
-        centre_brightness(&told)
-    );
+        let _sent = tilo_session::notices::announce_medium(desktop.notifications(), &plugged_in());
+        session.step(Duration::from_millis(1)).expect("a frame");
+
+        let up = session.notices().log().active().to_vec();
+        assert_eq!(up.len(), 1, "the notice is up as a banner");
+        assert!(
+            up[0].title.contains("Backup"),
+            "the banner is the drive's notice: {}",
+            up[0].title
+        );
+        let told = frame(&mut session);
+        assert!(
+            (edge_brightness(&told) - edge).abs() < 5.0,
+            "the display's edge does not light up: {edge} then {}",
+            edge_brightness(&told)
+        );
+        assert!(
+            (centre_brightness(&told) - middle).abs() < 5.0,
+            "and the shell is unchanged by it: {middle} then {}",
+            centre_brightness(&told)
+        );
+    }
 }

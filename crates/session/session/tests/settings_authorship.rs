@@ -87,90 +87,94 @@ fn changes_since(before: usize) -> Vec<Value> {
     all
 }
 
-#[test]
-fn a_setting_changed_in_a_session_is_the_persons_and_their_history_shows_it() {
-    let _settled = ui::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let (_identity, person) = this_computers_person(&mut home);
-    let person = hex::encode(person);
-    let mut session = session();
-    session.step(std::time::Duration::from_millis(1)).unwrap();
+tilo_test_env::scenario! {
+    fn a_setting_the_person_changed_is_theirs;
 
-    let before = changes().len();
-    session
-        .invoke(&setting_resource(HIGH_CONTRAST), "switch", &Map::new())
-        .expect("the switch is published");
-    assert!(high_contrast(&session), "the switch turned it on");
+    phase a_setting_changed_in_a_session_is_the_persons_and_their_history_shows_it;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let (_identity, person) = this_computers_person(&mut home);
+        let person = hex::encode(person);
+        let mut session = session();
+        session.step(std::time::Duration::from_millis(1)).unwrap();
 
-    let changed = changes_since(before);
-    let change = changed
-        .iter()
-        .find(|change| change["leaf"] == json!(FIELD))
-        .expect("the change is in the settings document's history");
-    assert_eq!(
-        change["principal"],
-        json!(person),
-        "the person at the device made it, by the id their workspaces know them by"
-    );
-    assert_eq!(change["action"], json!("settings.appearance/field-edit"));
+        let before = changes().len();
+        session
+            .invoke(&setting_resource(HIGH_CONTRAST), "switch", &Map::new())
+            .expect("the switch is published");
+        assert!(high_contrast(&session), "the switch turned it on");
 
-    // Their own undo finds the step: it is theirs, and taking it back is theirs to do.
-    let before = changes().len();
-    session
-        .invoke(SECTION, "undo", &Map::new())
-        .expect("their step is taken back");
-    assert!(!high_contrast(&session), "the switch is off again");
-    let undone = changes_since(before);
-    assert!(
-        undone.iter().any(
-            |change| change["action"] == json!("settings.appearance/undo")
-                && change["principal"] == json!(person)
-        ),
-        "the undo is the person's too: {undone:?}"
-    );
-}
+        let changed = changes_since(before);
+        let change = changed
+            .iter()
+            .find(|change| change["leaf"] == json!(FIELD))
+            .expect("the change is in the settings document's history");
+        assert_eq!(
+            change["principal"],
+            json!(person),
+            "the person at the device made it, by the id their workspaces know them by"
+        );
+        assert_eq!(change["action"], json!("settings.appearance/field-edit"));
 
-#[test]
-fn what_was_changed_before_the_device_knew_them_is_still_theirs_to_take_back() {
-    let _settled = ui::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let (_identity, person) = this_computers_person(&mut home);
-    let person = hex::encode(person);
+        // Their own undo finds the step: it is theirs, and taking it back is theirs to do.
+        let before = changes().len();
+        session
+            .invoke(SECTION, "undo", &Map::new())
+            .expect("their step is taken back");
+        assert!(!high_contrast(&session), "the switch is off again");
+        let undone = changes_since(before);
+        assert!(
+            undone.iter().any(
+                |change| change["action"] == json!("settings.appearance/undo")
+                    && change["principal"] == json!(person)
+            ),
+            "the undo is the person's too: {undone:?}"
+        );
+    }
 
-    // A session from before this computer had an identity changed the setting as the placeholder it
-    // was started with.
-    let mut earlier_session = SettingsService::new();
-    earlier_session.seated("person", &[]);
-    let mut services = tilo_service::Services::default();
-    services.add(Box::new(earlier_session));
-    services
-        .invoke(&setting_resource(HIGH_CONTRAST), "switch", &Map::new())
-        .expect("the switch is published")
-        .expect("flipped");
-    assert_eq!(
-        services.read(SECTION).expect("published")[FIELD],
-        json!(true),
-        "it was on before this session"
-    );
+    phase what_was_changed_before_the_device_knew_them_is_still_theirs_to_take_back;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let (_identity, person) = this_computers_person(&mut home);
+        let person = hex::encode(person);
 
-    let mut session = session();
-    session.step(std::time::Duration::from_millis(1)).unwrap();
-    assert!(high_contrast(&session), "the session reads it on");
+        // A session from before this computer had an identity changed the setting as the placeholder it
+        // was started with.
+        let mut earlier_session = SettingsService::new();
+        earlier_session.seated("person", &[]);
+        let mut services = tilo_service::Services::default();
+        services.add(Box::new(earlier_session));
+        services
+            .invoke(&setting_resource(HIGH_CONTRAST), "switch", &Map::new())
+            .expect("the switch is published")
+            .expect("flipped");
+        assert_eq!(
+            services.read(SECTION).expect("published")[FIELD],
+            json!(true),
+            "it was on before this session"
+        );
 
-    let before = changes().len();
-    session
-        .invoke(SECTION, "undo", &Map::new())
-        .expect("the step is read as theirs");
-    assert!(
-        !high_contrast(&session),
-        "the change made before the device knew them is taken back"
-    );
-    let undone = changes_since(before);
-    assert!(
-        undone.iter().any(
-            |change| change["action"] == json!("settings.appearance/undo")
-                && change["principal"] == json!(person)
-        ),
-        "the undo is the person's: {undone:?}"
-    );
+        let mut session = session();
+        session.step(std::time::Duration::from_millis(1)).unwrap();
+        assert!(high_contrast(&session), "the session reads it on");
+
+        let before = changes().len();
+        session
+            .invoke(SECTION, "undo", &Map::new())
+            .expect("the step is read as theirs");
+        assert!(
+            !high_contrast(&session),
+            "the change made before the device knew them is taken back"
+        );
+        let undone = changes_since(before);
+        assert!(
+            undone.iter().any(
+                |change| change["action"] == json!("settings.appearance/undo")
+                    && change["principal"] == json!(person)
+            ),
+            "the undo is the person's: {undone:?}"
+        );
+    }
 }

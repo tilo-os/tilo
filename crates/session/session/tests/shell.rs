@@ -203,51 +203,189 @@ fn band_colours(shot: &tilo_compositor::Screenshot) -> usize {
         .len()
 }
 
-#[test]
-fn the_bar_shows_the_time_the_workspace_its_strip_and_the_person_the_session_publishes() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    until(&mut session, |session| {
-        let shell = shell(session);
-        says(session, &time(session).clock)
-            && says(session, &shell.workspace)
-            && (shell.strip.is_empty() || says(session, &shell.strip))
-            && says(session, PERSON)
-    });
-    let shell = shell(&session);
-    assert_eq!(shell.person, PERSON);
-    assert!(!shell.workspaces.is_empty(), "the shell has its workspaces");
-    assert!(
-        shell
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.current && workspace.name == shell.workspace),
-        "the workspace in front is the one named: {shell:?}"
-    );
-    let clock = time(&session).clock;
-    for words in [clock.as_str(), shell.workspace.as_str(), PERSON] {
+tilo_test_env::scenario! {
+    fn the_bar_shows_what_the_session_publishes;
+
+    phase the_bar_shows_the_time_the_workspace_its_strip_and_the_person_the_session_publishes;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session();
+        until(&mut session, |session| {
+            let shell = shell(session);
+            says(session, &time(session).clock)
+                && says(session, &shell.workspace)
+                && (shell.strip.is_empty() || says(session, &shell.strip))
+                && says(session, PERSON)
+        });
+        let shell = shell(&session);
+        assert_eq!(shell.person, PERSON);
+        assert!(!shell.workspaces.is_empty(), "the shell has its workspaces");
         assert!(
-            says(&session, words),
-            "the bar says {words:?}: {:?}",
-            session.accessible_labels()
+            shell
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.current && workspace.name == shell.workspace),
+            "the workspace in front is the one named: {shell:?}"
+        );
+        let clock = time(&session).clock;
+        for words in [clock.as_str(), shell.workspace.as_str(), PERSON] {
+            assert!(
+                says(&session, words),
+                "the bar says {words:?}: {:?}",
+                session.accessible_labels()
+            );
+        }
+        if !shell.strip.is_empty() {
+            assert!(says(&session, &shell.strip), "the bar names the strip");
+        }
+        // The bar draws in its band: its controls stand on the shell there.
+        let _shot = crate::common::wait_for(&mut session, "the bar in its band", |session| {
+            session.step(Duration::from_millis(16)).expect("step");
+            let shot = keep(session, "shell-bar-empty-shell");
+            (band_colours(&shot) > 8).then_some(shot)
+        });
+        // Its controls stand where the bar's band is.
+        let (_, y, _, h) = session.shell_control(&shell.workspace).unwrap();
+        let band = bar_band(&session);
+        assert!(
+            y >= band.1 - 0.5 && y + h <= band.1 + band.3 + 0.5,
+            "the workspace's control stands in the bar's band: {y} {h} of {band:?}"
         );
     }
-    if !shell.strip.is_empty() {
-        assert!(says(&session, &shell.strip), "the bar names the strip");
+
+    phase an_apps_notification_is_counted_on_the_bar;
+    {
+        let _settled = ui::motion::testing::settled();
+        let bus = SessionBus::start();
+        let wake = tilo_service::LoopWake::default();
+        let (side, link) = tilo_session::portal_link::channel(wake.handle());
+        let desktop = Rc::new(
+            DesktopServices::start(
+                &Buses {
+                    session: Bus::Address(bus.address.clone()),
+                    system: Bus::None,
+                },
+                &wake.handle(),
+                std::sync::Arc::new(tilo_portal::NoCapture),
+                &side,
+                None,
+            )
+            .unwrap(),
+        );
+        let portal = desktop
+            .portal()
+            .map(|serving| link.with_captures(serving.input_captures().clone()));
+        let mut session = Session::headless(
+            Options {
+                services: desktop.services(),
+                wake,
+                desktop: Some(Rc::clone(&desktop)),
+                portal,
+                ..options()
+            },
+            &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        )
+        .expect("session");
+        until(&mut session, |session| says(session, &time(session).clock));
+        assert!(says(&session, "Notifications"), "nothing unread: the bell");
+        desktop.runtime().block_on(async {
+            let app = zbus::connection::Builder::address(bus.address.as_str())
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            let proxy = zbus::Proxy::new(
+                &app,
+                "org.freedesktop.Notifications",
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications",
+            )
+            .await
+            .unwrap();
+            let hints: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::new();
+            let _: u32 = proxy
+                .call_method(
+                    "Notify",
+                    &(
+                        "Mail",
+                        0_u32,
+                        "",
+                        "New mail",
+                        "From Ada",
+                        Vec::<&str>::new(),
+                        hints,
+                        0_i32,
+                    ),
+                )
+                .await
+                .unwrap()
+                .body()
+                .deserialize()
+                .unwrap();
+        });
+        // The bell stays named with what it shows, and says how many are unread.
+        until(&mut session, |session| {
+            waiting(session) == 1 && says(session, "Notifications, 1 unread")
+        });
+        // And the notice rises as the shell's banner, in place of the shell's own banners app,
+        // which draws nothing under the shell: the shell names the one it has up, and the shell
+        // draws that one.
+        until(&mut session, |session| says(session, "New mail"));
+        keep(&mut session, "shell-bar-notification");
     }
-    // The bar draws in its band: its controls stand on the shell there.
-    let _shot = crate::common::wait_for(&mut session, "the bar in its band", |session| {
-        session.step(Duration::from_millis(16)).expect("step");
-        let shot = keep(session, "shell-bar-empty-shell");
-        (band_colours(&shot) > 8).then_some(shot)
-    });
-    // Its controls stand where the bar's band is.
-    let (_, y, _, h) = session.shell_control(&shell.workspace).unwrap();
-    let band = bar_band(&session);
-    assert!(
-        y >= band.1 - 0.5 && y + h <= band.1 + band.3 + 0.5,
-        "the workspace's control stands in the bar's band: {y} {h} of {band:?}"
-    );
+
+    phase the_bars_status_shows_the_sounds_published_level;
+    // The bar's status is the device's own reading: the sound's level, from the same `sound` resource
+    // the quick settings read and change — a change of the resource moves the bar's number, never a
+    // copy of it.
+    {
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let _settled = ui::motion::testing::settled();
+        let mut session = session_with_devices(WIDTH, HEIGHT);
+        until_settled(&mut session, |session| says(session, &time(session).clock));
+        until_settled(&mut session, |session| says(session, "Volume, 40%"));
+        keep(&mut session, "shell-bar-status");
+        session
+            .invoke(
+                "sound",
+                "set-volume",
+                &serde_json::Map::from_iter([("level".to_owned(), serde_json::json!(0.65))]),
+            )
+            .expect("the sound takes its own volume");
+        until_settled(&mut session, |session| says(session, "Volume, 65%"));
+        keep(&mut session, "shell-bar-status-louder");
+    }
+
+    phase the_bells_count_stands_inside_the_bar;
+    // The count's badge stands wholly inside the bell's face, which stands inside the bar: what the
+    // person sees when a notification arrives, and where.
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session();
+        until(&mut session, |session| says(session, &time(session).clock));
+        let before = keep(&mut session, "shell-bar-bell");
+        session
+            .notices()
+            .post_quiet(tilo_desktop_surface::notifications::Notification::new(
+                "New mail", "From Ada",
+            ));
+        until(&mut session, |session| {
+            waiting(session) == 1 && says(session, "Notifications, 1 unread")
+        });
+        let after = keep(&mut session, "shell-bar-bell-counted");
+        let bell = bar_control(&session, "Notifications, 1 unread").expect("the bell");
+        let band = bar_band(&session);
+        assert!(
+            bell.1 >= band.1 && bell.1 + bell.3 <= band.1 + band.3 + 0.5,
+            "the bell stands inside the bar's band: {bell:?} of {band:?}"
+        );
+        // The count sits on the bell's corner, inside the bell's own bounds: a badge is clamped inside
+        // the control it counts, so a bell standing inside the bar's band carries no pixel of its count
+        // over the screen's top edge. (What the notice itself draws on the shell is not the bar's; the
+        // pixels below the bar change with it.)
+        let (inside, _) = changed_in(&before, &after, bell);
+        assert!(inside > 20, "the count shows: {inside} pixels");
+    }
 }
 
 #[test]
@@ -501,87 +639,6 @@ impl Drop for SessionBus {
         let _ = self.daemon.kill();
         let _ = self.daemon.wait();
     }
-}
-
-#[test]
-fn an_apps_notification_is_counted_on_the_bar() {
-    let _settled = ui::motion::testing::settled();
-    let bus = SessionBus::start();
-    let wake = tilo_service::LoopWake::default();
-    let (side, link) = tilo_session::portal_link::channel(wake.handle());
-    let desktop = Rc::new(
-        DesktopServices::start(
-            &Buses {
-                session: Bus::Address(bus.address.clone()),
-                system: Bus::None,
-            },
-            &wake.handle(),
-            std::sync::Arc::new(tilo_portal::NoCapture),
-            &side,
-            None,
-        )
-        .unwrap(),
-    );
-    let portal = desktop
-        .portal()
-        .map(|serving| link.with_captures(serving.input_captures().clone()));
-    let mut session = Session::headless(
-        Options {
-            services: desktop.services(),
-            wake,
-            desktop: Some(Rc::clone(&desktop)),
-            portal,
-            ..options()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    until(&mut session, |session| says(session, &time(session).clock));
-    assert!(says(&session, "Notifications"), "nothing unread: the bell");
-    desktop.runtime().block_on(async {
-        let app = zbus::connection::Builder::address(bus.address.as_str())
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
-        let proxy = zbus::Proxy::new(
-            &app,
-            "org.freedesktop.Notifications",
-            "/org/freedesktop/Notifications",
-            "org.freedesktop.Notifications",
-        )
-        .await
-        .unwrap();
-        let hints: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::new();
-        let _: u32 = proxy
-            .call_method(
-                "Notify",
-                &(
-                    "Mail",
-                    0_u32,
-                    "",
-                    "New mail",
-                    "From Ada",
-                    Vec::<&str>::new(),
-                    hints,
-                    0_i32,
-                ),
-            )
-            .await
-            .unwrap()
-            .body()
-            .deserialize()
-            .unwrap();
-    });
-    // The bell stays named with what it shows, and says how many are unread.
-    until(&mut session, |session| {
-        waiting(session) == 1 && says(session, "Notifications, 1 unread")
-    });
-    // And the notice rises as the shell's banner, in place of the shell's own banners app,
-    // which draws nothing under the shell: the shell names the one it has up, and the shell
-    // draws that one.
-    until(&mut session, |session| says(session, "New mail"));
-    keep(&mut session, "shell-bar-notification");
 }
 
 // ---- the shell's overlays ------------------------------------------------------------------
@@ -1420,42 +1477,61 @@ impl media::audio::GraphControl for Card {
     }
 }
 
-/// An app's own `open` the shell calls (`session.open(app)`, a dock's press) starts the app in the
-/// workspace in front, as the launcher's row of it does. (The press making that call is
-/// `tilo-surface-host` 's `a_press_on_a_dock_app_asks_the_session_to_open_it` .)
-#[test]
-fn an_apps_open_the_shell_calls_starts_it() {
-    let _settled = ui::motion::testing::settled();
-    let apps = Rc::new(Apps::default());
-    let mut session = Session::headless(
-        Options {
-            apps: Some(Rc::clone(&apps) as Rc<dyn tilo_session::AppActions>),
-            ..options()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    until(&mut session, |session| says(session, &time(session).clock));
-    session
-        .shell_link()
-        .expect("the shell runs")
-        .ask(tilo_surface_host::shell_part::Ask {
-            resource: "app.so.tilo.sheets".to_owned(),
-            action: "open".to_owned(),
-            arguments: std::collections::BTreeMap::new(),
-            from: None,
+tilo_test_env::scenario! {
+    fn the_launcher_opens_and_starts_what_it_lists;
+
+    phase an_apps_open_the_shell_calls_starts_it;
+    // An app's own `open` the shell calls (`session.open(app)`, a dock's press) starts the app in the
+    // workspace in front, as the launcher's row of it does. (The press making that call is
+    // `tilo-surface-host` 's `a_press_on_a_dock_app_asks_the_session_to_open_it` .)
+    {
+        let _settled = ui::motion::testing::settled();
+        let apps = Rc::new(Apps::default());
+        let mut session = Session::headless(
+            Options {
+                apps: Some(Rc::clone(&apps) as Rc<dyn tilo_session::AppActions>),
+                ..options()
+            },
+            &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        )
+        .expect("session");
+        until(&mut session, |session| says(session, &time(session).clock));
+        session
+            .shell_link()
+            .expect("the shell runs")
+            .ask(tilo_surface_host::shell_part::Ask {
+                resource: "app.so.tilo.sheets".to_owned(),
+                action: "open".to_owned(),
+                arguments: std::collections::BTreeMap::new(),
+                from: None,
+            });
+        until(&mut session, |_| !apps.invoked.borrow().is_empty());
+        assert_eq!(
+            apps.invoked.borrow()[0].address,
+            tilo_actions::ActionAddress::new("app.so.tilo.sheets", "open"),
+            "the app opens by the workspace's address for it"
+        );
+        assert!(
+            session.shell_refusals().is_empty(),
+            "{:?}",
+            session.shell_refusals()
+        );
+    }
+
+    phase a_press_on_the_docks_launcher_shows_the_launcher;
+    // A press on the dock's launcher calls the shell's own `show-surface` : the launcher comes up.
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session();
+        until(&mut session, |session| says(session, &time(session).clock));
+        until(&mut session, |session| {
+            session.shell_control("Launcher").is_some()
         });
-    until(&mut session, |_| !apps.invoked.borrow().is_empty());
-    assert_eq!(
-        apps.invoked.borrow()[0].address,
-        tilo_actions::ActionAddress::new("app.so.tilo.sheets", "open"),
-        "the app opens by the workspace's address for it"
-    );
-    assert!(
-        session.shell_refusals().is_empty(),
-        "{:?}",
-        session.shell_refusals()
-    );
+        press(&mut session, "Launcher");
+        until(&mut session, |session| {
+            crate::common::shell_here(session) == "launcher"
+        });
+    }
 }
 
 /// A sound service over a card in memory: the speakers, at 40%.
@@ -1556,21 +1632,6 @@ fn until_settled(session: &mut Session, mut done: impl FnMut(&mut Session) -> bo
     });
 }
 
-/// A press on the dock's launcher calls the shell's own `show-surface` : the launcher comes up.
-#[test]
-fn a_press_on_the_docks_launcher_shows_the_launcher() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    until(&mut session, |session| says(session, &time(session).clock));
-    until(&mut session, |session| {
-        session.shell_control("Launcher").is_some()
-    });
-    press(&mut session, "Launcher");
-    until(&mut session, |session| {
-        crate::common::shell_here(session) == "launcher"
-    });
-}
-
 /// Press the control named `name` once the bar stands still: what the services report while the
 /// session starts (the workspace, who is here) adds controls beside it and moves it, and a person
 /// presses the control where they see it at rest.
@@ -1597,28 +1658,6 @@ fn appearance_mode(session: &Session) -> serde_json::Value {
         .read("settings:settings.appearance")
         .map(|section| section["mode"].clone())
         .unwrap_or_default()
-}
-
-/// The bar's status is the device's own reading: the sound's level, from the same `sound` resource
-/// the quick settings read and change — a change of the resource moves the bar's number, never a
-/// copy of it.
-#[test]
-fn the_bars_status_shows_the_sounds_published_level() {
-    let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
-    let mut session = session_with_devices(WIDTH, HEIGHT);
-    until_settled(&mut session, |session| says(session, &time(session).clock));
-    until_settled(&mut session, |session| says(session, "Volume, 40%"));
-    keep(&mut session, "shell-bar-status");
-    session
-        .invoke(
-            "sound",
-            "set-volume",
-            &serde_json::Map::from_iter([("level".to_owned(), serde_json::json!(0.65))]),
-        )
-        .expect("the sound takes its own volume");
-    until_settled(&mut session, |session| says(session, "Volume, 65%"));
-    keep(&mut session, "shell-bar-status-louder");
 }
 
 /// The bar's status opens the quick settings over the shell, and the panel's Dark mode tile runs the
@@ -2497,37 +2536,6 @@ fn changed_in(
     rect: (f64, f64, f64, f64),
 ) -> (usize, usize) {
     changed_near(before, after, rect, &[rect])
-}
-
-/// The count's badge stands wholly inside the bell's face, which stands inside the bar: what the
-/// person sees when a notification arrives, and where.
-#[test]
-fn the_bells_count_stands_inside_the_bar() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    until(&mut session, |session| says(session, &time(session).clock));
-    let before = keep(&mut session, "shell-bar-bell");
-    session
-        .notices()
-        .post_quiet(tilo_desktop_surface::notifications::Notification::new(
-            "New mail", "From Ada",
-        ));
-    until(&mut session, |session| {
-        waiting(session) == 1 && says(session, "Notifications, 1 unread")
-    });
-    let after = keep(&mut session, "shell-bar-bell-counted");
-    let bell = bar_control(&session, "Notifications, 1 unread").expect("the bell");
-    let band = bar_band(&session);
-    assert!(
-        bell.1 >= band.1 && bell.1 + bell.3 <= band.1 + band.3 + 0.5,
-        "the bell stands inside the bar's band: {bell:?} of {band:?}"
-    );
-    // The count sits on the bell's corner, inside the bell's own bounds: a badge is clamped inside
-    // the control it counts, so a bell standing inside the bar's band carries no pixel of its count
-    // over the screen's top edge. (What the notice itself draws on the shell is not the bar's; the
-    // pixels below the bar change with it.)
-    let (inside, _) = changed_in(&before, &after, bell);
-    assert!(inside > 20, "the count shows: {inside} pixels");
 }
 
 /// The bar's trailing group, in order: who is here, the device's status, the bell and the person's

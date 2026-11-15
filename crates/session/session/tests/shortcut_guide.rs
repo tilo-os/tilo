@@ -287,71 +287,183 @@ fn rebind(session: &mut Session, action: &str, keys: &[u32]) {
     until(session, |session| guide(session).listening.is_none());
 }
 
-#[test]
-fn f1_shows_the_guide_filled_with_the_chords_the_session_answers() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = one_display();
-    assert!(!up(&session), "nothing is showing yet");
+tilo_test_env::scenario! {
+    fn the_shortcut_guide_comes_up_filled_and_goes_down;
 
-    tap(&mut session, KEY_F1);
-    until(&mut session, up);
-    assert!(
-        session
-            .shortcut_guide()
-            .is_some_and(|seat| seat.presentation().is_drawn()),
-        "something of the guide is on screen"
-    );
+    phase f1_shows_the_guide_filled_with_the_chords_the_session_answers;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = one_display();
+        assert!(!up(&session), "nothing is showing yet");
 
-    let guide = guide(&session);
-    // The pairs are the shortcuts the person can change, in the guide's order,
-    // with the chords the session answers them by now.
-    let pairs: Vec<&str> = guide
-        .pairs
-        .iter()
-        .map(|pair| pair.previous.action.as_str())
-        .collect();
-    assert_eq!(
-        pairs,
-        [
-            "focus-previous-window",
-            "previous-tab",
-            "attach-tab-left",
-            "maximize-window",
-            "previous-strip",
-            "previous-workspace",
-            "move-group-left",
-            "resize-narrower",
-            "move-group-to-previous-strip",
-        ]
-    );
-    assert_eq!(
-        guide.pairs[0].previous.keys,
-        binding(&[KeyboardModifier::System], "left"),
-        "the live chord, not a default the guide remembers"
-    );
-    assert!(
-        guide.pairs.iter().all(|pair| !pair.changed),
-        "nothing is changed out of the box"
-    );
-    // The essentials name the keys that answer now, the fixed ones included.
-    assert!(
-        essential_chords(&guide).contains(&binding(&[], "printscreen")),
-        "the screenshot key is an essential: {:?}",
-        guide.essentials
-    );
-    assert!(
-        essential_chords(&guide).contains(&binding(&[KeyboardModifier::System], "space")),
-        "so is search: {:?}",
-        guide.essentials
-    );
-    assert!(
-        !guide.notes.is_empty(),
-        "the guide says what else the keys do"
-    );
-    assert_eq!(guide.listening, None, "no shortcut waits for a chord");
+        tap(&mut session, KEY_F1);
+        until(&mut session, up);
+        assert!(
+            session
+                .shortcut_guide()
+                .is_some_and(|seat| seat.presentation().is_drawn()),
+            "something of the guide is on screen"
+        );
 
-    tap(&mut session, KEY_F1);
-    until(&mut session, |session| !up(session));
+        let guide = guide(&session);
+        // The pairs are the shortcuts the person can change, in the guide's order,
+        // with the chords the session answers them by now.
+        let pairs: Vec<&str> = guide
+            .pairs
+            .iter()
+            .map(|pair| pair.previous.action.as_str())
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                "focus-previous-window",
+                "previous-tab",
+                "attach-tab-left",
+                "maximize-window",
+                "previous-strip",
+                "previous-workspace",
+                "move-group-left",
+                "resize-narrower",
+                "move-group-to-previous-strip",
+            ]
+        );
+        assert_eq!(
+            guide.pairs[0].previous.keys,
+            binding(&[KeyboardModifier::System], "left"),
+            "the live chord, not a default the guide remembers"
+        );
+        assert!(
+            guide.pairs.iter().all(|pair| !pair.changed),
+            "nothing is changed out of the box"
+        );
+        // The essentials name the keys that answer now, the fixed ones included.
+        assert!(
+            essential_chords(&guide).contains(&binding(&[], "printscreen")),
+            "the screenshot key is an essential: {:?}",
+            guide.essentials
+        );
+        assert!(
+            essential_chords(&guide).contains(&binding(&[KeyboardModifier::System], "space")),
+            "so is search: {:?}",
+            guide.essentials
+        );
+        assert!(
+            !guide.notes.is_empty(),
+            "the guide says what else the keys do"
+        );
+        assert_eq!(guide.listening, None, "no shortcut waits for a chord");
+
+        tap(&mut session, KEY_F1);
+        until(&mut session, |session| !up(session));
+    }
+
+    phase escape_and_done_take_the_guide_down;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = one_display();
+
+        tap(&mut session, KEY_F1);
+        until(&mut session, up);
+        tap(&mut session, KEY_ESCAPE);
+        until(&mut session, |session| !up(session));
+
+        tap(&mut session, KEY_F1);
+        until(&mut session, up);
+        done(&mut session);
+        until(&mut session, |session| !up(session));
+    }
+
+    phase the_guide_shows_the_chord_the_person_rebound;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut config = SessionConfig::default();
+        let mine = KeyChord::parse("Ctrl+Alt+J").expect("a chord");
+        config
+            .shortcuts
+            .set(ShortcutAction::Search, mine)
+            .expect("no other shortcut holds it");
+        let mut session = session_with(config, &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)]);
+
+        tap(&mut session, KEY_F1);
+        until(&mut session, up);
+        let guide = guide(&session);
+        let chords = essential_chords(&guide);
+        assert!(
+            chords.contains(&binding(
+                &[KeyboardModifier::Control, KeyboardModifier::Alt],
+                "j"
+            )),
+            "search reads as the person bound it: {:?}",
+            guide.essentials
+        );
+        assert!(
+            !chords.contains(&binding(&[KeyboardModifier::System], "space")),
+            "the default it left behind is gone: {:?}",
+            guide.essentials
+        );
+    }
+
+    phase the_guide_is_drawn_over_the_display_in_focus_and_leaves_it_clean;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = docked();
+        assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
+        focus(&mut session, 1);
+        let centre = (WIDTH / 2, HEIGHT / 2);
+        let before_left = shot(&mut session, "HEADLESS-1");
+        let before_right = shot(&mut session, "HEADLESS-2");
+
+        tap(&mut session, KEY_F1);
+        until(&mut session, up);
+        until(&mut session, |session| {
+            session
+                .shortcut_guide()
+                .is_some_and(|seat| seat.presentation().is_drawn())
+        });
+        let after_left = shot(&mut session, "HEADLESS-1");
+        let after_right = shot(&mut session, "HEADLESS-2");
+        assert_ne!(
+            pixel(&after_right, centre.0, centre.1),
+            pixel(&before_right, centre.0, centre.1),
+            "the guide is drawn on the display in focus"
+        );
+        assert_eq!(
+            pixel(&after_left, centre.0, centre.1),
+            pixel(&before_left, centre.0, centre.1),
+            "and nothing of it reaches the other display"
+        );
+
+        tap(&mut session, KEY_F1);
+        until(&mut session, |session| !up(session));
+        until(&mut session, |session| {
+            session
+                .shortcut_guide()
+                .is_some_and(|seat| !seat.presentation().is_drawn())
+        });
+        let closed = shot(&mut session, "HEADLESS-2");
+        assert_eq!(
+            pixel(&closed, centre.0, centre.1),
+            pixel(&before_right, centre.0, centre.1),
+            "the display is as it was once the guide is gone"
+        );
+    }
+
+    phase the_desktop_help_chord_shows_the_same_guide;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = one_display();
+
+        chord(&mut session, &[KEY_LEFT_META, KEY_LEFT_SHIFT, KEY_SLASH]);
+        until(&mut session, up);
+        assert!(
+            session
+                .shortcut_guide()
+                .is_some_and(|seat| seat.presentation().is_open())
+        );
+        chord(&mut session, &[KEY_LEFT_META, KEY_LEFT_SHIFT, KEY_SLASH]);
+        until(&mut session, |session| !up(session));
+        assert!(!up(&session));
+    }
 }
 
 /// The guide's Done, pressed as a person or a script presses it: the dialog's primary control.
@@ -364,114 +476,6 @@ fn done(session: &mut Session) {
         )
         .expect("the guide publishes its Done while it is up");
     session.step(Duration::from_millis(1)).expect("step");
-}
-
-#[test]
-fn escape_and_done_take_the_guide_down() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = one_display();
-
-    tap(&mut session, KEY_F1);
-    until(&mut session, up);
-    tap(&mut session, KEY_ESCAPE);
-    until(&mut session, |session| !up(session));
-
-    tap(&mut session, KEY_F1);
-    until(&mut session, up);
-    done(&mut session);
-    until(&mut session, |session| !up(session));
-}
-
-#[test]
-fn the_guide_shows_the_chord_the_person_rebound() {
-    let _settled = ui::motion::testing::settled();
-    let mut config = SessionConfig::default();
-    let mine = KeyChord::parse("Ctrl+Alt+J").expect("a chord");
-    config
-        .shortcuts
-        .set(ShortcutAction::Search, mine)
-        .expect("no other shortcut holds it");
-    let mut session = session_with(config, &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)]);
-
-    tap(&mut session, KEY_F1);
-    until(&mut session, up);
-    let guide = guide(&session);
-    let chords = essential_chords(&guide);
-    assert!(
-        chords.contains(&binding(
-            &[KeyboardModifier::Control, KeyboardModifier::Alt],
-            "j"
-        )),
-        "search reads as the person bound it: {:?}",
-        guide.essentials
-    );
-    assert!(
-        !chords.contains(&binding(&[KeyboardModifier::System], "space")),
-        "the default it left behind is gone: {:?}",
-        guide.essentials
-    );
-}
-
-#[test]
-fn the_desktop_help_chord_shows_the_same_guide() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = one_display();
-
-    chord(&mut session, &[KEY_LEFT_META, KEY_LEFT_SHIFT, KEY_SLASH]);
-    until(&mut session, up);
-    assert!(
-        session
-            .shortcut_guide()
-            .is_some_and(|seat| seat.presentation().is_open())
-    );
-    chord(&mut session, &[KEY_LEFT_META, KEY_LEFT_SHIFT, KEY_SLASH]);
-    until(&mut session, |session| !up(session));
-    assert!(!up(&session));
-}
-
-#[test]
-fn the_guide_is_drawn_over_the_display_in_focus_and_leaves_it_clean() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = docked();
-    assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
-    focus(&mut session, 1);
-    let centre = (WIDTH / 2, HEIGHT / 2);
-    let before_left = shot(&mut session, "HEADLESS-1");
-    let before_right = shot(&mut session, "HEADLESS-2");
-
-    tap(&mut session, KEY_F1);
-    until(&mut session, up);
-    until(&mut session, |session| {
-        session
-            .shortcut_guide()
-            .is_some_and(|seat| seat.presentation().is_drawn())
-    });
-    let after_left = shot(&mut session, "HEADLESS-1");
-    let after_right = shot(&mut session, "HEADLESS-2");
-    assert_ne!(
-        pixel(&after_right, centre.0, centre.1),
-        pixel(&before_right, centre.0, centre.1),
-        "the guide is drawn on the display in focus"
-    );
-    assert_eq!(
-        pixel(&after_left, centre.0, centre.1),
-        pixel(&before_left, centre.0, centre.1),
-        "and nothing of it reaches the other display"
-    );
-
-    tap(&mut session, KEY_F1);
-    until(&mut session, |session| !up(session));
-    until(&mut session, |session| {
-        session
-            .shortcut_guide()
-            .is_some_and(|seat| !seat.presentation().is_drawn())
-    });
-    let closed = shot(&mut session, "HEADLESS-2");
-    assert_eq!(
-        pixel(&closed, centre.0, centre.1),
-        pixel(&before_right, centre.0, centre.1),
-        "the display is as it was once the guide is gone"
-    );
 }
 
 /// The chords the person presses for a shortcut of their own.

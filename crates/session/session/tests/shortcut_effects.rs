@@ -418,25 +418,54 @@ fn the_session_answers_every_shortcut_of_its_side() {
     }
 }
 
-/// The clipboard panel Super+V asks for is up in the pass the key is pressed in, beside a caret
-/// nothing waits for: no frame goes by with the key answered and the panel still down.
-#[test]
-fn super_v_puts_the_clipboard_panel_up_in_the_pass_it_is_pressed_in() {
-    let _panel = panel_environment();
-    let mut session = session_with(layout_tree());
-    key(&mut session, KEY_LEFT_META, true);
-    session
-        .compositor()
-        .input(InputEvent::Key {
-            keycode: KEY_V,
-            pressed: true,
-        })
-        .expect("the key");
-    session.step(REFRESH).expect("a pass");
-    assert!(
-        session.quick_settings_open(),
-        "the pass that ran Super+V put the panel up"
-    );
+tilo_test_env::scenario! {
+    fn the_session_answers_its_shortcuts;
+
+    phase super_v_puts_the_clipboard_panel_up_in_the_pass_it_is_pressed_in;
+    // The clipboard panel Super+V asks for is up in the pass the key is pressed in, beside a caret
+    // nothing waits for: no frame goes by with the key answered and the panel still down.
+    {
+        let _panel = panel_environment();
+        let mut session = session_with(layout_tree());
+        key(&mut session, KEY_LEFT_META, true);
+        session
+            .compositor()
+            .input(InputEvent::Key {
+                keycode: KEY_V,
+                pressed: true,
+            })
+            .expect("the key");
+        session.step(REFRESH).expect("a pass");
+        assert!(
+            session.quick_settings_open(),
+            "the pass that ran Super+V put the panel up"
+        );
+    }
+
+    phase a_pointer_action_between_supers_press_and_release_opens_no_search;
+    // A pointer action between Super's press and its release is no tap: the person was using the
+    // pointer, not reaching for the search.
+    {
+        let _panel = panel_environment();
+        let mut session = session_with(layout_tree());
+        key(&mut session, KEY_LEFT_META, true);
+        session
+            .compositor()
+            .input(InputEvent::PointerMotion { x: 640.0, y: 500.0 })
+            .expect("the pointer");
+        session
+            .compositor()
+            .input(InputEvent::PointerAxis {
+                horizontal: 0.0,
+                vertical: -15.0,
+            })
+            .expect("the wheel");
+        key(&mut session, KEY_LEFT_META, false);
+        for _ in 0..10 {
+            session.step(REFRESH).expect("a turn of the session");
+        }
+        assert!(!search_open(&session), "Super and a wheel are no tap");
+    }
 }
 
 /// Tapping Super alone opens search: a press and a release with nothing between, well inside the
@@ -533,31 +562,6 @@ fn holding_super_shows_the_keys_and_letting_go_takes_them_away() {
             .read(|tree| tree.workspaces[0].strips[0].window_groups[0].tabs.len() == 1)
     });
     key(&mut session, KEY_LEFT_META, false);
-}
-
-/// A pointer action between Super's press and its release is no tap: the person was using the
-/// pointer, not reaching for the search.
-#[test]
-fn a_pointer_action_between_supers_press_and_release_opens_no_search() {
-    let _panel = panel_environment();
-    let mut session = session_with(layout_tree());
-    key(&mut session, KEY_LEFT_META, true);
-    session
-        .compositor()
-        .input(InputEvent::PointerMotion { x: 640.0, y: 500.0 })
-        .expect("the pointer");
-    session
-        .compositor()
-        .input(InputEvent::PointerAxis {
-            horizontal: 0.0,
-            vertical: -15.0,
-        })
-        .expect("the wheel");
-    key(&mut session, KEY_LEFT_META, false);
-    for _ in 0..10 {
-        session.step(REFRESH).expect("a turn of the session");
-    }
-    assert!(!search_open(&session), "Super and a wheel are no tap");
 }
 
 /// The chord a menu row shows, by the row's id.

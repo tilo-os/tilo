@@ -93,62 +93,99 @@ fn part(session: &Session, output: &str) -> Option<((i32, i32, u32, u32), bool)>
         .map(|part| (part.rect, part.aside))
 }
 
-#[test]
-fn every_display_has_a_shell_on_its_own_rectangle() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session(&[(0, 0), (WIDTH, 0)]);
-    until(&mut session, |session| session.shell_parts().len() == 2);
-    let parts = session.shell_parts();
-    let names: Vec<&str> = parts.iter().map(|part| part.output.as_str()).collect();
-    assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"], "one part per display");
-    for part in &parts {
+tilo_test_env::scenario! {
+    fn every_display_has_a_shell_of_its_own_at_its_scale;
+
+    phase every_display_has_a_shell_on_its_own_rectangle;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session(&[(0, 0), (WIDTH, 0)]);
+        until(&mut session, |session| session.shell_parts().len() == 2);
+        let parts = session.shell_parts();
+        let names: Vec<&str> = parts.iter().map(|part| part.output.as_str()).collect();
+        assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"], "one part per display");
+        for part in &parts {
+            assert!(
+                !part.aside,
+                "no window covers {}: its part stands",
+                part.output
+            );
+        }
+        let first = part(&session, "HEADLESS-1")
+            .expect("the first display's part")
+            .0;
+        let second = part(&session, "HEADLESS-2")
+            .expect("the second display's part")
+            .0;
+        assert_eq!(
+            (first.0, first.1, first.2, first.3),
+            (0, 0, WIDTH as u32, HEIGHT as u32),
+            "the first part stands on the first display, its whole screen"
+        );
+        assert_eq!(
+            (second.0, second.1, second.2, second.3),
+            (WIDTH, 0, WIDTH as u32, HEIGHT as u32),
+            "the second part stands on the second display, not stretched across both"
+        );
         assert!(
-            !part.aside,
-            "no window covers {}: its part stands",
-            part.output
+            second.0 >= WIDTH,
+            "the second part is on its display, beyond the first: {second:?}"
         );
     }
-    let first = part(&session, "HEADLESS-1")
-        .expect("the first display's part")
-        .0;
-    let second = part(&session, "HEADLESS-2")
-        .expect("the second display's part")
-        .0;
-    assert_eq!(
-        (first.0, first.1, first.2, first.3),
-        (0, 0, WIDTH as u32, HEIGHT as u32),
-        "the first part stands on the first display, its whole screen"
-    );
-    assert_eq!(
-        (second.0, second.1, second.2, second.3),
-        (WIDTH, 0, WIDTH as u32, HEIGHT as u32),
-        "the second part stands on the second display, not stretched across both"
-    );
-    assert!(
-        second.0 >= WIDTH,
-        "the second part is on its display, beyond the first: {second:?}"
-    );
-}
 
-#[test]
-fn a_display_added_later_gets_its_own_shell() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session(&[(0, 0)]);
-    until(&mut session, |session| session.shell_parts().len() == 1);
-    assert!(part(&session, "HEADLESS-1").is_some());
-    // A second display comes: its part is made, on its rectangle.
-    let mut output = OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT);
-    output.position = Some((WIDTH, 0));
-    session.compositor().add_output(&output).unwrap();
-    until(&mut session, |session| session.shell_parts().len() == 2);
-    let second = part(&session, "HEADLESS-2")
-        .expect("the new display's part")
-        .0;
-    assert_eq!(
-        (second.0, second.2, second.3),
-        (WIDTH, WIDTH as u32, HEIGHT as u32),
-        "the added display's part stands on the added display"
-    );
+    phase a_display_added_later_gets_its_own_shell;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session(&[(0, 0)]);
+        until(&mut session, |session| session.shell_parts().len() == 1);
+        assert!(part(&session, "HEADLESS-1").is_some());
+        // A second display comes: its part is made, on its rectangle.
+        let mut output = OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT);
+        output.position = Some((WIDTH, 0));
+        session.compositor().add_output(&output).unwrap();
+        until(&mut session, |session| session.shell_parts().len() == 2);
+        let second = part(&session, "HEADLESS-2")
+            .expect("the new display's part")
+            .0;
+        assert_eq!(
+            (second.0, second.2, second.3),
+            (WIDTH, WIDTH as u32, HEIGHT as u32),
+            "the added display's part stands on the added display"
+        );
+    }
+
+    phase a_shell_on_a_scaled_display_draws_at_that_scale;
+    // The shell on a `HiDPI` display draws at that display's scale: its part paints the pixels the
+    // panel shows, so the bar and the shell are as crisp as the display allows rather than one scale's
+    // worth stretched over twice the area.
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = Session::headless(
+            options(),
+            &[
+                OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT).with_scale(1.0),
+                OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT)
+                    .with_scale(2.0)
+                    .at(WIDTH, 0),
+            ],
+        )
+        .expect("session");
+        until(&mut session, |session| session.shell_parts().len() == 2);
+        let parts = session.shell_parts();
+        let scale = |name: &str| {
+            parts
+                .iter()
+                .find(|part| part.output == name)
+                .map(|part| part.scale)
+        };
+        assert_eq!(scale("HEADLESS-1"), Some(1.0), "the plain display's part");
+        assert_eq!(
+            scale("HEADLESS-2"),
+            Some(2.0),
+            "the part on the 2 display draws at 2: {:?}",
+            session.shell_parts()
+        );
+    }
 }
 
 #[test]
@@ -226,39 +263,6 @@ fn a_part_steps_aside_on_the_display_a_fullscreen_window_owns() {
     client.pump(&mut session, |session, _| {
         session.shell_parts().iter().all(|part| !part.aside)
     });
-}
-
-/// The shell on a `HiDPI` display draws at that display's scale: its part paints the pixels the
-/// panel shows, so the bar and the shell are as crisp as the display allows rather than one scale's
-/// worth stretched over twice the area.
-#[test]
-fn a_shell_on_a_scaled_display_draws_at_that_scale() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        options(),
-        &[
-            OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT).with_scale(1.0),
-            OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT)
-                .with_scale(2.0)
-                .at(WIDTH, 0),
-        ],
-    )
-    .expect("session");
-    until(&mut session, |session| session.shell_parts().len() == 2);
-    let parts = session.shell_parts();
-    let scale = |name: &str| {
-        parts
-            .iter()
-            .find(|part| part.output == name)
-            .map(|part| part.scale)
-    };
-    assert_eq!(scale("HEADLESS-1"), Some(1.0), "the plain display's part");
-    assert_eq!(
-        scale("HEADLESS-2"),
-        Some(2.0),
-        "the part on the 2 display draws at 2: {:?}",
-        session.shell_parts()
-    );
 }
 
 /// A fractional scale is a scale like any other: a display at 1.75 draws the shell's part at 1.75,

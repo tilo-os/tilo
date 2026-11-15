@@ -27,34 +27,59 @@ pub(super) fn readout_saying(session: &mut Session, words: &str) -> String {
         .unwrap_or_default()
 }
 
-#[test]
-fn a_volume_key_names_the_output_it_changed() {
-    let _settled = ui::motion::testing::settled();
-    let asked = Rc::new(RefCell::new(Vec::new()));
-    let headphones = Audio::speakers(Rc::clone(&asked));
+tilo_test_env::scenario! {
+    fn a_key_is_answered_by_the_readout;
+
+    phase a_volume_key_names_the_output_it_changed;
     {
-        let mut sound = headphones.sound.borrow_mut();
-        sound.volume = Some(0.65);
-        sound.muted = false;
-        sound.outputs = vec![tilo_audio_service::sound::Device {
-            node: 40,
-            name: "bluez_output.AC_80_0A_0B_0C_0D.1".to_owned(),
-            label: "Studio headphones".to_owned(),
-            chosen: true,
-            ..tilo_audio_service::sound::Device::default()
-        }];
+        let _settled = ui::motion::testing::settled();
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let headphones = Audio::speakers(Rc::clone(&asked));
+        {
+            let mut sound = headphones.sound.borrow_mut();
+            sound.volume = Some(0.65);
+            sound.muted = false;
+            sound.outputs = vec![tilo_audio_service::sound::Device {
+                node: 40,
+                name: "bluez_output.AC_80_0A_0B_0C_0D.1".to_owned(),
+                label: "Studio headphones".to_owned(),
+                chosen: true,
+                ..tilo_audio_service::sound::Device::default()
+            }];
+        }
+        let mut session = crate::common::headless(Options {
+            services: vec![Box::new(headphones)],
+            collab: false,
+            ..Options::default()
+        });
+        tap(&mut session, keys::VOLUME_UP);
+        assert_eq!(
+            readout_saying(&mut session, "Studio headphones"),
+            "Studio headphones, 65%",
+            "the readout says which output it changed, and its level"
+        );
     }
-    let mut session = crate::common::headless(Options {
-        services: vec![Box::new(headphones)],
-        collab: false,
-        ..Options::default()
-    });
-    tap(&mut session, keys::VOLUME_UP);
-    assert_eq!(
-        readout_saying(&mut session, "Studio headphones"),
-        "Studio headphones, 65%",
-        "the readout says which output it changed, and its level"
-    );
+
+    phase a_brightness_key_on_a_machine_that_dims_nothing_says_so;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = crate::common::headless(Options {
+            collab: false,
+            ..Options::default()
+        });
+        tap(&mut session, keys::BRIGHTNESS_DOWN);
+        pump(&mut session, &mut [], |session, _| {
+            session
+                .accessible_labels()
+                .iter()
+                .any(|label| label == "No adjustable display")
+        });
+        let said = session.accessible_labels().join("\n");
+        assert!(
+            !said.contains("0%"),
+            "a machine with nothing to dim reports no level, never zero percent: {said}"
+        );
+    }
 }
 
 #[test]
@@ -152,26 +177,5 @@ fn a_mode_change_is_confirmed_in_words() {
         readout_saying(&mut session, "Touchpad"),
         "Touchpad off",
         "the touchpad says what it now does"
-    );
-}
-
-#[test]
-fn a_brightness_key_on_a_machine_that_dims_nothing_says_so() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = crate::common::headless(Options {
-        collab: false,
-        ..Options::default()
-    });
-    tap(&mut session, keys::BRIGHTNESS_DOWN);
-    pump(&mut session, &mut [], |session, _| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label == "No adjustable display")
-    });
-    let said = session.accessible_labels().join("\n");
-    assert!(
-        !said.contains("0%"),
-        "a machine with nothing to dim reports no level, never zero percent: {said}"
     );
 }

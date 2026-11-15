@@ -179,220 +179,224 @@ fn changed(before: &Screenshot, after: &Screenshot, from: i32) -> usize {
     count
 }
 
-/// Where every sheet puts itself: on the display the person is working on.
-#[test]
-fn a_sheet_opens_on_the_display_in_focus() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = docked();
-    let mut client = client(&mut session);
-    assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
-    focuses(&mut session, &mut client, 1);
+tilo_test_env::scenario! {
+    fn sheets_and_cards_stand_on_the_display_in_focus;
 
-    let before_left = shot(&mut session, "HEADLESS-1");
-    let before_right = shot(&mut session, "HEADLESS-2");
-
-    let power = session.power_menu().expect("power sheet");
-    power.presentation().open(false);
-    client.pump(&mut session, |session, _| {
-        let presentation = session.power_menu().expect("power sheet").presentation();
-        presentation.place() == Some(right()) && presentation.is_open()
-    });
-    let power = session.power_menu().expect("power sheet");
-    assert_eq!(
-        power.presentation().place(),
-        Some(right()),
-        "the sheet covers the display in focus"
-    );
-    assert!(power.presentation().is_open(), "and is up for the person");
-    let (cx, cy) = panel_centre(&mut session);
-
-    let _after_right = crate::common::wait_for(
-        &mut session,
-        format!("the sheet drawn on the display in focus, at ({cx}, {cy}) of it"),
-        |session| {
-            session.step(Duration::from_millis(16)).expect("step");
-            let frame = shot(session, "HEADLESS-2");
-            (pixel(&frame, cx, cy) != pixel(&before_right, cx, cy)).then_some(frame)
-        },
-    );
-    let after_left = shot(&mut session, "HEADLESS-1");
-    assert_eq!(
-        pixel(&after_left, cx, cy),
-        pixel(&before_left, cx, cy),
-        "and nothing of it reaches the other display"
-    );
-}
-
-/// A banner and an activity card stand where the sheets do: on the display the person is working
-/// on, and on the other display once they work there.
-#[test]
-fn a_banner_and_an_activity_card_stand_on_the_display_in_focus() {
-    use tilo_desktop::notifications::{Banner, BannerFeed, Notification};
-    use ui::live_activity::{Kind, Published, Summary};
-
-    let _settled = ui::motion::testing::settled();
-    let mut session = docked();
-    let mut client = client(&mut session);
-    assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
-    focuses(&mut session, &mut client, 1);
-    let left = shot(&mut session, "HEADLESS-1");
-    let right = shot(&mut session, "HEADLESS-2");
-
-    // An app floats a card over the shell, and a notification puts a banner beside it.
-    let mut card = Published::of(Summary::new(Kind::Timer, "Tea", "4:32").with_id("tea"));
-    card.overlay = true;
-    session.live_activities().show(
-        "so.tilo.clocks",
-        Some(serde_json::to_value(card).expect("an activity is JSON")),
-    );
-    session.banners().publish(BannerFeed {
-        banners: vec![Banner {
-            notification: Notification::new("Build finished", "All 524 tests passed")
-                .with_shown_at(ui::time::now())
-                .with_dismiss_after(Duration::from_secs(60)),
-            actions: Vec::new(),
-        }],
-        locked: false,
-        held: false,
-    });
-    crate::common::wait_for(
-        &mut session,
-        "the banner and the card drawn on the display in focus",
-        |session| {
-            session.step(Duration::from_millis(16)).expect("step");
-            let shown = session.banners().shown();
-            let frame = shot(session, "HEADLESS-2");
-            (!shown.stack.is_zero_area() && changed(&right, &frame, under_bar()) > 1_000)
-                .then_some(())
-        },
-    );
-    assert_eq!(
-        session.banners().shown().banners.len(),
-        1,
-        "the banner is up for the person"
-    );
-    assert_eq!(
-        changed(&left, &shot(&mut session, "HEADLESS-1"), under_bar()),
-        0,
-        "nothing of them reaches the other display"
-    );
-
-    // The person moves to the other display: what stands over the shell moves with them.
-    focuses(&mut session, &mut client, 0);
-    crate::common::wait_for(
-        &mut session,
-        "the banner and the card on the display the person works on",
-        |session| {
-            session.step(Duration::from_millis(16)).expect("step");
-            let frame = shot(session, "HEADLESS-1");
-            (changed(&left, &frame, under_bar()) > 1_000).then_some(())
-        },
-    );
-    assert_eq!(
-        changed(&right, &shot(&mut session, "HEADLESS-2"), under_bar()),
-        0,
-        "and nothing of them stays behind"
-    );
-}
-
-/// A window maximised over the whole display stays under the sheet, and the sheet, not the window,
-/// gets the person's keys while it is up.
-#[test]
-fn a_window_filling_the_display_keeps_the_sheet_on_top_and_takes_no_keys() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session_at(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)]);
-    let mut client = client(&mut session);
-    let editor = map(
-        &mut session,
-        &mut client,
-        "org.example.Editor",
-        (300, 200),
-        |_| {},
-    );
-    client.toplevel(editor).set_maximized();
-
-    // The compositor hands the client the size it fills, which the client then draws at: nothing of
-    // the display shows around it.
-    let before = client.seen.toplevels[editor].size;
-    client.pump(&mut session, |_, seen| seen.toplevel(editor).size != before);
-    if let Some((w, h)) = client.seen.toplevels[editor].size
-        && w > 0
-        && h > 0
+    phase a_sheet_opens_on_the_display_in_focus;
+    // Where every sheet puts itself: on the display the person is working on.
     {
-        client.show(editor, w, h, WINDOW_BYTES);
+        let _settled = ui::motion::testing::settled();
+        let mut session = docked();
+        let mut client = client(&mut session);
+        assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
+        focuses(&mut session, &mut client, 1);
+
+        let before_left = shot(&mut session, "HEADLESS-1");
+        let before_right = shot(&mut session, "HEADLESS-2");
+
+        let power = session.power_menu().expect("power sheet");
+        power.presentation().open(false);
+        client.pump(&mut session, |session, _| {
+            let presentation = session.power_menu().expect("power sheet").presentation();
+            presentation.place() == Some(right()) && presentation.is_open()
+        });
+        let power = session.power_menu().expect("power sheet");
+        assert_eq!(
+            power.presentation().place(),
+            Some(right()),
+            "the sheet covers the display in focus"
+        );
+        assert!(power.presentation().is_open(), "and is up for the person");
+        let (cx, cy) = panel_centre(&mut session);
+
+        let _after_right = crate::common::wait_for(
+            &mut session,
+            format!("the sheet drawn on the display in focus, at ({cx}, {cy}) of it"),
+            |session| {
+                session.step(Duration::from_millis(16)).expect("step");
+                let frame = shot(session, "HEADLESS-2");
+                (pixel(&frame, cx, cy) != pixel(&before_right, cx, cy)).then_some(frame)
+            },
+        );
+        let after_left = shot(&mut session, "HEADLESS-1");
+        assert_eq!(
+            pixel(&after_left, cx, cy),
+            pixel(&before_left, cx, cy),
+            "and nothing of it reaches the other display"
+        );
     }
-    client.pump(&mut session, |session, _| {
-        let (x, y, w, h) = rect(session, "org.example.Editor");
-        x == 0 && w == WIDTH && y + h == HEIGHT
-    });
-    client.pump(&mut session, |_, seen| seen.keyboard_focused);
 
-    // The window has the keyboard to itself before the sheet comes up.
-    client.tap(&mut session, KEY_A);
-    client.pump(&mut session, |_, seen| seen.keys.contains(&(KEY_A, true)));
-    assert!(
-        !client.seen.keys.iter().any(|(key, _)| *key == KEY_ESCAPE),
-        "no key of the sheet's reached the window yet: {:?}",
-        client.seen.keys
-    );
+    phase a_banner_and_an_activity_card_stand_on_the_display_in_focus;
+    // A banner and an activity card stand where the sheets do: on the display the person is working
+    // on, and on the other display once they work there.
+    {
+        use tilo_desktop::notifications::{Banner, BannerFeed, Notification};
+        use ui::live_activity::{Kind, Published, Summary};
 
-    let before = shot(&mut session, "HEADLESS-1");
-    let power = session.power_menu().expect("power sheet");
-    power.presentation().open(false);
-    client.pump(&mut session, |session, _| {
-        session.power_menu().expect("power sheet").panel().x1 > 0.0
-    });
-    let (cx, cy) = panel_centre(&mut session);
-    let (wx, wy, ww, wh) = rect(&mut session, "org.example.Editor");
-    assert!(
-        cx >= wx && cx < wx + ww && cy >= wy && cy < wy + wh,
-        "the menu's middle ({cx}, {cy}) is over the window {:?}",
-        (wx, wy, ww, wh)
-    );
-    assert_eq!(
-        pixel(&before, cx, cy),
-        WINDOW,
-        "the window filled the display at ({cx}, {cy}) before the sheet"
-    );
-    crate::common::wait_for(
-        &mut session,
-        "the sheet painting over the maximised window",
-        |session| {
-            session.step(Duration::from_millis(16)).expect("step");
-            let frame = shot(session, "HEADLESS-1");
-            (pixel(&frame, cx, cy) != WINDOW).then_some(())
-        },
-    );
-    let (x, y, w, h) = rect(&mut session, "org.example.Editor");
-    assert_eq!(
-        (x, w, y + h),
-        (0, WIDTH, HEIGHT),
-        "and the window still fills the display"
-    );
+        let _settled = ui::motion::testing::settled();
+        let mut session = docked();
+        let mut client = client(&mut session);
+        assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
+        focuses(&mut session, &mut client, 1);
+        let left = shot(&mut session, "HEADLESS-1");
+        let right = shot(&mut session, "HEADLESS-2");
 
-    // Escape is the sheet's while it is up: the window sees nothing of it.
-    let seen_before = client.seen.keys.clone();
-    client.tap(&mut session, KEY_ESCAPE);
-    client.pump(&mut session, |session, _| {
-        !session
-            .power_menu()
-            .expect("power sheet")
-            .presentation()
-            .is_open()
-    });
-    assert_eq!(
-        client.seen.keys, seen_before,
-        "Escape closed the sheet and never reached the window"
-    );
+        // An app floats a card over the shell, and a notification puts a banner beside it.
+        let mut card = Published::of(Summary::new(Kind::Timer, "Tea", "4:32").with_id("tea"));
+        card.overlay = true;
+        session.live_activities().show(
+            "so.tilo.clocks",
+            Some(serde_json::to_value(card).expect("an activity is JSON")),
+        );
+        session.banners().publish(BannerFeed {
+            banners: vec![Banner {
+                notification: Notification::new("Build finished", "All 524 tests passed")
+                    .with_shown_at(ui::time::now())
+                    .with_dismiss_after(Duration::from_secs(60)),
+                actions: Vec::new(),
+            }],
+            locked: false,
+            held: false,
+        });
+        crate::common::wait_for(
+            &mut session,
+            "the banner and the card drawn on the display in focus",
+            |session| {
+                session.step(Duration::from_millis(16)).expect("step");
+                let shown = session.banners().shown();
+                let frame = shot(session, "HEADLESS-2");
+                (!shown.stack.is_zero_area() && changed(&right, &frame, under_bar()) > 1_000)
+                    .then_some(())
+            },
+        );
+        assert_eq!(
+            session.banners().shown().banners.len(),
+            1,
+            "the banner is up for the person"
+        );
+        assert_eq!(
+            changed(&left, &shot(&mut session, "HEADLESS-1"), under_bar()),
+            0,
+            "nothing of them reaches the other display"
+        );
 
-    // The window is still the client with focus, and takes keys again once the sheet is gone.
-    assert!(client.seen.keyboard_focused, "the window kept the seat");
-    client.tap(&mut session, KEY_A);
-    client.pump(&mut session, |_, seen| {
-        seen.keys
-            .iter()
-            .filter(|(key, pressed)| *key == KEY_A && *pressed)
-            .count()
-            >= 2
-    });
+        // The person moves to the other display: what stands over the shell moves with them.
+        focuses(&mut session, &mut client, 0);
+        crate::common::wait_for(
+            &mut session,
+            "the banner and the card on the display the person works on",
+            |session| {
+                session.step(Duration::from_millis(16)).expect("step");
+                let frame = shot(session, "HEADLESS-1");
+                (changed(&left, &frame, under_bar()) > 1_000).then_some(())
+            },
+        );
+        assert_eq!(
+            changed(&right, &shot(&mut session, "HEADLESS-2"), under_bar()),
+            0,
+            "and nothing of them stays behind"
+        );
+    }
+
+    phase a_window_filling_the_display_keeps_the_sheet_on_top_and_takes_no_keys;
+    // A window maximised over the whole display stays under the sheet, and the sheet, not the window,
+    // gets the person's keys while it is up.
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session_at(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)]);
+        let mut client = client(&mut session);
+        let editor = map(
+            &mut session,
+            &mut client,
+            "org.example.Editor",
+            (300, 200),
+            |_| {},
+        );
+        client.toplevel(editor).set_maximized();
+
+        // The compositor hands the client the size it fills, which the client then draws at: nothing of
+        // the display shows around it.
+        let before = client.seen.toplevels[editor].size;
+        client.pump(&mut session, |_, seen| seen.toplevel(editor).size != before);
+        if let Some((w, h)) = client.seen.toplevels[editor].size
+            && w > 0
+            && h > 0
+        {
+            client.show(editor, w, h, WINDOW_BYTES);
+        }
+        client.pump(&mut session, |session, _| {
+            let (x, y, w, h) = rect(session, "org.example.Editor");
+            x == 0 && w == WIDTH && y + h == HEIGHT
+        });
+        client.pump(&mut session, |_, seen| seen.keyboard_focused);
+
+        // The window has the keyboard to itself before the sheet comes up.
+        client.tap(&mut session, KEY_A);
+        client.pump(&mut session, |_, seen| seen.keys.contains(&(KEY_A, true)));
+        assert!(
+            !client.seen.keys.iter().any(|(key, _)| *key == KEY_ESCAPE),
+            "no key of the sheet's reached the window yet: {:?}",
+            client.seen.keys
+        );
+
+        let before = shot(&mut session, "HEADLESS-1");
+        let power = session.power_menu().expect("power sheet");
+        power.presentation().open(false);
+        client.pump(&mut session, |session, _| {
+            session.power_menu().expect("power sheet").panel().x1 > 0.0
+        });
+        let (cx, cy) = panel_centre(&mut session);
+        let (wx, wy, ww, wh) = rect(&mut session, "org.example.Editor");
+        assert!(
+            cx >= wx && cx < wx + ww && cy >= wy && cy < wy + wh,
+            "the menu's middle ({cx}, {cy}) is over the window {:?}",
+            (wx, wy, ww, wh)
+        );
+        assert_eq!(
+            pixel(&before, cx, cy),
+            WINDOW,
+            "the window filled the display at ({cx}, {cy}) before the sheet"
+        );
+        crate::common::wait_for(
+            &mut session,
+            "the sheet painting over the maximised window",
+            |session| {
+                session.step(Duration::from_millis(16)).expect("step");
+                let frame = shot(session, "HEADLESS-1");
+                (pixel(&frame, cx, cy) != WINDOW).then_some(())
+            },
+        );
+        let (x, y, w, h) = rect(&mut session, "org.example.Editor");
+        assert_eq!(
+            (x, w, y + h),
+            (0, WIDTH, HEIGHT),
+            "and the window still fills the display"
+        );
+
+        // Escape is the sheet's while it is up: the window sees nothing of it.
+        let seen_before = client.seen.keys.clone();
+        client.tap(&mut session, KEY_ESCAPE);
+        client.pump(&mut session, |session, _| {
+            !session
+                .power_menu()
+                .expect("power sheet")
+                .presentation()
+                .is_open()
+        });
+        assert_eq!(
+            client.seen.keys, seen_before,
+            "Escape closed the sheet and never reached the window"
+        );
+
+        // The window is still the client with focus, and takes keys again once the sheet is gone.
+        assert!(client.seen.keyboard_focused, "the window kept the seat");
+        client.tap(&mut session, KEY_A);
+        client.pump(&mut session, |_, seen| {
+            seen.keys
+                .iter()
+                .filter(|(key, pressed)| *key == KEY_A && *pressed)
+                .count()
+                >= 2
+        });
+    }
 }
