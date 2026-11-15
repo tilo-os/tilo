@@ -256,7 +256,9 @@ impl MailConnector for EngineConnector {
             .split_whitespace()
             .map(str::to_owned)
             .collect();
-        self.request(EngineRequest::send(config, Box::new(draft)))
+        // A message written on this device brings its files in the draft: there is no page
+        // whose files the host would have to read for it.
+        self.request(EngineRequest::send(config, Box::new(draft), Vec::new()))
             .ok_or(Unmade::EngineStopped)
     }
 
