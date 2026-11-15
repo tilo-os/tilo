@@ -103,6 +103,7 @@ async fn the_relays_person_creates_and_lists_workspaces_as_actions() {
             CREATE_WORKSPACE,
             tilo_relay_session::workspaces::CREATE_OWN_WORKSPACE,
             DELETE_WORKSPACE,
+            tilo_relay_session::workspaces::BRANCH_OWN_WORKSPACE,
             LIST_WORKSPACES,
             tilo_relay_session::workspaces::LIST_PERSONAL,
             tilo_relay_session::workspaces::KEEP_PERSONAL,

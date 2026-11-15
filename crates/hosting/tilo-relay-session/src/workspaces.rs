@@ -138,6 +138,21 @@ pub const CREATE_WORKSPACE: &str = "workspace.create";
 /// [`CreatedWorkspace`] with the invitation the person's devices redeem to
 /// hold it, as its administrator.
 pub const CREATE_OWN_WORKSPACE: &str = "workspace.create-own";
+/// Branch `workspace`, one of the caller's person's own on a host that keeps
+/// workspaces of people's own: a new workspace of theirs, named `name` and
+/// labelled `labels` when given, that starts with every record of `workspace`
+/// with its history and the content those records name, and goes on apart
+/// from it. What is tied to other people stays behind
+/// (`tilo_desktop_model::branch::stays`), and the person is its only member.
+/// `branch` is its identity (a UUID; a new one when omitted): asked again
+/// under the same one, the host answers the branch it made and copies
+/// nothing twice. All or nothing: a branch that could not take everything is
+/// deleted again and the refusal names what did not come. Only a person's
+/// device, or an agent's grant reaching all their workspaces, branches; a
+/// workspace that is not theirs is refused with [`NOT_YOUR_OWN`]. Answers a
+/// [`CreatedWorkspace`] with the invitation the person's devices redeem to
+/// hold the branch (redeemable `expires_in_seconds`, 600 when omitted).
+pub const BRANCH_OWN_WORKSPACE: &str = "workspace.branch-own";
 /// Every workspace the host governs, each as a [`WorkspaceListing`].
 pub const LIST_WORKSPACES: &str = "workspace.list";
 /// Delete the workspace `workspace`, one of the caller's person's own (any

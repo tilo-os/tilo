@@ -190,6 +190,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     assert_eq!(
         offers,
         [
+            tilo_relay_session::workspaces::BRANCH_OWN_WORKSPACE,
             CREATE_OWN_WORKSPACE,
             DELETE_WORKSPACE,
             tilo_relay_session::workspaces::LIST_WORKSPACES,
@@ -197,8 +198,8 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
             tilo_relay_session::workspaces::KEEP_PERSONAL,
             tilo_relay_session::workspaces::PERSONAL_DEVICE_NAME,
         ],
-        "a stranger makes, deletes and lists the workspaces of their own, keeps and reads their \
-         list, and nothing else"
+        "a stranger makes, branches, deletes and lists the workspaces of their own, keeps and \
+         reads their list, and nothing else"
     );
     let created = create_own(&host, &guest, json!({"name": "Ada's workspace"}))
         .await

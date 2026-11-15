@@ -29,6 +29,8 @@ mod appended;
 mod applications;
 mod authority;
 mod bootstrap;
+mod branch;
+pub use branch::{BranchContent, Branched};
 mod channel_governance;
 mod index;
 mod mcp_server;
@@ -951,6 +953,11 @@ struct WorkspacesInner {
     /// Each workspace deleted here, and its relay workspace
     /// ([`Workspaces::deletions`]).
     deletions: tokio::sync::broadcast::Sender<(String, WorkspaceId)>,
+    /// Each branch made here ([`Workspaces::branches`]).
+    branches: tokio::sync::broadcast::Sender<Branched>,
+    /// What copies a source's content into a branch of it
+    /// ([`Workspaces::branch_content`]).
+    branch_content: std::sync::RwLock<Option<Arc<dyn BranchContent>>>,
     /// Each record write of a member the governor's copy took in.
     record_writes: tokio::sync::broadcast::Sender<RecordWrite>,
     /// What the changes a record's repair kept wait for, by record, so a
@@ -1204,6 +1211,8 @@ impl Workspaces {
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
                 deletions: tokio::sync::broadcast::channel(64).0,
+                branches: tokio::sync::broadcast::channel(64).0,
+                branch_content: std::sync::RwLock::default(),
                 record_writes: tokio::sync::broadcast::channel(256).0,
                 #[cfg(feature = "agents")]
                 repairs: repaired_records::Repairs::default(),

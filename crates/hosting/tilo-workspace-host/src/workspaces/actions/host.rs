@@ -21,6 +21,7 @@ use tilo_action_policy::roles;
 use tilo_actions::remote::{ActionHostError, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
+use tilo_relay_session::workspaces::BRANCH_OWN_WORKSPACE;
 use tilo_relay_session::workspaces::{
     ATTACH_HOST, ActionInvitation, CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CreatedWorkspace,
     DELETE_WORKSPACE, DETACH_HOST, ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER,
@@ -58,7 +59,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 13] = [
+const HOST_VERBS: [(Verb, HostOperation); 14] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -88,6 +89,16 @@ const HOST_VERBS: [(Verb, HostOperation); 13] = [
             params: workspace_params,
         },
         HostOperation::DeleteOwnWorkspace,
+    ),
+    (
+        Verb {
+            id: BRANCH_OWN_WORKSPACE,
+            label: "Branch your workspace",
+            gate: BRANCH_OWN_WORKSPACE,
+            kind: roles::GOVERNANCE_KIND,
+            params: branch::params,
+        },
+        HostOperation::BranchOwnWorkspace,
     ),
     (
         Verb {
@@ -553,6 +564,11 @@ impl Workspaces {
                     .await
                     .map_err(|error| refused(&error))?;
                 Ok(serde_json::json!({ "deleted": workspace }))
+            }
+            HostOperation::BranchOwnWorkspace => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                self.branch_own_invoke(device, &args, request_id, now).await
             }
             HostOperation::ReadPersonalList
             | HostOperation::KeepPersonalList
@@ -1064,6 +1080,7 @@ impl Workspaces {
     }
 }
 
+mod branch;
 #[cfg(test)]
 mod own_tests;
 #[cfg(test)]

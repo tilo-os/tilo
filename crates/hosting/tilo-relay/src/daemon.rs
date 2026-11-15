@@ -680,6 +680,10 @@ impl Relay {
             governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
                 &content,
             ))));
+            // A branch of a workspace takes the content its records name.
+            governed.branch_content(Arc::new(crate::content::branch::StoresBranches(
+                Arc::clone(&content),
+            )));
             let files = crate::files_content::FilesContent::new(
                 governed.clone(),
                 identity.device_cert.device_public_key,

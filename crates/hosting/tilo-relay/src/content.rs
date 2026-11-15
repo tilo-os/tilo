@@ -12,6 +12,7 @@
 //! workspace. What no record of a workspace names any more is let go of
 //! ([`collection`]).
 
+pub mod branch;
 pub mod collection;
 
 use std::path::Path;

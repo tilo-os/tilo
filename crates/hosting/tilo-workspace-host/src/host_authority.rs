@@ -84,6 +84,12 @@ pub enum HostOperation {
     /// people's own, as making one is; an agent's grant only when it reaches
     /// all its person's workspaces, as for making one.
     DeleteOwnWorkspace,
+    /// Branch a workspace of the caller's own person here: a new workspace of
+    /// theirs that starts as a copy of it and goes on apart from it. Which
+    /// workspace is theirs the handler checks, as for deleting one. Anyone's,
+    /// on a host that keeps workspaces of people's own; an agent's grant only
+    /// when it reaches all its person's workspaces, as for making one.
+    BranchOwnWorkspace,
     /// Keep the caller's person's workspace list here, as one of their own
     /// devices holds it: anyone's for their own list once the site let them in
     /// or they are a member of a workspace here, never an agent's grant.
@@ -117,6 +123,7 @@ impl HostOperation {
             Self::ListRevocations => "identity.revocations",
             Self::CreateOwnWorkspace => "workspace.create-own",
             Self::DeleteOwnWorkspace => "workspace.delete",
+            Self::BranchOwnWorkspace => "workspace.branch-own",
             Self::KeepPersonalList => "workspace.personal.keep",
             Self::ReadPersonalList => "workspace.personal",
             Self::NamePersonalDevice => "workspace.personal.name",
@@ -134,6 +141,7 @@ impl HostOperation {
                 self,
                 Self::CreateOwnWorkspace
                     | Self::DeleteOwnWorkspace
+                    | Self::BranchOwnWorkspace
                     | Self::ListWorkspaces
                     | Self::KeepPersonalList
                     | Self::ReadPersonalList
@@ -150,7 +158,10 @@ impl HostOperation {
             return true;
         };
         match self {
-            Self::CreateWorkspace | Self::DeleteOwnWorkspace => scope.makes_workspaces(),
+            // A branch is a workspace made: for a grant that makes them.
+            Self::CreateWorkspace | Self::DeleteOwnWorkspace | Self::BranchOwnWorkspace => {
+                scope.makes_workspaces()
+            }
             // The listing answers only the workspaces the scope reaches. A grant for one
             // workspace asks for the invitation into that one, which its person already has:
             // making another is for a grant reaching all of them, and the handler holds a
@@ -182,7 +193,7 @@ mod tests {
     use super::HostOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [HostOperation; 18] = [
+    const ALL: [HostOperation; 19] = [
         HostOperation::CreateWorkspace,
         HostOperation::ListWorkspaces,
         HostOperation::EnterWorkspace,
@@ -199,6 +210,7 @@ mod tests {
         HostOperation::ListRevocations,
         HostOperation::CreateOwnWorkspace,
         HostOperation::DeleteOwnWorkspace,
+        HostOperation::BranchOwnWorkspace,
         HostOperation::KeepPersonalList,
         HostOperation::ReadPersonalList,
     ];
@@ -224,6 +236,7 @@ mod tests {
                 operation,
                 HostOperation::CreateOwnWorkspace
                     | HostOperation::DeleteOwnWorkspace
+                    | HostOperation::BranchOwnWorkspace
                     | HostOperation::ListWorkspaces
                     | HostOperation::KeepPersonalList
                     | HostOperation::ReadPersonalList
@@ -269,6 +282,7 @@ mod tests {
                 HostOperation::CreateWorkspace
                     | HostOperation::CreateOwnWorkspace
                     | HostOperation::DeleteOwnWorkspace
+                    | HostOperation::BranchOwnWorkspace
             );
             assert_eq!(
                 operation.permits(&host, &all),
@@ -295,6 +309,7 @@ mod tests {
                     operation,
                     HostOperation::CreateOwnWorkspace
                         | HostOperation::DeleteOwnWorkspace
+                        | HostOperation::BranchOwnWorkspace
                         | HostOperation::ListWorkspaces
                         | HostOperation::ReadPersonalList
                 ),

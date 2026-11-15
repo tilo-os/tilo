@@ -174,6 +174,7 @@ impl Workspaces {
                 HostOperation::CreateOwnWorkspace
                     | HostOperation::ListWorkspaces
                     | HostOperation::DeleteOwnWorkspace
+                    | HostOperation::BranchOwnWorkspace
                     | HostOperation::KeepPersonalList
                     | HostOperation::ReadPersonalList
                     | HostOperation::NamePersonalDevice

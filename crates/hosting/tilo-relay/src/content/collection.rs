@@ -236,6 +236,27 @@ pub async fn named(
     Some(Named { names, unread })
 }
 
+/// Every content address `documents` (records by app and id, each saved
+/// whole) name, in any version of them, with what that content is made of:
+/// the chunks of each file manifest `read` finds among them. What a pass
+/// keeps of a workspace for these records is what a branch holding them takes
+/// of its source's content ([`super::branch`]).
+///
+/// # Errors
+///
+/// A record that does not load, named with why.
+pub(crate) fn named_by(
+    documents: &[(Route, Vec<u8>)],
+    read: &impl Fn(&str) -> Option<Vec<u8>>,
+) -> Result<BTreeSet<String>, String> {
+    let mut live = BTreeSet::new();
+    for ((app, record), document) in documents {
+        named_in(document, &mut live).map_err(|why| format!("{record} of {app}: {why}"))?;
+    }
+    made_of(read, &mut live);
+    Ok(live)
+}
+
 /// Add every content address `record` (a saved Automerge document) names to
 /// `live`: in any value its history ever held, and in the text it holds now.
 ///
