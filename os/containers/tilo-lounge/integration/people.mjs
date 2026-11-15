@@ -876,11 +876,14 @@ try {
   // them.
   const joinedPlane = async (person, who) => {
     const deadline = Date.now() + stepLimit(3);
+    // The plane of the workspace this person joined, by its own id: any
+    // other workspace's plane is not theirs.
+    const named = `plane ${person.membership.workspace}: `;
     for (;;) {
       const channels = await person.tab.evaluate('globalThis.tiloChannels?.() ?? ""');
       const joined = channels
         .split('\n')
-        .find(entry => /^plane \d+: epoch \d+, reads \d+ device\(s\)/.test(entry));
+        .find(entry => entry.startsWith(named) && /^epoch \d+, reads \d+ device\(s\)/.test(entry.slice(named.length)));
       if (joined) return joined;
       if (Date.now() > deadline) {
         await dump(person.tab, `timeout-plane-${who}`);
