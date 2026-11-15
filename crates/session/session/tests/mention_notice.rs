@@ -151,12 +151,7 @@ fn opening_in(
     );
     assert_eq!(
         application_provider_record(&target.provider),
-        Some(
-            RecordId::parse(RECORD)
-                .expect("a record id")
-                .storage_key()
-                .as_str()
-        ),
+        Some(RECORD),
         "on the record the notice names: {target:?}"
     );
     assert_eq!(

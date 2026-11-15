@@ -807,12 +807,8 @@ fn read_workspace_records(
             if !seen.insert((package.clone(), checkout.id.as_str().to_owned())) {
                 continue;
             }
-            let document = crate::platform::records::document(
-                store,
-                &package,
-                workspace,
-                &checkout.id.storage_key(),
-            );
+            let document =
+                crate::platform::records::document(store, &package, workspace, checkout.id.route());
             if let Some(document) = &document {
                 noted(document.get_actor());
             }
@@ -833,7 +829,7 @@ fn read_workspace_records(
             store,
             fs_protocol::tree::FILES_APP,
             workspace,
-            &record_id.storage_key(),
+            record_id.route(),
         )
     {
         noted(document.get_actor());

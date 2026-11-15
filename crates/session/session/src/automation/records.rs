@@ -1,307 +1,164 @@
 //! A person's record changes as trigger events.
-//! Each look reads, per record in a workspace a shortcut of this device may watch, the changes
-//! after the heads it last saw, and turns each one that carries a history entry into a
-//! [`RecordEvent`]. The first look at a record only learns its heads: a shortcut saved today never
-//! fires on last year's messages.
-//! The documents belong to the apps that write them, and this process reads them the way search
-//! does: a tree watch over the device's data home, and a worker that reads again whenever a record
-//! or a workspace index below it changes. The session's loop only takes what the worker found
-//! ([`RecordFeed::take`]); it never opens, lists or stats a path, and there is no second store: the
-//! record documents read here are the ones the apps wrote.
+//! Each change of a record in a workspace a shortcut of this device may watch is read for the
+//! changes after the heads the record was last seen at, and each one that carries a history entry
+//! becomes a [`RecordEvent`]. The first look at a record only learns its heads: a shortcut saved
+//! today never fires on last year's messages.
+//! The records are followed as every role that follows them does: off the one stream of record
+//! changes ([`Changes`]) and through the store they are kept in, on a worker of the feed's own. The
+//! session's loop only takes what the worker found ([`RecordFeed::take`]).
 //! A workspace a shortcut starts watching is read on the loop's pass that armed it
 //! ([`RecordFeed::follow`]), so the heads it learns as its baseline are the heads at that moment: a
 //! change made after the shortcut is shown is one it fires on, never one swallowed by a baseline
 //! read that happened later.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use app_state::{DOCUMENT_FILE, WORKSPACES_DIR};
-use automerge::{AutoCommit, ChangeHash, LoadOptions, OnPartialLoad};
+use automerge::{AutoCommit, ChangeHash};
+use durable_store::DurableStore;
 use tilo_actions::ActionContext;
 use tilo_automation::dispatch::{RecordEvent, event_of};
-use tilo_files::native::{ChangeWatch, watch_tree_changes};
 
-/// Ceiling on a record document this worker reads: Automerge cannot read one in part, and a file
-/// past this is not a record an app wrote.
-const MAX_RECORD_BYTES: u64 = 16 * 1024 * 1024;
-
-/// One record's document as last read, and where it was.
-#[derive(Clone, Debug)]
-struct Seen {
-    /// The workspace's name for the record, and its kind.
-    kind: String,
-    /// When the file was last written and how large it was: a document whose stamp did not move has
-    /// no change to turn into an event.
-    stamp: Option<(u64, u64)>,
-}
+use crate::platform::Store;
+use crate::platform::records::{Changed, Changes, document, named_checkouts};
 
 /// What the worker keeps between reads.
 #[derive(Default)]
 struct Worker {
     /// The workspaces a shortcut watches, by id: only their records are read.
     workspaces: BTreeSet<String>,
-    /// Every record read so far, by (workspace, record): its kind and stamp.
-    seen: BTreeMap<(String, String), Seen>,
-    /// The heads each record was last read at.
-    cursors: BTreeMap<(String, String), Vec<ChangeHash>>,
+    /// The heads each record was last read at, by its workspace, app and route.
+    cursors: BTreeMap<(String, String, String), Vec<ChangeHash>>,
+    /// What the worker found and the loop has not taken yet.
+    found: Vec<RecordEvent>,
 }
 
 /// A person's record changes as trigger events, followed on a worker.
 pub struct RecordFeed {
-    /// What the worker found and the loop has not taken yet.
-    found: Arc<Mutex<Vec<RecordEvent>>>,
-    /// What the worker keeps between reads: the workspaces it watches, the heads each record was
-    /// read at. Shared with the loop, which reads a workspace's records once when it starts
-    /// watching them.
-    reading: Arc<Mutex<Worker>>,
-    /// The data home the worker reads, as [`RecordFeed::follow`] reads it.
-    root: PathBuf,
-    worker: Option<std::thread::JoinHandle<()>>,
-    /// Ends the watch, and so the worker, with the feed.
-    watch: Option<ChangeWatch>,
+    /// What the worker keeps between reads, shared with the loop, which reads a workspace's
+    /// records once when it starts watching them.
+    worker: Arc<Mutex<Worker>>,
+    /// The store the records are kept in; `None` on a session that keeps none.
+    store: Option<Store>,
 }
 
 impl RecordFeed {
-    /// Follow the records under `root` , the data home this device's apps write: the workspaces
-    /// `workspaces` names are read, and the rest are left alone until a shortcut watches one of
-    /// them.
-    /// The first read happens on this thread, before the watch's worker starts, so the heads it
-    /// learns are the heads on disk before any change it reports.
-    pub fn start(
-        root: PathBuf,
-        workspaces: BTreeSet<String>,
-        wake: crate::automation::Wake,
-    ) -> Self {
-        let found = Arc::new(Mutex::new(Vec::new()));
-        let worker = Arc::new(Mutex::new(Worker {
-            workspaces,
-            ..Worker::default()
-        }));
-        {
-            let mut worker = worker.lock().unwrap_or_else(PoisonError::into_inner);
-            worker.read(&root, &found);
-        }
-        let (tells, told) = mpsc::channel::<()>();
-        let telling = tells;
-        let names_root = root.clone();
-        let reading_root = root.clone();
-        let reading_found = Arc::clone(&found);
-        let reading = Arc::clone(&worker);
-        let watch = watch_tree_changes(
-            &root,
-            move |path: &Path| {
-                let Some(inside) = path.strip_prefix(&names_root).ok() else {
-                    return false;
-                };
-                let parts: Vec<&std::ffi::OsStr> = inside.iter().collect();
-                // A record or a workspace index: the documents this feed reads, and the directory a
-                // record of a workspace not read yet appears in.
-                parts.get(1) == Some(&std::ffi::OsStr::new(WORKSPACES_DIR))
-            },
-            move || {
-                let _ = telling.send(());
-            },
-        )
-        .ok();
-        let worker_thread = watch.as_ref().and_then(|_| {
-            std::thread::Builder::new()
+    /// Follow the records `records` keeps, as its stream notes their changes, waking the loop
+    /// through `wake` when one became an event. Nothing is read until a shortcut watches a
+    /// workspace ([`Self::follow`]).
+    pub fn start(records: Option<(Store, Changes)>, wake: tilo_service::Wake) -> Self {
+        let worker = Arc::new(Mutex::new(Worker::default()));
+        let store = records.map(|(store, changes)| {
+            let reader = changes.reader();
+            let (following, reading) = (Arc::downgrade(&worker), Store::clone(&store));
+            let spawned = std::thread::Builder::new()
                 .name("tilo-automation-records".into())
                 .spawn(move || {
-                    for () in told {
-                        let mut worker = reading.lock().unwrap_or_else(PoisonError::into_inner);
-                        worker.read(&reading_root, &reading_found);
+                    // Ends with the stream, or with the feed.
+                    while let Ok(changed) = reader.recv() {
+                        let Some(worker) = following.upgrade() else {
+                            break;
+                        };
+                        let mut worker = lock(&worker);
+                        let mut found = worker.look(reading.as_ref(), &changed);
+                        // A burst of changes is read before the loop is woken once.
+                        while let Ok(more) = reader.try_recv() {
+                            found |= worker.look(reading.as_ref(), &more);
+                        }
                         drop(worker);
-                        (wake)();
+                        if found {
+                            wake();
+                        }
                     }
-                })
-                .ok()
+                });
+            if let Err(error) = spawned {
+                tracing::warn!(%error, "record changes fire no shortcut");
+            }
+            store
         });
-        Self {
-            found,
-            reading: Arc::clone(&worker),
-            root,
-            worker: worker_thread,
-            watch,
-        }
+        Self { worker, store }
     }
 
     /// Read the records of exactly `workspaces` from now on: the workspaces where an armed shortcut
-    /// watches record changes. The workspace that starts being watched is read here, before this
+    /// watches record changes. A workspace that starts being watched is read here, before this
     /// returns, so the heads learned as the baseline are the heads the person's shortcut was shown
     /// at, and every change written after it is one the worker reports.
     pub fn follow(&self, workspaces: BTreeSet<String>) {
-        let mut worker = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut worker = lock(&self.worker);
         if worker.workspaces == workspaces {
             return;
         }
+        let added: Vec<String> = workspaces.difference(&worker.workspaces).cloned().collect();
+        worker
+            .cursors
+            .retain(|(workspace, ..), _| workspaces.contains(workspace));
         worker.workspaces = workspaces;
-        worker.read(&self.root, &self.found);
+        let Some(store) = &self.store else {
+            return;
+        };
+        let indexes = store.workspace_indexes().unwrap_or_default();
+        for workspace in added {
+            for (app, _) in indexes.iter().filter(|(_, held)| *held == workspace) {
+                for (checkout, _) in
+                    named_checkouts(store.as_ref(), app, &workspace).unwrap_or_default()
+                {
+                    worker.look(
+                        store.as_ref(),
+                        &Changed {
+                            workspace: workspace.clone(),
+                            app: app.clone(),
+                            record: checkout.id.route().to_owned(),
+                            replayed: true,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     /// The events the worker found since the last call, oldest first.
     pub fn take(&self) -> Vec<RecordEvent> {
-        std::mem::take(&mut *self.found.lock().unwrap_or_else(PoisonError::into_inner))
+        std::mem::take(&mut lock(&self.worker).found)
     }
 }
 
-impl Drop for RecordFeed {
-    fn drop(&mut self) {
-        // Ends the watch's thread, and with it the sender it holds: the worker ends on the channel
-        // closing.
-        self.watch = None;
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
+/// The worker's state, whoever holds it.
+fn lock(worker: &Mutex<Worker>) -> MutexGuard<'_, Worker> {
+    worker.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Worker {
-    /// Read every record of the workspaces this worker watches, turn what changed since the last
-    /// read into events, and keep the heads.
-    fn read(&mut self, root: &Path, found: &Mutex<Vec<RecordEvent>>) {
-        let mut events = Vec::new();
-        let held = self.held(root);
-        let mut cursors = BTreeMap::new();
-        for (package, workspace, record, kind) in held {
-            let key = (workspace.clone(), record.clone());
-            let path = record_document(root, &package, &workspace, &record);
-            let stamp = path.as_deref().and_then(stamp_of);
-            let unchanged = match (&stamp, self.seen.get(&key)) {
-                (Some(stamp), Some(seen)) => {
-                    seen.stamp.as_ref() == Some(stamp) && seen.kind == kind
-                }
-                _ => false,
-            };
-            let mut heads = self.cursors.get(&key).cloned();
-            if !unchanged
-                && let Some(path) = path
-                && stamp_of(&path).is_some_and(|(_, len)| len <= MAX_RECORD_BYTES)
-                && let Some(doc) = load(&path)
-            {
-                if let Some(since) = &heads {
-                    events.extend(record_events(&workspace, &record, &kind, &doc, since));
-                }
-                // A record looked at for the first time only has its heads learned: a shortcut
-                // saved today never fires on last year's messages.
-                heads = Some(doc.committed_heads());
-            }
-            // A record whose document could not be read this time keeps its heads: the next read of
-            // it compares against them again.
-            if let Some(heads) = heads.clone() {
-                cursors.insert(key.clone(), heads);
-            }
-            self.seen.insert(key, Seen { kind, stamp });
+    /// Read the record `changed` reached, where a shortcut watches its workspace: what changed
+    /// since its heads were last read becomes events, and its heads are kept. Whether it found any.
+    fn look(&mut self, store: &dyn DurableStore, changed: &Changed) -> bool {
+        // The workspace's own document is its list of records, not one of them.
+        if changed.record.is_empty() || !self.workspaces.contains(&changed.workspace) {
+            return false;
         }
-        // Records a workspace no longer holds are forgotten: a record written again from nothing is
-        // not the old one.
-        self.seen.retain(|key, _| cursors.contains_key(key));
-        self.cursors = cursors;
-        if !events.is_empty() {
-            found
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .extend(events);
+        let Some(doc) = document(store, &changed.app, &changed.workspace, &changed.record) else {
+            return false;
+        };
+        let kind = ui::record::identity(&doc)
+            .map(|identity| identity.kind.as_str().to_owned())
+            .unwrap_or_default();
+        let key = (
+            changed.workspace.clone(),
+            changed.app.clone(),
+            changed.record.clone(),
+        );
+        let before = self.found.len();
+        // A record looked at for the first time only has its heads learned.
+        if let Some(since) = self.cursors.insert(key, doc.committed_heads()) {
+            self.found.extend(record_events(
+                &changed.workspace,
+                &changed.record,
+                &kind,
+                &doc,
+                &since,
+            ));
         }
+        self.found.len() > before
     }
-
-    /// Every record the watched workspaces hold, by the workspace indexes the apps of this device
-    /// write: the app that named it, its workspace, its name, and its kind.
-    fn held(&self, data_home: &Path) -> Vec<(String, String, String, String)> {
-        let mut held = Vec::new();
-        let mut packages = Vec::new();
-        collect(&mut packages, data_home);
-        let mut indexes = Vec::new();
-        for package in packages {
-            if let Ok(entries) = std::fs::read_dir(data_home.join(&package).join(WORKSPACES_DIR)) {
-                for entry in entries.flatten() {
-                    let workspace = entry.file_name().to_string_lossy().into_owned();
-                    if self.workspaces.contains(&workspace) {
-                        indexes.push((package.clone(), workspace));
-                    }
-                }
-            }
-        }
-        for (package, workspace) in indexes {
-            for (record, kind) in named_in(data_home, &package, &workspace) {
-                held.push((package.clone(), workspace.clone(), record, kind));
-            }
-        }
-        held
-    }
-}
-
-/// The package directories under `root` : one per app that keeps documents here.
-fn collect(packages: &mut Vec<String>, root: &Path) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            packages.push(entry.file_name().to_string_lossy().into_owned());
-        }
-    }
-    packages.sort();
-}
-
-/// Where record `record` of `package` in `workspace` keeps its document.
-fn record_document(
-    data_home: &Path,
-    package: &str,
-    workspace: &str,
-    record: &str,
-) -> Option<PathBuf> {
-    let directory =
-        app_state::DocStore::workspace_document_dir_at(data_home, package, workspace, record)
-            .ok()?;
-    Some(directory.join(DOCUMENT_FILE))
-}
-
-/// When `path` was last written and how large it is, or `None` when it is gone.
-fn stamp_of(path: &Path) -> Option<(u64, u64)> {
-    let meta = std::fs::metadata(path).ok()?;
-    let modified = meta.modified().ok()?;
-    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
-    Some((
-        u64::try_from(since.as_nanos()).unwrap_or(u64::MAX),
-        meta.len(),
-    ))
-}
-
-/// The document `path` holds, as far as it was written: an app appending to it may still be in the
-/// middle of a change, and the changes before it are the document as of the last write that
-/// completed.
-fn load(path: &Path) -> Option<AutoCommit> {
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.is_empty() {
-        return None;
-    }
-    let options = LoadOptions::new().on_partial_load(OnPartialLoad::Ignore);
-    AutoCommit::load_with_options(&bytes, options).ok()
-}
-
-/// The records `package` 's index for `workspace` names, by record id and kind.
-fn named_in(data_home: &Path, package: &str, workspace: &str) -> Vec<(String, String)> {
-    let directory = match app_state::workspace_index_directory(data_home, package, workspace) {
-        Ok(directory) => directory,
-        Err(error) => {
-            tracing::warn!(%error, package, %workspace, "a workspace's index is not read");
-            return Vec::new();
-        }
-    };
-    let Some(doc) = load(&directory.join(DOCUMENT_FILE)) else {
-        return Vec::new();
-    };
-    ui::record::index::discoverable_references(&doc)
-        .into_iter()
-        .map(|record| {
-            (
-                record.id.as_str().to_owned(),
-                record.kind.as_str().to_owned(),
-            )
-        })
-        .collect()
 }
 
 /// The changes of `doc` after `since` , in causal order, as events.
@@ -378,6 +235,65 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    /// A record a file opened as, kept under a storage key its route does not spell: a change of it
+    /// written through the records' store reaches the shortcuts by the record's route.
+    #[test]
+    fn a_change_written_to_a_file_record_becomes_an_event() {
+        use durable_store::{StorageKey, WriteOp};
+
+        const APP: &str = "so.tilo.word-processor";
+        const WORKSPACE: &str = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd4";
+        let dir = tempfile::tempdir().unwrap();
+        let changes = Changes::default();
+        let store = crate::platform::records::noting(
+            Arc::new(app_state::FsStore::new(dir.path())),
+            changes.clone(),
+        );
+        let write = |key: &StorageKey, doc: &mut AutoCommit| {
+            store
+                .write(key, WriteOp::Replace(doc.save()), None)
+                .unwrap();
+        };
+        let id = ui::record::RecordId::for_file("/run/tilo/documents/Budget for Friday.txt");
+        let kind = ui::record::RecordKind::new("word-processor.document");
+        let mut index = AutoCommit::new();
+        assert!(ui::record::index::reference(&mut index, &id, &kind));
+        index.commit();
+        let named = StorageKey::workspace_index(APP, WORKSPACE);
+        let key = crate::platform::records::storage_key(APP, WORKSPACE, id.route()).unwrap();
+        let _leases = (store.lease(&named).unwrap(), store.lease(&key).unwrap());
+        write(&named, &mut index);
+        let mut doc = AutoCommit::new();
+        ui::record::init(&mut doc, &id, &kind, WORKSPACE);
+        doc.commit();
+        write(&key, &mut doc);
+
+        let (woke, woken) = std::sync::mpsc::channel();
+        let feed = RecordFeed::start(
+            Some((Store::clone(&store), changes)),
+            Arc::new(move || {
+                let _ = woke.send(());
+            }),
+        );
+        feed.follow(BTreeSet::from([WORKSPACE.to_owned()]));
+        let context = ActionContext::for_app(APP, "Word Processor")
+            .with_invoker(tilo_actions::ActionInvoker::person("bob"))
+            .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new(APP, kind.as_str(), "type"),
+                [],
+            )));
+        doc.put(automerge::ROOT, "text", "Catering").unwrap();
+        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+        write(&key, &mut doc);
+
+        woken
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the change woke the loop");
+        let events = feed.take();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].record, id.route());
     }
 
     #[test]

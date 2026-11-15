@@ -91,7 +91,7 @@ impl Records {
         let plain: Store = Arc::new(app_state::FsStore::new(&root));
         let store = crate::platform::records::noting(plain, changes.clone());
         Self {
-            _followed: crate::platform::records::follow(&root, &changes),
+            _followed: crate::platform::records::follow(&root, &store, &changes),
             root: Some(root),
             // The session's index of what apps hold answers for their content
             // ([`crate::record_index`]): the records are offered by name.
@@ -329,7 +329,7 @@ fn record_contents(
     let Some(workspace) = record.workspaces.first() else {
         return Vec::new();
     };
-    crate::platform::records::document(store, &record.package, workspace, &id.storage_key())
+    crate::platform::records::document(store, &record.package, workspace, id.route())
         .map(|doc| tilo_app::framework::record_index::hosted_entries(&record.package, &doc))
         .unwrap_or_default()
 }

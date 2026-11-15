@@ -38,7 +38,7 @@ use tilo_peer_state::owner::{self, NativeWorkspaceOwner};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Launches, Options, Session};
+use tilo_session::{ActionPlane, Launches, Options, Records, SearchOptions, Session};
 use tilo_user_identity::DeviceCert;
 
 /// The workspace the shell shows, the id it has on every device, and the app whose records it holds.
@@ -228,13 +228,14 @@ fn kept(person: &str, shortcuts: &[SavedShortcut]) -> Workspace {
 
 /// A session keeping this device's shell under `state` , with the action plane the shortcuts run on
 /// at `socket` , for `person` , showing the workspace its governance holds.
-fn session_keeping(state: &Path, socket: &Path, person: &str) -> Session {
-    session_launching(state, socket, person, Arc::new(Launches::default()))
+fn session_keeping(data: &Path, state: &Path, socket: &Path, person: &str) -> Session {
+    session_launching(data, state, socket, person, Arc::new(Launches::default()))
 }
 
 /// The same session, starting its apps from `launches` : the record of what it started is the
 /// test's, so it can start one.
 fn session_launching(
+    data: &Path,
     state: &Path,
     socket: &Path,
     person: &str,
@@ -247,6 +248,10 @@ fn session_launching(
         person: person.to_owned(),
         wake: LoopWake::default(),
         launches,
+        search: SearchOptions {
+            records: Some(Records::of(data.to_path_buf())),
+            ..SearchOptions::default()
+        },
         ..Options::default()
     })
 }
@@ -264,8 +269,14 @@ fn show(session: &Session, workspace: Workspace) {
 /// The session on the shell showing `workspace` : the shell a device kept, before the first pass
 /// reads it, whose governance this device holds — and the passes in which that governance's
 /// shortcuts arm the triggers and the workspace's records are followed.
-fn showing(state: &Path, socket: &Path, person: &str, workspace: Workspace) -> Session {
-    let mut session = session_keeping(state, socket, person);
+fn showing(
+    data: &Path,
+    state: &Path,
+    socket: &Path,
+    person: &str,
+    workspace: Workspace,
+) -> Session {
+    let mut session = session_keeping(data, state, socket, person);
     show(&session, workspace);
     for _ in 0..2 {
         session.step(Duration::from_millis(1)).expect("a frame");
@@ -342,7 +353,10 @@ fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
 
 /// Where the record document lives.
 fn record_path(home: &tilo_test_env::TestHome) -> std::path::PathBuf {
-    app_state::DocStore::workspace_document_dir_at(home.data(), PACKAGE, WORKSPACE, RECORD)
+    let key = ui::record::RecordId::parse(RECORD)
+        .expect("a record id")
+        .storage_key();
+    app_state::DocStore::workspace_document_dir_at(home.data(), PACKAGE, WORKSPACE, &key)
         .expect("the record's directory")
         .join(app_state::DOCUMENT_FILE)
 }
@@ -350,6 +364,12 @@ fn record_path(home: &tilo_test_env::TestHome) -> std::path::PathBuf {
 /// The record as an app of the workspace wrote it before the session started.
 fn seed_record(home: &tilo_test_env::TestHome) {
     let mut doc = automerge::AutoCommit::new();
+    ui::record::init(
+        &mut doc,
+        &ui::record::RecordId::parse(RECORD).expect("a record id"),
+        &ui::record::RecordKind::new(KIND),
+        WORKSPACE,
+    );
     doc.put(automerge::ROOT, "seed", 1).expect("a field");
     doc.commit();
     let path = record_path(home);
@@ -425,6 +445,7 @@ fn an_edit_that_matches_a_rule_fires_its_action_once() {
     drop(owner);
 
     let mut session = showing(
+        home.data(),
         state.path(),
         &socket,
         &person,
@@ -488,6 +509,7 @@ fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
     drop(owner);
 
     let mut session = showing(
+        home.data(),
         state.path(),
         &socket,
         &person,
@@ -560,6 +582,7 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
     let due = i64::try_from(tilo_clock::unix_now_ms()).unwrap() - 1_000;
     keep_a_schedule_due_at(state.path(), &trigger, due);
     let mut session = showing(
+        home.data(),
         state.path(),
         &socket,
         &person,
@@ -597,6 +620,7 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
 
     // A third session finds the fire time it moved to and runs nothing.
     let mut session = showing(
+        home.data(),
         state.path(),
         &socket,
         &person,
@@ -632,6 +656,7 @@ fn a_shortcut_armed_on_a_chord_runs_once_when_the_person_presses_it() {
     drop(owner);
 
     let mut session = showing(
+        home.data(),
         state.path(),
         &socket,
         &person,
@@ -676,7 +701,13 @@ fn a_shortcut_armed_on_an_app_runs_once_when_it_starts() {
     drop(owner);
 
     let launches = Arc::new(Launches::default());
-    let mut session = session_launching(state.path(), &socket, &person, Arc::clone(&launches));
+    let mut session = session_launching(
+        home.data(),
+        state.path(),
+        &socket,
+        &person,
+        Arc::clone(&launches),
+    );
     show(&session, kept(&person, std::slice::from_ref(&tidy)));
     // A tick arms the shortcut and learns the apps running, of which there are none.
     pass(&mut session, Duration::from_millis(700));
@@ -717,6 +748,7 @@ fn a_shortcut_armed_on_a_focus_mode_runs_once_when_it_switches_on() {
     drop(owner);
 
     let mut session = showing(
+        home.data(),
         state.path(),
         &socket,
         &person,
@@ -765,7 +797,7 @@ fn a_shortcut_armed_on_a_shared_folder_runs_once_when_a_file_in_it_changes() {
     workspace
         .sandbox
         .push(sharing(&person, "notes", folder.path()));
-    let mut session = showing(state.path(), &socket, &person, workspace);
+    let mut session = showing(home.data(), state.path(), &socket, &person, workspace);
     // A tick arms the shortcut and starts watching the folder it shares.
     pass(&mut session, Duration::from_millis(1200));
     std::fs::write(folder.path().join("groceries.md"), "milk").expect("a file in the folder");

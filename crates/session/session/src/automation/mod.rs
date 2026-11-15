@@ -112,6 +112,8 @@ pub struct Automation {
 /// notification policy, what each of its workspaces revokes, and which of the person's devices are
 /// online to run a schedule.
 pub struct Feeds {
+    /// The store the workspaces' records are kept in, and the stream their changes are noted in.
+    pub records: Option<(crate::platform::Store, crate::platform::records::Changes)>,
     pub fabric: Option<crate::platform::fabric::SharedLink>,
     pub launches: Arc<crate::launches::Launches>,
     pub policy: Arc<std::sync::Mutex<NotificationPolicy>>,
@@ -130,18 +132,18 @@ impl Automation {
         feeds: Feeds,
     ) -> Self {
         let Feeds {
+            records,
             fabric,
             launches,
             policy,
             revocations,
         } = feeds;
-        let root = cli::data_home();
         let devices = Arc::new(triggers::FixedDevices::new(devices_of(fabric.as_ref())));
         let mut triggers = TriggerHost::for_session(state, wake.clone());
         triggers.set_devices(Arc::clone(&devices) as Arc<dyn triggers::DeviceDirectory>);
         Self {
             triggers,
-            feed: records::RecordFeed::start(root, BTreeSet::new(), wake),
+            feed: records::RecordFeed::start(records, wake),
             followed: BTreeSet::new(),
             broker: None,
             devices,

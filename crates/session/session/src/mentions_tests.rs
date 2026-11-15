@@ -95,7 +95,8 @@ impl Device {
     }
 
     fn write_through(store: &Store, app: &str, route: &str, doc: &mut AutoCommit) {
-        Self::write_doc(store, &StorageKey::document(app, WORKSPACE, route), doc);
+        let key = crate::platform::records::storage_key(app, WORKSPACE, route).expect("a route");
+        Self::write_doc(store, &key, doc);
     }
 
     /// Write `doc` at `key` through `store`, as a writer of it does.
@@ -163,10 +164,20 @@ fn look_again(mentions: &Mentions) {
 /// A notebook as `tilo_resource::Collection` keeps it: one page, its title and a paragraph whose
 /// text marks `mention` (as `tilo-doc` does), written by `by`.
 fn notebook(text: &str, mention: Option<(usize, usize, &str)>, by: &str) -> AutoCommit {
+    notebook_at(&RecordId::parse(NOTE).unwrap(), text, mention, by)
+}
+
+/// [`notebook`], kept as the record `id`.
+fn notebook_at(
+    id: &RecordId,
+    text: &str,
+    mention: Option<(usize, usize, &str)>,
+    by: &str,
+) -> AutoCommit {
     let mut doc = AutoCommit::new();
     ui::record::init(
         &mut doc,
-        &RecordId::parse(NOTE).unwrap(),
+        id,
         &RecordKind::new("notes.notebook"),
         "workspace",
     );
@@ -241,6 +252,27 @@ fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
         }
     );
     assert_eq!(Place::from_activation(&place.activation()), Some(place));
+}
+
+/// A document a file opened in is named by the file's path, and kept under its storage key: its
+/// write is noted by the record's route, and the notice opens that record.
+#[test]
+fn a_mention_in_a_file_opened_as_a_record_opens_that_record() {
+    let file = RecordId::for_file("/run/tilo/documents/Budget for Friday.txt");
+    let route = file.route().to_owned();
+    let written = notebook_at(&file, "Ask @Bea about the date", Some((4, 8, BEA)), ADA);
+    let device = Device::holding(&[(NOTES, &route, &written)]);
+    let shown = Rc::new(Shown::default());
+    device.role(&shown).step();
+
+    let up = shown.up.borrow();
+    assert_eq!(up.len(), 1, "{up:?}");
+    let place = up.values().next().unwrap().place.clone();
+    assert_eq!(
+        place.expect("it opens what it names").record,
+        route,
+        "the record by its route, not where it is kept"
+    );
 }
 
 /// An app's own record is the workspace's document, which also keeps its index, and travels
@@ -373,7 +405,7 @@ fn changes_arriving_in_a_burst_are_looked_at_together() {
 }
 
 /// A chat part whose message mentions Bea, its mark's value written by `write_value` into the
-/// span: the record names no identity of its own, as a chat's part does not.
+/// span: the part names no kind of its own beyond its chain's, and the chain none at all.
 fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
     let mut chat = AutoCommit::new();
     let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
@@ -391,6 +423,12 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
         .part(0)
         .as_str()
         .to_owned();
+    ui::record::init(
+        &mut part,
+        &RecordId::parse(&part_route).expect("a record id"),
+        &RecordKind::new("chat.part"),
+        "workspace",
+    );
     let messages = part.put_object(ROOT, "messages", ObjType::Map).unwrap();
     let entry = part.put_object(&messages, "m1", ObjType::Map).unwrap();
     let message = part.put_object(&entry, "v", ObjType::Map).unwrap();

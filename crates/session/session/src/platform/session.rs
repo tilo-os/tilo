@@ -1311,6 +1311,10 @@ impl Session {
             handle.clone(),
             options.person.clone(),
             crate::automation::Feeds {
+                // The workspaces' records, whose changes a shortcut can answer.
+                records: records_store
+                    .clone()
+                    .map(|store| (store, crate::platform::records::Changes::clone(&changes))),
                 // Which of the person's devices this one is, and which of
                 // them are online: each schedule runs on one of them.
                 fabric: sync.as_ref().and_then(|sync| sync.fabric()),

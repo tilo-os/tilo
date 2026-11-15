@@ -29,7 +29,7 @@
 //!
 //! A package's workspace-primary document travels with an empty record, as the
 //! native broker sends it; in the page's stores it is
-//! [`RecordId::package_primary`], kept at the workspace index.
+//! [`ui::record::RecordId::package_primary`], kept at the workspace index.
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -39,7 +39,7 @@ use std::sync::{Mutex, PoisonError};
 use tilo_sort::CompactSort as _;
 
 use collab_types::DocumentMutation;
-use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
+use durable_store::{DurableStore as _, MemoryStore, WriteOp};
 use neighbour_wire::content::ContentWants;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -48,7 +48,7 @@ use tilo_session_client::engine::RecordReading;
 use tilo_session_client::{Events, Link};
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
-use ui::record::{RecordId, RecordSync};
+use ui::record::RecordSync;
 use ui::state::DocumentReplica;
 
 use crate::replicated::{Attachment, DESKTOP_APP, DESKTOP_RECORD};
@@ -191,15 +191,6 @@ pub(crate) struct Joined {
     /// The one stream of record changes this page feeds: what the session's activity and the
     /// person's mentions follow.
     changes: tilo_session::platform::records::Changes,
-}
-
-/// The page's storage key of wire record `record` of `app` in `workspace`.
-fn storage_key(app: &str, workspace: &str, record: &str) -> Result<StorageKey, &'static str> {
-    if record.is_empty() {
-        return Ok(StorageKey::workspace_index(app, workspace));
-    }
-    let id = RecordId::parse(record).ok_or("not a record id")?;
-    Ok(StorageKey::document(app, workspace, id.storage_key()))
 }
 
 /// Start replicating `workspace` for peer `id`. `events` must have been created
@@ -1316,7 +1307,8 @@ impl Joined {
     ) -> Result<(), String> {
         let (app, record) = (route.app_id.clone(), route.record.clone());
         self.changes.note(&self.uuid, &app, &record, !self.ready);
-        let key = storage_key(&app, &self.uuid, &record)?;
+        let key = tilo_session::platform::records::storage_key(&app, &self.uuid, &record)
+            .ok_or("not a record id")?;
         let writer = self
             .store
             .read(&key)
@@ -1375,7 +1367,8 @@ impl Joined {
         bytes: Vec<u8>,
         heads: &[[u8; 32]],
     ) -> Result<Option<Vec<ui::automerge::ChangeHash>>, String> {
-        let key = storage_key(app, &self.uuid, record)?;
+        let key = tilo_session::platform::records::storage_key(app, &self.uuid, record)
+            .ok_or("not a record id")?;
         let stored = self.store.read(&key).map_err(|error| error.to_string())?;
         let writer = stored.as_ref().and_then(|stored| stored.writer.clone());
         let stored = stored

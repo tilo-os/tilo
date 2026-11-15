@@ -20,7 +20,7 @@ use tilo_broker_core::custody::OwnerCustody as _;
 use tilo_desktop_model::WorkspaceId;
 use ui::permissions::MemberId;
 use ui::record::workspace::WorkspaceRecords;
-use ui::record::{RecordId, RecordOwners, RecordStore, RecordSync};
+use ui::record::{RecordOwners, RecordStore, RecordSync};
 
 use crate::engine::{Engine, SealKeys};
 use crate::engine_write::{Writing, Written};
@@ -42,7 +42,7 @@ struct Inner {
     /// Each record's replication with the engine, by workspace, app and wire record.
     replicas: RefCell<HashMap<RecordKey, Replica>>,
     /// The workspaces whose records moved in the engine, told as each one does.
-    moved: RefCell<Option<mpsc::Receiver<String>>>,
+    moved: RefCell<Option<mpsc::Receiver<crate::platform::records::Changed>>>,
     /// The stores, by workspace and app, the session wrote to since their changes were last
     /// written into the engine.
     written: RefCell<BTreeSet<(String, String)>>,
@@ -187,10 +187,11 @@ impl EngineRecords {
     /// What the session's copy of `record` of `app` in `workspace` holds as stored: the record a
     /// test reads back, as the session's own readers do.
     pub(crate) fn stored(&self, app: &str, workspace: &str, record: &str) -> Option<Vec<u8>> {
-        let id = RecordId::parse(record)?;
         self.0
             .store
-            .read(&StorageKey::document(app, workspace, id.storage_key()))
+            .read(&crate::platform::records::storage_key(
+                app, workspace, record,
+            )?)
             .ok()
             .flatten()
             .map(|stored| stored.bytes)
@@ -212,7 +213,7 @@ impl EngineRecords {
             .moved
             .borrow()
             .as_ref()
-            .map(|moved| moved.try_iter().collect())
+            .map(|moved| moved.try_iter().map(|changed| changed.workspace).collect())
             .unwrap_or_default();
         let mut due = std::mem::take(&mut *self.0.unread.borrow_mut());
         due.extend(
@@ -525,12 +526,8 @@ impl Inner {
 
     /// Keep the engine's copy of a record no copy has open, for whoever opens it next.
     fn keep(&self, workspace: &str, app: &str, record: &str, bytes: Vec<u8>) -> Result<(), String> {
-        let key = if record.is_empty() {
-            StorageKey::workspace_index(app, workspace)
-        } else {
-            let id = RecordId::parse(record).ok_or("not a record id")?;
-            StorageKey::document(app, workspace, id.storage_key())
-        };
+        let key = crate::platform::records::storage_key(app, workspace, record)
+            .ok_or("not a record id")?;
         let writer = self
             .store
             .read(&key)
