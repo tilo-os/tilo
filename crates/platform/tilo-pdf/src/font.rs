@@ -68,6 +68,9 @@ pub fn use_catalog(root: PathBuf) {
 fn library() -> &'static [BundledFace] {
     USABLE.get_or_init(|| {
         let Some(root) = CATALOG.get() else {
+            // Only the helper sets one; without a catalog annotations come
+            // out with no text.
+            eprintln!("tilo-pdf: appearance text is left out: no font catalog");
             return Vec::new();
         };
         load(root).unwrap_or_else(|error| {

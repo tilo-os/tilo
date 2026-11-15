@@ -595,8 +595,12 @@ impl Drop for Sandboxed {
 /// exports identical whichever machine wrote them.
 const HELPER_TZ: &str = "UTC0";
 
-/// The helper's command line and environment: nothing inherited but what it
-/// needs to find pdfium and fonts, in UTC.
+/// The variables the helper inherits: pdfium's location, the prepared font
+/// catalog, and the home directory and locale documents may read.
+const HELPER_ENV: [&str; 4] = ["TILO_PDFIUM_LIB", "TILO_FONT_ASSET_CACHE", "HOME", "LANG"];
+
+/// The helper's command line and environment: nothing inherited but
+/// [`HELPER_ENV`], in UTC.
 fn helper_command(helper: &Path) -> Command {
     let mut command = Command::new(helper);
     command
@@ -604,7 +608,7 @@ fn helper_command(helper: &Path) -> Command {
         .stderr(Stdio::inherit())
         .env_clear()
         .env("TZ", HELPER_TZ);
-    for key in ["TILO_PDFIUM_LIB", "HOME", "LANG"] {
+    for key in HELPER_ENV {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
         }
@@ -663,5 +667,21 @@ mod tests {
         // A POSIX rule, not a zone name ("UTC", "Etc/UTC"), which glibc
         // would look up under /usr/share/zoneinfo.
         assert_eq!(tz, Some(std::ffi::OsStr::new("UTC0")));
+    }
+
+    /// A test job and a development build publish the catalog appearance
+    /// text is set in below `TILO_FONT_ASSET_CACHE`; the helper reads it
+    /// through the same variable, so it must be handed on.
+    #[test]
+    fn the_helper_inherits_the_prepared_font_catalog() {
+        let command = helper_command(Path::new("tilo-pdf-helper"));
+        let forwarded = command
+            .get_envs()
+            .find(|(key, _)| *key == "TILO_FONT_ASSET_CACHE")
+            .and_then(|(_, value)| value);
+        assert_eq!(
+            forwarded,
+            std::env::var_os("TILO_FONT_ASSET_CACHE").as_deref()
+        );
     }
 }
