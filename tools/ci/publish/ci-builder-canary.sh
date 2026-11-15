@@ -98,12 +98,15 @@ JS
     test "${CHROME:-}" = /usr/lib64/chromium-browser/chromium-browser \
       || die "CHROME is ${CHROME:-unset}, not the builder's Chromium"
     # A build directory of its own: the sources, target/ in them included, are read-only in a
-    # job, and the browser tests' nextest store lives in the build directory.
-    export CARGO_TARGET_DIR=$scratch/builder-canary-browser-target
+    # job, and the browser tests' nextest store lives in the build directory. A new one each run:
+    # the scratch directory is shared with whatever else runs on the builder, and a directory
+    # another user left there cannot be written or handed to the test user.
+    CARGO_TARGET_DIR=$(mktemp -d "$scratch/builder-canary-browser-target.XXXXXX")
+    export CARGO_TARGET_DIR
+    trap 'rm -rf -- "$CARGO_TARGET_DIR"' EXIT
     export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets
-    mkdir -p "$CARGO_TARGET_DIR"
     # nextest keeps its store (JUnit reports) under the workspace's target/ unless told otherwise.
-    store_config=$scratch/builder-canary-nextest.toml
+    store_config=$CARGO_TARGET_DIR/nextest.toml
     printf '[store]\ndir = "%s"\n' "$CARGO_TARGET_DIR/nextest" > "$store_config"
     bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=fail \
       --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-session-client --test it \

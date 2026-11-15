@@ -128,8 +128,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     };
     serve(&stack_command, fresh, &state)?;
     let origin = site_origin(stack_command(&["env"]))?;
-    let ca = state.join("local-ca.pem");
-    let loaded = verify(&origin, &ca);
+    let loaded = verify(&origin);
     if check {
         let _ = stack_command(&["down"]).stdout(Stdio::null()).status();
     }
@@ -145,9 +144,8 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         println!("ok: cargo web --check passed; its stack is stopped again");
     } else {
         println!(
-            "    open {origin}/ in a browser with WebGPU (trust {} or accept the warning);\n    \
-             cargo web status | logs web | down",
-            ca.display()
+            "    open {origin}/ in a browser with WebGPU;\n    \
+             cargo web status | logs web | down"
         );
     }
     Ok(ExitCode::SUCCESS)
@@ -277,15 +275,14 @@ struct Fetched {
 
 /// `url` as a browser asks for it: the site answers a command-line client at `/` with its
 /// installer script, as `curl https://tilo.sh | sh` gets it.
-fn fetch(url: &str, ca: &Path, accept: &str) -> Result<Fetched, String> {
+fn fetch(url: &str, accept: &str) -> Result<Fetched, String> {
     let out = Command::new("curl")
         .args(["-sS", "--max-time", "30", "--compressed"])
         .args([
             "-A",
             "Mozilla/5.0 (X11; Linux x86_64) tilo-local page check",
         ])
-        .args(["-H", &format!("Accept: {accept}"), "--cacert"])
-        .arg(ca)
+        .args(["-H", &format!("Accept: {accept}")])
         .args(["-w", "\n%{http_code} %{content_type}", url])
         .output()
         .map_err(|error| format!("curl: {error}"))?;
@@ -386,9 +383,9 @@ fn has_extension(url: &str, extension: &str) -> bool {
 }
 
 /// Load the page as a browser starts it; what loaded, or what did not.
-fn verify(origin: &str, ca: &Path) -> Result<String, String> {
+fn verify(origin: &str) -> Result<String, String> {
     let page_url = format!("{origin}/");
-    let page = fetch(&page_url, ca, "text/html")?;
+    let page = fetch(&page_url, "text/html")?;
     if page.code != 200 || !page.kind.starts_with("text/html") {
         return Err(format!(
             "{page_url} answered {} {} instead of the entry page",
@@ -406,7 +403,7 @@ fn verify(origin: &str, ca: &Path) -> Result<String, String> {
         if !url.starts_with(origin) || !seen.insert(url.clone()) || seen.len() > 2000 {
             continue;
         }
-        let file = fetch(&url, ca, "*/*")?;
+        let file = fetch(&url, "*/*")?;
         if file.code != 200 {
             missing.push(format!("{url} ({}, named by {from})", file.code));
             continue;
