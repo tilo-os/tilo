@@ -3,9 +3,10 @@
 # already built (server-binaries.sh, the check api-binaries) laid out on the mirrored base,
 # with the runtime packages installed from the frozen RPM snapshot rpm-snapshot-ref.sh named in
 # SNAPSHOT (the published one, or this run's image-rpms-x86_64 in RPMS where it is not published
-# yet), into OUT (oci-build.sh), with the snapshot it came from in OUT/rpms-source, which
-# oci-sign.sh refuses unless it is the published one. Nothing compiles here: the image is only the
-# base, the packages and the binary, so it costs a layering run whatever changed in the tree.
+# yet, or where the run resolved no snapshot at all), into OUT (oci-build.sh), with the snapshot it
+# came from in OUT/rpms-source, which oci-sign.sh refuses unless it is the published one. Nothing
+# compiles here: the image is only the base, the packages and the binary, so it costs a layering
+# run whatever changed in the tree.
 #
 # usage: api-build.sh SNAPSHOT RPMS BINARIES OUT
 set -euo pipefail
@@ -19,6 +20,13 @@ cd "$repo_root"
 [[ -x $binaries/tilo-api ]] || die "no API server in $binaries"
 # oci-build.sh builds on this store, so an unpublished snapshot loaded here is the one FROM finds.
 use_buildah buildah overlay
+# A run that cannot publish a set (a dispatch whose signing is skipped) resolves no snapshot at
+# all: this run's own image-rpms-x86_64 is installed instead, as when the resolver found the set
+# unpublished.
+if [[ ! -f $snapshot/rpms-ref && ! -f $snapshot/unpublished ]]; then
+  mkdir -p "$snapshot"
+  printf 'of this run'"'"'s package set' > "$snapshot/unpublished"
+fi
 snapshot_for_build "$snapshot" "$rpms" x86_64
 # The package manifest inside a published snapshot must name what this tree's Containerfiles
 # install, not only its signed provenance: a stale snapshot fails here, before the build. The

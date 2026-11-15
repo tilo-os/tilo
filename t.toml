@@ -5567,7 +5567,12 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/web-entry /target/publish/web-entry 'dev:dev-{commit}' 'release:sha-{commit}'"
 needs = ["image-web-entry", "signing-tools"]
-optional_needs = ["sign-web-entry", "carry-web-entry"]
+optional_needs = ["carry-web-entry"]
+# Only a release tag's run can sign (the release key's role trusts v* tags), so a dispatch names
+# this and is skipped where that run cannot sign: publishing waits for the answer and pushes the
+# channel's tags anyway, a development build without a signature and a release one only with it
+# (oci-publish.sh), which is the loud failure a release that cannot sign should get.
+needs_any_outcome = ["sign-web-entry"]
 outputs = ["/target/publish/web-entry/receipt.json"]
 pointers = { web-entry = "/target/publish/web-entry/receipt.json" }
 id_token = ["registry.tilo.so"]
@@ -5913,7 +5918,11 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "install -d /target/publish/lounge/release\ncp /target/publish/lounge/image.oci.tar /target/publish/lounge/digest /target/publish/lounge/release/\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/lounge /target/publish/lounge/release 'dev:dev-{commit}' 'release:sha-{commit}'"
 needs = ["image-lounge", "signing-tools"]
-optional_needs = ["sign-lounge"]
+# Only a release tag's run can sign (the release key's role trusts v* tags), so a dispatch names
+# this and is skipped where that run cannot sign: publishing waits for the answer and pushes the
+# channel's tags anyway, a development build without a signature and a release one only with it
+# (oci-publish.sh), which is the loud failure a release that cannot sign should get.
+needs_any_outcome = ["sign-lounge"]
 outputs = ["/target/publish/lounge/release/receipt.json"]
 pointers = { lounge = "/target/publish/lounge/release/receipt.json" }
 id_token = ["registry.tilo.so"]
@@ -6110,7 +6119,12 @@ name = "image-api"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/api-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/api/binaries /target/publish/api"
-needs = ["api-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
+needs = ["api-binaries", "image-rpms-x86_64"]
+# The frozen snapshot is the published set, which only a run that can publish one resolves: on a
+# dispatch that cannot (a main dispatch, whose signing is skipped) the resolver is skipped and the
+# image installs from this run's own image-rpms-x86_64 instead, which oci-sign.sh refuses to sign
+# and oci-publish.sh publishes as a development build only.
+needs_any_outcome = ["rpm-snapshot-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -6161,7 +6175,11 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/api /target/publish/api 'dev:dev-{commit}' 'release:sha-{commit}'"
 needs = ["image-api", "test-image-api", "signing-tools"]
-optional_needs = ["sign-api"]
+# Only a release tag's run can sign (the release key's role trusts v* tags), so a dispatch names
+# this and is skipped where that run cannot sign: publishing waits for the answer and pushes the
+# channel's tags anyway, a development build without a signature and a release one only with it
+# (oci-publish.sh), which is the loud failure a release that cannot sign should get.
+needs_any_outcome = ["sign-api"]
 outputs = ["/target/publish/api/receipt.json"]
 pointers = { api = "/target/publish/api/receipt.json" }
 id_token = ["registry.tilo.so"]
