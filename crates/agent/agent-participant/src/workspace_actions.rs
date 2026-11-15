@@ -1744,7 +1744,7 @@ impl Worker {
                 Job::NotesFolder(workspace_id) => {
                     self.shared.projecting.lock_recover().remove(&workspace_id);
                     if let Err(error) = self.project_notes(workspace_id) {
-                        tracing::debug!(%workspace_id, %error, "workspace actions: the notes and their files were not brought into step");
+                        tracing::warn!(%workspace_id, %error, "workspace actions: the notes and their files were not brought into step");
                     }
                 }
                 Job::Forget(workspace_id) => self.forget(workspace_id),

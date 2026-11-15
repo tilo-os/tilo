@@ -242,6 +242,13 @@ fn follow(
     rename_for(tree, id, note, mtime);
     let file_agreed = agreed_of(&file);
     let note_agreed = agreed_of(&note.markdown);
+    tracing::trace!(
+        page = %note.id,
+        agreed,
+        file = %file_agreed,
+        note = %note_agreed,
+        "notes folder: a note and its file compared"
+    );
     if file_agreed == note_agreed {
         if agreed != note_agreed {
             tree.set_projection(id, &source_of(&note.id), &note_agreed);
@@ -250,7 +257,14 @@ fn follow(
     }
     if note_agreed == agreed {
         // Only the file moved: the note is written as it says, by whoever wrote it.
-        let by = writer(tree, tree_doc, id)?;
+        let Some(by) = writer(tree, tree_doc, id) else {
+            tracing::debug!(
+                page = %note.id,
+                record = ?tree.record_id_for_id(id),
+                "notes folder: a note's file changed with no version saying who wrote it"
+            );
+            return None;
+        };
         let markdown = String::from_utf8_lossy(&file).into_owned();
         let mut arguments = Map::new();
         arguments.insert("page".into(), json!(note.id));
@@ -264,6 +278,13 @@ fn follow(
         });
     }
     // The note moved (and the file too, perhaps): the note is the source of truth.
+    tracing::debug!(
+        page = %note.id,
+        agreed,
+        file = %file_agreed,
+        note = %note_agreed,
+        "notes folder: a note's file is written from the note"
+    );
     write_file(tree, id, note, mtime);
     None
 }
@@ -305,6 +326,7 @@ fn rename_for(tree: &mut Namespace, id: &str, note: &Note, mtime: u64) {
     else {
         return;
     };
+    tracing::debug!(%name, %wanted, "notes folder: a note's file is renamed for its title");
     let free = free_name(tree, &parent, &wanted);
     tree.rename(
         parent_ino,
@@ -344,6 +366,7 @@ fn folder(tree: &mut Namespace, mtime: u64) -> Option<(String, u64)> {
 
 /// Make note `note`'s file in the notes folder.
 fn make_file(tree: &mut Namespace, note: &Note, mtime: u64) {
+    tracing::debug!(page = %note.id, "notes folder: a note's file is made");
     let Some((folder, folder_ino)) = folder(tree, mtime) else {
         return;
     };
@@ -358,6 +381,52 @@ fn make_file(tree: &mut Namespace, note: &Note, mtime: u64) {
 }
 
 impl Worker {
+    /// Make `edits` with Notes' own actions, each as its writer, and record what each
+    /// note and its file agree on once it is made.
+    fn apply_note_edits(
+        &mut self,
+        workspace_id: WorkspaceId,
+        notes_route: &DocumentRoute,
+        tree: &mut Namespace,
+        edits: Vec<NoteEdit>,
+    ) {
+        for edit in edits {
+            let request = InvokeRequest {
+                invocation: InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: record_provider(notes_route),
+                    address: ActionAddress::new("", edit.action),
+                },
+                argument: InvokeArgument::Json(edit.arguments),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            let performed = self.perform(workspace_id, &edit.by, &request);
+            let (outcome, _) = self.saved(workspace_id, performed);
+            match outcome {
+                Ok(_) => {
+                    let (node, agreed) = edit.then;
+                    if let Some((source, _)) = tree.projection(&node) {
+                        tree.set_projection(&node, &source, &agreed);
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    page = %edit.page,
+                    action = edit.action,
+                    error = %match &error {
+                        crate::participant::actions::Outcome::Rejected(error) => error.to_string(),
+                        crate::participant::actions::Outcome::Failed(error) => error.message.clone(),
+                    },
+                    "a note file's change was not applied to its note"
+                ),
+            }
+        }
+    }
+
     /// Bring `workspace_id`'s notes and their files in its folder into step
     /// ([module docs](self)). Run whenever either record of the workspace takes a write.
     pub(super) fn project_notes(&mut self, workspace_id: WorkspaceId) -> Result<(), String> {
@@ -412,47 +481,26 @@ impl Worker {
             ),
         };
         let mtime = tilo_clock::unix_now_ns() / 1_000_000;
+        // What loading the tree settled of its own (ids it lacked) is not this pass's
+        // change: the tree is written only when the notes asked something of it.
+        let loaded = tree.heads();
         let edits = reconcile(&mut tree, &tree_doc, &notes, mtime);
-        for edit in edits {
-            let request = InvokeRequest {
-                invocation: InvocationId::new(),
-                target: RemoteActionTarget {
-                    provider: record_provider(&notes_route),
-                    address: ActionAddress::new("", edit.action),
-                },
-                argument: InvokeArgument::Json(edit.arguments),
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-                appearance: None,
-            };
-            let performed = self.perform(workspace_id, &edit.by, &request);
-            let (outcome, _) = self.saved(workspace_id, performed);
-            match outcome {
-                Ok(_) => {
-                    let (node, agreed) = edit.then;
-                    if let Some((source, _)) = tree.projection(&node) {
-                        tree.set_projection(&node, &source, &agreed);
-                    }
-                }
-                Err(error) => tracing::info!(
-                    page = %edit.page,
-                    action = edit.action,
-                    error = %match &error {
-                        crate::participant::actions::Outcome::Rejected(error) => error.to_string(),
-                        crate::participant::actions::Outcome::Failed(error) => error.message.clone(),
-                    },
-                    "a note file's change was not applied to its note"
-                ),
-            }
+        tracing::debug!(
+            %workspace_id,
+            notes = notes.len(),
+            edits = edits.len(),
+            "notes folder: a pass over the notes and their files"
+        );
+        self.apply_note_edits(workspace_id, &notes_route, &mut tree, edits);
+        if existing.is_some() && tree.heads() == loaded {
+            return Ok(());
         }
         let mutation = if existing.is_some() {
             let change = tree.save_incremental();
             if change.is_empty() {
                 return Ok(());
             }
+            tracing::debug!(bytes = change.len(), "notes folder: the tree is written");
             DocumentMutation::Incremental(change)
         } else {
             DocumentMutation::Snapshot(tree.save())

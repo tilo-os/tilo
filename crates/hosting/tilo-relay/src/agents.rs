@@ -992,18 +992,30 @@ fn attach_records(
         let mut writes = workspaces.record_writes();
         let actions = actions.clone();
         tokio::spawn(async move {
+            // A workspace takes many writes a second (each keystroke in a note is one): the
+            // workspaces written to are brought into step once a second, together.
+            let mut written = std::collections::BTreeSet::new();
+            let mut every = tokio::time::interval(std::time::Duration::from_secs(1));
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
-                match writes.recv().await {
-                    Ok(write) => {
-                        if WorkspaceActions::follows_notes_folder(&write.app)
-                            && let Some(workspace_id) =
-                                tilo_relay_protocol::WorkspaceId::parse(&write.workspace)
-                        {
+                tokio::select! {
+                    write = writes.recv() => match write {
+                        Ok(write) => {
+                            if WorkspaceActions::follows_notes_folder(&write.app)
+                                && let Some(workspace_id) =
+                                    tilo_relay_protocol::WorkspaceId::parse(&write.workspace)
+                            {
+                                written.insert(workspace_id);
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    },
+                    _ = every.tick() => {
+                        for workspace_id in std::mem::take(&mut written) {
                             actions.notes_folder_written(workspace_id);
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }
             }
         });
