@@ -136,36 +136,40 @@ mod tests {
         doc
     }
 
-    #[test]
-    fn a_workspace_document_brings_its_name_and_shortcuts_and_keeps_the_owner() {
-        let mut workspace = Workspace::new(WorkspaceId::from_u128(7), "Old");
-        workspace.policy.owner = Some("owner".into());
-        let mut doc = workspace_doc(&workspace);
-        projection::project_workspace_shortcuts(&mut doc, &[shortcut("water")]).unwrap();
+    tilo_test_env::scenario! {
+        fn adopting_a_workspace_document_takes_its_name_and_its_shortcuts;
 
-        assert!(adopt_workspace(&mut workspace, &doc, &[]));
-        assert_eq!(workspace.name, "Garden");
-        assert_eq!(workspace.policy.owner.as_deref(), Some("owner"));
-        assert_eq!(
-            workspace
-                .shortcuts
-                .iter()
-                .map(tilo_automation::SavedShortcut::id)
-                .collect::<Vec<_>>(),
-            ["water"]
-        );
-        assert!(
-            !adopt_workspace(&mut workspace, &doc, &[]),
-            "nothing changed twice"
-        );
-    }
+        phase a_workspace_document_brings_its_name_and_shortcuts_and_keeps_the_owner;
+        {
+            let mut workspace = Workspace::new(WorkspaceId::from_u128(7), "Old");
+            workspace.policy.owner = Some("owner".into());
+            let mut doc = workspace_doc(&workspace);
+            projection::project_workspace_shortcuts(&mut doc, &[shortcut("water")]).unwrap();
 
-    #[test]
-    fn a_shortcut_the_workspace_no_longer_has_goes() {
-        let mut workspace = Workspace::new(WorkspaceId::from_u128(7), "Garden");
-        workspace.shortcuts = vec![shortcut("water")];
-        let doc = workspace_doc(&workspace);
-        assert!(adopt_workspace(&mut workspace, &doc, &[]));
-        assert!(workspace.shortcuts.is_empty());
+            assert!(adopt_workspace(&mut workspace, &doc, &[]));
+            assert_eq!(workspace.name, "Garden");
+            assert_eq!(workspace.policy.owner.as_deref(), Some("owner"));
+            assert_eq!(
+                workspace
+                    .shortcuts
+                    .iter()
+                    .map(tilo_automation::SavedShortcut::id)
+                    .collect::<Vec<_>>(),
+                ["water"]
+            );
+            assert!(
+                !adopt_workspace(&mut workspace, &doc, &[]),
+                "nothing changed twice"
+            );
+        }
+
+        phase a_shortcut_the_workspace_no_longer_has_goes;
+        {
+            let mut workspace = Workspace::new(WorkspaceId::from_u128(7), "Garden");
+            workspace.shortcuts = vec![shortcut("water")];
+            let doc = workspace_doc(&workspace);
+            assert!(adopt_workspace(&mut workspace, &doc, &[]));
+            assert!(workspace.shortcuts.is_empty());
+        }
     }
 }

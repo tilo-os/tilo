@@ -83,194 +83,222 @@ pub(crate) fn held(peer: &StatePeer) -> Vec<SignedOp> {
         .to_vec()
 }
 
-#[test]
-fn a_sealed_write_becomes_the_durable_record_and_survives_restart() {
-    let (mut host, _, b, now) = host();
-    let plaintext = host.document(APP, RECORD).unwrap();
-    let write = sealed(&host, &b, 1, b"ciphertext the host cannot open");
-    let report = host.receive_from_report(origin(&b), write, now).unwrap();
-    assert!(
-        matches!(report.primary(), InputDisposition::Accepted(_)),
-        "a sealed write is admitted with an exact receipt, not parked"
-    );
-    assert_eq!(host.incomplete_reason(), None);
-    assert_eq!(
-        host.document(APP, RECORD).unwrap(),
-        plaintext,
-        "ciphertext is never merged into the plaintext document"
-    );
-    let restored = restore(&host, now).unwrap();
-    assert_eq!(held(&restored), held(&host));
-    assert_eq!(
-        held(&restored)[0].payload,
-        b"ciphertext the host cannot open"
-    );
-    assert_eq!(restored.incomplete_reason(), None);
-}
+tilo_test_env::scenario! {
+    fn a_sealed_history_keeps_only_its_authors_untampered_writes;
 
-#[test]
-fn tampered_ciphertext_is_refused_and_leaves_the_record_unchanged() {
-    let (mut host, _, b, now) = host();
-    let before = host.durable().unwrap();
-    let mut write = sealed(&host, &b, 1, b"sealed");
-    if let NeighbourMsg::AppDocument { envelope, .. } = &mut write {
-        envelope.payload[0] ^= 1;
-    }
-    assert!(host.receive_from(origin(&b), write, now).is_err());
-    assert_eq!(host.durable().unwrap(), before);
-}
-
-#[test]
-fn a_sealed_write_from_another_signer_is_refused() {
-    let (mut host, _, b, now) = host();
-    let before = held(&host);
-    let stranger = SigningKey::from_bytes(&[77; 32]);
-    let write = sealed(&host, &stranger, 1, b"sealed");
-    let report = host
-        .receive_from_report(origin(&stranger), write, now)
-        .unwrap();
-    assert_eq!(
-        report.primary(),
-        &InputDisposition::RetryLater(crate::MissingPrerequisite::Certificate),
-        "a device outside the workspace waits for a certificate, never admitted"
-    );
-    assert_eq!(held(&host), before);
-    let mut forged = sealed(&host, &stranger, 1, b"sealed");
-    if let NeighbourMsg::AppDocument { envelope, peer, .. } = &mut forged {
-        envelope.author = Ed25519PublicKey::from_bytes(b.verifying_key().to_bytes());
-        *peer = peer_handle(&b.verifying_key().to_bytes());
-    }
-    assert!(
-        host.receive_from(origin(&b), forged, now).is_err(),
-        "a signature that is not the named author's is refused"
-    );
-    assert_eq!(held(&host), before);
-}
-
-#[test]
-fn a_replayed_sealed_write_is_kept_once() {
-    let (mut host, _, b, now) = host();
-    let write = sealed(&host, &b, 1, b"sealed");
-    host.receive_from(origin(&b), write.clone(), now).unwrap();
-    let report = host.receive_from_report(origin(&b), write, now).unwrap();
-    assert!(!matches!(report.primary(), InputDisposition::Accepted(_)));
-    assert_eq!(held(&host).len(), 1);
-    let mut restored = restore(&host, now).unwrap();
-    let again = sealed(&restored, &b, 1, b"sealed");
-    restored.receive_from(origin(&b), again, now).ok();
-    assert_eq!(
-        held(&restored).len(),
-        1,
-        "the sequence floor survives restart"
-    );
-}
-
-#[test]
-fn a_plaintext_write_after_a_sealed_one_is_refused_as_a_downgrade() {
-    let (mut host, a, b, now) = host();
-    host.receive_from(origin(&b), sealed(&host, &b, 1, b"sealed"), now)
-        .unwrap();
-    let mut restored = restore(&host, now).unwrap();
-    let plaintext =
-        restored
-            .publication_mut()
-            .publish_incremental(APP, RECORD, Vec::new(), &a, now);
-    assert!(plaintext.is_err(), "the record stays encrypted");
-}
-
-#[test]
-fn a_revoked_author_cannot_add_sealed_history() {
-    use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
-    let (mut host, a, b, now) = host();
-    let mut revocation = RevocationEntry {
-        user_public_key: SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes(),
-        revoked_device_public_key: b.verifying_key().to_bytes(),
-        revoked_at_ns: 1,
-        reason: RevocationReason::Compromised,
-        signature: [0; 64],
-    };
-    sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    host.receive_from(
-        TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
-        NeighbourMsg::IdentityHello {
-            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            cert: Box::new(host.owner_certificates()[0].clone()),
-            revocations: vec![revocation],
-        },
-        now,
-    )
-    .unwrap();
-    let before = held(&host);
-    assert!(
-        host.receive_from(origin(&b), sealed(&host, &b, 1, b"sealed"), now)
-            .is_err()
-    );
-    assert_eq!(held(&host), before);
-}
-
-#[test]
-fn a_full_sealed_history_refuses_rather_than_evicts() {
-    let (mut host, _, b, now) = host();
-    host.receive_from(origin(&b), sealed(&host, &b, 1, b"first"), now)
-        .unwrap();
-    let route = Route {
-        app: APP.into(),
-        record: RECORD.into(),
-    };
-    let first = held(&host)[0].clone();
-    host.core.documents.get_mut(&route).unwrap().sealed = vec![first; MAX_SEALED_OPS].into();
-    assert!(
-        host.receive_from(origin(&b), sealed(&host, &b, 2, b"one more"), now)
-            .unwrap_err()
-            .to_string()
-            .contains("full")
-    );
-    assert_eq!(held(&host).len(), MAX_SEALED_OPS);
-}
-
-#[test]
-fn a_tampered_stored_sealed_history_refuses_to_restore() {
-    let (mut host, _, b, now) = host();
-    host.receive_from(origin(&b), sealed(&host, &b, 1, b"sealed"), now)
-        .unwrap();
-    let bytes = host.durable().unwrap();
-    let rewrite = |change: &dyn Fn(&mut SealedHistory)| {
-        let mut value: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
-        change(&mut value.sealed);
-        postcard::to_allocvec(&value).unwrap()
-    };
-    for (tampered, why) in [
-        (
-            rewrite(&|sealed| sealed[0].1[0].payload[0] ^= 1),
-            "a changed ciphertext",
-        ),
-        (
-            rewrite(&|sealed| sealed[0].1[0].seq = 9),
-            "a write that was never admitted",
-        ),
-        (
-            rewrite(&|sealed| sealed[0].0.record = "tab:2".into()),
-            "history for another record",
-        ),
-    ] {
+    phase a_sealed_write_becomes_the_durable_record_and_survives_restart;
+    {
+        let (mut host, _, b, now) = host();
+        let plaintext = host.document(APP, RECORD).unwrap();
+        let write = sealed(&host, &b, 1, b"ciphertext the host cannot open");
+        let report = host.receive_from_report(origin(&b), write, now).unwrap();
         assert!(
-            restore_bytes(&host, &tampered, now).is_err(),
-            "{why} restores"
+            matches!(report.primary(), InputDisposition::Accepted(_)),
+            "a sealed write is admitted with an exact receipt, not parked"
+        );
+        assert_eq!(host.incomplete_reason(), None);
+        assert_eq!(
+            host.document(APP, RECORD).unwrap(),
+            plaintext,
+            "ciphertext is never merged into the plaintext document"
+        );
+        let restored = restore(&host, now).unwrap();
+        assert_eq!(held(&restored), held(&host));
+        assert_eq!(
+            held(&restored)[0].payload,
+            b"ciphertext the host cannot open"
+        );
+        assert_eq!(restored.incomplete_reason(), None);
+    }
+
+    phase tampered_ciphertext_is_refused_and_leaves_the_record_unchanged;
+    {
+        let (mut host, _, b, now) = host();
+        let before = host.durable().unwrap();
+        let mut write = sealed(&host, &b, 1, b"sealed");
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut write {
+            envelope.payload[0] ^= 1;
+        }
+        assert!(host.receive_from(origin(&b), write, now).is_err());
+        assert_eq!(host.durable().unwrap(), before);
+    }
+
+    phase a_sealed_write_from_another_signer_is_refused;
+    {
+        let (mut host, _, b, now) = host();
+        let before = held(&host);
+        let stranger = SigningKey::from_bytes(&[77; 32]);
+        let write = sealed(&host, &stranger, 1, b"sealed");
+        let report = host
+            .receive_from_report(origin(&stranger), write, now)
+            .unwrap();
+        assert_eq!(
+            report.primary(),
+            &InputDisposition::RetryLater(crate::MissingPrerequisite::Certificate),
+            "a device outside the workspace waits for a certificate, never admitted"
+        );
+        assert_eq!(held(&host), before);
+        let mut forged = sealed(&host, &stranger, 1, b"sealed");
+        if let NeighbourMsg::AppDocument { envelope, peer, .. } = &mut forged {
+            envelope.author = Ed25519PublicKey::from_bytes(b.verifying_key().to_bytes());
+            *peer = peer_handle(&b.verifying_key().to_bytes());
+        }
+        assert!(
+            host.receive_from(origin(&b), forged, now).is_err(),
+            "a signature that is not the named author's is refused"
+        );
+        assert_eq!(held(&host), before);
+    }
+
+    phase a_replayed_sealed_write_is_kept_once;
+    {
+        let (mut host, _, b, now) = host();
+        let write = sealed(&host, &b, 1, b"sealed");
+        host.receive_from(origin(&b), write.clone(), now).unwrap();
+        let report = host.receive_from_report(origin(&b), write, now).unwrap();
+        assert!(!matches!(report.primary(), InputDisposition::Accepted(_)));
+        assert_eq!(held(&host).len(), 1);
+        let mut restored = restore(&host, now).unwrap();
+        let again = sealed(&restored, &b, 1, b"sealed");
+        restored.receive_from(origin(&b), again, now).ok();
+        assert_eq!(
+            held(&restored).len(),
+            1,
+            "the sequence floor survives restart"
         );
     }
-    let mut cleartext = host.clone();
-    let route = Route {
-        app: APP.into(),
-        record: RECORD.into(),
-    };
-    let mut op = held(&host)[0].clone();
-    op.encryption = None;
-    collab_types::sign_op(&mut op, &b).unwrap();
-    cleartext.core.documents.get_mut(&route).unwrap().sealed = vec![op].into();
-    assert!(
-        restore(&cleartext, now).is_err(),
-        "sealed history cannot carry plaintext"
-    );
+
+    phase a_plaintext_write_after_a_sealed_one_is_refused_as_a_downgrade;
+    {
+        let (mut host, a, b, now) = host();
+        host.receive_from(origin(&b), sealed(&host, &b, 1, b"sealed"), now)
+            .unwrap();
+        let mut restored = restore(&host, now).unwrap();
+        let plaintext =
+            restored
+                .publication_mut()
+                .publish_incremental(APP, RECORD, Vec::new(), &a, now);
+        assert!(plaintext.is_err(), "the record stays encrypted");
+    }
+
+    phase a_revoked_author_cannot_add_sealed_history;
+    {
+        use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+        let (mut host, a, b, now) = host();
+        let mut revocation = RevocationEntry {
+            user_public_key: SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes(),
+            revoked_device_public_key: b.verifying_key().to_bytes(),
+            revoked_at_ns: 1,
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[1; 32])).unwrap();
+        host.receive_from(
+            TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
+            NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                cert: Box::new(host.owner_certificates()[0].clone()),
+                revocations: vec![revocation],
+            },
+            now,
+        )
+        .unwrap();
+        let before = held(&host);
+        assert!(
+            host.receive_from(origin(&b), sealed(&host, &b, 1, b"sealed"), now)
+                .is_err()
+        );
+        assert_eq!(held(&host), before);
+    }
+
+    phase a_full_sealed_history_refuses_rather_than_evicts;
+    {
+        let (mut host, _, b, now) = host();
+        host.receive_from(origin(&b), sealed(&host, &b, 1, b"first"), now)
+            .unwrap();
+        let route = Route {
+            app: APP.into(),
+            record: RECORD.into(),
+        };
+        let first = held(&host)[0].clone();
+        host.core.documents.get_mut(&route).unwrap().sealed = vec![first; MAX_SEALED_OPS].into();
+        assert!(
+            host.receive_from(origin(&b), sealed(&host, &b, 2, b"one more"), now)
+                .unwrap_err()
+                .to_string()
+                .contains("full")
+        );
+        assert_eq!(held(&host).len(), MAX_SEALED_OPS);
+    }
+
+    phase a_tampered_stored_sealed_history_refuses_to_restore;
+    {
+        let (mut host, _, b, now) = host();
+        host.receive_from(origin(&b), sealed(&host, &b, 1, b"sealed"), now)
+            .unwrap();
+        let bytes = host.durable().unwrap();
+        let rewrite = |change: &dyn Fn(&mut SealedHistory)| {
+            let mut value: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
+            change(&mut value.sealed);
+            postcard::to_allocvec(&value).unwrap()
+        };
+        for (tampered, why) in [
+            (
+                rewrite(&|sealed| sealed[0].1[0].payload[0] ^= 1),
+                "a changed ciphertext",
+            ),
+            (
+                rewrite(&|sealed| sealed[0].1[0].seq = 9),
+                "a write that was never admitted",
+            ),
+            (
+                rewrite(&|sealed| sealed[0].0.record = "tab:2".into()),
+                "history for another record",
+            ),
+        ] {
+            assert!(
+                restore_bytes(&host, &tampered, now).is_err(),
+                "{why} restores"
+            );
+        }
+        let mut cleartext = host.clone();
+        let route = Route {
+            app: APP.into(),
+            record: RECORD.into(),
+        };
+        let mut op = held(&host)[0].clone();
+        op.encryption = None;
+        collab_types::sign_op(&mut op, &b).unwrap();
+        cleartext.core.documents.get_mut(&route).unwrap().sealed = vec![op].into();
+        assert!(
+            restore(&cleartext, now).is_err(),
+            "sealed history cannot carry plaintext"
+        );
+    }
+
+    phase a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it;
+    {
+        let (mut member, _, b, now) = host();
+        let author = b.verifying_key().to_bytes();
+        let write = sealed(&member, &b, 1, b"sealed by this member's app");
+        member
+            .admit_new_local_document(APP, RECORD, envelope_of(write.clone()), now)
+            .unwrap();
+        assert!(
+            member
+                .outbox()
+                .lookup_retained_local_document(&write, author)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            !member
+                .outbox()
+                .retained_local_document_retired(&write, author)
+                .unwrap(),
+            "only a durable receipt naming it retires it"
+        );
+    }
 }
 
 fn envelope_of(message: NeighbourMsg) -> SignedOp {
@@ -278,30 +306,6 @@ fn envelope_of(message: NeighbourMsg) -> SignedOp {
         panic!("a document write")
     };
     *envelope
-}
-
-#[test]
-fn a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it() {
-    let (mut member, _, b, now) = host();
-    let author = b.verifying_key().to_bytes();
-    let write = sealed(&member, &b, 1, b"sealed by this member's app");
-    member
-        .admit_new_local_document(APP, RECORD, envelope_of(write.clone()), now)
-        .unwrap();
-    assert!(
-        member
-            .outbox()
-            .lookup_retained_local_document(&write, author)
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        !member
-            .outbox()
-            .retained_local_document_retired(&write, author)
-            .unwrap(),
-        "only a durable receipt naming it retires it"
-    );
 }
 
 /// A sealed history's durable parts are the whole encoding cut apart: the

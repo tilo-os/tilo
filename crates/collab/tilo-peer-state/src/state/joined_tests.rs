@@ -21,116 +21,121 @@ fn certificate(root: &SigningKey, device: &SigningKey, expires_at_ns: Option<u64
     certificate
 }
 
-#[test]
-fn a_joined_replica_keeps_a_guest_whose_certificate_expired_and_refuses_it_still() {
-    let now = SystemTime::now();
-    let host_root = SigningKey::from_bytes(&[1; 32]);
-    let authority = certificate(&host_root, &SigningKey::from_bytes(&[2; 32]), None);
-    // A guest's device, certified for an hour that has passed.
-    let guest_device = SigningKey::from_bytes(&[4; 32]);
-    let guest = certificate(
-        &SigningKey::from_bytes(&[3; 32]),
-        &guest_device,
-        Some(now_ns(now) - 1),
-    );
-    let member = certificate(
-        &SigningKey::from_bytes(&[5; 32]),
-        &SigningKey::from_bytes(&[6; 32]),
-        None,
-    );
-    let roster = vec![authority.clone(), guest.clone(), member.clone()];
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_joined_replica_decides_by_the_governance_it_was_given;
 
-    assert!(
-        StatePeer::new(
-            WORKSPACE,
-            authority.clone(),
-            roster.clone(),
-            RevocationList::new(),
-            now
-        )
-        .is_err(),
-        "a replica the device builds itself admits only current certificates"
-    );
-    let peer = StatePeer::joined(WORKSPACE, authority, roster, RevocationList::new(), now)
-        .expect("the workspace's roster is its evidence, an expired guest included");
-    assert!(
-        peer.certificate(&guest.device_public_key, now).is_err(),
-        "the expired guest's expiry is still checked when it is used"
-    );
-    assert!(matches!(
-        peer.certificate(&member.device_public_key, now),
-        Ok(cert) if cert == &member
-    ));
-}
+    phase a_joined_replica_keeps_a_guest_whose_certificate_expired_and_refuses_it_still;
+    {
+        let now = SystemTime::now();
+        let host_root = SigningKey::from_bytes(&[1; 32]);
+        let authority = certificate(&host_root, &SigningKey::from_bytes(&[2; 32]), None);
+        // A guest's device, certified for an hour that has passed.
+        let guest_device = SigningKey::from_bytes(&[4; 32]);
+        let guest = certificate(
+            &SigningKey::from_bytes(&[3; 32]),
+            &guest_device,
+            Some(now_ns(now) - 1),
+        );
+        let member = certificate(
+            &SigningKey::from_bytes(&[5; 32]),
+            &SigningKey::from_bytes(&[6; 32]),
+            None,
+        );
+        let roster = vec![authority.clone(), guest.clone(), member.clone()];
 
-#[test]
-fn a_joined_replica_refuses_an_expired_authority_or_a_forged_roster_certificate() {
-    let now = SystemTime::now();
-    let host_root = SigningKey::from_bytes(&[1; 32]);
-    let host_device = SigningKey::from_bytes(&[2; 32]);
-    let expired_authority = certificate(&host_root, &host_device, Some(now_ns(now) - 1));
-    assert!(
-        StatePeer::joined(
-            WORKSPACE,
-            expired_authority.clone(),
-            vec![expired_authority],
-            RevocationList::new(),
-            now,
-        )
-        .is_err(),
-        "the governing authority must be valid now"
-    );
-
-    let authority = certificate(&host_root, &host_device, None);
-    let mut forged = certificate(
-        &SigningKey::from_bytes(&[3; 32]),
-        &SigningKey::from_bytes(&[4; 32]),
-        Some(now_ns(now) - 1),
-    );
-    forged.device_label = "someone else".into();
-    assert!(
-        StatePeer::joined(
-            WORKSPACE,
-            authority.clone(),
-            vec![authority, forged],
-            RevocationList::new(),
-            now,
-        )
-        .is_err(),
-        "a roster certificate's signature is checked"
-    );
-}
-
-#[test]
-fn a_relayed_document_is_decided_by_the_workspaces_governance_without_being_taken_in() {
-    let (mut peer, _, member, _, now) = crate::admission_tests::seeded();
-    let held = peer.document("test.app", "tab:1").unwrap();
-    let message = peer
-        .publication_mut()
-        .publish_document("test.app", "tab:1", held.clone(), &member, now)
-        .unwrap();
-    let author = member.verifying_key().to_bytes();
-    assert_eq!(
-        peer.decide_relayed_document(TransportOrigin::RelayDelta(author), &message, now),
-        Ok(true)
-    );
-    assert_eq!(
-        peer.document("test.app", "tab:1"),
-        Some(held),
-        "deciding takes nothing in"
-    );
-    assert!(
-        peer.decide_relayed_document(TransportOrigin::RelayDelta([9; 32]), &message, now)
+        assert!(
+            StatePeer::new(
+                WORKSPACE,
+                authority.clone(),
+                roster.clone(),
+                RevocationList::new(),
+                now
+            )
             .is_err(),
-        "a write is its relaying device's own"
-    );
-    let mut tampered = message;
-    if let NeighbourMsg::AppDocument { envelope, .. } = &mut tampered {
-        envelope.payload.push(0);
+            "a replica the device builds itself admits only current certificates"
+        );
+        let peer = StatePeer::joined(WORKSPACE, authority, roster, RevocationList::new(), now)
+            .expect("the workspace's roster is its evidence, an expired guest included");
+        assert!(
+            peer.certificate(&guest.device_public_key, now).is_err(),
+            "the expired guest's expiry is still checked when it is used"
+        );
+        assert!(matches!(
+            peer.certificate(&member.device_public_key, now),
+            Ok(cert) if cert == &member
+        ));
     }
-    assert!(
-        peer.decide_relayed_document(TransportOrigin::RelayDelta(author), &tampered, now)
+
+    phase a_joined_replica_refuses_an_expired_authority_or_a_forged_roster_certificate;
+    {
+        let now = SystemTime::now();
+        let host_root = SigningKey::from_bytes(&[1; 32]);
+        let host_device = SigningKey::from_bytes(&[2; 32]);
+        let expired_authority = certificate(&host_root, &host_device, Some(now_ns(now) - 1));
+        assert!(
+            StatePeer::joined(
+                WORKSPACE,
+                expired_authority.clone(),
+                vec![expired_authority],
+                RevocationList::new(),
+                now,
+            )
             .is_err(),
-        "its signature is checked"
-    );
+            "the governing authority must be valid now"
+        );
+
+        let authority = certificate(&host_root, &host_device, None);
+        let mut forged = certificate(
+            &SigningKey::from_bytes(&[3; 32]),
+            &SigningKey::from_bytes(&[4; 32]),
+            Some(now_ns(now) - 1),
+        );
+        forged.device_label = "someone else".into();
+        assert!(
+            StatePeer::joined(
+                WORKSPACE,
+                authority.clone(),
+                vec![authority, forged],
+                RevocationList::new(),
+                now,
+            )
+            .is_err(),
+            "a roster certificate's signature is checked"
+        );
+    }
+
+    phase a_relayed_document_is_decided_by_the_workspaces_governance_without_being_taken_in;
+    {
+        let (mut peer, _, member, _, now) = crate::admission_tests::seeded();
+        let held = peer.document("test.app", "tab:1").unwrap();
+        let message = peer
+            .publication_mut()
+            .publish_document("test.app", "tab:1", held.clone(), &member, now)
+            .unwrap();
+        let author = member.verifying_key().to_bytes();
+        assert_eq!(
+            peer.decide_relayed_document(TransportOrigin::RelayDelta(author), &message, now),
+            Ok(true)
+        );
+        assert_eq!(
+            peer.document("test.app", "tab:1"),
+            Some(held),
+            "deciding takes nothing in"
+        );
+        assert!(
+            peer.decide_relayed_document(TransportOrigin::RelayDelta([9; 32]), &message, now)
+                .is_err(),
+            "a write is its relaying device's own"
+        );
+        let mut tampered = message;
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut tampered {
+            envelope.payload.push(0);
+        }
+        assert!(
+            peer.decide_relayed_document(TransportOrigin::RelayDelta(author), &tampered, now)
+                .is_err(),
+            "its signature is checked"
+        );
+    }
 }

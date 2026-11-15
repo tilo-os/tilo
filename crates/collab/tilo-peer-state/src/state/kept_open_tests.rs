@@ -114,200 +114,204 @@ fn same(kept: &mut AutoCommit, whole: &mut AutoCommit) {
     }
 }
 
-#[test]
-fn a_kept_record_opens_only_the_writes_admitted_since_and_reads_as_a_whole_read_does() {
-    let mut f = fixture();
-    let keys = f.keys();
-    let reader = f.authority.device_public_key;
-    // Three writers editing at once, each from what it last saw.
-    let mut first = Author::new(&f.host);
-    let mut second = Author::new(&f.host);
-    let mut third = Author::new(&f.host);
-    let mut kept = KeptRecord::default();
-    let message = write(&f.host, &f.owner, &keys, &first.edit("value", "one"), f.now);
-    admit(&mut f.host, &f.owner, message, f.now);
-    let (mut replica, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
-    assert_eq!(opened, 1);
-    for round in 0..4 {
-        // What a reader that merged the last read holds.
-        let held = sorted_heads(&mut replica);
-        let message = write(
-            &f.host,
-            &f.other,
-            &keys,
-            &second.edit("value", &format!("second {round}")),
-            f.now,
-        );
-        admit(&mut f.host, &f.other, message, f.now);
-        let message = write(
-            &f.host,
-            &f.editor,
-            &keys,
-            &third.edit(&format!("third {round}"), "x"),
-            f.now,
-        );
-        admit(&mut f.host, &f.editor, message, f.now);
+tilo_test_env::scenario! {
+    fn a_kept_record_opens_what_was_admitted_since_and_reads_as_a_whole_read;
+
+    phase a_kept_record_opens_only_the_writes_admitted_since_and_reads_as_a_whole_read_does;
+    {
+        let mut f = fixture();
+        let keys = f.keys();
+        let reader = f.authority.device_public_key;
+        // Three writers editing at once, each from what it last saw.
+        let mut first = Author::new(&f.host);
+        let mut second = Author::new(&f.host);
+        let mut third = Author::new(&f.host);
+        let mut kept = KeptRecord::default();
+        let message = write(&f.host, &f.owner, &keys, &first.edit("value", "one"), f.now);
+        admit(&mut f.host, &f.owner, message, f.now);
+        let (mut replica, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+        assert_eq!(opened, 1);
+        for round in 0..4 {
+            // What a reader that merged the last read holds.
+            let held = sorted_heads(&mut replica);
+            let message = write(
+                &f.host,
+                &f.other,
+                &keys,
+                &second.edit("value", &format!("second {round}")),
+                f.now,
+            );
+            admit(&mut f.host, &f.other, message, f.now);
+            let message = write(
+                &f.host,
+                &f.editor,
+                &keys,
+                &third.edit(&format!("third {round}"), "x"),
+                f.now,
+            );
+            admit(&mut f.host, &f.editor, message, f.now);
+            let message = write(
+                &f.host,
+                &f.owner,
+                &keys,
+                &first.edit("value", &format!("first {round}")),
+                f.now,
+            );
+            admit(&mut f.host, &f.owner, message, f.now);
+            let (mut document, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+            assert_eq!(opened, 3, "round {round} opens only its own writes");
+            let mut whole = read_whole(&f.host, reader, &[&keys]);
+            same(&mut document, &mut whole);
+            // A capture of what is kept extends the last one, and loads as the whole read does.
+            let captured = kept.capture(1024 * 1024).unwrap().unwrap();
+            same(&mut AutoCommit::load(&captured).unwrap(), &mut whole);
+            // The changes after what the reader held complete it to the same.
+            let changes = changes_after(&f.host, reader, &keys, &mut kept, &held)
+                .expect("the record holds the reader's heads");
+            replica.load_incoming(&changes).unwrap();
+            assert!(replica.get_missing_deps(&[]).is_empty());
+            same(&mut replica, &mut whole);
+            assert!(
+                changes_after(&f.host, reader, &keys, &mut kept, &sorted_heads(&mut whole))
+                    .is_none_or(|changes| changes.is_empty()),
+                "nothing follows the current heads"
+            );
+        }
+        // Nothing admitted: nothing opened.
+        let (_, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+        assert_eq!(opened, 0);
+    }
+
+    phase a_compacted_history_is_opened_whole_again_and_reads_alike;
+    {
+        let mut f = fixture();
+        let keys = f.keys();
+        let reader = f.authority.device_public_key;
+        let mut author = Author::new(&f.host);
+        let mut kept = KeptRecord::default();
+        for value in ["one", "two"] {
+            let message = write(
+                &f.host,
+                &f.owner,
+                &keys,
+                &author.edit("value", value),
+                f.now,
+            );
+            admit(&mut f.host, &f.owner, message, f.now);
+        }
+        read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+        mint(&mut f.host, &keys, &f.owner, f.now).unwrap();
         let message = write(
             &f.host,
             &f.owner,
             &keys,
-            &first.edit("value", &format!("first {round}")),
+            &author.edit("value", "three"),
             f.now,
         );
         admit(&mut f.host, &f.owner, message, f.now);
         let (mut document, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
-        assert_eq!(opened, 3, "round {round} opens only its own writes");
-        let mut whole = read_whole(&f.host, reader, &[&keys]);
-        same(&mut document, &mut whole);
-        // A capture of what is kept extends the last one, and loads as the whole read does.
-        let captured = kept.capture(1024 * 1024).unwrap().unwrap();
-        same(&mut AutoCommit::load(&captured).unwrap(), &mut whole);
-        // The changes after what the reader held complete it to the same.
-        let changes = changes_after(&f.host, reader, &keys, &mut kept, &held)
-            .expect("the record holds the reader's heads");
-        replica.load_incoming(&changes).unwrap();
-        assert!(replica.get_missing_deps(&[]).is_empty());
-        same(&mut replica, &mut whole);
-        assert!(
-            changes_after(&f.host, reader, &keys, &mut kept, &sorted_heads(&mut whole))
-                .is_none_or(|changes| changes.is_empty()),
-            "nothing follows the current heads"
+        assert_eq!(opened, 2, "the compaction and the write after it, whole");
+        same(&mut document, &mut read_whole(&f.host, reader, &[&keys]));
+        assert_eq!(
+            document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("three")
         );
     }
-    // Nothing admitted: nothing opened.
-    let (_, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
-    assert_eq!(opened, 0);
-}
 
-#[test]
-fn a_compacted_history_is_opened_whole_again_and_reads_alike() {
-    let mut f = fixture();
-    let keys = f.keys();
-    let reader = f.authority.device_public_key;
-    let mut author = Author::new(&f.host);
-    let mut kept = KeptRecord::default();
-    for value in ["one", "two"] {
+    phase a_write_sealed_after_a_rotation_waits_for_the_rotated_keys_and_hides_nothing_before_it;
+    {
+        let mut f = fixture();
+        let before = f.keys();
+        let reader = f.authority.device_public_key;
+        let mut author = Author::new(&f.host);
+        let message = write(
+            &f.host,
+            &f.owner,
+            &before,
+            &author.edit("value", "before"),
+            f.now,
+        );
+        admit(&mut f.host, &f.owner, message, f.now);
+        let mut kept = KeptRecord::default();
+        read_kept(&f.host, reader, &[&before], &mut kept).unwrap();
+        let after = f.rotate();
+        let message = write(
+            &f.host,
+            &f.owner,
+            &after,
+            &author.edit("value", SECRET),
+            f.now,
+        );
+        admit(&mut f.host, &f.owner, message, f.now);
+        // Keys from before the rotation open nothing new, and hide nothing read before.
+        let (document, _) = read_kept(&f.host, reader, &[&before], &mut kept).unwrap();
+        assert_eq!(
+            document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("before")
+        );
+        // The rotated keys open the new write alone, and read as a whole read.
+        let (mut document, opened) = read_kept(&f.host, reader, &[&before, &after], &mut kept).unwrap();
+        assert_eq!(opened, 1);
+        same(
+            &mut document,
+            &mut read_whole(&f.host, reader, &[&before, &after]),
+        );
+        assert_eq!(
+            document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some(SECRET)
+        );
+    }
+
+    phase a_member_removed_from_the_workspace_reads_nothing_and_keeps_nothing_open;
+    {
+        let mut f = fixture();
+        let keys = f.keys();
+        let (_, editor) = device(110, 111);
+        let mut author = Author::new(&f.host);
         let message = write(
             &f.host,
             &f.owner,
             &keys,
-            &author.edit("value", value),
+            &author.edit("value", "seen"),
             f.now,
         );
         admit(&mut f.host, &f.owner, message, f.now);
+        let mut kept = KeptRecord::default();
+        read_kept(&f.host, editor.device_public_key, &[&keys], &mut kept).unwrap();
+        assert!(kept.is_open());
+        assert!(
+            f.host
+                .governance_mut()
+                .remove_member(editor.user_public_key, &f.owner, f.now)
+                .unwrap()
+        );
+        let message = write(
+            &f.host,
+            &f.owner,
+            &keys,
+            &author.edit("value", SECRET),
+            f.now,
+        );
+        admit(&mut f.host, &f.owner, message, f.now);
+        // Even holding keys that would open the new write, the removed member's
+        // read is refused before anything is opened, and what it kept is gone.
+        let opened = Cell::new(0_usize);
+        let refused = f.host.open_document(
+            editor.device_public_key,
+            (APP, RECORD),
+            f.now,
+            1024 * 1024,
+            Some(&mut |op| {
+                opened.set(opened.get().saturating_add(1));
+                open(&keys, op)
+            }),
+            &mut kept,
+        );
+        assert!(matches!(
+            refused,
+            Err(crate::PeerDocumentReadError::Membership(_))
+        ));
+        assert_eq!(opened.get(), 0, "nothing is opened for a removed member");
+        assert!(!kept.is_open(), "nothing stays open for a removed member");
     }
-    read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
-    mint(&mut f.host, &keys, &f.owner, f.now).unwrap();
-    let message = write(
-        &f.host,
-        &f.owner,
-        &keys,
-        &author.edit("value", "three"),
-        f.now,
-    );
-    admit(&mut f.host, &f.owner, message, f.now);
-    let (mut document, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
-    assert_eq!(opened, 2, "the compaction and the write after it, whole");
-    same(&mut document, &mut read_whole(&f.host, reader, &[&keys]));
-    assert_eq!(
-        document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some("three")
-    );
-}
-
-#[test]
-fn a_write_sealed_after_a_rotation_waits_for_the_rotated_keys_and_hides_nothing_before_it() {
-    let mut f = fixture();
-    let before = f.keys();
-    let reader = f.authority.device_public_key;
-    let mut author = Author::new(&f.host);
-    let message = write(
-        &f.host,
-        &f.owner,
-        &before,
-        &author.edit("value", "before"),
-        f.now,
-    );
-    admit(&mut f.host, &f.owner, message, f.now);
-    let mut kept = KeptRecord::default();
-    read_kept(&f.host, reader, &[&before], &mut kept).unwrap();
-    let after = f.rotate();
-    let message = write(
-        &f.host,
-        &f.owner,
-        &after,
-        &author.edit("value", SECRET),
-        f.now,
-    );
-    admit(&mut f.host, &f.owner, message, f.now);
-    // Keys from before the rotation open nothing new, and hide nothing read before.
-    let (document, _) = read_kept(&f.host, reader, &[&before], &mut kept).unwrap();
-    assert_eq!(
-        document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some("before")
-    );
-    // The rotated keys open the new write alone, and read as a whole read.
-    let (mut document, opened) = read_kept(&f.host, reader, &[&before, &after], &mut kept).unwrap();
-    assert_eq!(opened, 1);
-    same(
-        &mut document,
-        &mut read_whole(&f.host, reader, &[&before, &after]),
-    );
-    assert_eq!(
-        document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some(SECRET)
-    );
-}
-
-#[test]
-fn a_member_removed_from_the_workspace_reads_nothing_and_keeps_nothing_open() {
-    let mut f = fixture();
-    let keys = f.keys();
-    let (_, editor) = device(110, 111);
-    let mut author = Author::new(&f.host);
-    let message = write(
-        &f.host,
-        &f.owner,
-        &keys,
-        &author.edit("value", "seen"),
-        f.now,
-    );
-    admit(&mut f.host, &f.owner, message, f.now);
-    let mut kept = KeptRecord::default();
-    read_kept(&f.host, editor.device_public_key, &[&keys], &mut kept).unwrap();
-    assert!(kept.is_open());
-    assert!(
-        f.host
-            .governance_mut()
-            .remove_member(editor.user_public_key, &f.owner, f.now)
-            .unwrap()
-    );
-    let message = write(
-        &f.host,
-        &f.owner,
-        &keys,
-        &author.edit("value", SECRET),
-        f.now,
-    );
-    admit(&mut f.host, &f.owner, message, f.now);
-    // Even holding keys that would open the new write, the removed member's
-    // read is refused before anything is opened, and what it kept is gone.
-    let opened = Cell::new(0_usize);
-    let refused = f.host.open_document(
-        editor.device_public_key,
-        (APP, RECORD),
-        f.now,
-        1024 * 1024,
-        Some(&mut |op| {
-            opened.set(opened.get().saturating_add(1));
-            open(&keys, op)
-        }),
-        &mut kept,
-    );
-    assert!(matches!(
-        refused,
-        Err(crate::PeerDocumentReadError::Membership(_))
-    ));
-    assert_eq!(opened.get(), 0, "nothing is opened for a removed member");
-    assert!(!kept.is_open(), "nothing stays open for a removed member");
 }

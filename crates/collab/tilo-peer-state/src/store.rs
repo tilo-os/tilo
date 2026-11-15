@@ -870,396 +870,408 @@ mod tests {
         Cursor { lineage, after_seq }
     }
 
-    #[test]
-    fn replay_continues_after_a_cursor() {
-        let (_dir, store) = open();
-        let key = device(2);
-        let frames: Vec<Frame> = (1..=3)
-            .map(|seq| frame(&key, seq, ContentRetention::Delta))
-            .collect();
-        for frame in &frames {
-            assert_eq!(store.retain(workspace(), frame).unwrap(), Retained::New);
-        }
-        let lineage = frames[0].lineage;
-        assert_eq!(
-            store.lineages(workspace()),
-            vec![(lineage, 1, 3)],
-            "one lineage holds the three frames"
-        );
+    tilo_test_env::scenario! {
+        fn replay_serves_a_records_frames_in_order_within_its_floor_and_budget;
 
-        let all = store.replay(workspace(), &[], Budget::default()).unwrap();
-        assert_eq!(all.frames.len(), 3);
-        assert!(all.floors.is_empty(), "nothing was retired");
-        assert!(!all.more);
-
-        let later = store
-            .replay(workspace(), &[cursor(lineage, 2)], Budget::default())
-            .unwrap();
-        assert_eq!(later.frames, vec![frames[2].message.clone()]);
-
-        assert_eq!(
-            store.retain(workspace(), &frames[2]).unwrap(),
-            Retained::Duplicate,
-            "the same frame is kept once"
-        );
-        assert!(
-            store
-                .replay(WorkspaceId::from_u128(8), &[], Budget::default())
-                .unwrap()
-                .frames
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn a_checkpoint_retires_only_its_own_lineage() {
-        let (_dir, store) = open();
-        let author = device(2);
-        let other = device(3);
-        for seq in 1..=2 {
-            store
-                .retain(workspace(), &frame(&author, seq, ContentRetention::Delta))
-                .unwrap();
-        }
-        let theirs = frame(&other, 1, ContentRetention::Delta);
-        store.retain(workspace(), &theirs).unwrap();
-        let checkpoint = frame(&author, 3, ContentRetention::Checkpoint);
-        store.retain(workspace(), &checkpoint).unwrap();
-        store
-            .retain(workspace(), &frame(&author, 4, ContentRetention::Delta))
-            .unwrap();
-
-        let lineages = store.lineages(workspace());
-        assert_eq!(
-            lineages,
-            vec![(checkpoint.lineage, 3, 4), (theirs.lineage, 1, 1)],
-            "the checkpoint retired the author's earlier frames and nothing else"
-        );
-        let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
-        let seqs: Vec<u64> = replay
-            .frames
-            .iter()
-            .map(|message| match message {
-                NeighbourMsg::AppDocument { envelope, .. } => envelope.seq,
-                other => panic!("a document frame, not {other:?}"),
-            })
-            .collect();
-        assert_eq!(
-            seqs,
-            vec![3, 1, 4],
-            "the baseline first, then the changes in the order they were written"
-        );
-    }
-
-    /// A member that catches up takes a change in only once its record holds a
-    /// baseline: the record's baseline is sent before any author's changes,
-    /// whichever author's line sorts first. A line sent whole before the
-    /// baseline's left the late member without that author's changes.
-    #[test]
-    fn replay_sends_a_records_baseline_before_its_changes() {
-        let (_dir, store) = open();
-        let (mut founder, mut editor) = (device(2), device(3));
-        if frame(&editor, 2, ContentRetention::Delta).lineage
-            > frame(&founder, 1, ContentRetention::Checkpoint).lineage
+        phase replay_continues_after_a_cursor;
         {
-            // The editor's line sorts first, as a line sent whole once did.
-            std::mem::swap(&mut founder, &mut editor);
-        }
-        let baseline = frame(&founder, 1, ContentRetention::Checkpoint);
-        let edit = frame(&editor, 2, ContentRetention::Delta);
-        assert!(edit.lineage < baseline.lineage);
-        store.retain(workspace(), &edit).unwrap();
-        store.retain(workspace(), &baseline).unwrap();
-
-        let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
-        assert_eq!(replay.frames, vec![baseline.message, edit.message]);
-    }
-
-    #[test]
-    fn replay_reports_a_floor_it_cannot_continue_from() {
-        let (_dir, store) = open();
-        let key = device(2);
-        for seq in 1..=5 {
-            store
-                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
-                .unwrap();
-        }
-        let lineage = store
-            .replay(workspace(), &[], Budget::default())
-            .unwrap()
-            .frames[0]
-            .clone();
-        let lineage = Frame::of(&lineage).unwrap().lineage;
-        let retired = store.compact(workspace(), 4).unwrap();
-        assert_eq!(retired.frames, 3, "the three oldest frames went");
-
-        let early = store
-            .replay(workspace(), &[cursor(lineage, 1)], Budget::default())
-            .unwrap();
-        assert_eq!(
-            early.floors,
-            vec![Floor {
-                lineage,
-                earliest_seq: 4
-            }]
-        );
-        assert_eq!(gaps(&[cursor(lineage, 1)], &early).len(), 1);
-        assert!(
-            gaps(&[cursor(lineage, 3)], &early).is_empty(),
-            "a cursor leading straight into the earliest frame has no gap"
-        );
-    }
-
-    #[test]
-    fn replay_stops_at_its_budget_and_says_more() {
-        let (_dir, store) = open();
-        let key = device(2);
-        let frames: Vec<Frame> = (1..=5)
-            .map(|seq| frame(&key, seq, ContentRetention::Delta))
-            .collect();
-        for frame in &frames {
-            store.retain(workspace(), frame).unwrap();
-        }
-        let budget = Budget {
-            max_frames: 2,
-            max_bytes: 8 * 1024 * 1024,
-        };
-        let mut cursors = Vec::new();
-        let mut rounds = 0;
-        loop {
-            let replay = store.replay(workspace(), &cursors, budget).unwrap();
-            advance(&mut cursors, &replay.frames);
-            rounds += 1;
-            if !replay.more {
-                break;
+            let (_dir, store) = open();
+            let key = device(2);
+            let frames: Vec<Frame> = (1..=3)
+                .map(|seq| frame(&key, seq, ContentRetention::Delta))
+                .collect();
+            for frame in &frames {
+                assert_eq!(store.retain(workspace(), frame).unwrap(), Retained::New);
             }
-        }
-        assert_eq!(rounds, 3, "five frames in rounds of two");
-        assert_eq!(cursors, vec![cursor(frames[0].lineage, 5)]);
-    }
+            let lineage = frames[0].lineage;
+            assert_eq!(
+                store.lineages(workspace()),
+                vec![(lineage, 1, 3)],
+                "one lineage holds the three frames"
+            );
 
-    #[test]
-    fn a_bounded_appetite_retires_the_oldest_and_keeps_a_checkpoint() {
-        let (dir, store) = open();
-        let key = device(2);
-        for seq in 1..=2 {
-            store
-                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
-                .unwrap();
-        }
-        let checkpoint = frame(&key, 3, ContentRetention::Checkpoint);
-        store.retain(workspace(), &checkpoint).unwrap();
-        let size = store.bytes();
-        let path = frame_path(
-            dir.path(),
-            workspace(),
-            checkpoint.lineage,
-            checkpoint.seq,
-            checkpoint.retention,
-        );
-        let kept = fs::read(&path).unwrap().len() as u64;
-        assert!(size >= kept);
+            let all = store.replay(workspace(), &[], Budget::default()).unwrap();
+            assert_eq!(all.frames.len(), 3);
+            assert!(all.floors.is_empty(), "nothing was retired");
+            assert!(!all.more);
 
-        // Reopening under an appetite of exactly the checkpoint keeps that
-        // and retires everything else, since a checkpoint is the state a
-        // later frame is read against.
-        let reopened = Store::open(dir.path(), Appetite::Bounded { max_bytes: kept }).unwrap();
-        assert_eq!(reopened.bytes(), kept);
-        assert_eq!(
-            reopened.lineages(workspace()),
-            vec![(checkpoint.lineage, 3, 3)]
-        );
-        assert!(fs::read(&path).is_ok());
-    }
+            let later = store
+                .replay(workspace(), &[cursor(lineage, 2)], Budget::default())
+                .unwrap();
+            assert_eq!(later.frames, vec![frames[2].message.clone()]);
 
-    #[test]
-    fn compaction_retires_the_frames_a_time_covers() {
-        let (_dir, store) = open();
-        let key = device(2);
-        for seq in 1..=3 {
-            store
-                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
-                .unwrap();
+            assert_eq!(
+                store.retain(workspace(), &frames[2]).unwrap(),
+                Retained::Duplicate,
+                "the same frame is kept once"
+            );
+            assert!(
+                store
+                    .replay(WorkspaceId::from_u128(8), &[], Budget::default())
+                    .unwrap()
+                    .frames
+                    .is_empty()
+            );
         }
-        let retired = store.compact(workspace(), 3).unwrap();
-        assert_eq!(retired.frames, 2);
-        assert!(retired.bytes > 0);
-        assert_eq!(store.lineages(workspace()).len(), 1);
-        assert_eq!(
-            store.compact(WorkspaceId::from_u128(8), u64::MAX).unwrap(),
-            Retired::default()
-        );
-    }
 
-    /// Forgetting a workspace ends everything the store keeps of it, in one
-    /// pass: its frames, its bytes and its files, and no reopen reads it
-    /// again. The store's other workspaces are untouched.
-    #[test]
-    fn forgetting_a_workspace_removes_its_frames_and_files() {
-        let (dir, store) = open();
-        let key = device(2);
-        let other = WorkspaceId::from_u128(9);
-        for seq in 1..=3 {
-            store
-                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
-                .unwrap();
-            store
-                .retain(other, &frame(&key, seq, ContentRetention::Delta))
-                .unwrap();
+        phase replay_sends_a_records_baseline_before_its_changes;
+        // A member that catches up takes a change in only once its record holds a
+        // baseline: the record's baseline is sent before any author's changes,
+        // whichever author's line sorts first. A line sent whole before the
+        // baseline's left the late member without that author's changes.
+        {
+            let (_dir, store) = open();
+            let (mut founder, mut editor) = (device(2), device(3));
+            if frame(&editor, 2, ContentRetention::Delta).lineage
+                > frame(&founder, 1, ContentRetention::Checkpoint).lineage
+            {
+                // The editor's line sorts first, as a line sent whole once did.
+                std::mem::swap(&mut founder, &mut editor);
+            }
+            let baseline = frame(&founder, 1, ContentRetention::Checkpoint);
+            let edit = frame(&editor, 2, ContentRetention::Delta);
+            assert!(edit.lineage < baseline.lineage);
+            store.retain(workspace(), &edit).unwrap();
+            store.retain(workspace(), &baseline).unwrap();
+
+            let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
+            assert_eq!(replay.frames, vec![baseline.message, edit.message]);
         }
-        let size = store.bytes();
-        let forgotten = store.bytes_of(workspace());
-        let retired = store.forget(workspace()).unwrap();
-        assert_eq!(retired.frames, 3, "every frame it held went");
-        assert_eq!(retired.bytes, forgotten);
-        assert_eq!(
-            store.bytes(),
-            size - forgotten,
-            "the other workspace's bytes stay"
-        );
-        assert!(
-            !workspace_dir(dir.path(), workspace()).exists(),
-            "its directory went whole"
-        );
-        assert!(
-            store
+
+        phase replay_reports_a_floor_it_cannot_continue_from;
+        {
+            let (_dir, store) = open();
+            let key = device(2);
+            for seq in 1..=5 {
+                store
+                    .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
+                    .unwrap();
+            }
+            let lineage = store
                 .replay(workspace(), &[], Budget::default())
                 .unwrap()
-                .frames
-                .is_empty()
-        );
-        assert_eq!(
-            store
-                .replay(other, &[], Budget::default())
-                .unwrap()
-                .frames
-                .len(),
-            3,
-            "the other workspace still replays"
-        );
-        assert_eq!(store.forget(workspace()).unwrap(), Retired::default());
-        drop(store);
+                .frames[0]
+                .clone();
+            let lineage = Frame::of(&lineage).unwrap().lineage;
+            let retired = store.compact(workspace(), 4).unwrap();
+            assert_eq!(retired.frames, 3, "the three oldest frames went");
 
-        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
-        assert!(
-            reopened
-                .replay(workspace(), &[], Budget::default())
-                .unwrap()
-                .frames
-                .is_empty(),
-            "a reopened store does not read a forgotten workspace back"
-        );
-    }
-
-    #[test]
-    fn reopening_reads_back_what_the_store_acknowledged() {
-        let (dir, store) = open();
-        let key = device(2);
-        let frames: Vec<Frame> = (1..=3)
-            .map(|seq| frame(&key, seq, ContentRetention::Delta))
-            .collect();
-        for frame in &frames {
-            store.retain(workspace(), frame).unwrap();
+            let early = store
+                .replay(workspace(), &[cursor(lineage, 1)], Budget::default())
+                .unwrap();
+            assert_eq!(
+                early.floors,
+                vec![Floor {
+                    lineage,
+                    earliest_seq: 4
+                }]
+            );
+            assert_eq!(gaps(&[cursor(lineage, 1)], &early).len(), 1);
+            assert!(
+                gaps(&[cursor(lineage, 3)], &early).is_empty(),
+                "a cursor leading straight into the earliest frame has no gap"
+            );
         }
-        let bytes = store.bytes();
-        drop(store);
 
-        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
-        assert_eq!(reopened.bytes(), bytes);
-        let replay = reopened
-            .replay(workspace(), &[], Budget::default())
-            .unwrap();
-        assert_eq!(replay.frames.len(), 3);
+        phase replay_stops_at_its_budget_and_says_more;
+        {
+            let (_dir, store) = open();
+            let key = device(2);
+            let frames: Vec<Frame> = (1..=5)
+                .map(|seq| frame(&key, seq, ContentRetention::Delta))
+                .collect();
+            for frame in &frames {
+                store.retain(workspace(), frame).unwrap();
+            }
+            let budget = Budget {
+                max_frames: 2,
+                max_bytes: 8 * 1024 * 1024,
+            };
+            let mut cursors = Vec::new();
+            let mut rounds = 0;
+            loop {
+                let replay = store.replay(workspace(), &cursors, budget).unwrap();
+                advance(&mut cursors, &replay.frames);
+                rounds += 1;
+                if !replay.more {
+                    break;
+                }
+            }
+            assert_eq!(rounds, 3, "five frames in rounds of two");
+            assert_eq!(cursors, vec![cursor(frames[0].lineage, 5)]);
+        }
     }
 
-    #[test]
-    fn a_file_that_is_not_a_frame_is_not_served() {
-        let (dir, store) = open();
-        let key = device(2);
-        let frame = frame(&key, 1, ContentRetention::Delta);
-        store.retain(workspace(), &frame).unwrap();
-        let stray = frame_path(
-            dir.path(),
-            workspace(),
-            frame.lineage,
-            2,
-            ContentRetention::Delta,
-        );
-        fs::write(&stray, b"not a frame").unwrap();
-        drop(store);
+    tilo_test_env::scenario! {
+        fn the_store_retires_only_what_a_checkpoint_a_bound_or_a_time_covers;
 
-        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
-        let replay = reopened
-            .replay(workspace(), &[], Budget::default())
-            .unwrap();
-        assert_eq!(replay.frames.len(), 1, "the stray file is skipped");
-        assert!(stray.exists(), "and left on disk for an operator");
+        phase a_checkpoint_retires_only_its_own_lineage;
+        {
+            let (_dir, store) = open();
+            let author = device(2);
+            let other = device(3);
+            for seq in 1..=2 {
+                store
+                    .retain(workspace(), &frame(&author, seq, ContentRetention::Delta))
+                    .unwrap();
+            }
+            let theirs = frame(&other, 1, ContentRetention::Delta);
+            store.retain(workspace(), &theirs).unwrap();
+            let checkpoint = frame(&author, 3, ContentRetention::Checkpoint);
+            store.retain(workspace(), &checkpoint).unwrap();
+            store
+                .retain(workspace(), &frame(&author, 4, ContentRetention::Delta))
+                .unwrap();
+
+            let lineages = store.lineages(workspace());
+            assert_eq!(
+                lineages,
+                vec![(checkpoint.lineage, 3, 4), (theirs.lineage, 1, 1)],
+                "the checkpoint retired the author's earlier frames and nothing else"
+            );
+            let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
+            let seqs: Vec<u64> = replay
+                .frames
+                .iter()
+                .map(|message| match message {
+                    NeighbourMsg::AppDocument { envelope, .. } => envelope.seq,
+                    other => panic!("a document frame, not {other:?}"),
+                })
+                .collect();
+            assert_eq!(
+                seqs,
+                vec![3, 1, 4],
+                "the baseline first, then the changes in the order they were written"
+            );
+        }
+
+        phase a_bounded_appetite_retires_the_oldest_and_keeps_a_checkpoint;
+        {
+            let (dir, store) = open();
+            let key = device(2);
+            for seq in 1..=2 {
+                store
+                    .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
+                    .unwrap();
+            }
+            let checkpoint = frame(&key, 3, ContentRetention::Checkpoint);
+            store.retain(workspace(), &checkpoint).unwrap();
+            let size = store.bytes();
+            let path = frame_path(
+                dir.path(),
+                workspace(),
+                checkpoint.lineage,
+                checkpoint.seq,
+                checkpoint.retention,
+            );
+            let kept = fs::read(&path).unwrap().len() as u64;
+            assert!(size >= kept);
+
+            // Reopening under an appetite of exactly the checkpoint keeps that
+            // and retires everything else, since a checkpoint is the state a
+            // later frame is read against.
+            let reopened = Store::open(dir.path(), Appetite::Bounded { max_bytes: kept }).unwrap();
+            assert_eq!(reopened.bytes(), kept);
+            assert_eq!(
+                reopened.lineages(workspace()),
+                vec![(checkpoint.lineage, 3, 3)]
+            );
+            assert!(fs::read(&path).is_ok());
+        }
+
+        phase compaction_retires_the_frames_a_time_covers;
+        {
+            let (_dir, store) = open();
+            let key = device(2);
+            for seq in 1..=3 {
+                store
+                    .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
+                    .unwrap();
+            }
+            let retired = store.compact(workspace(), 3).unwrap();
+            assert_eq!(retired.frames, 2);
+            assert!(retired.bytes > 0);
+            assert_eq!(store.lineages(workspace()).len(), 1);
+            assert_eq!(
+                store.compact(WorkspaceId::from_u128(8), u64::MAX).unwrap(),
+                Retired::default()
+            );
+        }
+
+        phase forgetting_a_workspace_removes_its_frames_and_files;
+        // Forgetting a workspace ends everything the store keeps of it, in one
+        // pass: its frames, its bytes and its files, and no reopen reads it
+        // again. The store's other workspaces are untouched.
+        {
+            let (dir, store) = open();
+            let key = device(2);
+            let other = WorkspaceId::from_u128(9);
+            for seq in 1..=3 {
+                store
+                    .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
+                    .unwrap();
+                store
+                    .retain(other, &frame(&key, seq, ContentRetention::Delta))
+                    .unwrap();
+            }
+            let size = store.bytes();
+            let forgotten = store.bytes_of(workspace());
+            let retired = store.forget(workspace()).unwrap();
+            assert_eq!(retired.frames, 3, "every frame it held went");
+            assert_eq!(retired.bytes, forgotten);
+            assert_eq!(
+                store.bytes(),
+                size - forgotten,
+                "the other workspace's bytes stay"
+            );
+            assert!(
+                !workspace_dir(dir.path(), workspace()).exists(),
+                "its directory went whole"
+            );
+            assert!(
+                store
+                    .replay(workspace(), &[], Budget::default())
+                    .unwrap()
+                    .frames
+                    .is_empty()
+            );
+            assert_eq!(
+                store
+                    .replay(other, &[], Budget::default())
+                    .unwrap()
+                    .frames
+                    .len(),
+                3,
+                "the other workspace still replays"
+            );
+            assert_eq!(store.forget(workspace()).unwrap(), Retired::default());
+            drop(store);
+
+            let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert!(
+                reopened
+                    .replay(workspace(), &[], Budget::default())
+                    .unwrap()
+                    .frames
+                    .is_empty(),
+                "a reopened store does not read a forgotten workspace back"
+            );
+        }
     }
 
-    #[test]
-    fn only_signed_sealed_document_frames_are_kept() {
-        let key = device(2);
-        assert_eq!(
-            Frame::of(&NeighbourMsg::Heartbeat { peer: 0, ts: 0 }),
-            Err(Refusal::NotADocument)
-        );
+    tilo_test_env::scenario! {
+        fn the_store_keeps_and_serves_only_the_signed_frames_it_acknowledged;
 
-        let mut unsigned = SignedOp::new_unsigned(
-            vec![1; 8],
-            ArtifactId::new(),
-            Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-            AttestationId::new(),
-            OpKind::Change,
-            at(1),
-            1,
-        );
-        unsigned.encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
-        let message = NeighbourMsg::AppDocument {
-            peer: 0,
-            app_id: APP.into(),
-            cluster_id: CLUSTER.into(),
-            record_id: RECORD.into(),
-            envelope: Box::new(unsigned),
-        };
-        assert_eq!(Frame::of(&message), Err(Refusal::Unsigned));
+        phase reopening_reads_back_what_the_store_acknowledged;
+        {
+            let (dir, store) = open();
+            let key = device(2);
+            let frames: Vec<Frame> = (1..=3)
+                .map(|seq| frame(&key, seq, ContentRetention::Delta))
+                .collect();
+            for frame in &frames {
+                store.retain(workspace(), frame).unwrap();
+            }
+            let bytes = store.bytes();
+            drop(store);
 
-        let mut cleartext = SignedOp::new_unsigned(
-            vec![1; 8],
-            ArtifactId::new(),
-            Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-            AttestationId::new(),
-            OpKind::Change,
-            at(1),
-            1,
-        );
-        sign_op(&mut cleartext, &key).unwrap();
-        let message = NeighbourMsg::AppDocument {
-            peer: 0,
-            app_id: APP.into(),
-            cluster_id: CLUSTER.into(),
-            record_id: RECORD.into(),
-            envelope: Box::new(cleartext),
-        };
-        assert_eq!(Frame::of(&message), Err(Refusal::NotSealed));
+            let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert_eq!(reopened.bytes(), bytes);
+            let replay = reopened
+                .replay(workspace(), &[], Budget::default())
+                .unwrap();
+            assert_eq!(replay.frames.len(), 3);
+        }
 
-        let mut mls = SignedOp::new_unsigned(
-            vec![1; 8],
-            ArtifactId::new(),
-            Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-            AttestationId::new(),
-            OpKind::Change,
-            at(1),
-            1,
-        );
-        mls.encryption = Some(EncryptionMetadata::mls_application(1));
-        sign_op(&mut mls, &key).unwrap();
-        let message = NeighbourMsg::AppDocument {
-            peer: 0,
-            app_id: APP.into(),
-            cluster_id: CLUSTER.into(),
-            record_id: RECORD.into(),
-            envelope: Box::new(mls),
-        };
-        assert_eq!(Frame::of(&message), Err(Refusal::NotSealed));
+        phase a_file_that_is_not_a_frame_is_not_served;
+        {
+            let (dir, store) = open();
+            let key = device(2);
+            let frame = frame(&key, 1, ContentRetention::Delta);
+            store.retain(workspace(), &frame).unwrap();
+            let stray = frame_path(
+                dir.path(),
+                workspace(),
+                frame.lineage,
+                2,
+                ContentRetention::Delta,
+            );
+            fs::write(&stray, b"not a frame").unwrap();
+            drop(store);
+
+            let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            let replay = reopened
+                .replay(workspace(), &[], Budget::default())
+                .unwrap();
+            assert_eq!(replay.frames.len(), 1, "the stray file is skipped");
+            assert!(stray.exists(), "and left on disk for an operator");
+        }
+
+        phase only_signed_sealed_document_frames_are_kept;
+        {
+            let key = device(2);
+            assert_eq!(
+                Frame::of(&NeighbourMsg::Heartbeat { peer: 0, ts: 0 }),
+                Err(Refusal::NotADocument)
+            );
+
+            let mut unsigned = SignedOp::new_unsigned(
+                vec![1; 8],
+                ArtifactId::new(),
+                Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+                AttestationId::new(),
+                OpKind::Change,
+                at(1),
+                1,
+            );
+            unsigned.encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
+            let message = NeighbourMsg::AppDocument {
+                peer: 0,
+                app_id: APP.into(),
+                cluster_id: CLUSTER.into(),
+                record_id: RECORD.into(),
+                envelope: Box::new(unsigned),
+            };
+            assert_eq!(Frame::of(&message), Err(Refusal::Unsigned));
+
+            let mut cleartext = SignedOp::new_unsigned(
+                vec![1; 8],
+                ArtifactId::new(),
+                Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+                AttestationId::new(),
+                OpKind::Change,
+                at(1),
+                1,
+            );
+            sign_op(&mut cleartext, &key).unwrap();
+            let message = NeighbourMsg::AppDocument {
+                peer: 0,
+                app_id: APP.into(),
+                cluster_id: CLUSTER.into(),
+                record_id: RECORD.into(),
+                envelope: Box::new(cleartext),
+            };
+            assert_eq!(Frame::of(&message), Err(Refusal::NotSealed));
+
+            let mut mls = SignedOp::new_unsigned(
+                vec![1; 8],
+                ArtifactId::new(),
+                Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+                AttestationId::new(),
+                OpKind::Change,
+                at(1),
+                1,
+            );
+            mls.encryption = Some(EncryptionMetadata::mls_application(1));
+            sign_op(&mut mls, &key).unwrap();
+            let message = NeighbourMsg::AppDocument {
+                peer: 0,
+                app_id: APP.into(),
+                cluster_id: CLUSTER.into(),
+                record_id: RECORD.into(),
+                envelope: Box::new(mls),
+            };
+            assert_eq!(Frame::of(&message), Err(Refusal::NotSealed));
+        }
     }
 }

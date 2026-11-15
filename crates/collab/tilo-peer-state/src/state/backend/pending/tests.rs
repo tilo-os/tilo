@@ -39,87 +39,92 @@ fn deferred() -> (StatePeer, NeighbourMsg, SystemTime) {
     (receiver, predecessor, now)
 }
 
-#[test]
-fn bounded_pending_counts_actual_signed_deferred_message() {
-    let (peer, predecessor, now) = deferred();
-    let bytes = peer.durable().unwrap();
-    let durable: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
-    validate(&durable.pending, durable.pending_bytes).unwrap();
-    let mut restored = StatePeer::restore(
-        &bytes,
-        peer.workspace_id(),
-        peer.owner_certificates()[0].clone(),
-        peer.certificates(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert_eq!(restored.pending_count(), 1);
-    let source = match &predecessor {
-        NeighbourMsg::AppDocument { envelope, .. } => *envelope.author.as_bytes(),
-        _ => panic!("unexpected fixture shape"),
-    };
-    restored
-        .receive_from(TransportOrigin::RelayDelta(source), predecessor, now)
-        .unwrap();
-    assert_eq!(restored.pending_count(), 0);
-    let doc = AutoCommit::load(&restored.document("test.app", "tab:1").unwrap()).unwrap();
-    assert!(doc.get(ROOT, "pending-descendant").unwrap().is_some());
-}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn bounded_pending_counts_and_bounds_what_waits;
 
-#[test]
-fn bounded_pending_preserves_exact_count_and_declared_byte_denials() {
-    let (peer, _, now) = deferred();
-    let bytes = peer.durable().unwrap();
-    let mut durable: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
-    assert_eq!(
-        validate(&durable.pending, durable.pending_bytes + 1),
-        Err(PendingError::Bytes)
-    );
-    let item = durable.pending.front().unwrap().clone();
-    durable.pending = std::iter::repeat_n(item, 65).collect();
-    assert_eq!(
-        validate(&durable.pending, usize::MAX),
-        Err(PendingError::Count)
-    );
-    let bytes = postcard::to_allocvec(&durable).unwrap();
-    assert_eq!(
-        StatePeer::restore(
+    phase bounded_pending_counts_actual_signed_deferred_message;
+    {
+        let (peer, predecessor, now) = deferred();
+        let bytes = peer.durable().unwrap();
+        let durable: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
+        validate(&durable.pending, durable.pending_bytes).unwrap();
+        let mut restored = StatePeer::restore(
             &bytes,
             peer.workspace_id(),
             peer.owner_certificates()[0].clone(),
             peer.certificates(),
             RevocationList::new(),
-            now
+            now,
         )
-        .err()
-        .unwrap(),
-        "durable pending queue exceeds entry limit"
-    );
-    let empty = VecDeque::new();
-    assert_eq!(validate(&empty, 0), Ok(()));
-    assert_eq!(
-        validate(&empty, 4 * 1024 * 1024 + 1),
-        Err(PendingError::Bytes)
-    );
-}
+        .unwrap();
+        assert_eq!(restored.pending_count(), 1);
+        let source = match &predecessor {
+            NeighbourMsg::AppDocument { envelope, .. } => *envelope.author.as_bytes(),
+            _ => panic!("unexpected fixture shape"),
+        };
+        restored
+            .receive_from(TransportOrigin::RelayDelta(source), predecessor, now)
+            .unwrap();
+        assert_eq!(restored.pending_count(), 0);
+        let doc = AutoCommit::load(&restored.document("test.app", "tab:1").unwrap()).unwrap();
+        assert!(doc.get(ROOT, "pending-descendant").unwrap().is_some());
+    }
 
-#[test]
-fn bounded_pending_enforces_four_mib_at_literal_serialized_boundary() {
-    let limit = 4 * 1024 * 1024;
-    let mut message = NeighbourMsg::SyncResp {
-        workspace: String::new(),
-        changes: vec![vec![0; limit]],
-    };
-    let overhead = postcard::to_allocvec(&message).unwrap().len() - limit;
-    if let NeighbourMsg::SyncResp { changes, .. } = &mut message {
-        changes[0].truncate(limit - overhead);
+    phase bounded_pending_preserves_exact_count_and_declared_byte_denials;
+    {
+        let (peer, _, now) = deferred();
+        let bytes = peer.durable().unwrap();
+        let mut durable: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            validate(&durable.pending, durable.pending_bytes + 1),
+            Err(PendingError::Bytes)
+        );
+        let item = durable.pending.front().unwrap().clone();
+        durable.pending = std::iter::repeat_n(item, 65).collect();
+        assert_eq!(
+            validate(&durable.pending, usize::MAX),
+            Err(PendingError::Count)
+        );
+        let bytes = postcard::to_allocvec(&durable).unwrap();
+        assert_eq!(
+            StatePeer::restore(
+                &bytes,
+                peer.workspace_id(),
+                peer.owner_certificates()[0].clone(),
+                peer.certificates(),
+                RevocationList::new(),
+                now
+            )
+            .err()
+            .unwrap(),
+            "durable pending queue exceeds entry limit"
+        );
+        let empty = VecDeque::new();
+        assert_eq!(validate(&empty, 0), Ok(()));
+        assert_eq!(
+            validate(&empty, 4 * 1024 * 1024 + 1),
+            Err(PendingError::Bytes)
+        );
     }
-    assert_eq!(postcard::to_allocvec(&message).unwrap().len(), limit);
-    let mut queue = VecDeque::from([([0; 32], message, false)]);
-    validate(&queue, limit).unwrap();
-    if let NeighbourMsg::SyncResp { changes, .. } = &mut queue[0].1 {
-        changes[0].push(0);
+
+    phase bounded_pending_enforces_four_mib_at_literal_serialized_boundary;
+    {
+        let limit = 4 * 1024 * 1024;
+        let mut message = NeighbourMsg::SyncResp {
+            workspace: String::new(),
+            changes: vec![vec![0; limit]],
+        };
+        let overhead = postcard::to_allocvec(&message).unwrap().len() - limit;
+        if let NeighbourMsg::SyncResp { changes, .. } = &mut message {
+            changes[0].truncate(limit - overhead);
+        }
+        assert_eq!(postcard::to_allocvec(&message).unwrap().len(), limit);
+        let mut queue = VecDeque::from([([0; 32], message, false)]);
+        validate(&queue, limit).unwrap();
+        if let NeighbourMsg::SyncResp { changes, .. } = &mut queue[0].1 {
+            changes[0].push(0);
+        }
+        assert_eq!(validate(&queue, limit + 1), Err(PendingError::Bytes));
     }
-    assert_eq!(validate(&queue, limit + 1), Err(PendingError::Bytes));
 }

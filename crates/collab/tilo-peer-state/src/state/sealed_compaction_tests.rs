@@ -422,149 +422,464 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-#[test]
-fn a_minted_compaction_after_a_rotation_opens_as_a_current_write_with_every_change() {
-    let mut f = fixture();
-    let now = f.now;
-    let mut author = Author::new(&f.host);
-    let before_rotation = f.keys();
-    let first = write(
-        &f.host,
-        &f.other,
-        &before_rotation,
-        &author.edit("first", SECRET),
-        now,
-    );
-    admit(&mut f.host, &f.other, first, now);
-    let current = f.rotate();
-    assert!(current.epoch() > before_rotation.epoch());
-    let second = write(
-        &f.host,
-        &f.owner,
-        &current,
-        &author.edit("second", "2"),
-        now,
-    );
-    admit(&mut f.host, &f.owner, second, now);
-    let base = f.host.document(APP, RECORD).unwrap();
-    let mut replica = f.host.clone();
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_writer_mints_a_compaction_of_the_history_it_holds;
 
-    let minted = mint(&mut f.host, &current, &f.owner, now).unwrap();
-    let compaction = envelope_of(&minted);
-    assert_eq!(
-        held(&f.host),
-        vec![compaction.clone()],
-        "history superseded"
-    );
-    assert_eq!(compaction.kind, OpKind::Compaction);
-    let metadata = compaction.encryption.unwrap();
-    assert_eq!(metadata.epoch, current.epoch());
-    assert_eq!(metadata.retention(), Some(ContentRetention::Checkpoint));
-    let plaintext = current
-        .open_current_content(
-            artifact(),
-            &metadata,
-            &collab_types::sealed_ciphertext(&compaction).unwrap(),
+    phase a_minted_compaction_after_a_rotation_opens_as_a_current_write_with_every_change;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let mut author = Author::new(&f.host);
+        let before_rotation = f.keys();
+        let first = write(
+            &f.host,
+            &f.other,
+            &before_rotation,
+            &author.edit("first", SECRET),
+            now,
+        );
+        admit(&mut f.host, &f.other, first, now);
+        let current = f.rotate();
+        assert!(current.epoch() > before_rotation.epoch());
+        let second = write(
+            &f.host,
+            &f.owner,
+            &current,
+            &author.edit("second", "2"),
+            now,
+        );
+        admit(&mut f.host, &f.owner, second, now);
+        let base = f.host.document(APP, RECORD).unwrap();
+        let mut replica = f.host.clone();
+
+        let minted = mint(&mut f.host, &current, &f.owner, now).unwrap();
+        let compaction = envelope_of(&minted);
+        assert_eq!(
+            held(&f.host),
+            vec![compaction.clone()],
+            "history superseded"
+        );
+        assert_eq!(compaction.kind, OpKind::Compaction);
+        let metadata = compaction.encryption.unwrap();
+        assert_eq!(metadata.epoch, current.epoch());
+        assert_eq!(metadata.retention(), Some(ContentRetention::Checkpoint));
+        let plaintext = current
+            .open_current_content(
+                artifact(),
+                &metadata,
+                &collab_types::sealed_ciphertext(&compaction).unwrap(),
+            )
+            .unwrap();
+        let DocumentMutation::Snapshot(bytes) = DocumentMutation::decode(&plaintext).unwrap() else {
+            panic!("a compaction opens to a snapshot");
+        };
+        let merged = AutoCommit::load(&bytes).unwrap();
+        for (key, value) in [("value", "base"), ("first", SECRET), ("second", "2")] {
+            assert_eq!(
+                merged.get(ROOT, key).unwrap().unwrap().0.as_str(),
+                Some(value),
+                "the compaction holds {key}"
+            );
+        }
+
+        admit(&mut replica, &f.owner, minted, now);
+        assert_eq!(held(&replica), held(&f.host), "another replica supersedes");
+        assert_eq!(
+            f.host.document(APP, RECORD).unwrap(),
+            base,
+            "nothing is merged where no key is held"
+        );
+        let durable = f.host.durable().unwrap();
+        assert!(
+            !contains(&durable, SECRET.as_bytes()),
+            "no plaintext is kept"
+        );
+        let restored = f.restore(&durable).unwrap();
+        assert_eq!(held(&restored), held(&f.host), "survives restart");
+    }
+
+    phase minting_aborts_without_a_trace_when_any_write_cannot_be_compacted;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        for value in ["1", "2"] {
+            let write = write(&f.host, &f.other, &keys, &author.edit("value", value), now);
+            admit(&mut f.host, &f.other, write, now);
+        }
+        let before = f.host.durable().unwrap();
+        let keys = &keys;
+        let sealer = |artifact, retention| {
+            move |plaintext: &[u8]| {
+                keys.seal_content(artifact, retention, plaintext)
+                    .map_err(|error| error.to_string())
+            }
+        };
+        let checkpoint = sealer(artifact(), ContentRetention::Checkpoint);
+        let mut opened = 0;
+        let attempts: Vec<(&str, Opener<'_>, Sealer<'_>)> = vec![
+            (
+                "a write that does not open",
+                Box::new(move |op: &SignedOp| {
+                    opened += 1;
+                    if opened == 2 {
+                        return Err("stale key".to_owned());
+                    }
+                    open(keys, op)
+                }),
+                Box::new(checkpoint),
+            ),
+            (
+                "a write that does not decode",
+                Box::new(|_: &SignedOp| Ok(b"not a document mutation".to_vec())),
+                Box::new(checkpoint),
+            ),
+            (
+                "a snapshot sealed as a delta",
+                Box::new(|op: &SignedOp| open(keys, op)),
+                Box::new(sealer(artifact(), ContentRetention::Delta)),
+            ),
+            (
+                "a snapshot sealed for another artifact",
+                Box::new(|op: &SignedOp| open(keys, op)),
+                Box::new(sealer(
+                    collab_types::ArtifactId::new(),
+                    ContentRetention::Checkpoint,
+                )),
+            ),
+        ];
+        for (why, mut open, mut seal) in attempts {
+            assert!(
+                f.host
+                    .publication()
+                    .draft_sealed_compaction(
+                        (APP, RECORD),
+                        None,
+                        &mut *open,
+                        &mut *seal,
+                        f.owner.verifying_key().to_bytes(),
+                        now
+                    )
+                    .is_err(),
+                "{why} is compacted"
+            );
+            assert_eq!(
+                f.host.durable().unwrap(),
+                before,
+                "{why} changed the record"
+            );
+        }
+    }
+
+    phase a_compaction_merges_writes_admitted_out_of_causal_order;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let (first, second) = (author.edit("value", "1"), author.edit("value", "2"));
+        let late = write(&f.host, &f.other, &keys, &second, now);
+        admit(&mut f.host, &f.other, late, now);
+        let early = write(&f.host, &f.owner, &keys, &first, now);
+        admit(&mut f.host, &f.owner, early, now);
+        let minted = envelope_of(&mint(&mut f.host, &keys, &f.owner, now).unwrap());
+        let DocumentMutation::Snapshot(bytes) =
+            DocumentMutation::decode(&open(&keys, &minted).unwrap()).unwrap()
+        else {
+            panic!("a snapshot");
+        };
+        let merged = AutoCommit::load(&bytes).unwrap();
+        assert_eq!(
+            merged.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("2")
+        );
+    }
+
+    phase a_records_writer_compacts_the_history_it_holds;
+    // The record's own writers fold its sealed history, not only the workspace's
+    // governor: a device the record admits as a writer of it holds the channel
+    // keys, so compacting is part of writing it. A replica without the keys
+    // takes the checkpoint in, and the writes after it.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        for value in ["1", "2"] {
+            let write = write(&f.host, &f.other, &keys, &author.edit("value", value), now);
+            admit(&mut f.host, &f.other, write, now);
+        }
+        let mut replica = f.host.clone();
+        // The workspace's editor is one of the record's writers.
+        let editor = f.editor.clone();
+        let compaction = mint(&mut f.host, &keys, &editor, now).unwrap();
+        assert_eq!(
+            held(&f.host),
+            vec![envelope_of(&compaction)],
+            "the writer folded the history it holds"
+        );
+        admit(&mut replica, &editor, compaction, now);
+        assert_eq!(
+            held(&replica),
+            held(&f.host),
+            "a replica without the keys takes the checkpoint in"
+        );
+
+        // The record goes on: the writer's next write builds on the checkpoint,
+        // and the replica follows it.
+        let later = write(&f.host, &f.other, &keys, &author.edit("value", "3"), now);
+        admit(&mut f.host, &f.other, later.clone(), now);
+        admit(&mut replica, &f.other, later, now);
+        assert_eq!(held(&replica), held(&f.host), "the write after it joins");
+        assert_eq!(
+            held(&replica).len(),
+            2,
+            "the checkpoint and the write after it"
+        );
+
+        // A key holder reads the record whole from what the replica kept.
+        let restored = f.restore(&replica.durable().unwrap()).unwrap();
+        let mut read_write = |op: &SignedOp| open(&keys, op);
+        let opened = restored
+            .publication()
+            .opened_document(APP, RECORD, &mut read_write)
+            .unwrap()
+            .unwrap();
+        let read = AutoCommit::load(&opened.document).unwrap();
+        assert_eq!(
+            read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("3")
+        );
+    }
+
+    phase a_member_writes_past_its_bound_without_a_workspace_host;
+    // A record fills its sealed bound and the device writing it folds the
+    // history itself: the write past the bound is refused first, then the
+    // device publishes its own checkpoint and the record goes on. Nothing else
+    // takes part.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let editor = f.editor.clone();
+        let mut author = Author::new(&f.host);
+        let mut written = 0;
+        while held(&f.host).len() < MAX_SEALED_OPS {
+            let value = written.to_string();
+            let sealed = write(&f.host, &editor, &keys, &author.edit("value", &value), now);
+            match f.host.receive_from_report(origin(&editor), sealed, now) {
+                Ok(report) => {
+                    assert!(matches!(report.primary(), InputDisposition::Accepted(_)));
+                    written += 1;
+                }
+                Err(error) => {
+                    assert!(
+                        error.to_string().contains("sealed record history is full"),
+                        "{error}"
+                    );
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            written, MAX_SEALED_OPS,
+            "the bound refuses the write past it"
+        );
+        assert!(
+            !f.host.publication().sealed_records_to_compact().is_empty(),
+            "a full record is due for its writer's checkpoint"
+        );
+
+        let checkpoint = mint(&mut f.host, &keys, &editor, now).unwrap();
+        assert_eq!(held(&f.host), vec![envelope_of(&checkpoint)]);
+
+        // The record goes on past the bound it refused at.
+        for value in MAX_SEALED_OPS..MAX_SEALED_OPS + 8 {
+            let sealed = write(
+                &f.host,
+                &editor,
+                &keys,
+                &author.edit("value", &value.to_string()),
+                now,
+            );
+            admit(&mut f.host, &editor, sealed, now);
+        }
+        assert_eq!(
+            held(&f.host).len(),
+            9,
+            "the checkpoint and the writes after it"
+        );
+        assert!(f.host.publication().sealed_records_to_compact().is_empty());
+        let mut read_write = |op: &SignedOp| open(&keys, op);
+        let opened = f
+            .host
+            .publication()
+            .opened_document(APP, RECORD, &mut read_write)
+            .unwrap()
+            .unwrap();
+        let read = AutoCommit::load(&opened.document).unwrap();
+        assert_eq!(
+            read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some((MAX_SEALED_OPS + 7).to_string().as_str()),
+            "every write before the checkpoint is still in the record"
+        );
+    }
+
+    phase a_compaction_is_numbered_as_the_last_write_of_its_author_it_folds;
+    // The device that signs a compaction writes the record as well (a relay's host does what its
+    // agents do), numbering each write after its last one. A page that opens the record takes the
+    // compaction first and then refuses every write of its author numbered at or below it as a
+    // replay, so a compaction numbered past the writes it folds would stop the page at the fold.
+    // It is numbered as the last of its author's own writes that it folds.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        for index in 0..6 {
+            let message = write(
+                &f.host,
+                &f.owner,
+                &keys,
+                &author.edit("value", &format!("own-{index}")),
+                now,
+            );
+            admit(&mut f.host, &f.owner, message, now);
+        }
+        let plain = write(
+            &f.host,
+            &f.other,
+            &keys,
+            &author.edit("value", "a member's"),
+            now,
+        );
+        admit(&mut f.host, &f.other, plain, now);
+        let last = floor(&f.host, &f.owner);
+        let compaction = mint(&mut f.host, &keys, &f.owner, now).unwrap();
+        assert_eq!(
+            envelope_of(&compaction).seq,
+            last,
+            "the host's last write it folds"
+        );
+
+        // A page that opens the record takes the compaction first, then the
+        // host's next write.
+        let mut fresh = StatePeer::new(
+            WORKSPACE,
+            f.authority.clone(),
+            vec![],
+            RevocationList::new(),
+            now,
         )
         .unwrap();
-    let DocumentMutation::Snapshot(bytes) = DocumentMutation::decode(&plaintext).unwrap() else {
-        panic!("a compaction opens to a snapshot");
-    };
-    let merged = AutoCommit::load(&bytes).unwrap();
-    for (key, value) in [("value", "base"), ("first", SECRET), ("second", "2")] {
-        assert_eq!(
-            merged.get(ROOT, key).unwrap().unwrap().0.as_str(),
-            Some(value),
-            "the compaction holds {key}"
+        fresh.select_exact_admissions().unwrap();
+        fresh
+            .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+            .unwrap();
+        admit(&mut fresh, &f.owner, compaction, now);
+        assert_eq!(floor(&fresh, &f.owner), last);
+        let next = write(
+            &f.host,
+            &f.owner,
+            &keys,
+            &author.edit("value", "after the fold"),
+            now,
         );
+        admit(&mut f.host, &f.owner, next.clone(), now);
+        admit(&mut fresh, &f.owner, next, now);
     }
 
-    admit(&mut replica, &f.owner, minted, now);
-    assert_eq!(held(&replica), held(&f.host), "another replica supersedes");
-    assert_eq!(
-        f.host.document(APP, RECORD).unwrap(),
-        base,
-        "nothing is merged where no key is held"
-    );
-    let durable = f.host.durable().unwrap();
-    assert!(
-        !contains(&durable, SECRET.as_bytes()),
-        "no plaintext is kept"
-    );
-    let restored = f.restore(&durable).unwrap();
-    assert_eq!(held(&restored), held(&f.host), "survives restart");
-}
-
-#[test]
-fn minting_aborts_without_a_trace_when_any_write_cannot_be_compacted() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    for value in ["1", "2"] {
-        let write = write(&f.host, &f.other, &keys, &author.edit("value", value), now);
-        admit(&mut f.host, &f.other, write, now);
-    }
-    let before = f.host.durable().unwrap();
-    let keys = &keys;
-    let sealer = |artifact, retention| {
-        move |plaintext: &[u8]| {
-            keys.seal_content(artifact, retention, plaintext)
-                .map_err(|error| error.to_string())
+    phase a_compaction_folds_its_writes_exact_evidence_into_one_mark_per_writer;
+    // Every round of writes a compaction folds leaves one mark per writer,
+    // not an exact entry per write: the index stays the same size however
+    // long the record runs. A folded write sent again is ignored, whatever its
+    // bytes; above the mark a conflicting write is still refused.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let mut first = None;
+        let mut sizes = Vec::new();
+        for round in 0..3 {
+            for index in 0..200 {
+                let key = if index % 2 == 0 {
+                    f.other.clone()
+                } else {
+                    f.editor.clone()
+                };
+                let next = write(
+                    &f.host,
+                    &key,
+                    &keys,
+                    &author.edit("value", &format!("{round}.{index}")),
+                    now,
+                );
+                first.get_or_insert_with(|| next.clone());
+                admit(&mut f.host, &key, next, now);
+            }
+            mint(&mut f.host, &keys, &f.owner, now).unwrap();
+            sizes.push(f.host.core.exact_admissions.len());
         }
-    };
-    let checkpoint = sealer(artifact(), ContentRetention::Checkpoint);
-    let mut opened = 0;
-    let attempts: Vec<(&str, Opener<'_>, Sealer<'_>)> = vec![
-        (
-            "a write that does not open",
-            Box::new(move |op: &SignedOp| {
-                opened += 1;
-                if opened == 2 {
-                    return Err("stale key".to_owned());
-                }
-                open(keys, op)
-            }),
-            Box::new(checkpoint),
-        ),
-        (
-            "a write that does not decode",
-            Box::new(|_: &SignedOp| Ok(b"not a document mutation".to_vec())),
-            Box::new(checkpoint),
-        ),
-        (
-            "a snapshot sealed as a delta",
-            Box::new(|op: &SignedOp| open(keys, op)),
-            Box::new(sealer(artifact(), ContentRetention::Delta)),
-        ),
-        (
-            "a snapshot sealed for another artifact",
-            Box::new(|op: &SignedOp| open(keys, op)),
-            Box::new(sealer(
-                collab_types::ArtifactId::new(),
-                ContentRetention::Checkpoint,
-            )),
-        ),
-    ];
-    for (why, mut open, mut seal) in attempts {
+        // A compaction is numbered as a write it folds, so its evidence is the
+        // mark of that fold, never an entry: what stays is the owner's seeded
+        // checkpoint, above the number the owner's first fold takes.
+        assert_eq!(
+            sizes,
+            vec![1, 1, 1],
+            "a fold adds marks, and the index does not grow"
+        );
+        let index = &f.host.core.exact_admissions;
+        for writer in [&f.other, &f.editor] {
+            let mark = index
+                .marks()
+                .find(|(key, _)| key.author == writer.verifying_key().to_bytes())
+                .map(|(_, mark)| mark);
+            assert_eq!(
+                mark,
+                Some(floor(&f.host, writer)),
+                "a writer's mark is its last folded write"
+            );
+        }
+
+        // The first write again, and a different write at its sequence: both
+        // are in the snapshot already, so both are ignored.
+        let first = first.unwrap();
+        let report = f
+            .host
+            .receive_from_report(origin(&f.other), first.clone(), now)
+            .unwrap();
+        assert!(matches!(report.primary(), InputDisposition::Duplicate(_)));
+        let mut rewritten = envelope_of(&first);
+        rewritten.timestamp += Duration::from_secs(1);
+        collab_types::sign_op(&mut rewritten, &f.other).unwrap();
+        let report = f
+            .host
+            .receive_from_report(origin(&f.other), message(rewritten), now)
+            .unwrap();
+        assert!(matches!(report.primary(), InputDisposition::Duplicate(_)));
+        assert_eq!(held(&f.host).len(), 1, "nothing folded comes back");
+
+        // Above the mark the evidence is exact again.
+        let above = write(&f.host, &f.other, &keys, &author.edit("value", "late"), now);
+        admit(&mut f.host, &f.other, above.clone(), now);
+        let mut conflicting = envelope_of(&above);
+        conflicting.timestamp += Duration::from_secs(1);
+        collab_types::sign_op(&mut conflicting, &f.other).unwrap();
         assert!(
             f.host
-                .publication()
-                .draft_sealed_compaction(
-                    (APP, RECORD),
-                    None,
-                    &mut *open,
-                    &mut *seal,
-                    f.owner.verifying_key().to_bytes(),
-                    now
-                )
+                .receive_from_report(origin(&f.other), message(conflicting), now)
                 .is_err(),
-            "{why} is compacted"
+            "a second write at an unfolded sequence conflicts"
         );
+
+        // The marks are part of the durable state.
+        let restored = f.restore(&f.host.durable().unwrap()).unwrap();
         assert_eq!(
-            f.host.durable().unwrap(),
-            before,
-            "{why} changed the record"
+            restored.core.exact_admissions.encode().unwrap(),
+            f.host.core.exact_admissions.encode().unwrap()
         );
     }
 }
@@ -572,188 +887,255 @@ fn minting_aborts_without_a_trace_when_any_write_cannot_be_compacted() {
 type Opener<'a> = Box<dyn FnMut(&SignedOp) -> Result<Vec<u8>, String> + 'a>;
 type Sealer<'a> = Box<dyn FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a>;
 
-#[test]
-fn a_compaction_merges_writes_admitted_out_of_causal_order() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let (first, second) = (author.edit("value", "1"), author.edit("value", "2"));
-    let late = write(&f.host, &f.other, &keys, &second, now);
-    admit(&mut f.host, &f.other, late, now);
-    let early = write(&f.host, &f.owner, &keys, &first, now);
-    admit(&mut f.host, &f.owner, early, now);
-    let minted = envelope_of(&mint(&mut f.host, &keys, &f.owner, now).unwrap());
-    let DocumentMutation::Snapshot(bytes) =
-        DocumentMutation::decode(&open(&keys, &minted).unwrap()).unwrap()
-    else {
-        panic!("a snapshot");
-    };
-    let merged = AutoCommit::load(&bytes).unwrap();
-    assert_eq!(
-        merged.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some("2")
-    );
-}
+tilo_test_env::scenario! {
+    fn a_history_with_a_gap_or_a_repeat_still_opens;
 
-#[test]
-fn a_history_missing_a_write_opens_without_it_and_keeps_what_waits_for_it() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let (first, second) = (author.edit("first", "1"), author.edit("second", "2"));
-    let unreadable = author.edit("third", "3");
-    // `second` builds on `first`, which this replica never got and which
-    // `second`'s own writer never sent: it reads as stuck behind that change.
-    // Another device bringing it after all (below) still completes the record.
-    // The write after it does not open with the keys this key holder has.
-    let late = write(&f.host, &f.other, &keys, &second, now);
-    admit(&mut f.host, &f.other, late, now);
-    let foreign = KeyGroup::create(channel(), MemberKey::generate("other").unwrap())
-        .unwrap()
-        .content_keys()
+    phase a_history_missing_a_write_opens_without_it_and_keeps_what_waits_for_it;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let (first, second) = (author.edit("first", "1"), author.edit("second", "2"));
+        let unreadable = author.edit("third", "3");
+        // `second` builds on `first`, which this replica never got and which
+        // `second`'s own writer never sent: it reads as stuck behind that change.
+        // Another device bringing it after all (below) still completes the record.
+        // The write after it does not open with the keys this key holder has.
+        let late = write(&f.host, &f.other, &keys, &second, now);
+        admit(&mut f.host, &f.other, late, now);
+        let foreign = KeyGroup::create(channel(), MemberKey::generate("other").unwrap())
+            .unwrap()
+            .content_keys()
+            .unwrap();
+        let sealed_apart = write(&f.host, &f.other, &foreign, &unreadable, now);
+        admit(&mut f.host, &f.other, sealed_apart, now);
+        let mut read_write = |op: &SignedOp| open(&keys, op);
+
+        let opened = f
+            .host
+            .publication()
+            .opened_document(APP, RECORD, &mut read_write)
+            .unwrap()
+            .expect("the record is held");
+        let read = AutoCommit::load(&opened.document).expect("what merges opens as a whole record");
+        assert_eq!(
+            read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("base"),
+            "the record reads"
+        );
+        assert!(read.get(ROOT, "second").unwrap().is_none());
+        let other = *Ed25519PublicKey::from_bytes(f.other.verifying_key().to_bytes()).as_bytes();
+        assert!(
+            matches!(
+                opened.unmerged.as_slice(),
+                [
+                    UnmergedWrite { author: a, seq: 1, reason: UnmergedReason::BehindUnsent { missing } },
+                    UnmergedWrite { author: b, seq: 2, reason: UnmergedReason::Unreadable(_) },
+                ] if *a == other && *b == other && missing.len() == 1
+            ),
+            "{:?}",
+            opened.unmerged
+        );
+        assert_eq!(held(&f.host).len(), 2, "every write is kept");
+        assert!(
+            mint(&mut f.host, &keys, &f.owner, now).is_err(),
+            "a history that leaves a write out is never compacted"
+        );
+        // A restart keeps them too.
+        let mut restored = f.restore(&f.host.durable().unwrap()).unwrap();
+        assert_eq!(held(&restored), held(&f.host));
+
+        // Once what it waits for arrives, the write is in the record.
+        let early = write(&restored, &f.owner, &keys, &first, now);
+        admit(&mut restored, &f.owner, early, now);
+        let opened = restored
+            .publication()
+            .opened_document(APP, RECORD, &mut read_write)
+            .unwrap()
+            .unwrap();
+        let read = AutoCommit::load(&opened.document).unwrap();
+        assert_eq!(
+            read.get(ROOT, "second").unwrap().unwrap().0.as_str(),
+            Some("2")
+        );
+        assert!(
+            matches!(
+                opened.unmerged.as_slice(),
+                [UnmergedWrite {
+                    reason: UnmergedReason::Unreadable(_),
+                    ..
+                }]
+            ),
+            "{:?}",
+            opened.unmerged
+        );
+    }
+
+    phase a_history_that_writes_a_sequence_twice_opens_with_the_second_write_named;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut first = Author::new(&f.host);
+        let mut conflicting = Author::new(&f.host);
+        // Two writers of one shell used one actor: each wrote the next sequence of
+        // the same writer without seeing the other's change.
+        let actor = automerge::ActorId::from(vec![0x42]);
+        first.0.set_actor(actor.clone());
+        conflicting.0.set_actor(actor);
+        let one = write(
+            &f.host,
+            &f.owner,
+            &keys,
+            &first.edit("value", "canonical"),
+            now,
+        );
+        let two = write(
+            &f.host,
+            &f.other,
+            &keys,
+            &conflicting.edit("value", "conflicting"),
+            now,
+        );
+        admit(&mut f.host, &f.owner, one, now);
+        admit(&mut f.host, &f.other, two, now);
+        let mut read_write = |op: &SignedOp| open(&keys, op);
+
+        let opened = f
+            .host
+            .publication()
+            .opened_document(APP, RECORD, &mut read_write)
+            .unwrap()
+            .expect("the record is held");
+        let read = AutoCommit::load(&opened.document).expect("the record reads as a whole document");
+        assert_eq!(
+            read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("canonical"),
+            "the record keeps the change of the sequence that reached it first"
+        );
+        let other = *Ed25519PublicKey::from_bytes(f.other.verifying_key().to_bytes()).as_bytes();
+        assert!(
+            matches!(
+                opened.unmerged.as_slice(),
+                [UnmergedWrite {
+                    author: a,
+                    seq: 1,
+                    reason: UnmergedReason::AlreadyHeld { actor: written, seq: 1 },
+                }] if *a == other && written == "42"
+            ),
+            "{:?}",
+            opened.unmerged
+        );
+        assert_eq!(
+            held(&f.host).len(),
+            2,
+            "the write the record cannot hold is kept"
+        );
+
+        // A compaction replaces the history, so it folds the write whose sequence
+        // the record already holds: no reader can ever carry both changes.
+        mint(&mut f.host, &keys, &f.owner, now).expect("a fork does not block the compaction");
+        let opened = f
+            .host
+            .publication()
+            .opened_document(APP, RECORD, &mut read_write)
+            .unwrap()
+            .unwrap();
+        let read = AutoCommit::load(&opened.document).unwrap();
+        assert_eq!(
+            read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("canonical")
+        );
+        assert!(opened.unmerged.is_empty());
+    }
+
+    phase a_chat_that_lost_a_write_at_a_hard_stop_opens_and_completes_once_it_returns;
+    {
+        let fixture: Vec<(String, Vec<u8>)> = postcard::from_bytes(
+            &hex::decode(LOUNGE_CHAT_GAP.split_whitespace().collect::<String>()).unwrap(),
+        )
         .unwrap();
-    let sealed_apart = write(&f.host, &f.other, &foreign, &unreadable, now);
-    admit(&mut f.host, &f.other, sealed_apart, now);
-    let mut read_write = |op: &SignedOp| open(&keys, op);
+        let [(_, base), history @ .., (_, lost)] = fixture.as_slice() else {
+            panic!("a base, a history and the lost write")
+        };
+        let now = SystemTime::UNIX_EPOCH;
+        // Only the plaintext matters here: each write opens to its own.
+        let op = |seq: u64| {
+            SignedOp::new_unsigned(
+                Vec::new(),
+                artifact(),
+                Ed25519PublicKey::from_bytes([u8::try_from(seq).unwrap(); 32]),
+                collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
+                OpKind::Change,
+                now,
+                seq,
+            )
+        };
+        let mut plaintexts: std::collections::BTreeMap<u64, Vec<u8>> = history
+            .iter()
+            .zip(1..)
+            .map(|((_, plaintext), seq)| (seq, plaintext.clone()))
+            .collect();
+        let mut document = Document {
+            doc: tilo_automerge_isolate::load(base)
+                .map(crate::cached_document::CachedDocument::from)
+                .unwrap(),
+            channel: InboundState::default(),
+            encryption_required: true,
+            covered: std::collections::BTreeMap::new(),
+            covered_snapshot: None,
+            sealed: plaintexts
+                .keys()
+                .copied()
+                .map(op)
+                .collect::<Vec<_>>()
+                .into(),
+        };
+        let missing = "32cc8086d6eb9538799a44d9b6e5229f22d7626ef79e2d3ec867898a01224cf1";
 
-    let opened = f
-        .host
-        .publication()
-        .opened_document(APP, RECORD, &mut read_write)
-        .unwrap()
-        .expect("the record is held");
-    let read = AutoCommit::load(&opened.document).expect("what merges opens as a whole record");
-    assert_eq!(
-        read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some("base"),
-        "the record reads"
-    );
-    assert!(read.get(ROOT, "second").unwrap().is_none());
-    let other = *Ed25519PublicKey::from_bytes(f.other.verifying_key().to_bytes()).as_bytes();
-    assert!(
-        matches!(
-            opened.unmerged.as_slice(),
-            [
-                UnmergedWrite { author: a, seq: 1, reason: UnmergedReason::BehindUnsent { missing } },
-                UnmergedWrite { author: b, seq: 2, reason: UnmergedReason::Unreadable(_) },
-            ] if *a == other && *b == other && missing.len() == 1
-        ),
-        "{:?}",
-        opened.unmerged
-    );
-    assert_eq!(held(&f.host).len(), 2, "every write is kept");
-    assert!(
-        mint(&mut f.host, &keys, &f.owner, now).is_err(),
-        "a history that leaves a write out is never compacted"
-    );
-    // A restart keeps them too.
-    let mut restored = f.restore(&f.host.durable().unwrap()).unwrap();
-    assert_eq!(held(&restored), held(&f.host));
+        let opened = {
+            let mut read_write = |op: &SignedOp| Ok(plaintexts[&op.seq].clone());
+            assert_eq!(
+                sealed_compaction::merge_sealed(&document, &mut read_write).unwrap_err(),
+                "sealed history does not merge into a complete record",
+                "as the workspace service refused to start on it"
+            );
+            sealed_compaction::open_sealed(&document, &mut read_write).unwrap()
+        };
+        let waiting: Vec<(u64, &UnmergedReason)> = opened
+            .unmerged
+            .iter()
+            .map(|write| (write.seq, &write.reason))
+            .collect();
+        let gap = UnmergedReason::MissingDependencies {
+            missing: vec![missing.to_owned()],
+        };
+        assert_eq!(
+            waiting,
+            [(3, &gap), (4, &gap)],
+            "both visitors' writes wait for the lost change"
+        );
+        let mut read = AutoCommit::load(&opened.document).expect("the rest opens as a whole record");
+        let governor = "54b2fcc8";
+        assert!(
+            read.get_heads()
+                .iter()
+                .any(|head| head.to_string().starts_with(governor)),
+            "the governor's own write is read"
+        );
 
-    // Once what it waits for arrives, the write is in the record.
-    let early = write(&restored, &f.owner, &keys, &first, now);
-    admit(&mut restored, &f.owner, early, now);
-    let opened = restored
-        .publication()
-        .opened_document(APP, RECORD, &mut read_write)
-        .unwrap()
-        .unwrap();
-    let read = AutoCommit::load(&opened.document).unwrap();
-    assert_eq!(
-        read.get(ROOT, "second").unwrap().unwrap().0.as_str(),
-        Some("2")
-    );
-    assert!(
-        matches!(
-            opened.unmerged.as_slice(),
-            [UnmergedWrite {
-                reason: UnmergedReason::Unreadable(_),
-                ..
-            }]
-        ),
-        "{:?}",
-        opened.unmerged
-    );
-}
-
-#[test]
-fn a_history_that_writes_a_sequence_twice_opens_with_the_second_write_named() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut first = Author::new(&f.host);
-    let mut conflicting = Author::new(&f.host);
-    // Two writers of one shell used one actor: each wrote the next sequence of
-    // the same writer without seeing the other's change.
-    let actor = automerge::ActorId::from(vec![0x42]);
-    first.0.set_actor(actor.clone());
-    conflicting.0.set_actor(actor);
-    let one = write(
-        &f.host,
-        &f.owner,
-        &keys,
-        &first.edit("value", "canonical"),
-        now,
-    );
-    let two = write(
-        &f.host,
-        &f.other,
-        &keys,
-        &conflicting.edit("value", "conflicting"),
-        now,
-    );
-    admit(&mut f.host, &f.owner, one, now);
-    admit(&mut f.host, &f.other, two, now);
-    let mut read_write = |op: &SignedOp| open(&keys, op);
-
-    let opened = f
-        .host
-        .publication()
-        .opened_document(APP, RECORD, &mut read_write)
-        .unwrap()
-        .expect("the record is held");
-    let read = AutoCommit::load(&opened.document).expect("the record reads as a whole document");
-    assert_eq!(
-        read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some("canonical"),
-        "the record keeps the change of the sequence that reached it first"
-    );
-    let other = *Ed25519PublicKey::from_bytes(f.other.verifying_key().to_bytes()).as_bytes();
-    assert!(
-        matches!(
-            opened.unmerged.as_slice(),
-            [UnmergedWrite {
-                author: a,
-                seq: 1,
-                reason: UnmergedReason::AlreadyHeld { actor: written, seq: 1 },
-            }] if *a == other && written == "42"
-        ),
-        "{:?}",
-        opened.unmerged
-    );
-    assert_eq!(
-        held(&f.host).len(),
-        2,
-        "the write the record cannot hold is kept"
-    );
-
-    // A compaction replaces the history, so it folds the write whose sequence
-    // the record already holds: no reader can ever carry both changes.
-    mint(&mut f.host, &keys, &f.owner, now).expect("a fork does not block the compaction");
-    let opened = f
-        .host
-        .publication()
-        .opened_document(APP, RECORD, &mut read_write)
-        .unwrap()
-        .unwrap();
-    let read = AutoCommit::load(&opened.document).unwrap();
-    assert_eq!(
-        read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some("canonical")
-    );
-    assert!(opened.unmerged.is_empty());
+        // The lost write returns: the record is whole again.
+        plaintexts.insert(5, lost.clone());
+        document.sealed.push(op(5));
+        let mut read_write = |op: &SignedOp| Ok(plaintexts[&op.seq].clone());
+        let opened = sealed_compaction::open_sealed(&document, &mut read_write).unwrap();
+        assert_eq!(opened.unmerged, []);
+        assert_eq!(
+            opened.document,
+            sealed_compaction::merge_sealed(&document, &mut read_write).unwrap()
+        );
+    }
 }
 
 /// A public workspace's chat as its governor kept it after hard stops, opened
@@ -764,760 +1146,489 @@ fn a_history_that_writes_a_sequence_twice_opens_with_the_second_write_named() {
 /// Its postcard `Vec<(label, bytes)>`, hex.
 const LOUNGE_CHAT_GAP: &str = include_str!("fixtures/lounge-chat-gap.hex");
 
-#[test]
-fn a_chat_that_lost_a_write_at_a_hard_stop_opens_and_completes_once_it_returns() {
-    let fixture: Vec<(String, Vec<u8>)> = postcard::from_bytes(
-        &hex::decode(LOUNGE_CHAT_GAP.split_whitespace().collect::<String>()).unwrap(),
-    )
-    .unwrap();
-    let [(_, base), history @ .., (_, lost)] = fixture.as_slice() else {
-        panic!("a base, a history and the lost write")
-    };
-    let now = SystemTime::UNIX_EPOCH;
-    // Only the plaintext matters here: each write opens to its own.
-    let op = |seq: u64| {
-        SignedOp::new_unsigned(
-            Vec::new(),
-            artifact(),
-            Ed25519PublicKey::from_bytes([u8::try_from(seq).unwrap(); 32]),
-            collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
-            OpKind::Change,
-            now,
-            seq,
-        )
-    };
-    let mut plaintexts: std::collections::BTreeMap<u64, Vec<u8>> = history
-        .iter()
-        .zip(1..)
-        .map(|((_, plaintext), seq)| (seq, plaintext.clone()))
-        .collect();
-    let mut document = Document {
-        doc: tilo_automerge_isolate::load(base)
-            .map(crate::cached_document::CachedDocument::from)
-            .unwrap(),
-        channel: InboundState::default(),
-        encryption_required: true,
-        covered: std::collections::BTreeMap::new(),
-        covered_snapshot: None,
-        sealed: plaintexts
-            .keys()
-            .copied()
-            .map(op)
-            .collect::<Vec<_>>()
-            .into(),
-    };
-    let missing = "32cc8086d6eb9538799a44d9b6e5229f22d7626ef79e2d3ec867898a01224cf1";
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_replica_admits_only_a_whole_current_verified_compaction;
 
-    let opened = {
-        let mut read_write = |op: &SignedOp| Ok(plaintexts[&op.seq].clone());
-        assert_eq!(
-            sealed_compaction::merge_sealed(&document, &mut read_write).unwrap_err(),
-            "sealed history does not merge into a complete record",
-            "as the workspace service refused to start on it"
-        );
-        sealed_compaction::open_sealed(&document, &mut read_write).unwrap()
-    };
-    let waiting: Vec<(u64, &UnmergedReason)> = opened
-        .unmerged
-        .iter()
-        .map(|write| (write.seq, &write.reason))
-        .collect();
-    let gap = UnmergedReason::MissingDependencies {
-        missing: vec![missing.to_owned()],
-    };
-    assert_eq!(
-        waiting,
-        [(3, &gap), (4, &gap)],
-        "both visitors' writes wait for the lost change"
-    );
-    let mut read = AutoCommit::load(&opened.document).expect("the rest opens as a whole record");
-    let governor = "54b2fcc8";
-    assert!(
-        read.get_heads()
-            .iter()
-            .any(|head| head.to_string().starts_with(governor)),
-        "the governor's own write is read"
-    );
-
-    // The lost write returns: the record is whole again.
-    plaintexts.insert(5, lost.clone());
-    document.sealed.push(op(5));
-    let mut read_write = |op: &SignedOp| Ok(plaintexts[&op.seq].clone());
-    let opened = sealed_compaction::open_sealed(&document, &mut read_write).unwrap();
-    assert_eq!(opened.unmerged, []);
-    assert_eq!(
-        opened.document,
-        sealed_compaction::merge_sealed(&document, &mut read_write).unwrap()
-    );
-}
-
-/// The record's own writers fold its sealed history, not only the workspace's
-/// governor: a device the record admits as a writer of it holds the channel
-/// keys, so compacting is part of writing it. A replica without the keys
-/// takes the checkpoint in, and the writes after it.
-#[test]
-fn a_records_writer_compacts_the_history_it_holds() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    for value in ["1", "2"] {
-        let write = write(&f.host, &f.other, &keys, &author.edit("value", value), now);
+    phase forged_compactions_are_refused;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let write = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
         admit(&mut f.host, &f.other, write, now);
-    }
-    let mut replica = f.host.clone();
-    // The workspace's editor is one of the record's writers.
-    let editor = f.editor.clone();
-    let compaction = mint(&mut f.host, &keys, &editor, now).unwrap();
-    assert_eq!(
-        held(&f.host),
-        vec![envelope_of(&compaction)],
-        "the writer folded the history it holds"
-    );
-    admit(&mut replica, &editor, compaction, now);
-    assert_eq!(
-        held(&replica),
-        held(&f.host),
-        "a replica without the keys takes the checkpoint in"
-    );
+        let history = held(&f.host);
+        let valid = wrapper(&f.host, &keys, &history);
 
-    // The record goes on: the writer's next write builds on the checkpoint,
-    // and the replica follows it.
-    let later = write(&f.host, &f.other, &keys, &author.edit("value", "3"), now);
-    admit(&mut f.host, &f.other, later.clone(), now);
-    admit(&mut replica, &f.other, later, now);
-    assert_eq!(held(&replica), held(&f.host), "the write after it joins");
-    assert_eq!(
-        held(&replica).len(),
-        2,
-        "the checkpoint and the write after it"
-    );
+        let mut tampered = envelope_of(&forged(&f.host, &f.owner, &valid, now));
+        let mut altered = valid.0.clone();
+        altered.ciphertext[0] ^= 1;
+        tampered.payload = altered.encode().unwrap();
+        refused(&mut f.host, &f.owner, message(tampered), now);
 
-    // A key holder reads the record whole from what the replica kept.
-    let restored = f.restore(&replica.durable().unwrap()).unwrap();
-    let mut read_write = |op: &SignedOp| open(&keys, op);
-    let opened = restored
-        .publication()
-        .opened_document(APP, RECORD, &mut read_write)
-        .unwrap()
-        .unwrap();
-    let read = AutoCommit::load(&opened.document).unwrap();
-    assert_eq!(
-        read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some("3")
-    );
-}
+        let stranger = SigningKey::from_bytes(&[77; 32]);
+        let mut impostor = envelope_of(&forged(&f.host, &stranger, &valid, now));
+        impostor.author = Ed25519PublicKey::from_bytes(f.owner.verifying_key().to_bytes());
+        impostor.seq = next_seq(&f.host, &f.owner);
+        refused(&mut f.host, &f.owner, message(impostor), now);
 
-/// A record fills its sealed bound and the device writing it folds the
-/// history itself: the write past the bound is refused first, then the
-/// device publishes its own checkpoint and the record goes on. Nothing else
-/// takes part.
-#[test]
-fn a_member_writes_past_its_bound_without_a_workspace_host() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let editor = f.editor.clone();
-    let mut author = Author::new(&f.host);
-    let mut written = 0;
-    while held(&f.host).len() < MAX_SEALED_OPS {
-        let value = written.to_string();
-        let sealed = write(&f.host, &editor, &keys, &author.edit("value", &value), now);
-        match f.host.receive_from_report(origin(&editor), sealed, now) {
-            Ok(report) => {
-                assert!(matches!(report.primary(), InputDisposition::Accepted(_)));
-                written += 1;
-            }
-            Err(error) => {
-                assert!(
-                    error.to_string().contains("sealed record history is full"),
-                    "{error}"
-                );
-                break;
-            }
-        }
-    }
-    assert_eq!(
-        written, MAX_SEALED_OPS,
-        "the bound refuses the write past it"
-    );
-    assert!(
-        !f.host.publication().sealed_records_to_compact().is_empty(),
-        "a full record is due for its writer's checkpoint"
-    );
+        let mut other_record = envelope_of(&forged(&f.host, &f.owner, &valid, now));
+        other_record.artifact = collab_types::document_artifact_id(APP, WORKSPACE, "tab:2");
+        collab_types::sign_op(&mut other_record, &f.owner).unwrap();
+        refused(&mut f.host, &f.owner, message(other_record), now);
 
-    let checkpoint = mint(&mut f.host, &keys, &editor, now).unwrap();
-    assert_eq!(held(&f.host), vec![envelope_of(&checkpoint)]);
+        let mut delta = valid.1;
+        delta.scheme = collab_types::EncryptionScheme::ContentKey {
+            retention: ContentRetention::Delta,
+        };
+        let forgery = forged(&f.host, &f.owner, &(valid.0, delta), now);
+        refused(&mut f.host, &f.owner, forgery, now);
 
-    // The record goes on past the bound it refused at.
-    for value in MAX_SEALED_OPS..MAX_SEALED_OPS + 8 {
-        let sealed = write(
-            &f.host,
-            &editor,
-            &keys,
-            &author.edit("value", &value.to_string()),
+        let cleartext = signed(
+            &f.owner,
+            next_seq(&f.host, &f.owner),
+            OpKind::Compaction,
+            DocumentMutation::Snapshot(f.host.document(APP, RECORD).unwrap())
+                .encode()
+                .unwrap(),
+            None,
             now,
         );
-        admit(&mut f.host, &editor, sealed, now);
+        refused_with(
+            &mut f.host,
+            &f.owner,
+            message(cleartext),
+            now,
+            "only ever sealed",
+        );
+        assert_eq!(held(&f.host), history);
     }
-    assert_eq!(
-        held(&f.host).len(),
-        9,
-        "the checkpoint and the writes after it"
-    );
-    assert!(f.host.publication().sealed_records_to_compact().is_empty());
-    let mut read_write = |op: &SignedOp| open(&keys, op);
-    let opened = f
-        .host
-        .publication()
-        .opened_document(APP, RECORD, &mut read_write)
-        .unwrap()
+
+    phase a_compaction_under_a_stale_epoch_is_refused;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let stale = f.keys();
+        let current = f.rotate();
+        let mut author = Author::new(&f.host);
+        let write = write(&f.host, &f.other, &current, &author.edit("value", "1"), now);
+        admit(&mut f.host, &f.other, write, now);
+        let compaction = wrapper(&f.host, &stale, &held(&f.host));
+        let owner = f.owner.clone();
+        let forgery = forged(&f.host, &owner, &compaction, now);
+        refused_with(&mut f.host, &owner, forgery, now, "stale epoch");
+    }
+
+    phase a_compaction_founds_a_route_a_replica_holds_none_of;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let message = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.host, &f.other, message, now);
+        let compaction = mint(&mut f.host, &keys, &f.owner, now).unwrap();
+
+        let mut fresh = StatePeer::new(
+            WORKSPACE,
+            f.authority.clone(),
+            vec![],
+            RevocationList::new(),
+            now,
+        )
         .unwrap();
-    let read = AutoCommit::load(&opened.document).unwrap();
-    assert_eq!(
-        read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some((MAX_SEALED_OPS + 7).to_string().as_str()),
-        "every write before the checkpoint is still in the record"
-    );
-}
+        fresh.select_exact_admissions().unwrap();
+        fresh
+            .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+            .unwrap();
+        assert!(
+            fresh.document(APP, RECORD).is_none(),
+            "the replica holds no history of the record"
+        );
+        admit(&mut fresh, &f.owner, compaction.clone(), now);
+        assert_eq!(held(&fresh), vec![envelope_of(&compaction)]);
+    }
 
-#[test]
-fn forged_compactions_are_refused() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let write = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-    admit(&mut f.host, &f.other, write, now);
-    let history = held(&f.host);
-    let valid = wrapper(&f.host, &keys, &history);
+    phase a_sealed_checkpoint_founds_the_route_its_deltas_change;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.host, &f.other, first, now);
+        let later = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
+        admit(&mut f.host, &f.other, later.clone(), now);
+        let saved = checkpoint(&f.host, &keys, &f.owner, now);
 
-    let mut tampered = envelope_of(&forged(&f.host, &f.owner, &valid, now));
-    let mut altered = valid.0.clone();
-    altered.ciphertext[0] ^= 1;
-    tampered.payload = altered.encode().unwrap();
-    refused(&mut f.host, &f.owner, message(tampered), now);
-
-    let stranger = SigningKey::from_bytes(&[77; 32]);
-    let mut impostor = envelope_of(&forged(&f.host, &stranger, &valid, now));
-    impostor.author = Ed25519PublicKey::from_bytes(f.owner.verifying_key().to_bytes());
-    impostor.seq = next_seq(&f.host, &f.owner);
-    refused(&mut f.host, &f.owner, message(impostor), now);
-
-    let mut other_record = envelope_of(&forged(&f.host, &f.owner, &valid, now));
-    other_record.artifact = collab_types::document_artifact_id(APP, WORKSPACE, "tab:2");
-    collab_types::sign_op(&mut other_record, &f.owner).unwrap();
-    refused(&mut f.host, &f.owner, message(other_record), now);
-
-    let mut delta = valid.1;
-    delta.scheme = collab_types::EncryptionScheme::ContentKey {
-        retention: ContentRetention::Delta,
-    };
-    let forgery = forged(&f.host, &f.owner, &(valid.0, delta), now);
-    refused(&mut f.host, &f.owner, forgery, now);
-
-    let cleartext = signed(
-        &f.owner,
-        next_seq(&f.host, &f.owner),
-        OpKind::Compaction,
-        DocumentMutation::Snapshot(f.host.document(APP, RECORD).unwrap())
-            .encode()
-            .unwrap(),
-        None,
-        now,
-    );
-    refused_with(
-        &mut f.host,
-        &f.owner,
-        message(cleartext),
-        now,
-        "only ever sealed",
-    );
-    assert_eq!(held(&f.host), history);
-}
-
-#[test]
-fn a_compaction_under_a_stale_epoch_is_refused() {
-    let mut f = fixture();
-    let now = f.now;
-    let stale = f.keys();
-    let current = f.rotate();
-    let mut author = Author::new(&f.host);
-    let write = write(&f.host, &f.other, &current, &author.edit("value", "1"), now);
-    admit(&mut f.host, &f.other, write, now);
-    let compaction = wrapper(&f.host, &stale, &held(&f.host));
-    let owner = f.owner.clone();
-    let forgery = forged(&f.host, &owner, &compaction, now);
-    refused_with(&mut f.host, &owner, forgery, now, "stale epoch");
-}
-
-#[test]
-fn a_compaction_founds_a_route_a_replica_holds_none_of() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let message = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-    admit(&mut f.host, &f.other, message, now);
-    let compaction = mint(&mut f.host, &keys, &f.owner, now).unwrap();
-
-    let mut fresh = StatePeer::new(
-        WORKSPACE,
-        f.authority.clone(),
-        vec![],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    fresh.select_exact_admissions().unwrap();
-    fresh
-        .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+        let mut fresh = StatePeer::new(
+            WORKSPACE,
+            f.authority.clone(),
+            vec![],
+            RevocationList::new(),
+            now,
+        )
         .unwrap();
-    assert!(
-        fresh.document(APP, RECORD).is_none(),
-        "the replica holds no history of the record"
-    );
-    admit(&mut fresh, &f.owner, compaction.clone(), now);
-    assert_eq!(held(&fresh), vec![envelope_of(&compaction)]);
-}
+        fresh.select_exact_admissions().unwrap();
+        fresh
+            .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+            .unwrap();
+        // A change whose checkpoint this replica never saw waits for one.
+        let waited = fresh
+            .receive_from_report(origin(&f.other), later.clone(), now)
+            .unwrap();
+        assert!(
+            matches!(
+                waited.primary(),
+                InputDisposition::RetryLater(MissingPrerequisite::RecordCheckpoint)
+            ),
+            "waited for the record's checkpoint: {:?}",
+            waited.primary()
+        );
+        assert!(
+            fresh.document(APP, RECORD).is_none(),
+            "the replica holds no history of the record"
+        );
+        // The checkpoint is the whole record as its writer saved it, so it founds
+        // the route for a replica holding none of it, and the change that waited
+        // is decided again behind it.
+        admit(&mut fresh, &f.owner, saved.clone(), now);
+        assert_eq!(held(&fresh), vec![envelope_of(&saved), envelope_of(&later)]);
+    }
 
-/// The device that signs a compaction writes the record as well (a relay's host does what its
-/// agents do), numbering each write after its last one. A page that opens the record takes the
-/// compaction first and then refuses every write of its author numbered at or below it as a
-/// replay, so a compaction numbered past the writes it folds would stop the page at the fold.
-/// It is numbered as the last of its author's own writes that it folds.
-#[test]
-fn a_compaction_is_numbered_as_the_last_write_of_its_author_it_folds() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    for index in 0..6 {
-        let message = write(
+    phase a_replayed_or_superseded_compaction_is_refused;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.host, &f.other, first, now);
+        let mut replica = f.host.clone();
+        let mut lagging = f.host.clone();
+        let older = mint(&mut f.host, &keys, &f.owner, now).unwrap();
+        let after = f.host.durable().unwrap();
+        let replay = f
+            .host
+            .receive_from_report(origin(&f.owner), older.clone(), now)
+            .unwrap();
+        assert!(!matches!(replay.primary(), InputDisposition::Accepted(_)));
+        assert_eq!(f.host.durable().unwrap(), after, "a replay changes nothing");
+
+        let second = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
+        admit(&mut f.host, &f.other, second.clone(), now);
+        let newer = mint(&mut f.host, &keys, &f.owner, now).unwrap();
+        assert_eq!(held(&f.host), vec![envelope_of(&newer)]);
+
+        admit(&mut replica, &f.owner, older.clone(), now);
+        admit(&mut replica, &f.other, second.clone(), now);
+        admit(&mut replica, &f.owner, newer.clone(), now);
+        assert_eq!(held(&replica), held(&f.host));
+        let settled = replica.durable().unwrap();
+        replica
+            .receive_from_report(origin(&f.owner), older, now)
+            .unwrap();
+        assert_eq!(
+            replica.durable().unwrap(),
+            settled,
+            "an older compaction after a newer one changes nothing"
+        );
+
+        admit(&mut lagging, &f.other, second, now);
+        let owner = f.owner.clone();
+        // Its history is not the one the newer fold replaces: it never took the
+        // fold that came between.
+        refused_with(
+            &mut lagging,
+            &owner,
+            newer,
+            now,
+            "does not cover exactly this replica's writes",
+        );
+    }
+
+    phase a_partial_compaction_is_refused;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let mut holder = f.host.clone();
+        let writes: Vec<NeighbourMsg> = ["1", "2", "3"]
+            .iter()
+            .map(|value| {
+                let message = write(&holder, &f.other, &keys, &author.edit("value", value), now);
+                admit(&mut holder, &f.other, message.clone(), now);
+                message
+            })
+            .collect();
+        let all = held(&holder);
+        let owner = f.owner.clone();
+
+        admit(&mut f.host, &f.other, writes[0].clone(), now);
+        let forgery = forged(&f.host, &owner, &wrapper(&f.host, &keys, &all), now);
+        refused_with(&mut f.host, &owner, forgery, now, "has not admitted");
+
+        let mut gap = f.host.clone();
+        admit(&mut gap, &f.other, writes[2].clone(), now);
+        let forgery = forged(&gap, &owner, &wrapper(&gap, &keys, &all), now);
+        refused_with(&mut gap, &owner, forgery, now, "partial");
+
+        admit(&mut f.host, &f.other, writes[1].clone(), now);
+        let (mut other_set, metadata) = wrapper(&f.host, &keys, &all[..2]);
+        other_set.prefix_hash = collab_types::hash_sealed_prefix(&all[..1]).unwrap();
+        let forgery = forged(&f.host, &owner, &(other_set, metadata), now);
+        refused_with(&mut f.host, &owner, forgery, now, "partial");
+
+        let (mut nothing, metadata) = wrapper(&f.host, &keys, &all[..1]);
+        nothing.covers = vec![(
+            Ed25519PublicKey::from_bytes(owner.verifying_key().to_bytes()),
+            floor(&f.host, &owner),
+        )];
+        nothing.prefix_hash = collab_types::hash_sealed_prefix(std::iter::empty()).unwrap();
+        let forgery = forged(&f.host, &owner, &(nothing, metadata), now);
+        refused_with(&mut f.host, &owner, forgery, now, "supersedes nothing");
+
+        let first = mint(&mut f.host, &keys, &owner, now).unwrap();
+        let third = write(&f.host, &f.other, &keys, &author.edit("value", "4"), now);
+        admit(&mut f.host, &f.other, third, now);
+        let history = held(&f.host);
+        assert_eq!(history[0], envelope_of(&first));
+        let forgery = forged(
+            &f.host,
+            &owner,
+            &wrapper(&f.host, &keys, &history[1..]),
+            now,
+        );
+        refused_with(
+            &mut f.host,
+            &owner,
+            forgery,
+            now,
+            "leaves an earlier compaction",
+        );
+    }
+
+    phase a_full_history_refuses_writes_until_a_verified_compaction_supersedes_it;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.host, &f.other, first, now);
+        let one = held(&f.host).remove(0);
+        f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS].into();
+        let more = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
+        let other = f.other.clone();
+        refused_with(
+            &mut f.host,
+            &other,
+            more.clone(),
+            now,
+            "draft_sealed_compaction",
+        );
+
+        let compaction = forged(
             &f.host,
             &f.owner,
-            &keys,
-            &author.edit("value", &format!("own-{index}")),
+            &wrapper(&f.host, &keys, &held(&f.host)),
             now,
         );
-        admit(&mut f.host, &f.owner, message, now);
-    }
-    let plain = write(
-        &f.host,
-        &f.other,
-        &keys,
-        &author.edit("value", "a member's"),
-        now,
-    );
-    admit(&mut f.host, &f.other, plain, now);
-    let last = floor(&f.host, &f.owner);
-    let compaction = mint(&mut f.host, &keys, &f.owner, now).unwrap();
-    assert_eq!(
-        envelope_of(&compaction).seq,
-        last,
-        "the host's last write it folds"
-    );
-
-    // A page that opens the record takes the compaction first, then the
-    // host's next write.
-    let mut fresh = StatePeer::new(
-        WORKSPACE,
-        f.authority.clone(),
-        vec![],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    fresh.select_exact_admissions().unwrap();
-    fresh
-        .receive_from(origin(&f.owner), f.host.workspace_message(), now)
-        .unwrap();
-    admit(&mut fresh, &f.owner, compaction, now);
-    assert_eq!(floor(&fresh, &f.owner), last);
-    let next = write(
-        &f.host,
-        &f.owner,
-        &keys,
-        &author.edit("value", "after the fold"),
-        now,
-    );
-    admit(&mut f.host, &f.owner, next.clone(), now);
-    admit(&mut fresh, &f.owner, next, now);
-}
-
-#[test]
-fn a_sealed_checkpoint_founds_the_route_its_deltas_change() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-    admit(&mut f.host, &f.other, first, now);
-    let later = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
-    admit(&mut f.host, &f.other, later.clone(), now);
-    let saved = checkpoint(&f.host, &keys, &f.owner, now);
-
-    let mut fresh = StatePeer::new(
-        WORKSPACE,
-        f.authority.clone(),
-        vec![],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    fresh.select_exact_admissions().unwrap();
-    fresh
-        .receive_from(origin(&f.owner), f.host.workspace_message(), now)
-        .unwrap();
-    // A change whose checkpoint this replica never saw waits for one.
-    let waited = fresh
-        .receive_from_report(origin(&f.other), later.clone(), now)
-        .unwrap();
-    assert!(
-        matches!(
-            waited.primary(),
-            InputDisposition::RetryLater(MissingPrerequisite::RecordCheckpoint)
-        ),
-        "waited for the record's checkpoint: {:?}",
-        waited.primary()
-    );
-    assert!(
-        fresh.document(APP, RECORD).is_none(),
-        "the replica holds no history of the record"
-    );
-    // The checkpoint is the whole record as its writer saved it, so it founds
-    // the route for a replica holding none of it, and the change that waited
-    // is decided again behind it.
-    admit(&mut fresh, &f.owner, saved.clone(), now);
-    assert_eq!(held(&fresh), vec![envelope_of(&saved), envelope_of(&later)]);
-}
-
-#[test]
-fn a_replayed_or_superseded_compaction_is_refused() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-    admit(&mut f.host, &f.other, first, now);
-    let mut replica = f.host.clone();
-    let mut lagging = f.host.clone();
-    let older = mint(&mut f.host, &keys, &f.owner, now).unwrap();
-    let after = f.host.durable().unwrap();
-    let replay = f
-        .host
-        .receive_from_report(origin(&f.owner), older.clone(), now)
-        .unwrap();
-    assert!(!matches!(replay.primary(), InputDisposition::Accepted(_)));
-    assert_eq!(f.host.durable().unwrap(), after, "a replay changes nothing");
-
-    let second = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
-    admit(&mut f.host, &f.other, second.clone(), now);
-    let newer = mint(&mut f.host, &keys, &f.owner, now).unwrap();
-    assert_eq!(held(&f.host), vec![envelope_of(&newer)]);
-
-    admit(&mut replica, &f.owner, older.clone(), now);
-    admit(&mut replica, &f.other, second.clone(), now);
-    admit(&mut replica, &f.owner, newer.clone(), now);
-    assert_eq!(held(&replica), held(&f.host));
-    let settled = replica.durable().unwrap();
-    replica
-        .receive_from_report(origin(&f.owner), older, now)
-        .unwrap();
-    assert_eq!(
-        replica.durable().unwrap(),
-        settled,
-        "an older compaction after a newer one changes nothing"
-    );
-
-    admit(&mut lagging, &f.other, second, now);
-    let owner = f.owner.clone();
-    // Its history is not the one the newer fold replaces: it never took the
-    // fold that came between.
-    refused_with(
-        &mut lagging,
-        &owner,
-        newer,
-        now,
-        "does not cover exactly this replica's writes",
-    );
-}
-
-#[test]
-fn a_partial_compaction_is_refused() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let mut holder = f.host.clone();
-    let writes: Vec<NeighbourMsg> = ["1", "2", "3"]
-        .iter()
-        .map(|value| {
-            let message = write(&holder, &f.other, &keys, &author.edit("value", value), now);
-            admit(&mut holder, &f.other, message.clone(), now);
-            message
-        })
-        .collect();
-    let all = held(&holder);
-    let owner = f.owner.clone();
-
-    admit(&mut f.host, &f.other, writes[0].clone(), now);
-    let forgery = forged(&f.host, &owner, &wrapper(&f.host, &keys, &all), now);
-    refused_with(&mut f.host, &owner, forgery, now, "has not admitted");
-
-    let mut gap = f.host.clone();
-    admit(&mut gap, &f.other, writes[2].clone(), now);
-    let forgery = forged(&gap, &owner, &wrapper(&gap, &keys, &all), now);
-    refused_with(&mut gap, &owner, forgery, now, "partial");
-
-    admit(&mut f.host, &f.other, writes[1].clone(), now);
-    let (mut other_set, metadata) = wrapper(&f.host, &keys, &all[..2]);
-    other_set.prefix_hash = collab_types::hash_sealed_prefix(&all[..1]).unwrap();
-    let forgery = forged(&f.host, &owner, &(other_set, metadata), now);
-    refused_with(&mut f.host, &owner, forgery, now, "partial");
-
-    let (mut nothing, metadata) = wrapper(&f.host, &keys, &all[..1]);
-    nothing.covers = vec![(
-        Ed25519PublicKey::from_bytes(owner.verifying_key().to_bytes()),
-        floor(&f.host, &owner),
-    )];
-    nothing.prefix_hash = collab_types::hash_sealed_prefix(std::iter::empty()).unwrap();
-    let forgery = forged(&f.host, &owner, &(nothing, metadata), now);
-    refused_with(&mut f.host, &owner, forgery, now, "supersedes nothing");
-
-    let first = mint(&mut f.host, &keys, &owner, now).unwrap();
-    let third = write(&f.host, &f.other, &keys, &author.edit("value", "4"), now);
-    admit(&mut f.host, &f.other, third, now);
-    let history = held(&f.host);
-    assert_eq!(history[0], envelope_of(&first));
-    let forgery = forged(
-        &f.host,
-        &owner,
-        &wrapper(&f.host, &keys, &history[1..]),
-        now,
-    );
-    refused_with(
-        &mut f.host,
-        &owner,
-        forgery,
-        now,
-        "leaves an earlier compaction",
-    );
-}
-
-#[test]
-fn a_full_history_refuses_writes_until_a_verified_compaction_supersedes_it() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-    admit(&mut f.host, &f.other, first, now);
-    let one = held(&f.host).remove(0);
-    f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS].into();
-    let more = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
-    let other = f.other.clone();
-    refused_with(
-        &mut f.host,
-        &other,
-        more.clone(),
-        now,
-        "draft_sealed_compaction",
-    );
-
-    let compaction = forged(
-        &f.host,
-        &f.owner,
-        &wrapper(&f.host, &keys, &held(&f.host)),
-        now,
-    );
-    admit(&mut f.host, &f.owner, compaction.clone(), now);
-    assert_eq!(held(&f.host), vec![envelope_of(&compaction)]);
-    admit(&mut f.host, &f.other, more.clone(), now);
-    assert_eq!(
-        held(&f.host),
-        vec![envelope_of(&compaction), envelope_of(&more)]
-    );
-}
-
-#[test]
-fn a_compacted_record_restores_and_a_tampered_stored_compaction_does_not() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-    admit(&mut f.host, &f.other, first.clone(), now);
-    mint(&mut f.host, &keys, &f.owner, now).unwrap();
-    let second = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
-    admit(&mut f.host, &f.other, second, now);
-    let bytes = f.host.durable().unwrap();
-    assert_eq!(held(&f.restore(&bytes).unwrap()), held(&f.host));
-
-    let rewrite = |change: &dyn Fn(&mut Vec<SignedOp>)| {
-        let mut value: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
-        change(&mut value.sealed[0].1);
-        postcard::to_allocvec(&value).unwrap()
-    };
-    let covered = envelope_of(&first);
-    let owner = f.owner.clone();
-    for (tampered, why) in [
-        (
-            rewrite(&|history| history.swap(0, 1)),
-            "a compaction after a write",
-        ),
-        (
-            rewrite(&|history| history.insert(1, covered.clone())),
-            "a later write the compaction covers",
-        ),
-        (
-            rewrite(&|history| {
-                history[0].seq += 1;
-                collab_types::sign_op(&mut history[0], &owner).unwrap();
-            }),
-            "a compaction numbered past the writes it folds",
-        ),
-        (
-            rewrite(&|history| {
-                let last = history[0].payload.len() - 1;
-                history[0].payload[last] ^= 1;
-            }),
-            "an altered compaction",
-        ),
-    ] {
-        assert!(f.restore(&tampered).is_err(), "{why} restores");
-    }
-}
-
-#[test]
-fn a_history_near_its_bound_is_due_for_compaction() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let first = write(&f.host, &f.editor, &keys, &author.edit("value", "1"), now);
-    admit(&mut f.host, &f.editor, first, now);
-    assert!(f.host.publication().sealed_records_to_compact().is_empty());
-    let one = held(&f.host).remove(0);
-    f.host.core.documents.get_mut(&route()).unwrap().sealed =
-        vec![one; MAX_SEALED_OPS / 4 * 3].into();
-    assert_eq!(
-        f.host.publication().sealed_records_to_compact(),
-        vec![(APP.to_owned(), RECORD.to_owned())]
-    );
-}
-
-/// Many records each short of their own bound fill the workspace's exact
-/// admission index all the same: once it is half full, every sealed history
-/// worth folding is due, and compacting it frees the index.
-#[test]
-fn a_half_full_admission_index_makes_every_sealed_history_due() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    for index in 0..super::sealed_compaction::PRESSED_HISTORY {
-        let next = write(
-            &f.host,
-            &f.other,
-            &keys,
-            &author.edit("value", &index.to_string()),
-            now,
+        admit(&mut f.host, &f.owner, compaction.clone(), now);
+        assert_eq!(held(&f.host), vec![envelope_of(&compaction)]);
+        admit(&mut f.host, &f.other, more.clone(), now);
+        assert_eq!(
+            held(&f.host),
+            vec![envelope_of(&compaction), envelope_of(&more)]
         );
-        admit(&mut f.host, &f.other, next, now);
     }
-    assert!(f.host.publication().sealed_records_to_compact().is_empty());
-    let mut sequence = 0;
-    while !f.host.core.exact_admissions.pressed() {
-        sequence += 1;
-        f.host
-            .core
-            .exact_admissions
-            .insert(&crate::admission::DocumentAdmission {
-                key: crate::admission::AdmissionKey {
-                    workspace: WORKSPACE.into(),
-                    app: APP.into(),
-                    record: "elsewhere".into(),
-                    author: [9; 32],
-                    sequence,
-                },
-                operation_id: [1; 32],
-            })
+
+    phase a_compacted_record_restores_and_a_tampered_stored_compaction_does_not;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.host, &f.other, first.clone(), now);
+        mint(&mut f.host, &keys, &f.owner, now).unwrap();
+        let second = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
+        admit(&mut f.host, &f.other, second, now);
+        let bytes = f.host.durable().unwrap();
+        assert_eq!(held(&f.restore(&bytes).unwrap()), held(&f.host));
+
+        let rewrite = |change: &dyn Fn(&mut Vec<SignedOp>)| {
+            let mut value: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
+            change(&mut value.sealed[0].1);
+            postcard::to_allocvec(&value).unwrap()
+        };
+        let covered = envelope_of(&first);
+        let owner = f.owner.clone();
+        for (tampered, why) in [
+            (
+                rewrite(&|history| history.swap(0, 1)),
+                "a compaction after a write",
+            ),
+            (
+                rewrite(&|history| history.insert(1, covered.clone())),
+                "a later write the compaction covers",
+            ),
+            (
+                rewrite(&|history| {
+                    history[0].seq += 1;
+                    collab_types::sign_op(&mut history[0], &owner).unwrap();
+                }),
+                "a compaction numbered past the writes it folds",
+            ),
+            (
+                rewrite(&|history| {
+                    let last = history[0].payload.len() - 1;
+                    history[0].payload[last] ^= 1;
+                }),
+                "an altered compaction",
+            ),
+        ] {
+            assert!(f.restore(&tampered).is_err(), "{why} restores");
+        }
+    }
+}
+
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_history_falls_due_and_the_governor_compacts_behind_its_receipt;
+
+    phase a_history_near_its_bound_is_due_for_compaction;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let first = write(&f.host, &f.editor, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.host, &f.editor, first, now);
+        assert!(f.host.publication().sealed_records_to_compact().is_empty());
+        let one = held(&f.host).remove(0);
+        f.host.core.documents.get_mut(&route()).unwrap().sealed =
+            vec![one; MAX_SEALED_OPS / 4 * 3].into();
+        assert_eq!(
+            f.host.publication().sealed_records_to_compact(),
+            vec![(APP.to_owned(), RECORD.to_owned())]
+        );
+    }
+
+    phase a_half_full_admission_index_makes_every_sealed_history_due;
+    // Many records each short of their own bound fill the workspace's exact
+    // admission index all the same: once it is half full, every sealed history
+    // worth folding is due, and compacting it frees the index.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        for index in 0..super::sealed_compaction::PRESSED_HISTORY {
+            let next = write(
+                &f.host,
+                &f.other,
+                &keys,
+                &author.edit("value", &index.to_string()),
+                now,
+            );
+            admit(&mut f.host, &f.other, next, now);
+        }
+        assert!(f.host.publication().sealed_records_to_compact().is_empty());
+        let mut sequence = 0;
+        while !f.host.core.exact_admissions.pressed() {
+            sequence += 1;
+            f.host
+                .core
+                .exact_admissions
+                .insert(&crate::admission::DocumentAdmission {
+                    key: crate::admission::AdmissionKey {
+                        workspace: WORKSPACE.into(),
+                        app: APP.into(),
+                        record: "elsewhere".into(),
+                        author: [9; 32],
+                        sequence,
+                    },
+                    operation_id: [1; 32],
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            f.host.publication().sealed_records_to_compact(),
+            vec![(APP.to_owned(), RECORD.to_owned())]
+        );
+        let before = f.host.core.exact_admissions.len();
+        mint(&mut f.host, &keys, &f.owner, now).unwrap();
+        assert!(
+            f.host.core.exact_admissions.len() < before,
+            "the compaction folded the record's evidence"
+        );
+    }
+
+    phase the_governor_publishes_its_compaction_behind_the_records_receipt;
+    {
+        let f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut host = f.host.clone();
+        let mut author = Author::new(&host);
+        for value in ["1", "2", "3"] {
+            let sealed = write(&host, &f.editor, &keys, &author.edit("value", value), now);
+            admit(&mut host, &f.editor, sealed, now);
+        }
+        let mut before = host.clone();
+        let compaction = envelope_of(&mint(&mut host, &keys, &f.owner, now).unwrap());
+        let sealed = |messages: &[NeighbourMsg]| {
+            messages
+                .iter()
+                .filter(|message| {
+                    matches!(message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some())
+                })
+                .map(envelope_of)
+                .collect::<Vec<_>>()
+        };
+
+        let mutation = host
+            .clone()
+            .publication_mut()
+            .durable_mutation_messages(&before, &f.owner, now, 2)
             .unwrap();
+        assert_eq!(sealed(&mutation), vec![compaction.clone()]);
+        assert_eq!(
+            mutation.last().map(envelope_of),
+            Some(compaction.clone()),
+            "behind the workspace change that carries the record's receipt"
+        );
+        let bootstrap = host
+            .clone()
+            .publication_mut()
+            .durable_bootstrap_messages(&f.owner, now, 2)
+            .unwrap();
+        assert_eq!(sealed(&bootstrap), vec![compaction]);
+        assert!(
+            sealed(
+                &host
+                    .clone()
+                    .publication_mut()
+                    .durable_mutation_messages(&host, &f.owner, now, 2)
+                    .unwrap()
+            )
+            .is_empty(),
+            "a compaction already published is not published again"
+        );
+        assert!(
+            sealed(
+                &before
+                    .publication_mut()
+                    .durable_bootstrap_messages(&f.owner, now, 2)
+                    .unwrap()
+            )
+            .is_empty(),
+            "other devices' sealed writes travel as themselves, never republished"
+        );
     }
-    assert_eq!(
-        f.host.publication().sealed_records_to_compact(),
-        vec![(APP.to_owned(), RECORD.to_owned())]
-    );
-    let before = f.host.core.exact_admissions.len();
-    mint(&mut f.host, &keys, &f.owner, now).unwrap();
-    assert!(
-        f.host.core.exact_admissions.len() < before,
-        "the compaction folded the record's evidence"
-    );
-}
-
-#[test]
-fn the_governor_publishes_its_compaction_behind_the_records_receipt() {
-    let f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut host = f.host.clone();
-    let mut author = Author::new(&host);
-    for value in ["1", "2", "3"] {
-        let sealed = write(&host, &f.editor, &keys, &author.edit("value", value), now);
-        admit(&mut host, &f.editor, sealed, now);
-    }
-    let mut before = host.clone();
-    let compaction = envelope_of(&mint(&mut host, &keys, &f.owner, now).unwrap());
-    let sealed = |messages: &[NeighbourMsg]| {
-        messages
-            .iter()
-            .filter(|message| {
-                matches!(message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some())
-            })
-            .map(envelope_of)
-            .collect::<Vec<_>>()
-    };
-
-    let mutation = host
-        .clone()
-        .publication_mut()
-        .durable_mutation_messages(&before, &f.owner, now, 2)
-        .unwrap();
-    assert_eq!(sealed(&mutation), vec![compaction.clone()]);
-    assert_eq!(
-        mutation.last().map(envelope_of),
-        Some(compaction.clone()),
-        "behind the workspace change that carries the record's receipt"
-    );
-    let bootstrap = host
-        .clone()
-        .publication_mut()
-        .durable_bootstrap_messages(&f.owner, now, 2)
-        .unwrap();
-    assert_eq!(sealed(&bootstrap), vec![compaction]);
-    assert!(
-        sealed(
-            &host
-                .clone()
-                .publication_mut()
-                .durable_mutation_messages(&host, &f.owner, now, 2)
-                .unwrap()
-        )
-        .is_empty(),
-        "a compaction already published is not published again"
-    );
-    assert!(
-        sealed(
-            &before
-                .publication_mut()
-                .durable_bootstrap_messages(&f.owner, now, 2)
-                .unwrap()
-        )
-        .is_empty(),
-        "other devices' sealed writes travel as themselves, never republished"
-    );
 }
 
 #[test]
@@ -1570,450 +1681,363 @@ fn the_governor_acknowledges_sealed_writes_without_a_cleartext_checkpoint() {
     assert_eq!(watermark(&bootstrapped), Some(envelope_of(&sealed).seq));
 }
 
-#[test]
-fn captured_history_replays_causal_order_and_continues_the_original_writer() {
-    let mut f = fixture();
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let actor = automerge::ActorId::from(vec![0x31]);
-    author.0.set_actor(actor.clone());
-    let first = author.edit("value", "first");
-    let second = author.edit("value", "second");
-    let first = write(&f.host, &f.owner, &keys, &first, f.now);
-    let second = write(&f.host, &f.other, &keys, &second, f.now);
-    // A keyless replica admits the later causal mutation first.
-    admit(&mut f.host, &f.other, second, f.now);
-    admit(&mut f.host, &f.owner, first, f.now);
-    let before = f.host.durable().unwrap();
-    let restored_peer = f.restore(&before).unwrap();
-    let capture = restored_peer
-        .capture_document(
-            f.authority.device_public_key,
-            (APP, RECORD),
-            f.now,
-            1024 * 1024,
-            Some(&mut |op| open(&keys, op)),
-        )
-        .unwrap();
-    let mut restored = AutoCommit::load(&capture.into_bytes()).unwrap();
-    assert_eq!(restored.get_heads(), author.0.get_heads());
-    assert_eq!(
-        restored
-            .get(ROOT, "value")
-            .unwrap()
-            .unwrap()
-            .0
-            .into_string()
-            .unwrap(),
-        "second"
-    );
-    restored.set_actor(actor);
-    let before_edit = restored.get_heads();
-    restored.put(ROOT, "value", "third").unwrap();
-    restored.commit();
-    let next = restored.get_changes(&before_edit);
-    assert_eq!(next.len(), 1);
-    assert_eq!(
-        next[0].seq(),
-        3,
-        "replay must retain the original writer's sequence"
-    );
-    author.0.merge_incoming(&mut restored).unwrap();
-    assert_eq!(
-        author
-            .0
-            .get(ROOT, "value")
-            .unwrap()
-            .unwrap()
-            .0
-            .into_string()
-            .unwrap(),
-        "third"
-    );
-    assert_eq!(
-        f.host.durable().unwrap(),
-        before,
-        "reading never changes durable admission"
-    );
-}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn captured_history_replays_only_what_was_admitted;
 
-#[test]
-fn captured_history_folds_a_writer_sequence_written_twice() {
-    let mut f = fixture();
-    let keys = f.keys();
-    let mut first = Author::new(&f.host);
-    let mut conflicting = Author::new(&f.host);
-    let actor = automerge::ActorId::from(vec![0x41]);
-    first.0.set_actor(actor.clone());
-    conflicting.0.set_actor(actor);
-    let first = first.edit("value", "canonical");
-    let conflicting = conflicting.edit("value", "conflicting");
-    let one = write(&f.host, &f.owner, &keys, &first, f.now);
-    let two = write(&f.host, &f.other, &keys, &conflicting, f.now);
-    admit(&mut f.host, &f.owner, one, f.now);
-    admit(&mut f.host, &f.other, two, f.now);
-    let before = f.host.durable().unwrap();
-    let restored_peer = f.restore(&before).unwrap();
-    let capture = restored_peer
-        .capture_document(
-            f.authority.device_public_key,
-            (APP, RECORD),
-            f.now,
-            1024 * 1024,
-            Some(&mut |op| open(&keys, op)),
-        )
-        .expect("a reader carries the change that reached the record first, never both");
-    let mut restored = AutoCommit::load(&capture.into_bytes()).unwrap();
-    assert_eq!(
-        restored.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some("canonical")
-    );
-    // The reader continues that writer without writing its sequence twice.
-    restored.set_actor(automerge::ActorId::from(vec![0x41]));
-    let heads = restored.get_heads();
-    restored.put(ROOT, "value", "next").unwrap();
-    restored.commit();
-    assert_eq!(restored.get_changes(&heads)[0].seq(), 2);
-    assert_eq!(f.host.durable().unwrap(), before);
-}
-
-/// A late joiner is sent a record's whole sealed history, and a key holder's whole-record
-/// checkpoint re-states what it already holds: a record's history outgrows one capture of it.
-/// What a joiner reads is bounded by what its caller allows, as a record held in the clear is,
-/// and its history is bounded where it is admitted. A fixed bound of one capture's own left a
-/// joiner refused for good while every caller allowed several times the record's size.
-#[test]
-fn a_late_joiner_reads_a_sealed_history_past_one_capture() {
-    /// Incompressible: a sealed history is as large as what it carries.
-    const WRITE: usize = 1024 * 1024;
-    /// Past what one capture hands out, and what a session reading a record allows.
-    const WRITES: usize = 9;
-    const ROOM: usize = 32 * 1024 * 1024;
-    let mut f = fixture();
-    let keys = f.keys();
-    let now = f.now;
-    let mut author = Author::new(&f.host);
-    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
-    let mut value = vec![0_u8; WRITE];
-    for byte in &mut value {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        *byte = state.to_le_bytes()[0];
-    }
-    for round in 0..WRITES {
-        let mut plaintext = value.clone();
-        plaintext[0] = u8::try_from(round).unwrap();
-        let edit = author.edit_bytes(&format!("value-{round}"), plaintext);
-        let message = write(&f.host, &f.owner, &keys, &edit, now);
-        admit(&mut f.host, &f.owner, message, now);
-    }
-    let joiner = f.restore(&f.host.durable().unwrap()).unwrap();
-    let read = |maximum: usize| {
-        let mut kept = KeptRecord::default();
-        joiner
-            .open_document(
+    phase captured_history_replays_causal_order_and_continues_the_original_writer;
+    {
+        let mut f = fixture();
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let actor = automerge::ActorId::from(vec![0x31]);
+        author.0.set_actor(actor.clone());
+        let first = author.edit("value", "first");
+        let second = author.edit("value", "second");
+        let first = write(&f.host, &f.owner, &keys, &first, f.now);
+        let second = write(&f.host, &f.other, &keys, &second, f.now);
+        // A keyless replica admits the later causal mutation first.
+        admit(&mut f.host, &f.other, second, f.now);
+        admit(&mut f.host, &f.owner, first, f.now);
+        let before = f.host.durable().unwrap();
+        let restored_peer = f.restore(&before).unwrap();
+        let capture = restored_peer
+            .capture_document(
                 f.authority.device_public_key,
                 (APP, RECORD),
-                now,
-                maximum,
+                f.now,
+                1024 * 1024,
                 Some(&mut |op| open(&keys, op)),
-                &mut kept,
             )
-            .expect("a joiner reads its record")
-            .save()
-    };
-    let record = read(ROOM);
-    assert!(
-        record.len() > 8 * 1024 * 1024,
-        "the record outgrew one capture"
-    );
-    assert_eq!(read(ROOM), record, "the whole record either way");
-}
-
-#[test]
-fn captured_history_validates_route_signature_admission_and_watermarks() {
-    let mut f = fixture();
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let plaintext = author.edit("value", SECRET);
-    let op = write(&f.host, &f.owner, &keys, &plaintext, f.now);
-    admit(&mut f.host, &f.owner, op, f.now);
-    let before = f.host.durable().unwrap();
-    for corruption in 0..4 {
-        let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
-        match corruption {
-            0 => wire.sealed[0].1[0].signature.0[0] ^= 1,
-            1 => wire.sealed[0].0.app = "other.app".into(),
-            2 => {
-                wire.sealed[0].1[0].payload[0] ^= 1;
-                collab_types::sign_op(&mut wire.sealed[0].1[0], &f.owner).unwrap();
-            }
-            _ => {
-                assert_eq!(corruption, 3);
-                wire.documents[0].watermarks.clear();
-            }
-        }
-        let corrupted = postcard::to_allocvec(&wire).unwrap();
-        assert!(
-            f.restore(&corrupted).is_err(),
-            "full restore corruption {corruption}"
+            .unwrap();
+        let mut restored = AutoCommit::load(&capture.into_bytes()).unwrap();
+        assert_eq!(restored.get_heads(), author.0.get_heads());
+        assert_eq!(
+            restored
+                .get(ROOT, "value")
+                .unwrap()
+                .unwrap()
+                .0
+                .into_string()
+                .unwrap(),
+            "second"
+        );
+        restored.set_actor(actor);
+        let before_edit = restored.get_heads();
+        restored.put(ROOT, "value", "third").unwrap();
+        restored.commit();
+        let next = restored.get_changes(&before_edit);
+        assert_eq!(next.len(), 1);
+        assert_eq!(
+            next[0].seq(),
+            3,
+            "replay must retain the original writer's sequence"
+        );
+        author.0.merge_incoming(&mut restored).unwrap();
+        assert_eq!(
+            author
+                .0
+                .get(ROOT, "value")
+                .unwrap()
+                .unwrap()
+                .0
+                .into_string()
+                .unwrap(),
+            "third"
+        );
+        assert_eq!(
+            f.host.durable().unwrap(),
+            before,
+            "reading never changes durable admission"
         );
     }
-    assert_eq!(f.host.durable().unwrap(), before);
-}
 
-#[test]
-fn captured_history_missing_admitted_write_is_refused_before_opening() {
-    let mut f = fixture();
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    for value in ["first", "second"] {
-        let plaintext = author.edit("value", value);
-        let message = write(&f.host, &f.owner, &keys, &plaintext, f.now);
-        admit(&mut f.host, &f.owner, message, f.now);
+    phase captured_history_folds_a_writer_sequence_written_twice;
+    {
+        let mut f = fixture();
+        let keys = f.keys();
+        let mut first = Author::new(&f.host);
+        let mut conflicting = Author::new(&f.host);
+        let actor = automerge::ActorId::from(vec![0x41]);
+        first.0.set_actor(actor.clone());
+        conflicting.0.set_actor(actor);
+        let first = first.edit("value", "canonical");
+        let conflicting = conflicting.edit("value", "conflicting");
+        let one = write(&f.host, &f.owner, &keys, &first, f.now);
+        let two = write(&f.host, &f.other, &keys, &conflicting, f.now);
+        admit(&mut f.host, &f.owner, one, f.now);
+        admit(&mut f.host, &f.other, two, f.now);
+        let before = f.host.durable().unwrap();
+        let restored_peer = f.restore(&before).unwrap();
+        let capture = restored_peer
+            .capture_document(
+                f.authority.device_public_key,
+                (APP, RECORD),
+                f.now,
+                1024 * 1024,
+                Some(&mut |op| open(&keys, op)),
+            )
+            .expect("a reader carries the change that reached the record first, never both");
+        let mut restored = AutoCommit::load(&capture.into_bytes()).unwrap();
+        assert_eq!(
+            restored.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("canonical")
+        );
+        // The reader continues that writer without writing its sequence twice.
+        restored.set_actor(automerge::ActorId::from(vec![0x41]));
+        let heads = restored.get_heads();
+        restored.put(ROOT, "value", "next").unwrap();
+        restored.commit();
+        assert_eq!(restored.get_changes(&heads)[0].seq(), 2);
+        assert_eq!(f.host.durable().unwrap(), before);
     }
-    let before = f.host.durable().unwrap();
-    let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
-    wire.sealed[0].1.remove(0);
-    let incomplete = postcard::to_allocvec(&wire).unwrap();
-    let restored_peer = f.restore(&incomplete).unwrap();
-    let mut opened = 0;
-    let result = restored_peer.capture_document(
-        f.authority.device_public_key,
-        (APP, RECORD),
-        f.now,
-        1024 * 1024,
-        Some(&mut |op| {
-            opened += 1;
-            open(&keys, op)
-        }),
-    );
-    assert!(matches!(
-        result,
-        Err(crate::PeerDocumentReadError::Incomplete)
-    ));
-    assert_eq!(opened, 0, "incomplete coverage is not decrypted");
-    assert_eq!(f.host.durable().unwrap(), before);
-}
 
-#[test]
-fn captured_history_denial_and_capacity_precede_opening_and_missing_keys_refuse() {
-    let mut f = fixture();
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let plaintext = author.edit("value", SECRET);
-    let message = write(&f.host, &f.owner, &keys, &plaintext, f.now);
-    admit(&mut f.host, &f.owner, message, f.now);
-    let before = f.host.durable().unwrap();
-    let restored_peer = f.restore(&before).unwrap();
-    let mut opened = 0;
-    let result = restored_peer.capture_document(
-        [0x77; 32],
-        (APP, RECORD),
-        f.now,
-        1024 * 1024,
-        Some(&mut |op| {
-            opened += 1;
-            open(&keys, op)
-        }),
-    );
-    assert!(matches!(
-        result,
-        Err(crate::PeerDocumentReadError::Membership(_))
-    ));
-    assert_eq!(opened, 0, "an unauthenticated reader is not decrypted");
-    let result = restored_peer.capture_document(
-        f.authority.device_public_key,
-        (APP, RECORD),
-        f.now,
-        1,
-        Some(&mut |op| {
-            opened += 1;
-            open(&keys, op)
-        }),
-    );
-    assert!(matches!(
-        result,
-        Err(crate::PeerDocumentReadError::Capacity)
-    ));
-    assert_eq!(
-        opened, 0,
-        "the base exceeds the caller's bound before opening"
-    );
-    let wrong_keys = fixture().keys();
-    let result = restored_peer.capture_document(
-        f.authority.device_public_key,
-        (APP, RECORD),
-        f.now,
-        1024 * 1024,
-        Some(&mut |op| open(&wrong_keys, op)),
-    );
-    assert!(matches!(
-        result,
-        Err(crate::PeerDocumentReadError::Opening(_))
-    ));
-    assert_eq!(f.host.durable().unwrap(), before);
-}
+    phase a_late_joiner_reads_a_sealed_history_past_one_capture;
+    // A late joiner is sent a record's whole sealed history, and a key holder's whole-record
+    // checkpoint re-states what it already holds: a record's history outgrows one capture of it.
+    // What a joiner reads is bounded by what its caller allows, as a record held in the clear is,
+    // and its history is bounded where it is admitted. A fixed bound of one capture's own left a
+    // joiner refused for good while every caller allowed several times the record's size.
+    {
+        /// Incompressible: a sealed history is as large as what it carries.
+        const WRITE: usize = 1024 * 1024;
+        /// Past what one capture hands out, and what a session reading a record allows.
+        const WRITES: usize = 9;
+        const ROOM: usize = 32 * 1024 * 1024;
+        let mut f = fixture();
+        let keys = f.keys();
+        let now = f.now;
+        let mut author = Author::new(&f.host);
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut value = vec![0_u8; WRITE];
+        for byte in &mut value {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state.to_le_bytes()[0];
+        }
+        for round in 0..WRITES {
+            let mut plaintext = value.clone();
+            plaintext[0] = u8::try_from(round).unwrap();
+            let edit = author.edit_bytes(&format!("value-{round}"), plaintext);
+            let message = write(&f.host, &f.owner, &keys, &edit, now);
+            admit(&mut f.host, &f.owner, message, now);
+        }
+        let joiner = f.restore(&f.host.durable().unwrap()).unwrap();
+        let read = |maximum: usize| {
+            let mut kept = KeptRecord::default();
+            joiner
+                .open_document(
+                    f.authority.device_public_key,
+                    (APP, RECORD),
+                    now,
+                    maximum,
+                    Some(&mut |op| open(&keys, op)),
+                    &mut kept,
+                )
+                .expect("a joiner reads its record")
+                .save()
+        };
+        let record = read(ROOM);
+        assert!(
+            record.len() > 8 * 1024 * 1024,
+            "the record outgrew one capture"
+        );
+        assert_eq!(read(ROOM), record, "the whole record either way");
+    }
 
-#[test]
-fn captured_history_replays_compaction_and_waits_for_epochs_not_held() {
-    let mut f = fixture();
-    let old_keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let plaintext = author.edit("value", "before rotation");
-    let message = write(&f.host, &f.owner, &old_keys, &plaintext, f.now);
-    admit(&mut f.host, &f.owner, message, f.now);
-    mint(&mut f.host, &old_keys, &f.owner, f.now).unwrap();
-    let new_keys = f.rotate();
-    let plaintext = author.edit("value", "after rotation");
-    let message = write(&f.host, &f.owner, &new_keys, &plaintext, f.now);
-    admit(&mut f.host, &f.owner, message, f.now);
-    let before = f.host.durable().unwrap();
-    let restored_peer = f.restore(&before).unwrap();
-    let capture = restored_peer
-        .capture_document(
+    phase captured_history_validates_route_signature_admission_and_watermarks;
+    {
+        let mut f = fixture();
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let plaintext = author.edit("value", SECRET);
+        let op = write(&f.host, &f.owner, &keys, &plaintext, f.now);
+        admit(&mut f.host, &f.owner, op, f.now);
+        let before = f.host.durable().unwrap();
+        for corruption in 0..4 {
+            let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
+            match corruption {
+                0 => wire.sealed[0].1[0].signature.0[0] ^= 1,
+                1 => wire.sealed[0].0.app = "other.app".into(),
+                2 => {
+                    wire.sealed[0].1[0].payload[0] ^= 1;
+                    collab_types::sign_op(&mut wire.sealed[0].1[0], &f.owner).unwrap();
+                }
+                _ => {
+                    assert_eq!(corruption, 3);
+                    wire.documents[0].watermarks.clear();
+                }
+            }
+            let corrupted = postcard::to_allocvec(&wire).unwrap();
+            assert!(
+                f.restore(&corrupted).is_err(),
+                "full restore corruption {corruption}"
+            );
+        }
+        assert_eq!(f.host.durable().unwrap(), before);
+    }
+
+    phase captured_history_missing_admitted_write_is_refused_before_opening;
+    {
+        let mut f = fixture();
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        for value in ["first", "second"] {
+            let plaintext = author.edit("value", value);
+            let message = write(&f.host, &f.owner, &keys, &plaintext, f.now);
+            admit(&mut f.host, &f.owner, message, f.now);
+        }
+        let before = f.host.durable().unwrap();
+        let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
+        wire.sealed[0].1.remove(0);
+        let incomplete = postcard::to_allocvec(&wire).unwrap();
+        let restored_peer = f.restore(&incomplete).unwrap();
+        let mut opened = 0;
+        let result = restored_peer.capture_document(
             f.authority.device_public_key,
             (APP, RECORD),
             f.now,
             1024 * 1024,
             Some(&mut |op| {
-                let keys = if op.encryption.unwrap().epoch == old_keys.epoch() {
-                    &old_keys
-                } else {
-                    &new_keys
-                };
-                open(keys, op)
+                opened += 1;
+                open(&keys, op)
             }),
-        )
-        .unwrap();
-    let mut restored = AutoCommit::load(&capture.into_bytes()).unwrap();
-    assert_eq!(restored.get_heads(), author.0.get_heads());
-    assert_eq!(
-        restored
-            .get(ROOT, "value")
-            .unwrap()
-            .unwrap()
-            .0
-            .into_string()
-            .unwrap(),
-        "after rotation"
-    );
-    // Without the rotated key the capture is the compaction alone: the write after it waits.
-    let capture = restored_peer
-        .capture_document(
+        );
+        assert!(matches!(
+            result,
+            Err(crate::PeerDocumentReadError::Incomplete)
+        ));
+        assert_eq!(opened, 0, "incomplete coverage is not decrypted");
+        assert_eq!(f.host.durable().unwrap(), before);
+    }
+
+    phase captured_history_denial_and_capacity_precede_opening_and_missing_keys_refuse;
+    {
+        let mut f = fixture();
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let plaintext = author.edit("value", SECRET);
+        let message = write(&f.host, &f.owner, &keys, &plaintext, f.now);
+        admit(&mut f.host, &f.owner, message, f.now);
+        let before = f.host.durable().unwrap();
+        let restored_peer = f.restore(&before).unwrap();
+        let mut opened = 0;
+        let result = restored_peer.capture_document(
+            [0x77; 32],
+            (APP, RECORD),
+            f.now,
+            1024 * 1024,
+            Some(&mut |op| {
+                opened += 1;
+                open(&keys, op)
+            }),
+        );
+        assert!(matches!(
+            result,
+            Err(crate::PeerDocumentReadError::Membership(_))
+        ));
+        assert_eq!(opened, 0, "an unauthenticated reader is not decrypted");
+        let result = restored_peer.capture_document(
+            f.authority.device_public_key,
+            (APP, RECORD),
+            f.now,
+            1,
+            Some(&mut |op| {
+                opened += 1;
+                open(&keys, op)
+            }),
+        );
+        assert!(matches!(
+            result,
+            Err(crate::PeerDocumentReadError::Capacity)
+        ));
+        assert_eq!(
+            opened, 0,
+            "the base exceeds the caller's bound before opening"
+        );
+        let wrong_keys = fixture().keys();
+        let result = restored_peer.capture_document(
             f.authority.device_public_key,
             (APP, RECORD),
             f.now,
             1024 * 1024,
-            Some(&mut |op| open(&old_keys, op)),
-        )
-        .unwrap();
-    let restored = AutoCommit::load(&capture.into_bytes()).unwrap();
-    assert_eq!(
-        restored.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some("before rotation")
-    );
-    let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
-    wire.sealed[0].1.swap(0, 1);
-    let misplaced = postcard::to_allocvec(&wire).unwrap();
-    assert!(
-        f.restore(&misplaced).is_err(),
-        "a compaction is first, never a later write"
-    );
-    assert_eq!(f.host.durable().unwrap(), before);
-}
-
-/// Every round of writes a compaction folds leaves one mark per writer,
-/// not an exact entry per write: the index stays the same size however
-/// long the record runs. A folded write sent again is ignored, whatever its
-/// bytes; above the mark a conflicting write is still refused.
-#[test]
-fn a_compaction_folds_its_writes_exact_evidence_into_one_mark_per_writer() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let mut first = None;
-    let mut sizes = Vec::new();
-    for round in 0..3 {
-        for index in 0..200 {
-            let key = if index % 2 == 0 {
-                f.other.clone()
-            } else {
-                f.editor.clone()
-            };
-            let next = write(
-                &f.host,
-                &key,
-                &keys,
-                &author.edit("value", &format!("{round}.{index}")),
-                now,
-            );
-            first.get_or_insert_with(|| next.clone());
-            admit(&mut f.host, &key, next, now);
-        }
-        mint(&mut f.host, &keys, &f.owner, now).unwrap();
-        sizes.push(f.host.core.exact_admissions.len());
-    }
-    // A compaction is numbered as a write it folds, so its evidence is the
-    // mark of that fold, never an entry: what stays is the owner's seeded
-    // checkpoint, above the number the owner's first fold takes.
-    assert_eq!(
-        sizes,
-        vec![1, 1, 1],
-        "a fold adds marks, and the index does not grow"
-    );
-    let index = &f.host.core.exact_admissions;
-    for writer in [&f.other, &f.editor] {
-        let mark = index
-            .marks()
-            .find(|(key, _)| key.author == writer.verifying_key().to_bytes())
-            .map(|(_, mark)| mark);
-        assert_eq!(
-            mark,
-            Some(floor(&f.host, writer)),
-            "a writer's mark is its last folded write"
+            Some(&mut |op| open(&wrong_keys, op)),
         );
+        assert!(matches!(
+            result,
+            Err(crate::PeerDocumentReadError::Opening(_))
+        ));
+        assert_eq!(f.host.durable().unwrap(), before);
     }
 
-    // The first write again, and a different write at its sequence: both
-    // are in the snapshot already, so both are ignored.
-    let first = first.unwrap();
-    let report = f
-        .host
-        .receive_from_report(origin(&f.other), first.clone(), now)
-        .unwrap();
-    assert!(matches!(report.primary(), InputDisposition::Duplicate(_)));
-    let mut rewritten = envelope_of(&first);
-    rewritten.timestamp += Duration::from_secs(1);
-    collab_types::sign_op(&mut rewritten, &f.other).unwrap();
-    let report = f
-        .host
-        .receive_from_report(origin(&f.other), message(rewritten), now)
-        .unwrap();
-    assert!(matches!(report.primary(), InputDisposition::Duplicate(_)));
-    assert_eq!(held(&f.host).len(), 1, "nothing folded comes back");
-
-    // Above the mark the evidence is exact again.
-    let above = write(&f.host, &f.other, &keys, &author.edit("value", "late"), now);
-    admit(&mut f.host, &f.other, above.clone(), now);
-    let mut conflicting = envelope_of(&above);
-    conflicting.timestamp += Duration::from_secs(1);
-    collab_types::sign_op(&mut conflicting, &f.other).unwrap();
-    assert!(
-        f.host
-            .receive_from_report(origin(&f.other), message(conflicting), now)
-            .is_err(),
-        "a second write at an unfolded sequence conflicts"
-    );
-
-    // The marks are part of the durable state.
-    let restored = f.restore(&f.host.durable().unwrap()).unwrap();
-    assert_eq!(
-        restored.core.exact_admissions.encode().unwrap(),
-        f.host.core.exact_admissions.encode().unwrap()
-    );
+    phase captured_history_replays_compaction_and_waits_for_epochs_not_held;
+    {
+        let mut f = fixture();
+        let old_keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let plaintext = author.edit("value", "before rotation");
+        let message = write(&f.host, &f.owner, &old_keys, &plaintext, f.now);
+        admit(&mut f.host, &f.owner, message, f.now);
+        mint(&mut f.host, &old_keys, &f.owner, f.now).unwrap();
+        let new_keys = f.rotate();
+        let plaintext = author.edit("value", "after rotation");
+        let message = write(&f.host, &f.owner, &new_keys, &plaintext, f.now);
+        admit(&mut f.host, &f.owner, message, f.now);
+        let before = f.host.durable().unwrap();
+        let restored_peer = f.restore(&before).unwrap();
+        let capture = restored_peer
+            .capture_document(
+                f.authority.device_public_key,
+                (APP, RECORD),
+                f.now,
+                1024 * 1024,
+                Some(&mut |op| {
+                    let keys = if op.encryption.unwrap().epoch == old_keys.epoch() {
+                        &old_keys
+                    } else {
+                        &new_keys
+                    };
+                    open(keys, op)
+                }),
+            )
+            .unwrap();
+        let mut restored = AutoCommit::load(&capture.into_bytes()).unwrap();
+        assert_eq!(restored.get_heads(), author.0.get_heads());
+        assert_eq!(
+            restored
+                .get(ROOT, "value")
+                .unwrap()
+                .unwrap()
+                .0
+                .into_string()
+                .unwrap(),
+            "after rotation"
+        );
+        // Without the rotated key the capture is the compaction alone: the write after it waits.
+        let capture = restored_peer
+            .capture_document(
+                f.authority.device_public_key,
+                (APP, RECORD),
+                f.now,
+                1024 * 1024,
+                Some(&mut |op| open(&old_keys, op)),
+            )
+            .unwrap();
+        let restored = AutoCommit::load(&capture.into_bytes()).unwrap();
+        assert_eq!(
+            restored.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("before rotation")
+        );
+        let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
+        wire.sealed[0].1.swap(0, 1);
+        let misplaced = postcard::to_allocvec(&wire).unwrap();
+        assert!(
+            f.restore(&misplaced).is_err(),
+            "a compaction is first, never a later write"
+        );
+        assert_eq!(f.host.durable().unwrap(), before);
+    }
 }
 
 fn sealer(
@@ -2027,266 +2051,271 @@ fn sealer(
     }
 }
 
-#[test]
-fn the_key_holder_seals_a_record_held_in_the_clear_from_its_next_write_on() {
-    let f = fixture();
-    let keys = f.keys();
-    let mut host = f.host.clone();
-    assert!(!host.publication().is_sealed_record(APP, RECORD));
-    let mut document = AutoCommit::load(&host.document(APP, RECORD).unwrap()).unwrap();
-    let heads = document.get_heads();
-    document.put(ROOT, "value", "sealed").unwrap();
-    document.commit_edit("fixture", "value");
-    let message = host
-        .publication_mut()
-        .publish_sealed_incremental(
-            APP,
-            RECORD,
-            document.save_after(&heads),
-            &mut sealer(&keys, RECORD),
-            &f.owner,
-            f.now,
-        )
-        .unwrap();
-    assert!(envelope_of(&message).encryption.is_some());
-    assert!(host.publication().is_sealed_record(APP, RECORD));
-    let opened = host
-        .publication()
-        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        AutoCommit::load(&opened.document)
-            .unwrap()
-            .get(ROOT, "value")
-            .unwrap()
-            .unwrap()
-            .0
-            .to_string(),
-        "\"sealed\""
-    );
-    assert!(
-        host.publication_mut()
-            .publish_incremental(APP, RECORD, Vec::new(), &f.owner, f.now)
-            .is_err()
-    );
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn the_key_holder_seals_a_record_and_it_stays_sealed;
 
-    let mut keyless = f.host.clone();
-    admit(&mut keyless, &f.owner, message, f.now);
-    assert!(keyless.publication().is_sealed_record(APP, RECORD));
-}
-
-/// A record is born from its owner's checkpoint, which holds nothing; its
-/// key holder's first write, its genesis, is sealed.
-#[test]
-fn the_key_holder_writes_a_new_records_genesis_sealed() {
-    let f = fixture();
-    let record = "tab:2";
-    let group = KeyGroup::create(
-        collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
-        MemberKey::generate("owner").unwrap(),
-    )
-    .unwrap();
-    let keys = group.content_keys().unwrap();
-    let mut genesis = AutoCommit::new();
-    genesis.put(ROOT, "value", "born sealed").unwrap();
-    genesis.commit_edit("fixture", "value");
-    let mut host = f.host.clone();
-    host.publication_mut()
-        .publish_document(APP, record, AutoCommit::new().save(), &f.owner, f.now)
-        .unwrap();
-    let message = host
-        .publication_mut()
-        .publish_sealed_incremental(
-            APP,
-            record,
-            genesis.save_after(&[]),
-            &mut sealer(&keys, record),
-            &f.owner,
-            f.now,
-        )
-        .unwrap();
-    assert!(host.publication().is_sealed_record(APP, record));
-    assert_eq!(
-        AutoCommit::load(&host.document(APP, record).unwrap())
-            .unwrap()
-            .get_heads(),
-        Vec::new()
-    );
-    let opened = host
-        .publication()
-        .opened_document(APP, record, &mut |op| open(&keys, op))
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        AutoCommit::load(&opened.document).unwrap().get_heads(),
-        genesis.get_heads()
-    );
-    // Its writer reads the record as it was written, before and after a
-    // restart: the empty start in the clear is content the record carries.
-    let read = |host: &StatePeer| {
-        let capture = host
-            .capture_document(
-                f.owner.verifying_key().to_bytes(),
-                (APP, record),
-                f.now,
-                64 * 1024,
-                Some(&mut |op| open(&keys, op)),
-            )
-            .unwrap_or_else(|error| panic!("the record does not read: {error}"));
-        AutoCommit::load(&capture.into_bytes()).unwrap().get_heads()
-    };
-    assert_eq!(read(&host), genesis.get_heads());
-    let restored = f.restore(&host.durable().unwrap()).unwrap();
-    assert_eq!(read(&restored), genesis.get_heads(), "after a restart");
-    assert!(envelope_of(&message).encryption.is_some());
-}
-
-#[test]
-fn a_record_its_key_holder_seals_is_never_published_in_the_clear_again() {
-    let f = fixture();
-    let mut host = f.host.clone();
-    assert!(host.seal_record(APP, RECORD));
-    assert!(host.publication().is_sealed_record(APP, RECORD));
-    assert!(
-        host.clone()
+    phase the_key_holder_seals_a_record_held_in_the_clear_from_its_next_write_on;
+    {
+        let f = fixture();
+        let keys = f.keys();
+        let mut host = f.host.clone();
+        assert!(!host.publication().is_sealed_record(APP, RECORD));
+        let mut document = AutoCommit::load(&host.document(APP, RECORD).unwrap()).unwrap();
+        let heads = document.get_heads();
+        document.put(ROOT, "value", "sealed").unwrap();
+        document.commit_edit("fixture", "value");
+        let message = host
             .publication_mut()
-            .publish_incremental(APP, RECORD, Vec::new(), &f.owner, f.now)
-            .is_err()
-    );
-    let restored = f.restore(&host.durable().unwrap()).unwrap();
-    assert!(restored.publication().is_sealed_record(APP, RECORD));
-    let messages = host
-        .publication_mut()
-        .durable_bootstrap_messages(&f.owner, f.now, 2)
-        .unwrap();
-    assert!(!messages.iter().any(
-        |message| matches!(message, NeighbourMsg::AppDocument { record_id, .. } if record_id == RECORD)
-    ));
-    assert!(!host.seal_record(APP, "tab:2"));
-}
-
-/// A cleartext write held here for what it builds on came before the seal in
-/// the record's order: the seal waits behind it, so the record's base takes
-/// in every write made before it sealed, however they arrive.
-#[test]
-fn a_seal_waits_behind_the_cleartext_writes_held_before_it() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    // A write in the clear names its action, as a device's executor signs it.
-    let mut named = |key: &str, value: &str| {
-        let heads = author.0.get_heads();
-        author.0.put(ROOT, key, value).unwrap();
-        author.0.commit_edit("fixture", key);
-        DocumentMutation::Incremental(author.0.save_after(&heads))
-            .encode()
-            .unwrap()
-    };
-    let seq = next_seq(&f.host, &f.owner);
-    let first = message(signed(
-        &f.owner,
-        seq,
-        OpKind::Change,
-        named("first", "1"),
-        None,
-        now,
-    ));
-    let second = message(signed(
-        &f.owner,
-        seq.checked_add(1).unwrap(),
-        OpKind::Change,
-        named("second", "2"),
-        None,
-        now,
-    ));
-    let sealed = named("sealed", "yes");
-    let seal = write(&f.host, &f.other, &keys, &sealed, now);
-    // `second` waits for `first`, which arrives after the seal.
-    let report = f
-        .host
-        .receive_from_report(origin(&f.owner), second, now)
-        .unwrap();
-    assert!(matches!(report.primary(), InputDisposition::RetryLater(_)));
-    f.host
-        .receive_from_report(origin(&f.other), seal, now)
-        .unwrap();
-    f.host
-        .receive_from_report(origin(&f.owner), first, now)
-        .expect("a cleartext write before the seal is the record's base");
-    assert!(f.host.publication().is_sealed_record(APP, RECORD));
-    let opened = f
-        .host
-        .publication()
-        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-        .unwrap()
-        .unwrap();
-    let read = AutoCommit::load(&opened.document).unwrap();
-    for (key, value) in [("first", "1"), ("second", "2"), ("sealed", "yes")] {
-        assert_eq!(
-            read.get(ROOT, key)
-                .unwrap()
-                .map(|(value, _)| value.to_string()),
-            Some(format!("\"{value}\"")),
-            "{key}"
-        );
-    }
-}
-
-/// Sealed changes that came before the record's checkpoint, more than the
-/// held queue keeps: the ones let go are no base the checkpoint waits
-/// behind. It founds the record, and the host is asked for what was let go.
-#[test]
-fn a_checkpoint_founds_its_record_behind_sealed_changes_let_go() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut author = Author::new(&f.host);
-    let mut changes = Vec::new();
-    for n in 0..=held::MAX_HELD_INPUTS {
-        let change = write(
-            &f.host,
-            &f.other,
-            &keys,
-            &author.edit("value", &n.to_string()),
-            now,
-        );
-        admit(&mut f.host, &f.other, change.clone(), now);
-        changes.push(change);
-    }
-    let saved = checkpoint(&f.host, &keys, &f.owner, now);
-
-    let mut fresh = StatePeer::new(
-        WORKSPACE,
-        f.authority.clone(),
-        vec![],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    fresh.select_exact_admissions().unwrap();
-    fresh
-        .receive_from(origin(&f.owner), f.host.workspace_message(), now)
-        .unwrap();
-    let mut let_go = 0;
-    for change in changes {
-        let report = fresh
-            .receive_from_report(origin(&f.other), change, now)
+            .publish_sealed_incremental(
+                APP,
+                RECORD,
+                document.save_after(&heads),
+                &mut sealer(&keys, RECORD),
+                &f.owner,
+                f.now,
+            )
             .unwrap();
-        let_go += report.summary().dropped.len();
+        assert!(envelope_of(&message).encryption.is_some());
+        assert!(host.publication().is_sealed_record(APP, RECORD));
+        let opened = host
+            .publication()
+            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            AutoCommit::load(&opened.document)
+                .unwrap()
+                .get(ROOT, "value")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_string(),
+            "\"sealed\""
+        );
+        assert!(
+            host.publication_mut()
+                .publish_incremental(APP, RECORD, Vec::new(), &f.owner, f.now)
+                .is_err()
+        );
+
+        let mut keyless = f.host.clone();
+        admit(&mut keyless, &f.owner, message, f.now);
+        assert!(keyless.publication().is_sealed_record(APP, RECORD));
     }
-    assert!(let_go > 0, "the held queue let a change go");
-    let report = fresh
-        .receive_from_report(origin(&f.owner), saved.clone(), now)
+
+    phase the_key_holder_writes_a_new_records_genesis_sealed;
+    // A record is born from its owner's checkpoint, which holds nothing; its
+    // key holder's first write, its genesis, is sealed.
+    {
+        let f = fixture();
+        let record = "tab:2";
+        let group = KeyGroup::create(
+            collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
+            MemberKey::generate("owner").unwrap(),
+        )
         .unwrap();
-    assert!(
-        matches!(report.primary(), InputDisposition::Accepted(_)),
-        "the checkpoint founds the record: {:?}",
-        report.primary()
-    );
-    assert!(report.replay_wanted, "what was let go is asked for again");
-    assert_eq!(held(&fresh).first(), Some(&envelope_of(&saved)));
+        let keys = group.content_keys().unwrap();
+        let mut genesis = AutoCommit::new();
+        genesis.put(ROOT, "value", "born sealed").unwrap();
+        genesis.commit_edit("fixture", "value");
+        let mut host = f.host.clone();
+        host.publication_mut()
+            .publish_document(APP, record, AutoCommit::new().save(), &f.owner, f.now)
+            .unwrap();
+        let message = host
+            .publication_mut()
+            .publish_sealed_incremental(
+                APP,
+                record,
+                genesis.save_after(&[]),
+                &mut sealer(&keys, record),
+                &f.owner,
+                f.now,
+            )
+            .unwrap();
+        assert!(host.publication().is_sealed_record(APP, record));
+        assert_eq!(
+            AutoCommit::load(&host.document(APP, record).unwrap())
+                .unwrap()
+                .get_heads(),
+            Vec::new()
+        );
+        let opened = host
+            .publication()
+            .opened_document(APP, record, &mut |op| open(&keys, op))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            AutoCommit::load(&opened.document).unwrap().get_heads(),
+            genesis.get_heads()
+        );
+        // Its writer reads the record as it was written, before and after a
+        // restart: the empty start in the clear is content the record carries.
+        let read = |host: &StatePeer| {
+            let capture = host
+                .capture_document(
+                    f.owner.verifying_key().to_bytes(),
+                    (APP, record),
+                    f.now,
+                    64 * 1024,
+                    Some(&mut |op| open(&keys, op)),
+                )
+                .unwrap_or_else(|error| panic!("the record does not read: {error}"));
+            AutoCommit::load(&capture.into_bytes()).unwrap().get_heads()
+        };
+        assert_eq!(read(&host), genesis.get_heads());
+        let restored = f.restore(&host.durable().unwrap()).unwrap();
+        assert_eq!(read(&restored), genesis.get_heads(), "after a restart");
+        assert!(envelope_of(&message).encryption.is_some());
+    }
+
+    phase a_record_its_key_holder_seals_is_never_published_in_the_clear_again;
+    {
+        let f = fixture();
+        let mut host = f.host.clone();
+        assert!(host.seal_record(APP, RECORD));
+        assert!(host.publication().is_sealed_record(APP, RECORD));
+        assert!(
+            host.clone()
+                .publication_mut()
+                .publish_incremental(APP, RECORD, Vec::new(), &f.owner, f.now)
+                .is_err()
+        );
+        let restored = f.restore(&host.durable().unwrap()).unwrap();
+        assert!(restored.publication().is_sealed_record(APP, RECORD));
+        let messages = host
+            .publication_mut()
+            .durable_bootstrap_messages(&f.owner, f.now, 2)
+            .unwrap();
+        assert!(!messages.iter().any(
+            |message| matches!(message, NeighbourMsg::AppDocument { record_id, .. } if record_id == RECORD)
+        ));
+        assert!(!host.seal_record(APP, "tab:2"));
+    }
+
+    phase a_seal_waits_behind_the_cleartext_writes_held_before_it;
+    // A cleartext write held here for what it builds on came before the seal in
+    // the record's order: the seal waits behind it, so the record's base takes
+    // in every write made before it sealed, however they arrive.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        // A write in the clear names its action, as a device's executor signs it.
+        let mut named = |key: &str, value: &str| {
+            let heads = author.0.get_heads();
+            author.0.put(ROOT, key, value).unwrap();
+            author.0.commit_edit("fixture", key);
+            DocumentMutation::Incremental(author.0.save_after(&heads))
+                .encode()
+                .unwrap()
+        };
+        let seq = next_seq(&f.host, &f.owner);
+        let first = message(signed(
+            &f.owner,
+            seq,
+            OpKind::Change,
+            named("first", "1"),
+            None,
+            now,
+        ));
+        let second = message(signed(
+            &f.owner,
+            seq.checked_add(1).unwrap(),
+            OpKind::Change,
+            named("second", "2"),
+            None,
+            now,
+        ));
+        let sealed = named("sealed", "yes");
+        let seal = write(&f.host, &f.other, &keys, &sealed, now);
+        // `second` waits for `first`, which arrives after the seal.
+        let report = f
+            .host
+            .receive_from_report(origin(&f.owner), second, now)
+            .unwrap();
+        assert!(matches!(report.primary(), InputDisposition::RetryLater(_)));
+        f.host
+            .receive_from_report(origin(&f.other), seal, now)
+            .unwrap();
+        f.host
+            .receive_from_report(origin(&f.owner), first, now)
+            .expect("a cleartext write before the seal is the record's base");
+        assert!(f.host.publication().is_sealed_record(APP, RECORD));
+        let opened = f
+            .host
+            .publication()
+            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+            .unwrap()
+            .unwrap();
+        let read = AutoCommit::load(&opened.document).unwrap();
+        for (key, value) in [("first", "1"), ("second", "2"), ("sealed", "yes")] {
+            assert_eq!(
+                read.get(ROOT, key)
+                    .unwrap()
+                    .map(|(value, _)| value.to_string()),
+                Some(format!("\"{value}\"")),
+                "{key}"
+            );
+        }
+    }
+
+    phase a_checkpoint_founds_its_record_behind_sealed_changes_let_go;
+    // Sealed changes that came before the record's checkpoint, more than the
+    // held queue keeps: the ones let go are no base the checkpoint waits
+    // behind. It founds the record, and the host is asked for what was let go.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.host);
+        let mut changes = Vec::new();
+        for n in 0..=held::MAX_HELD_INPUTS {
+            let change = write(
+                &f.host,
+                &f.other,
+                &keys,
+                &author.edit("value", &n.to_string()),
+                now,
+            );
+            admit(&mut f.host, &f.other, change.clone(), now);
+            changes.push(change);
+        }
+        let saved = checkpoint(&f.host, &keys, &f.owner, now);
+
+        let mut fresh = StatePeer::new(
+            WORKSPACE,
+            f.authority.clone(),
+            vec![],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        fresh.select_exact_admissions().unwrap();
+        fresh
+            .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+            .unwrap();
+        let mut let_go = 0;
+        for change in changes {
+            let report = fresh
+                .receive_from_report(origin(&f.other), change, now)
+                .unwrap();
+            let_go += report.summary().dropped.len();
+        }
+        assert!(let_go > 0, "the held queue let a change go");
+        let report = fresh
+            .receive_from_report(origin(&f.owner), saved.clone(), now)
+            .unwrap();
+        assert!(
+            matches!(report.primary(), InputDisposition::Accepted(_)),
+            "the checkpoint founds the record: {:?}",
+            report.primary()
+        );
+        assert!(report.replay_wanted, "what was let go is asked for again");
+        assert_eq!(held(&fresh).first(), Some(&envelope_of(&saved)));
+    }
 }
 
 /// A record whose merged state no single op can carry, written on past the bound of its history,
@@ -2705,227 +2734,231 @@ fn text(doc: &AutoCommit, key: &str) -> Option<String> {
         .and_then(|(value, _)| value.into_string().ok())
 }
 
-/// A page that held a sealed record's keys before the record itself wrote a change in that moment,
-/// which it let go unsigned and unsent, and its next change, built on the first, was taken: the
-/// record holds a change whose base its own writer never sent, and no device ever will. A reader
-/// reads the record without it rather than refusing the whole record as incomplete, and a member's
-/// own compaction still refuses to fold it away.
-#[test]
-fn a_change_built_on_one_its_writer_never_sent_is_read_without_it() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut page = Author::new(&f.host);
-    let _let_go = page.edit("early-1", "first");
-    let built_on = page.edit("early-2", "second");
-    let stuck = write(&f.host, &f.other, &keys, &built_on, now);
-    admit(&mut f.host, &f.other, stuck, now);
-    let mut member = Author::new(&f.host);
-    let later = write(&f.host, &f.owner, &keys, &member.edit("later", "kept"), now);
-    admit(&mut f.host, &f.owner, later, now);
+tilo_test_env::scenario! {
+    fn a_change_whose_base_was_lost_is_read_without_it_or_waits;
 
-    let read = captured(&f, &f.host, &keys).expect("the record reads");
-    assert_eq!(text(&read, "value").as_deref(), Some("base"));
-    assert_eq!(text(&read, "later").as_deref(), Some("kept"));
-    assert_eq!(text(&read, "early-2"), None);
-    let other = f.other.verifying_key().to_bytes();
-    let opened = f
-        .host
-        .publication()
-        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            opened.unmerged.as_slice(),
-            [UnmergedWrite { author, seq: 1, reason: UnmergedReason::BehindUnsent { missing } }]
-                if *author == other && missing.len() == 1
-        ),
-        "{:?}",
-        opened.unmerged
-    );
-    assert!(
-        mint(&mut f.host, &keys, &f.owner, now).is_err(),
-        "only the workspace's store folds a write away"
-    );
-}
+    phase a_change_built_on_one_its_writer_never_sent_is_read_without_it;
+    // A page that held a sealed record's keys before the record itself wrote a change in that moment,
+    // which it let go unsigned and unsent, and its next change, built on the first, was taken: the
+    // record holds a change whose base its own writer never sent, and no device ever will. A reader
+    // reads the record without it rather than refusing the whole record as incomplete, and a member's
+    // own compaction still refuses to fold it away.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut page = Author::new(&f.host);
+        let _let_go = page.edit("early-1", "first");
+        let built_on = page.edit("early-2", "second");
+        let stuck = write(&f.host, &f.other, &keys, &built_on, now);
+        admit(&mut f.host, &f.other, stuck, now);
+        let mut member = Author::new(&f.host);
+        let later = write(&f.host, &f.owner, &keys, &member.edit("later", "kept"), now);
+        admit(&mut f.host, &f.owner, later, now);
 
-/// A change whose base is in a write its writer signed and this replica has not taken in yet may
-/// still arrive: the record waits for it.
-#[test]
-fn a_change_whose_writer_signed_its_base_keeps_the_record_waiting() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut page = Author::new(&f.host);
-    let (first, second) = (
-        page.edit("early-1", "first"),
-        page.edit("early-2", "second"),
-    );
-    let on_its_way = write(&f.host, &f.other, &keys, &first, now);
-    let (metadata, payload) = keys
-        .seal_content(artifact(), ContentRetention::Delta, &second)
-        .unwrap();
-    let after = message(signed(
-        &f.other,
-        2,
-        OpKind::Change,
-        payload,
-        Some(metadata),
-        now,
-    ));
-    admit(&mut f.host, &f.other, after, now);
+        let read = captured(&f, &f.host, &keys).expect("the record reads");
+        assert_eq!(text(&read, "value").as_deref(), Some("base"));
+        assert_eq!(text(&read, "later").as_deref(), Some("kept"));
+        assert_eq!(text(&read, "early-2"), None);
+        let other = f.other.verifying_key().to_bytes();
+        let opened = f
+            .host
+            .publication()
+            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                opened.unmerged.as_slice(),
+                [UnmergedWrite { author, seq: 1, reason: UnmergedReason::BehindUnsent { missing } }]
+                    if *author == other && missing.len() == 1
+            ),
+            "{:?}",
+            opened.unmerged
+        );
+        assert!(
+            mint(&mut f.host, &keys, &f.owner, now).is_err(),
+            "only the workspace's store folds a write away"
+        );
+    }
 
-    assert!(matches!(
-        captured(&f, &f.host, &keys),
-        Err(crate::PeerDocumentReadError::Incomplete)
-    ));
-    let opened = f
-        .host
-        .publication()
-        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            opened.unmerged.as_slice(),
-            [UnmergedWrite {
-                seq: 2,
-                reason: UnmergedReason::MissingDependencies { .. },
-                ..
-            }]
-        ),
-        "{:?}",
-        opened.unmerged
-    );
-    // Signed and on its way: the host replays it in its writer's order, and the record reads whole
-    // then (as it did before any of this).
-    drop(on_its_way);
-}
-
-/// A reader that keeps a record opened between reads keeps the writes it read without, and takes
-/// one in once what it builds on turns up after all.
-#[test]
-fn a_kept_reader_takes_a_write_it_read_without_in_once_its_base_arrives() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut page = Author::new(&f.host);
-    let (first, second) = (
-        page.edit("early-1", "first"),
-        page.edit("early-2", "second"),
-    );
-    let stuck = write(&f.host, &f.other, &keys, &second, now);
-    admit(&mut f.host, &f.other, stuck, now);
-    let mut kept = KeptRecord::default();
-    let reader = f.authority.device_public_key;
-    let mut opener = |op: &SignedOp| open(&keys, op);
-    let read = f
-        .host
-        .open_document(
-            reader,
-            (APP, RECORD),
+    phase a_change_whose_writer_signed_its_base_keeps_the_record_waiting;
+    // A change whose base is in a write its writer signed and this replica has not taken in yet may
+    // still arrive: the record waits for it.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut page = Author::new(&f.host);
+        let (first, second) = (
+            page.edit("early-1", "first"),
+            page.edit("early-2", "second"),
+        );
+        let on_its_way = write(&f.host, &f.other, &keys, &first, now);
+        let (metadata, payload) = keys
+            .seal_content(artifact(), ContentRetention::Delta, &second)
+            .unwrap();
+        let after = message(signed(
+            &f.other,
+            2,
+            OpKind::Change,
+            payload,
+            Some(metadata),
             now,
-            1 << 20,
-            Some(&mut opener),
-            &mut kept,
-        )
-        .expect("the record reads without the stuck write")
-        .clone();
-    assert_eq!(
-        text(&AutoCommit::load(&read.save()).unwrap(), "early-2"),
-        None
-    );
+        ));
+        admit(&mut f.host, &f.other, after, now);
 
-    let brought = write(&f.host, &f.owner, &keys, &first, now);
-    admit(&mut f.host, &f.owner, brought, now);
-    let read = f
-        .host
-        .open_document(
-            reader,
-            (APP, RECORD),
+        assert!(matches!(
+            captured(&f, &f.host, &keys),
+            Err(crate::PeerDocumentReadError::Incomplete)
+        ));
+        let opened = f
+            .host
+            .publication()
+            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                opened.unmerged.as_slice(),
+                [UnmergedWrite {
+                    seq: 2,
+                    reason: UnmergedReason::MissingDependencies { .. },
+                    ..
+                }]
+            ),
+            "{:?}",
+            opened.unmerged
+        );
+        // Signed and on its way: the host replays it in its writer's order, and the record reads whole
+        // then (as it did before any of this).
+        drop(on_its_way);
+    }
+
+    phase a_kept_reader_takes_a_write_it_read_without_in_once_its_base_arrives;
+    // A reader that keeps a record opened between reads keeps the writes it read without, and takes
+    // one in once what it builds on turns up after all.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut page = Author::new(&f.host);
+        let (first, second) = (
+            page.edit("early-1", "first"),
+            page.edit("early-2", "second"),
+        );
+        let stuck = write(&f.host, &f.other, &keys, &second, now);
+        admit(&mut f.host, &f.other, stuck, now);
+        let mut kept = KeptRecord::default();
+        let reader = f.authority.device_public_key;
+        let mut opener = |op: &SignedOp| open(&keys, op);
+        let read = f
+            .host
+            .open_document(
+                reader,
+                (APP, RECORD),
+                now,
+                1 << 20,
+                Some(&mut opener),
+                &mut kept,
+            )
+            .expect("the record reads without the stuck write")
+            .clone();
+        assert_eq!(
+            text(&AutoCommit::load(&read.save()).unwrap(), "early-2"),
+            None
+        );
+
+        let brought = write(&f.host, &f.owner, &keys, &first, now);
+        admit(&mut f.host, &f.owner, brought, now);
+        let read = f
+            .host
+            .open_document(
+                reader,
+                (APP, RECORD),
+                now,
+                1 << 20,
+                Some(&mut opener),
+                &mut kept,
+            )
+            .expect("the record reads whole")
+            .clone();
+        let read = AutoCommit::load(&read.save()).unwrap();
+        assert_eq!(text(&read, "early-1").as_deref(), Some("first"));
+        assert_eq!(text(&read, "early-2").as_deref(), Some("second"));
+    }
+
+    phase a_writer_reloaded_after_losing_a_change_reads_without_what_it_built_on_it;
+    // A device writes a record under one Automerge writer of its own across reloads, as the shared
+    // desktop does. Its page lost a change and sent the next one, built on it; reloaded, the page read
+    // the record without either and wrote again, numbering its next change as the lost one was
+    // numbered. The stuck write still builds on a change no device will ever send: a reader reads the
+    // record with what the reloaded page wrote, and without the stuck write, after one write and after
+    // two.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let actor = automerge::ActorId::from(b"one device, every load".as_slice());
+        let base = f.host.document(APP, RECORD).unwrap();
+        let mut page = Author(AutoCommit::load(&base).unwrap().with_actor(actor.clone()));
+        let _let_go = page.edit("early-1", "first");
+        let stuck = write(
+            &f.host,
+            &f.other,
+            &keys,
+            &page.edit("early-2", "second"),
             now,
-            1 << 20,
-            Some(&mut opener),
-            &mut kept,
-        )
-        .expect("the record reads whole")
-        .clone();
-    let read = AutoCommit::load(&read.save()).unwrap();
-    assert_eq!(text(&read, "early-1").as_deref(), Some("first"));
-    assert_eq!(text(&read, "early-2").as_deref(), Some("second"));
-}
+        );
+        admit(&mut f.host, &f.other, stuck, now);
 
-/// A device writes a record under one Automerge writer of its own across reloads, as the shared
-/// desktop does. Its page lost a change and sent the next one, built on it; reloaded, the page read
-/// the record without either and wrote again, numbering its next change as the lost one was
-/// numbered. The stuck write still builds on a change no device will ever send: a reader reads the
-/// record with what the reloaded page wrote, and without the stuck write, after one write and after
-/// two.
-#[test]
-fn a_writer_reloaded_after_losing_a_change_reads_without_what_it_built_on_it() {
-    let mut f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let actor = automerge::ActorId::from(b"one device, every load".as_slice());
-    let base = f.host.document(APP, RECORD).unwrap();
-    let mut page = Author(AutoCommit::load(&base).unwrap().with_actor(actor.clone()));
-    let _let_go = page.edit("early-1", "first");
-    let stuck = write(
-        &f.host,
-        &f.other,
-        &keys,
-        &page.edit("early-2", "second"),
-        now,
-    );
-    admit(&mut f.host, &f.other, stuck, now);
+        let mut reloaded = Author(AutoCommit::load(&base).unwrap().with_actor(actor));
+        let again = write(&f.host, &f.other, &keys, &reloaded.edit("again", "1"), now);
+        admit(&mut f.host, &f.other, again, now);
+        let read = captured(&f, &f.host, &keys).expect("the record reads after one write");
+        assert_eq!(text(&read, "again").as_deref(), Some("1"));
+        assert_eq!(text(&read, "early-2"), None);
+        let opened = f
+            .host
+            .publication()
+            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                opened.unmerged.as_slice(),
+                [UnmergedWrite {
+                    seq: 1,
+                    reason: UnmergedReason::BehindUnsent { .. },
+                    ..
+                }]
+            ),
+            "{:?}",
+            opened.unmerged
+        );
 
-    let mut reloaded = Author(AutoCommit::load(&base).unwrap().with_actor(actor));
-    let again = write(&f.host, &f.other, &keys, &reloaded.edit("again", "1"), now);
-    admit(&mut f.host, &f.other, again, now);
-    let read = captured(&f, &f.host, &keys).expect("the record reads after one write");
-    assert_eq!(text(&read, "again").as_deref(), Some("1"));
-    assert_eq!(text(&read, "early-2"), None);
-    let opened = f
-        .host
-        .publication()
-        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            opened.unmerged.as_slice(),
-            [UnmergedWrite {
-                seq: 1,
-                reason: UnmergedReason::BehindUnsent { .. },
-                ..
-            }]
-        ),
-        "{:?}",
-        opened.unmerged
-    );
-
-    let more = write(&f.host, &f.other, &keys, &reloaded.edit("again", "2"), now);
-    admit(&mut f.host, &f.other, more, now);
-    let read = captured(&f, &f.host, &keys).expect("the record reads after two writes");
-    assert_eq!(text(&read, "again").as_deref(), Some("2"));
-    assert_eq!(text(&read, "early-2"), None);
-    let opened = f
-        .host
-        .publication()
-        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            opened.unmerged.as_slice(),
-            [UnmergedWrite {
-                seq: 1,
-                reason: UnmergedReason::BehindUnsent { .. },
-                ..
-            }]
-        ),
-        "{:?}",
-        opened.unmerged
-    );
+        let more = write(&f.host, &f.other, &keys, &reloaded.edit("again", "2"), now);
+        admit(&mut f.host, &f.other, more, now);
+        let read = captured(&f, &f.host, &keys).expect("the record reads after two writes");
+        assert_eq!(text(&read, "again").as_deref(), Some("2"));
+        assert_eq!(text(&read, "early-2"), None);
+        let opened = f
+            .host
+            .publication()
+            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                opened.unmerged.as_slice(),
+                [UnmergedWrite {
+                    seq: 1,
+                    reason: UnmergedReason::BehindUnsent { .. },
+                    ..
+                }]
+            ),
+            "{:?}",
+            opened.unmerged
+        );
+    }
 }

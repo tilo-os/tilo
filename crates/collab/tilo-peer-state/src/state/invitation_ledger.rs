@@ -227,83 +227,88 @@ mod tests {
         (signed, issuer, transport)
     }
 
-    #[test]
-    fn a_receipt_keeps_its_own_bytes_and_puts_its_invitation_back_together() {
-        let (signed, issuer, transport) = signed();
-        let (ledgered, parts) =
-            LedgerReceipt::new(receipt(&signed), &signed, &[&issuer, &transport]);
-        assert_eq!(parts, [issuer.clone(), transport.clone()]);
-        let encoded = ledgered.encode().unwrap();
-        assert!(
-            encoded.len() < signed.len() - issuer.len() - transport.len() + 300,
-            "the shared runs are named, not copied: {} B",
-            encoded.len()
-        );
-        let read = LedgerReceipt::decode(&encoded).unwrap();
-        let kept: BTreeMap<String, Vec<Vec<u8>>> = parts
-            .iter()
-            .map(|part| (part_key(blake3::hash(part).as_bytes()), vec![part.clone()]))
-            .collect();
-        assert_eq!(
-            read.invitation(|digest| part_in(&kept, digest)),
-            Some(signed)
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_receipt_names_its_invitation_only_whole_and_untampered;
 
-    #[test]
-    fn a_tampered_receipt_or_part_names_no_invitation() {
-        let (signed, issuer, transport) = signed();
-        let (ledgered, parts) =
-            LedgerReceipt::new(receipt(&signed), &signed, &[&issuer, &transport]);
-        let kept: BTreeMap<String, Vec<Vec<u8>>> = parts
-            .iter()
-            .map(|part| (part_key(blake3::hash(part).as_bytes()), vec![part.clone()]))
-            .collect();
-        // A byte of the receipt's own changed: the invitation it spells is
-        // not the one it names.
-        let mut own_changed = ledgered.clone();
-        for piece in &mut own_changed.invitation {
-            if let Piece::Own(bytes) = piece {
-                bytes[0] ^= 1;
-                break;
-            }
+        phase a_receipt_keeps_its_own_bytes_and_puts_its_invitation_back_together;
+        {
+            let (signed, issuer, transport) = signed();
+            let (ledgered, parts) =
+                LedgerReceipt::new(receipt(&signed), &signed, &[&issuer, &transport]);
+            assert_eq!(parts, [issuer.clone(), transport.clone()]);
+            let encoded = ledgered.encode().unwrap();
+            assert!(
+                encoded.len() < signed.len() - issuer.len() - transport.len() + 300,
+                "the shared runs are named, not copied: {} B",
+                encoded.len()
+            );
+            let read = LedgerReceipt::decode(&encoded).unwrap();
+            let kept: BTreeMap<String, Vec<Vec<u8>>> = parts
+                .iter()
+                .map(|part| (part_key(blake3::hash(part).as_bytes()), vec![part.clone()]))
+                .collect();
+            assert_eq!(
+                read.invitation(|digest| part_in(&kept, digest)),
+                Some(signed)
+            );
         }
-        assert_eq!(
-            own_changed.invitation(|digest| part_in(&kept, digest)),
-            None
-        );
-        // A part changed under its key.
-        let mut forged = kept.clone();
-        for values in forged.values_mut() {
-            values[0][0] ^= 1;
-        }
-        assert_eq!(ledgered.invitation(|digest| part_in(&forged, digest)), None);
-        // A part missing.
-        assert_eq!(ledgered.invitation(|_| None), None);
-        // Another part named in its place, itself well formed.
-        let mut swapped = ledgered;
-        let other = vec![8; 150];
-        for piece in &mut swapped.invitation {
-            if let Piece::Shared(digest) = piece {
-                *digest = *blake3::hash(&other).as_bytes();
-                break;
-            }
-        }
-        let mut with_other = kept;
-        with_other.insert(part_key(blake3::hash(&other).as_bytes()), vec![other]);
-        assert_eq!(
-            swapped.invitation(|digest| part_in(&with_other, digest)),
-            None
-        );
-    }
 
-    #[test]
-    fn a_run_it_does_not_hold_or_too_short_to_name_stays_its_own() {
-        let (signed, _, _) = signed();
-        let (ledgered, parts) =
-            LedgerReceipt::new(receipt(&signed), &signed, &[&[6; 100], &[7; 8]]);
-        assert!(parts.is_empty());
-        assert_eq!(ledgered.invitation, [Piece::Own(signed.clone())]);
-        assert_eq!(ledgered.invitation(|_| None), Some(signed));
+        phase a_tampered_receipt_or_part_names_no_invitation;
+        {
+            let (signed, issuer, transport) = signed();
+            let (ledgered, parts) =
+                LedgerReceipt::new(receipt(&signed), &signed, &[&issuer, &transport]);
+            let kept: BTreeMap<String, Vec<Vec<u8>>> = parts
+                .iter()
+                .map(|part| (part_key(blake3::hash(part).as_bytes()), vec![part.clone()]))
+                .collect();
+            // A byte of the receipt's own changed: the invitation it spells is
+            // not the one it names.
+            let mut own_changed = ledgered.clone();
+            for piece in &mut own_changed.invitation {
+                if let Piece::Own(bytes) = piece {
+                    bytes[0] ^= 1;
+                    break;
+                }
+            }
+            assert_eq!(
+                own_changed.invitation(|digest| part_in(&kept, digest)),
+                None
+            );
+            // A part changed under its key.
+            let mut forged = kept.clone();
+            for values in forged.values_mut() {
+                values[0][0] ^= 1;
+            }
+            assert_eq!(ledgered.invitation(|digest| part_in(&forged, digest)), None);
+            // A part missing.
+            assert_eq!(ledgered.invitation(|_| None), None);
+            // Another part named in its place, itself well formed.
+            let mut swapped = ledgered;
+            let other = vec![8; 150];
+            for piece in &mut swapped.invitation {
+                if let Piece::Shared(digest) = piece {
+                    *digest = *blake3::hash(&other).as_bytes();
+                    break;
+                }
+            }
+            let mut with_other = kept;
+            with_other.insert(part_key(blake3::hash(&other).as_bytes()), vec![other]);
+            assert_eq!(
+                swapped.invitation(|digest| part_in(&with_other, digest)),
+                None
+            );
+        }
+
+        phase a_run_it_does_not_hold_or_too_short_to_name_stays_its_own;
+        {
+            let (signed, _, _) = signed();
+            let (ledgered, parts) =
+                LedgerReceipt::new(receipt(&signed), &signed, &[&[6; 100], &[7; 8]]);
+            assert!(parts.is_empty());
+            assert_eq!(ledgered.invitation, [Piece::Own(signed.clone())]);
+            assert_eq!(ledgered.invitation(|_| None), Some(signed));
+        }
     }
 }

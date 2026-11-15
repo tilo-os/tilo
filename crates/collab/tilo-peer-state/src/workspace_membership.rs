@@ -592,161 +592,169 @@ mod tests {
     use super::*;
     use tilo_action_policy::{Answer, TreePath};
 
-    #[test]
-    fn a_bot_request_names_a_canonical_entry_and_version() {
-        let request = |entry: &str, version: &str| {
-            WorkspaceMembershipCommand::RequestBot(BotRequest {
-                entry: entry.into(),
-                version: version.into(),
-                inputs: std::collections::BTreeMap::new(),
-                program: None,
-            })
-            .validate()
-        };
-        let with_inputs = |inputs: &[(&str, &str)]| {
-            BotRequest {
-                entry: "so.tilo.bots.discord-bridge".into(),
-                version: "0.1.0".into(),
-                inputs: inputs
-                    .iter()
-                    .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                    .collect(),
-                program: None,
+    tilo_test_env::scenario! {
+        fn bot_and_agent_identifiers_are_canonical;
+
+        phase a_bot_request_names_a_canonical_entry_and_version;
+        {
+            let request = |entry: &str, version: &str| {
+                WorkspaceMembershipCommand::RequestBot(BotRequest {
+                    entry: entry.into(),
+                    version: version.into(),
+                    inputs: std::collections::BTreeMap::new(),
+                    program: None,
+                })
+                .validate()
+            };
+            let with_inputs = |inputs: &[(&str, &str)]| {
+                BotRequest {
+                    entry: "so.tilo.bots.discord-bridge".into(),
+                    version: "0.1.0".into(),
+                    inputs: inputs
+                        .iter()
+                        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                        .collect(),
+                    program: None,
+                }
+                .validate()
+            };
+            with_inputs(&[("guild", "123456789012345678"), ("server", "Garden club")]).unwrap();
+            assert!(
+                with_inputs(&[("Guild", "1")]).is_err(),
+                "names are lowercase"
+            );
+            assert!(
+                with_inputs(&[("guild", "1\n2")]).is_err(),
+                "no control characters"
+            );
+            assert!(with_inputs(&[("server", &"x".repeat(257))]).is_err());
+            let old: BotRequest =
+                serde_json::from_str(r#"{"entry":"so.tilo.bots.standup","version":"1.0.0"}"#).unwrap();
+            assert!(old.inputs.is_empty());
+            request("so.tilo.bots.standup", "1.2.0").unwrap();
+            request("so.tilo.bots.standup", "1.2.0-rc.1+build.7").unwrap();
+            for (entry, version) in [
+                ("", "1.0.0"),
+                ("So.Tilo.Bots", "1.0.0"),
+                ("so..tilo", "1.0.0"),
+                ("so.tilo bot", "1.0.0"),
+                (&"x".repeat(129), "1.0.0"),
+                ("so.tilo.bots.standup", ""),
+                ("so.tilo.bots.standup", "1.0 beta"),
+            ] {
+                assert!(request(entry, version).is_err(), "{entry:?} {version:?}");
             }
-            .validate()
-        };
-        with_inputs(&[("guild", "123456789012345678"), ("server", "Garden club")]).unwrap();
-        assert!(
-            with_inputs(&[("Guild", "1")]).is_err(),
-            "names are lowercase"
-        );
-        assert!(
-            with_inputs(&[("guild", "1\n2")]).is_err(),
-            "no control characters"
-        );
-        assert!(with_inputs(&[("server", &"x".repeat(257))]).is_err());
-        let old: BotRequest =
-            serde_json::from_str(r#"{"entry":"so.tilo.bots.standup","version":"1.0.0"}"#).unwrap();
-        assert!(old.inputs.is_empty());
-        request("so.tilo.bots.standup", "1.2.0").unwrap();
-        request("so.tilo.bots.standup", "1.2.0-rc.1+build.7").unwrap();
-        for (entry, version) in [
-            ("", "1.0.0"),
-            ("So.Tilo.Bots", "1.0.0"),
-            ("so..tilo", "1.0.0"),
-            ("so.tilo bot", "1.0.0"),
-            (&"x".repeat(129), "1.0.0"),
-            ("so.tilo.bots.standup", ""),
-            ("so.tilo.bots.standup", "1.0 beta"),
-        ] {
-            assert!(request(entry, version).is_err(), "{entry:?} {version:?}");
-        }
-        WorkspaceMembershipCommand::WithdrawBotRequest {
-            entry: "so.tilo.bots.standup".into(),
-        }
-        .validate()
-        .unwrap();
-        assert!(
             WorkspaceMembershipCommand::WithdrawBotRequest {
-                entry: "../standup".into(),
+                entry: "so.tilo.bots.standup".into(),
             }
             .validate()
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn agent_identifiers_are_canonical() {
-        for agent in ["", "Scribe", " scribe", "scribe\n", &"x".repeat(129)] {
-            assert!(valid_agent_id(agent).is_err(), "{agent:?}");
+            .unwrap();
+            assert!(
+                WorkspaceMembershipCommand::WithdrawBotRequest {
+                    entry: "../standup".into(),
+                }
+                .validate()
+                .is_err()
+            );
         }
-        valid_agent_id("scribe").unwrap();
+
+        phase agent_identifiers_are_canonical;
+        {
+            for agent in ["", "Scribe", " scribe", "scribe\n", &"x".repeat(129)] {
+                assert!(valid_agent_id(agent).is_err(), "{agent:?}");
+            }
+            valid_agent_id("scribe").unwrap();
+        }
     }
 
-    /// Postcard names a variant by its position; workspaces keep these commands,
-    /// and the digests of their administration requests, in those bytes.
-    #[test]
-    fn a_membership_command_keeps_its_bytes_around_the_retired_task_grants() {
-        let cases: Vec<(WorkspaceMembershipCommand, Vec<u8>)> = vec![
-            (
-                WorkspaceMembershipCommand::RetiredAddAgent {
-                    agent: "a".into(),
-                    preset: RetiredAgentPreset::Observer,
-                },
-                vec![0x00, 0x01, b'a', 0x00],
-            ),
-            (
-                WorkspaceMembershipCommand::RetiredRemoveAgent { agent: "a".into() },
-                vec![0x01, 0x01, b'a'],
-            ),
-            (
-                WorkspaceMembershipCommand::RetiredGrantAppAuthorship { app: "x".into() },
-                vec![0x02, 0x01, b'x'],
-            ),
-            (
+    tilo_test_env::scenario! {
+        fn a_membership_command_reads_from_the_bytes_earlier_builds_wrote;
+
+        phase a_membership_command_keeps_its_bytes_around_the_retired_task_grants;
+        // Postcard names a variant by its position; workspaces keep these commands,
+        // and the digests of their administration requests, in those bytes.
+        {
+            let cases: Vec<(WorkspaceMembershipCommand, Vec<u8>)> = vec![
+                (
+                    WorkspaceMembershipCommand::RetiredAddAgent {
+                        agent: "a".into(),
+                        preset: RetiredAgentPreset::Observer,
+                    },
+                    vec![0x00, 0x01, b'a', 0x00],
+                ),
+                (
+                    WorkspaceMembershipCommand::RetiredRemoveAgent { agent: "a".into() },
+                    vec![0x01, 0x01, b'a'],
+                ),
+                (
+                    WorkspaceMembershipCommand::RetiredGrantAppAuthorship { app: "x".into() },
+                    vec![0x02, 0x01, b'x'],
+                ),
+                (
+                    WorkspaceMembershipCommand::RetiredGrantForTask {
+                        task: "t".into(),
+                        node: TreePath::workspace("r"),
+                        kinds: KindSet::READ,
+                        answer: Answer::Allow,
+                    },
+                    [
+                        &[0x03, 0x01, b't', 0x0b][..],
+                        b"workspace:r",
+                        &[0x01, 0x00, 0x02],
+                    ]
+                    .concat(),
+                ),
+                (
+                    WorkspaceMembershipCommand::RetiredRevokeForTask {
+                        task: "t".into(),
+                        grant: GrantId::new("g"),
+                    },
+                    vec![0x04, 0x01, b't', 0x01, b'g'],
+                ),
+                (
+                    WorkspaceMembershipCommand::Revoke {
+                        grant: GrantId::new("g"),
+                    },
+                    vec![0x06, 0x01, b'g'],
+                ),
+                (
+                    WorkspaceMembershipCommand::WithdrawBotRequest { entry: "e".into() },
+                    vec![0x0f, 0x01, b'e'],
+                ),
+            ];
+            for (command, golden) in cases {
+                assert_eq!(
+                    postcard::to_stdvec(&command).unwrap(),
+                    golden,
+                    "{command:?}"
+                );
+                assert_eq!(
+                    postcard::from_bytes::<WorkspaceMembershipCommand>(&golden).unwrap(),
+                    command
+                );
+            }
+        }
+
+        phase a_grant_command_stored_under_the_workspace_path_name_still_reads;
+        // A grant command stored while the level was named for the workspace still
+        // reads, and reads as the grant it was: the node it names is the
+        // workspace's.
+        {
+            let held = [
+                0x03, 0x01, b't', 0x0b, b'w', b'o', b'r', b'k', b's', b'p', b'a', b'c', b'e', b':',
+                b'r', 0x01, 0x00, 0x02,
+            ];
+            let command = postcard::from_bytes::<WorkspaceMembershipCommand>(&held).unwrap();
+            assert_eq!(
+                command,
                 WorkspaceMembershipCommand::RetiredGrantForTask {
                     task: "t".into(),
                     node: TreePath::workspace("r"),
                     kinds: KindSet::READ,
                     answer: Answer::Allow,
-                },
-                [
-                    &[0x03, 0x01, b't', 0x0b][..],
-                    b"workspace:r",
-                    &[0x01, 0x00, 0x02],
-                ]
-                .concat(),
-            ),
-            (
-                WorkspaceMembershipCommand::RetiredRevokeForTask {
-                    task: "t".into(),
-                    grant: GrantId::new("g"),
-                },
-                vec![0x04, 0x01, b't', 0x01, b'g'],
-            ),
-            (
-                WorkspaceMembershipCommand::Revoke {
-                    grant: GrantId::new("g"),
-                },
-                vec![0x06, 0x01, b'g'],
-            ),
-            (
-                WorkspaceMembershipCommand::WithdrawBotRequest { entry: "e".into() },
-                vec![0x0f, 0x01, b'e'],
-            ),
-        ];
-        for (command, golden) in cases {
-            assert_eq!(
-                postcard::to_stdvec(&command).unwrap(),
-                golden,
-                "{command:?}"
-            );
-            assert_eq!(
-                postcard::from_bytes::<WorkspaceMembershipCommand>(&golden).unwrap(),
-                command
+                }
             );
         }
-    }
-
-    /// A grant command stored while the level was named for the workspace still
-    /// reads, and reads as the grant it was: the node it names is the
-    /// workspace's.
-    #[test]
-    fn a_grant_command_stored_under_the_workspace_path_name_still_reads() {
-        let held = [
-            0x03, 0x01, b't', 0x0b, b'w', b'o', b'r', b'k', b's', b'p', b'a', b'c', b'e', b':',
-            b'r', 0x01, 0x00, 0x02,
-        ];
-        let command = postcard::from_bytes::<WorkspaceMembershipCommand>(&held).unwrap();
-        assert_eq!(
-            command,
-            WorkspaceMembershipCommand::RetiredGrantForTask {
-                task: "t".into(),
-                node: TreePath::workspace("r"),
-                kinds: KindSet::READ,
-                answer: Answer::Allow,
-            }
-        );
     }
 
     /// Every retired command still reads from the bytes a workspace holds and

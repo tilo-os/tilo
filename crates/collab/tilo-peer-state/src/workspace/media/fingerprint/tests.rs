@@ -77,62 +77,67 @@ fn compare(doc: &AutoCommit) {
     };
     assert_eq!(result, expected);
 }
-#[test]
-fn shared_fingerprint_matches_literal_all_scalar_object_and_absent_shapes() {
-    compare(&AutoCommit::new());
-    let values = vec![
-        ScalarValue::Bytes(vec![0x17; 16000]),
-        ScalarValue::Str("x\n☺".repeat(4000).into()),
-        ScalarValue::Int(i64::MIN),
-        ScalarValue::Uint(u64::MAX),
-        ScalarValue::F64(-0.0),
-        ScalarValue::F64(f64::INFINITY),
-        ScalarValue::F64(f64::NAN),
-        ScalarValue::Counter(7.into()),
-        ScalarValue::Timestamp(-42),
-        ScalarValue::Boolean(true),
-        ScalarValue::Unknown {
-            type_code: 15,
-            bytes: vec![255; 16000],
-        },
-        ScalarValue::Null,
-    ];
-    for value in values {
-        let counter = matches!(value, ScalarValue::Counter(_));
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, super::super::FIELD, value).unwrap();
-        if counter {
-            doc.increment(ROOT, super::super::FIELD, 5).unwrap();
+tilo_test_env::scenario! {
+    fn shared_fingerprint_matches_literal_shapes_and_keeps_conflicts;
+
+    phase shared_fingerprint_matches_literal_all_scalar_object_and_absent_shapes;
+    {
+        compare(&AutoCommit::new());
+        let values = vec![
+            ScalarValue::Bytes(vec![0x17; 16000]),
+            ScalarValue::Str("x\n☺".repeat(4000).into()),
+            ScalarValue::Int(i64::MIN),
+            ScalarValue::Uint(u64::MAX),
+            ScalarValue::F64(-0.0),
+            ScalarValue::F64(f64::INFINITY),
+            ScalarValue::F64(f64::NAN),
+            ScalarValue::Counter(7.into()),
+            ScalarValue::Timestamp(-42),
+            ScalarValue::Boolean(true),
+            ScalarValue::Unknown {
+                type_code: 15,
+                bytes: vec![255; 16000],
+            },
+            ScalarValue::Null,
+        ];
+        for value in values {
+            let counter = matches!(value, ScalarValue::Counter(_));
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, super::super::FIELD, value).unwrap();
+            if counter {
+                doc.increment(ROOT, super::super::FIELD, 5).unwrap();
+            }
+            doc.commit();
+            compare(&doc);
         }
-        doc.commit();
-        compare(&doc);
+        for kind in [ObjType::Map, ObjType::Table, ObjType::List, ObjType::Text] {
+            let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![4; 16000]));
+            doc.put_object(ROOT, super::super::FIELD, kind).unwrap();
+            doc.commit();
+            compare(&doc);
+        }
     }
-    for kind in [ObjType::Map, ObjType::Table, ObjType::List, ObjType::Text] {
-        let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![4; 16000]));
-        doc.put_object(ROOT, super::super::FIELD, kind).unwrap();
+
+    phase shared_fingerprint_preserves_actual_conflicts_and_visitor_refusal;
+    {
+        let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![1]));
+        doc.put(ROOT, "ordinary", "basis").unwrap();
         doc.commit();
+        let mut a = doc.fork().with_actor(ActorId::from(vec![2]));
+        let mut b = doc.fork().with_actor(ActorId::from(vec![3]));
+        a.put(ROOT, super::super::FIELD, ScalarValue::Counter(9.into()))
+            .unwrap();
+        a.commit();
+        b.put_object(ROOT, super::super::FIELD, ObjType::List)
+            .unwrap();
+        b.commit();
+        doc.merge_incoming(&mut a).unwrap();
+        doc.merge_incoming(&mut b).unwrap();
         compare(&doc);
+        let admitted = AutoCommit::load(&doc.clone().save()).unwrap();
+        assert_eq!(
+            LegacyRead(&admitted).visit_media_fingerprints(|_| Err(7u8)),
+            Err(ReadError::Visitor(7))
+        );
     }
-}
-#[test]
-fn shared_fingerprint_preserves_actual_conflicts_and_visitor_refusal() {
-    let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![1]));
-    doc.put(ROOT, "ordinary", "basis").unwrap();
-    doc.commit();
-    let mut a = doc.fork().with_actor(ActorId::from(vec![2]));
-    let mut b = doc.fork().with_actor(ActorId::from(vec![3]));
-    a.put(ROOT, super::super::FIELD, ScalarValue::Counter(9.into()))
-        .unwrap();
-    a.commit();
-    b.put_object(ROOT, super::super::FIELD, ObjType::List)
-        .unwrap();
-    b.commit();
-    doc.merge_incoming(&mut a).unwrap();
-    doc.merge_incoming(&mut b).unwrap();
-    compare(&doc);
-    let admitted = AutoCommit::load(&doc.clone().save()).unwrap();
-    assert_eq!(
-        LegacyRead(&admitted).visit_media_fingerprints(|_| Err(7u8)),
-        Err(ReadError::Visitor(7))
-    );
 }

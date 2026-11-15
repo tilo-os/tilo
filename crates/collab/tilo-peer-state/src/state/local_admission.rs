@@ -368,32 +368,99 @@ mod tests {
         (peer, *envelope, other, certificate, now)
     }
 
-    #[test]
-    fn a_new_local_write_is_admitted_once_with_exact_evidence() {
-        let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
-        peer.select_exact_admissions().unwrap();
-        let bytes = peer.document("test.app", "tab:1").unwrap();
-        let NeighbourMsg::AppDocument { envelope, .. } = peer
-            .clone()
-            .publication_mut()
-            .publish_document("test.app", "tab:1", bytes, &key, now)
-            .unwrap()
-        else {
-            panic!("expected actual signed document publication")
-        };
-        peer.admit_new_local_document("test.app", "tab:1", (*envelope).clone(), now)
-            .unwrap();
-        assert!(
-            peer.lookup_exact_local_document("test.app", "tab:1", &envelope, now)
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_local_write_is_admitted_with_exact_evidence_or_a_fresh_successor;
+
+        phase a_new_local_write_is_admitted_once_with_exact_evidence;
+        {
+            let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
+            peer.select_exact_admissions().unwrap();
+            let bytes = peer.document("test.app", "tab:1").unwrap();
+            let NeighbourMsg::AppDocument { envelope, .. } = peer
+                .clone()
+                .publication_mut()
+                .publish_document("test.app", "tab:1", bytes, &key, now)
                 .unwrap()
-                .is_some()
-        );
-        assert!(
-            peer.clone()
-                .admit_new_local_document("test.app", "tab:1", *envelope, now)
-                .is_err(),
-            "an exact retry is not a new admission"
-        );
+            else {
+                panic!("expected actual signed document publication")
+            };
+            peer.admit_new_local_document("test.app", "tab:1", (*envelope).clone(), now)
+                .unwrap();
+            assert!(
+                peer.lookup_exact_local_document("test.app", "tab:1", &envelope, now)
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                peer.clone()
+                    .admit_new_local_document("test.app", "tab:1", *envelope, now)
+                    .is_err(),
+                "an exact retry is not a new admission"
+            );
+        }
+
+        phase replay_floor_without_exact_entry_requires_a_fresh_signed_successor;
+        {
+            use automerge::transaction::Transactable as _;
+            let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
+            let original = peer.document("test.app", "tab:1").unwrap();
+            let NeighbourMsg::AppDocument {
+                envelope: first, ..
+            } = peer
+                .clone()
+                .publication_mut()
+                .publish_document("test.app", "tab:1", original.clone(), &key, now)
+                .unwrap()
+            else {
+                panic!("first signed snapshot")
+            };
+            let mut changed = automerge::AutoCommit::load(&original).unwrap();
+            changed
+                .put(automerge::ROOT, "diagnostic", "different")
+                .unwrap();
+            let NeighbourMsg::AppDocument {
+                envelope: stale, ..
+            } = peer
+                .clone()
+                .publication_mut()
+                .publish_document("test.app", "tab:1", changed.save(), &key, now)
+                .unwrap()
+            else {
+                panic!("stale signed snapshot")
+            };
+            assert_eq!(first.seq, stale.seq);
+            let first_seq = first.seq;
+            peer.admit_local_app_document("test.app", "tab:1", *first, now)
+                .unwrap();
+            peer.select_exact_admissions().unwrap();
+            assert!(
+                peer.lookup_exact_local_document("test.app", "tab:1", &stale, now)
+                    .unwrap()
+                    .is_none()
+            );
+            let before = peer.durable().unwrap();
+            assert_eq!(
+                peer.admit_new_local_document("test.app", "tab:1", *stale, now)
+                    .unwrap_err(),
+                "native local document signed sequence is stale"
+            );
+            assert_eq!(peer.durable().unwrap(), before);
+
+            let NeighbourMsg::AppDocument {
+                envelope: fresh, ..
+            } = peer
+                .clone()
+                .publication_mut()
+                .publish_document("test.app", "tab:1", changed.save(), &key, now)
+                .unwrap()
+            else {
+                panic!("fresh signed snapshot")
+            };
+            assert_eq!(fresh.seq, first_seq + 1);
+            peer.admit_new_local_document("test.app", "tab:1", *fresh, now)
+                .unwrap();
+        }
     }
 
     /// One admitted write, looked up again: only its own envelope on its own
@@ -447,67 +514,5 @@ mod tests {
             before,
             "no lookup changes the state"
         );
-    }
-
-    #[test]
-    fn replay_floor_without_exact_entry_requires_a_fresh_signed_successor() {
-        use automerge::transaction::Transactable as _;
-        let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
-        let original = peer.document("test.app", "tab:1").unwrap();
-        let NeighbourMsg::AppDocument {
-            envelope: first, ..
-        } = peer
-            .clone()
-            .publication_mut()
-            .publish_document("test.app", "tab:1", original.clone(), &key, now)
-            .unwrap()
-        else {
-            panic!("first signed snapshot")
-        };
-        let mut changed = automerge::AutoCommit::load(&original).unwrap();
-        changed
-            .put(automerge::ROOT, "diagnostic", "different")
-            .unwrap();
-        let NeighbourMsg::AppDocument {
-            envelope: stale, ..
-        } = peer
-            .clone()
-            .publication_mut()
-            .publish_document("test.app", "tab:1", changed.save(), &key, now)
-            .unwrap()
-        else {
-            panic!("stale signed snapshot")
-        };
-        assert_eq!(first.seq, stale.seq);
-        let first_seq = first.seq;
-        peer.admit_local_app_document("test.app", "tab:1", *first, now)
-            .unwrap();
-        peer.select_exact_admissions().unwrap();
-        assert!(
-            peer.lookup_exact_local_document("test.app", "tab:1", &stale, now)
-                .unwrap()
-                .is_none()
-        );
-        let before = peer.durable().unwrap();
-        assert_eq!(
-            peer.admit_new_local_document("test.app", "tab:1", *stale, now)
-                .unwrap_err(),
-            "native local document signed sequence is stale"
-        );
-        assert_eq!(peer.durable().unwrap(), before);
-
-        let NeighbourMsg::AppDocument {
-            envelope: fresh, ..
-        } = peer
-            .clone()
-            .publication_mut()
-            .publish_document("test.app", "tab:1", changed.save(), &key, now)
-            .unwrap()
-        else {
-            panic!("fresh signed snapshot")
-        };
-        assert_eq!(fresh.seq, first_seq + 1);
-        peer.admit_new_local_document("test.app", "tab:1", *fresh, now)
-            .unwrap();
     }
 }

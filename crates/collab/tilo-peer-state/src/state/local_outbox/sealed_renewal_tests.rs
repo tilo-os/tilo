@@ -171,220 +171,225 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
         .unwrap();
 }
 
-#[test]
-fn an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_retires_with_it() {
-    let mut fixture = fixture();
-    let author = fixture.key.verifying_key().to_bytes();
-    let later = expired(fixture.now);
-    let renewal = fixture
-        .renew(&fixture.write.clone(), &mut identical, later)
-        .unwrap()
-        .expect("an expired unretired sealed write renews");
-    let (original, renewed) = (envelope(&fixture.write), envelope(&renewal));
-    collab_types::verify_op(renewed).unwrap();
-    assert_eq!(
-        renewed.payload, original.payload,
-        "the ciphertext is identical"
-    );
-    assert_eq!(renewed.encryption, original.encryption);
-    assert_eq!(
-        (
-            renewed.artifact,
-            renewed.attestation_id,
-            renewed.kind,
-            renewed.author
-        ),
-        (
-            original.artifact,
-            original.attestation_id,
-            original.kind,
-            original.author
-        )
-    );
-    assert_eq!(renewed.seq, original.seq.checked_add(1).unwrap());
-    assert_eq!(renewed.timestamp, later);
-    assert!(crate::outbox::fresh(&renewal, later));
-    assert!(
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_sealed_write_is_renewed_only_for_its_standing_author_by_the_key_holder;
+
+    phase an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_retires_with_it;
+    {
+        let mut fixture = fixture();
+        let author = fixture.key.verifying_key().to_bytes();
+        let later = expired(fixture.now);
+        let renewal = fixture
+            .renew(&fixture.write.clone(), &mut identical, later)
+            .unwrap()
+            .expect("an expired unretired sealed write renews");
+        let (original, renewed) = (envelope(&fixture.write), envelope(&renewal));
+        collab_types::verify_op(renewed).unwrap();
+        assert_eq!(
+            renewed.payload, original.payload,
+            "the ciphertext is identical"
+        );
+        assert_eq!(renewed.encryption, original.encryption);
+        assert_eq!(
+            (
+                renewed.artifact,
+                renewed.attestation_id,
+                renewed.kind,
+                renewed.author
+            ),
+            (
+                original.artifact,
+                original.attestation_id,
+                original.kind,
+                original.author
+            )
+        );
+        assert_eq!(renewed.seq, original.seq.checked_add(1).unwrap());
+        assert_eq!(renewed.timestamp, later);
+        assert!(crate::outbox::fresh(&renewal, later));
+        assert!(
+            fixture
+                .member
+                .lookup_exact_local_document(APP, RECORD, renewed, later)
+                .unwrap()
+                .is_some(),
+            "the renewal is admitted exactly, as a new local sealed write"
+        );
+        assert_eq!(held(&fixture.member).last(), Some(renewed));
+        assert_eq!(
+            fixture.renew(&renewal, &mut identical, later).unwrap(),
+            None,
+            "a fresh renewal is not renewed again"
+        );
+        assert!(
+            !fixture
+                .member
+                .outbox()
+                .retained_local_document_retired(&renewal, author)
+                .unwrap()
+        );
+
+        acknowledge(&mut fixture, renewal.clone(), later);
+        for message in [&renewal, &fixture.write] {
+            assert!(
+                fixture
+                    .member
+                    .outbox()
+                    .retained_local_document_retired(message, author)
+                    .unwrap(),
+                "the governor's watermark over the renewal retires both"
+            );
+        }
+        assert_eq!(
+            fixture
+                .renew(&fixture.write.clone(), &mut identical, later)
+                .unwrap(),
+            None,
+            "a retired write is not renewed"
+        );
+    }
+
+    phase a_write_from_an_older_epoch_renews_with_what_the_key_holder_resealed;
+    {
+        let mut fixture = fixture();
+        let later = expired(fixture.now);
+        let current = metadata(2);
+        let renewal = fixture
+            .renew(
+                &fixture.write.clone(),
+                &mut |_| Ok((current, b"resealed under epoch 2".to_vec())),
+                later,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(envelope(&renewal).encryption, Some(current));
+        assert_eq!(envelope(&renewal).payload, b"resealed under epoch 2");
+        collab_types::verify_op(envelope(&renewal)).unwrap();
+    }
+
+    phase a_refused_reseal_or_a_fresh_write_changes_nothing;
+    {
+        let mut fixture = fixture();
+        let before = fixture.member.durable().unwrap();
+        let (mut asked, write) = (0, fixture.write.clone());
+        assert_eq!(
+            fixture
+                .renew(
+                    &write,
+                    &mut |_| {
+                        asked += 1;
+                        identical(envelope(&write))
+                    },
+                    fixture.now
+                )
+                .unwrap(),
+            None,
+            "a fresh write is not renewed"
+        );
+        assert_eq!(asked, 0);
+        assert!(
+            fixture
+                .renew(
+                    &fixture.write.clone(),
+                    &mut |_| Err("this device holds no current key".into()),
+                    expired(fixture.now)
+                )
+                .is_err()
+        );
+        assert_eq!(
+            fixture.member.durable().unwrap(),
+            before,
+            "a refusal leaves the write exactly as it was"
+        );
+    }
+
+    phase a_revoked_author_renews_nothing;
+    {
+        let mut fixture = fixture();
+        let later = expired(fixture.now);
+        let mut revocation = tilo_user_identity::RevocationEntry {
+            user_public_key: fixture.cert.user_public_key,
+            revoked_device_public_key: fixture.cert.device_public_key,
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[1; 32]))
+            .unwrap();
         fixture
             .member
-            .lookup_exact_local_document(APP, RECORD, renewed, later)
-            .unwrap()
-            .is_some(),
-        "the renewal is admitted exactly, as a new local sealed write"
-    );
-    assert_eq!(held(&fixture.member).last(), Some(renewed));
-    assert_eq!(
-        fixture.renew(&renewal, &mut identical, later).unwrap(),
-        None,
-        "a fresh renewal is not renewed again"
-    );
-    assert!(
-        !fixture
-            .member
-            .outbox()
-            .retained_local_document_retired(&renewal, author)
-            .unwrap()
-    );
+            .receive_from(
+                TransportOrigin::UntrustedPresence(fixture.governor_key.verifying_key().to_bytes()),
+                NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                    cert: Box::new(fixture.governor.owner_certificates()[0].clone()),
+                    revocations: vec![revocation],
+                },
+                later,
+            )
+            .unwrap();
+        let before = fixture.member.durable().unwrap();
+        let mut asked = 0;
+        assert!(
+            fixture
+                .renew(
+                    &fixture.write.clone(),
+                    &mut |op| {
+                        asked += 1;
+                        identical(op)
+                    },
+                    later
+                )
+                .is_err()
+        );
+        assert_eq!(asked, 0, "nothing is resealed for a revoked author");
+        assert_eq!(fixture.member.durable().unwrap(), before);
+    }
 
-    acknowledge(&mut fixture, renewal.clone(), later);
-    for message in [&renewal, &fixture.write] {
+    phase a_renewal_survives_restart_as_exact_custody;
+    {
+        let mut fixture = fixture();
+        let later = expired(fixture.now);
+        let renewal = fixture
+            .renew(&fixture.write.clone(), &mut identical, later)
+            .unwrap()
+            .unwrap();
+        let restored = StatePeer::restore(
+            &fixture.member.durable().unwrap(),
+            fixture.member.workspace_id(),
+            fixture.member.owner_certificates()[0].clone(),
+            vec![fixture.cert.clone()],
+            RevocationList::new(),
+            later,
+        )
+        .unwrap();
+        let author = fixture.key.verifying_key().to_bytes();
+        for message in [&fixture.write, &renewal] {
+            assert!(
+                restored
+                    .outbox()
+                    .lookup_retained_local_document(message, author)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert_eq!(held(&restored), held(&fixture.member));
+        fixture.member = restored;
+        assert_eq!(
+            fixture.renew(&renewal, &mut identical, later).unwrap(),
+            None,
+            "the restored renewal is still fresh"
+        );
+        acknowledge(&mut fixture, renewal.clone(), later);
         assert!(
             fixture
                 .member
                 .outbox()
-                .retained_local_document_retired(message, author)
-                .unwrap(),
-            "the governor's watermark over the renewal retires both"
-        );
-    }
-    assert_eq!(
-        fixture
-            .renew(&fixture.write.clone(), &mut identical, later)
-            .unwrap(),
-        None,
-        "a retired write is not renewed"
-    );
-}
-
-#[test]
-fn a_write_from_an_older_epoch_renews_with_what_the_key_holder_resealed() {
-    let mut fixture = fixture();
-    let later = expired(fixture.now);
-    let current = metadata(2);
-    let renewal = fixture
-        .renew(
-            &fixture.write.clone(),
-            &mut |_| Ok((current, b"resealed under epoch 2".to_vec())),
-            later,
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(envelope(&renewal).encryption, Some(current));
-    assert_eq!(envelope(&renewal).payload, b"resealed under epoch 2");
-    collab_types::verify_op(envelope(&renewal)).unwrap();
-}
-
-#[test]
-fn a_refused_reseal_or_a_fresh_write_changes_nothing() {
-    let mut fixture = fixture();
-    let before = fixture.member.durable().unwrap();
-    let (mut asked, write) = (0, fixture.write.clone());
-    assert_eq!(
-        fixture
-            .renew(
-                &write,
-                &mut |_| {
-                    asked += 1;
-                    identical(envelope(&write))
-                },
-                fixture.now
-            )
-            .unwrap(),
-        None,
-        "a fresh write is not renewed"
-    );
-    assert_eq!(asked, 0);
-    assert!(
-        fixture
-            .renew(
-                &fixture.write.clone(),
-                &mut |_| Err("this device holds no current key".into()),
-                expired(fixture.now)
-            )
-            .is_err()
-    );
-    assert_eq!(
-        fixture.member.durable().unwrap(),
-        before,
-        "a refusal leaves the write exactly as it was"
-    );
-}
-
-#[test]
-fn a_revoked_author_renews_nothing() {
-    let mut fixture = fixture();
-    let later = expired(fixture.now);
-    let mut revocation = tilo_user_identity::RevocationEntry {
-        user_public_key: fixture.cert.user_public_key,
-        revoked_device_public_key: fixture.cert.device_public_key,
-        revoked_at_ns: 1,
-        reason: tilo_user_identity::RevocationReason::Compromised,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[1; 32]))
-        .unwrap();
-    fixture
-        .member
-        .receive_from(
-            TransportOrigin::UntrustedPresence(fixture.governor_key.verifying_key().to_bytes()),
-            NeighbourMsg::IdentityHello {
-                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(fixture.governor.owner_certificates()[0].clone()),
-                revocations: vec![revocation],
-            },
-            later,
-        )
-        .unwrap();
-    let before = fixture.member.durable().unwrap();
-    let mut asked = 0;
-    assert!(
-        fixture
-            .renew(
-                &fixture.write.clone(),
-                &mut |op| {
-                    asked += 1;
-                    identical(op)
-                },
-                later
-            )
-            .is_err()
-    );
-    assert_eq!(asked, 0, "nothing is resealed for a revoked author");
-    assert_eq!(fixture.member.durable().unwrap(), before);
-}
-
-#[test]
-fn a_renewal_survives_restart_as_exact_custody() {
-    let mut fixture = fixture();
-    let later = expired(fixture.now);
-    let renewal = fixture
-        .renew(&fixture.write.clone(), &mut identical, later)
-        .unwrap()
-        .unwrap();
-    let restored = StatePeer::restore(
-        &fixture.member.durable().unwrap(),
-        fixture.member.workspace_id(),
-        fixture.member.owner_certificates()[0].clone(),
-        vec![fixture.cert.clone()],
-        RevocationList::new(),
-        later,
-    )
-    .unwrap();
-    let author = fixture.key.verifying_key().to_bytes();
-    for message in [&fixture.write, &renewal] {
-        assert!(
-            restored
-                .outbox()
-                .lookup_retained_local_document(message, author)
+                .retained_local_document_retired(&renewal, author)
                 .unwrap()
-                .is_some()
         );
     }
-    assert_eq!(held(&restored), held(&fixture.member));
-    fixture.member = restored;
-    assert_eq!(
-        fixture.renew(&renewal, &mut identical, later).unwrap(),
-        None,
-        "the restored renewal is still fresh"
-    );
-    acknowledge(&mut fixture, renewal.clone(), later);
-    assert!(
-        fixture
-            .member
-            .outbox()
-            .retained_local_document_retired(&renewal, author)
-            .unwrap()
-    );
 }
 
 impl Fixture {

@@ -96,90 +96,95 @@ fn revoked(peer: &StatePeer, root: &SigningKey, now: SystemTime) -> StatePeer {
         .unwrap();
     candidate
 }
-#[test]
-fn workspace_media_reconciliation_promotes_verified_union_once_and_does_not_change_epoch() {
-    let (peer, root, key, now) = fixture(1);
-    let mut candidate = revoked(&peer, &root, now);
-    assert!(
-        candidate
-            .media()
-            .validate_media_governance_for_publication()
-            .is_err()
-    );
-    assert!(
-        candidate
-            .media_mut()
-            .reconcile_media_governance(&key, now)
-            .unwrap()
-    );
-    assert_eq!(
-        candidate
-            .validated_media_policy()
-            .unwrap()
-            .unwrap()
-            .authorization_revision,
-        2
-    );
-    let bytes = candidate.durable().unwrap();
-    assert!(
-        !candidate
-            .media_mut()
-            .reconcile_media_governance(&key, now)
-            .unwrap()
-    );
-    assert_eq!(candidate.durable().unwrap(), bytes);
-}
-#[test]
-fn workspace_media_exhaustion_keeps_the_record_and_reopens_denied() {
-    let (peer, root, key, now) = fixture(u64::MAX);
-    let mut candidate = revoked(&peer, &root, now);
-    let bytes = candidate.durable().unwrap();
-    assert!(
-        candidate
-            .media_mut()
-            .reconcile_media_governance(&key, now)
-            .is_err()
-    );
-    assert_eq!(candidate.durable().unwrap(), bytes);
-    let restored = StatePeer::restore(
-        &bytes,
-        peer.workspace_id(),
-        peer.owner_certificates()[0].clone(),
-        vec![],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert!(restored.validated_media_policy().is_err());
-    assert_eq!(
-        media::parse(restored.admitted_workspace().unwrap())
-            .unwrap()
-            .unwrap()
-            .authorization_revision,
-        u64::MAX
-    );
-}
-#[test]
-fn workspace_media_reconciliation_preserves_disabled_policy_before_first_call() {
-    let (peer, root, key, now) = fixture(0);
-    let mut candidate = revoked(&peer, &root, now);
-    assert!(
-        candidate
-            .media_mut()
-            .reconcile_media_governance(&key, now)
-            .unwrap()
-    );
-    assert!(candidate.validated_media_policy().unwrap().is_none());
-    assert_eq!(
-        media::security_basis(candidate.admitted_workspace().unwrap(), &[]).unwrap(),
-        media::security_basis(
-            candidate.admitted_workspace().unwrap(),
-            &candidate.revocations()
-        )
-        .unwrap()
-    );
-}
+tilo_test_env::scenario! {
+    fn workspace_media_reconciliation_keeps_epoch_record_and_disabled_policy;
 
+    phase workspace_media_reconciliation_promotes_verified_union_once_and_does_not_change_epoch;
+    {
+        let (peer, root, key, now) = fixture(1);
+        let mut candidate = revoked(&peer, &root, now);
+        assert!(
+            candidate
+                .media()
+                .validate_media_governance_for_publication()
+                .is_err()
+        );
+        assert!(
+            candidate
+                .media_mut()
+                .reconcile_media_governance(&key, now)
+                .unwrap()
+        );
+        assert_eq!(
+            candidate
+                .validated_media_policy()
+                .unwrap()
+                .unwrap()
+                .authorization_revision,
+            2
+        );
+        let bytes = candidate.durable().unwrap();
+        assert!(
+            !candidate
+                .media_mut()
+                .reconcile_media_governance(&key, now)
+                .unwrap()
+        );
+        assert_eq!(candidate.durable().unwrap(), bytes);
+    }
+
+    phase workspace_media_exhaustion_keeps_the_record_and_reopens_denied;
+    {
+        let (peer, root, key, now) = fixture(u64::MAX);
+        let mut candidate = revoked(&peer, &root, now);
+        let bytes = candidate.durable().unwrap();
+        assert!(
+            candidate
+                .media_mut()
+                .reconcile_media_governance(&key, now)
+                .is_err()
+        );
+        assert_eq!(candidate.durable().unwrap(), bytes);
+        let restored = StatePeer::restore(
+            &bytes,
+            peer.workspace_id(),
+            peer.owner_certificates()[0].clone(),
+            vec![],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert!(restored.validated_media_policy().is_err());
+        assert_eq!(
+            media::parse(restored.admitted_workspace().unwrap())
+                .unwrap()
+                .unwrap()
+                .authorization_revision,
+            u64::MAX
+        );
+    }
+
+    phase workspace_media_reconciliation_preserves_disabled_policy_before_first_call;
+    {
+        let (peer, root, key, now) = fixture(0);
+        let mut candidate = revoked(&peer, &root, now);
+        assert!(
+            candidate
+                .media_mut()
+                .reconcile_media_governance(&key, now)
+                .unwrap()
+        );
+        assert!(candidate.validated_media_policy().unwrap().is_none());
+        assert_eq!(
+            media::security_basis(candidate.admitted_workspace().unwrap(), &[]).unwrap(),
+            media::security_basis(
+                candidate.admitted_workspace().unwrap(),
+                &candidate.revocations()
+            )
+            .unwrap()
+        );
+    }
+}
 fn no_policy_document_fixture() -> (StatePeer, SigningKey, SigningKey, SystemTime) {
     let (mut peer, root, key, now) = fixture(0);
     peer.select_exact_admissions().unwrap();
@@ -192,145 +197,149 @@ fn no_policy_document_fixture() -> (StatePeer, SigningKey, SigningKey, SystemTim
     (peer, root, key, now)
 }
 
-#[test]
-fn workspace_media_security_no_policy_accepts_host_revocation_without_enabling_media() {
-    let (mut peer, root, key, now) = no_policy_document_fixture();
-    let owner = peer.owner_certificates()[0].clone();
-    let sibling_key = SigningKey::from_bytes(&[209; 32]);
-    let mut sibling = owner.clone();
-    sibling.device_public_key = sibling_key.verifying_key().to_bytes();
-    sibling.device_label = "same-root revocation carrier".into();
-    sign_device_cert(&mut sibling, &root).unwrap();
-    assert!(peer.admit_certificate(sibling.clone(), &key, now).unwrap());
-    let before = peer.durable().unwrap();
-    let mut entry = RevocationEntry {
-        user_public_key: peer.owner(),
-        revoked_device_public_key: owner.device_public_key,
-        revoked_at_ns: 2,
-        reason: RevocationReason::Retired,
-        signature: [0; 64],
-    };
-    sign_revocation_entry(&mut entry, &root).unwrap();
-    let mut observed = peer.clone();
-    let error = observed
-        .receive_from(
-            TransportOrigin::UntrustedPresence(owner.device_public_key),
-            NeighbourMsg::IdentityHello {
-                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(owner.clone()),
-                revocations: vec![entry.clone()],
-            },
-            now,
-        )
-        .unwrap_err();
-    assert!(error.to_string().contains("device revoked"), "{error}");
-    assert_eq!(observed.durable().unwrap(), before);
-    observed
-        .receive_from(
-            TransportOrigin::UntrustedPresence(sibling.device_public_key),
-            NeighbourMsg::IdentityHello {
-                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(sibling),
-                revocations: vec![entry],
-            },
+tilo_test_env::scenario! {
+    fn workspace_media_security_without_a_policy_takes_only_verified_revocations;
+
+    phase workspace_media_security_no_policy_accepts_host_revocation_without_enabling_media;
+    {
+        let (mut peer, root, key, now) = no_policy_document_fixture();
+        let owner = peer.owner_certificates()[0].clone();
+        let sibling_key = SigningKey::from_bytes(&[209; 32]);
+        let mut sibling = owner.clone();
+        sibling.device_public_key = sibling_key.verifying_key().to_bytes();
+        sibling.device_label = "same-root revocation carrier".into();
+        sign_device_cert(&mut sibling, &root).unwrap();
+        assert!(peer.admit_certificate(sibling.clone(), &key, now).unwrap());
+        let before = peer.durable().unwrap();
+        let mut entry = RevocationEntry {
+            user_public_key: peer.owner(),
+            revoked_device_public_key: owner.device_public_key,
+            revoked_at_ns: 2,
+            reason: RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut entry, &root).unwrap();
+        let mut observed = peer.clone();
+        let error = observed
+            .receive_from(
+                TransportOrigin::UntrustedPresence(owner.device_public_key),
+                NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                    cert: Box::new(owner.clone()),
+                    revocations: vec![entry.clone()],
+                },
+                now,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("device revoked"), "{error}");
+        assert_eq!(observed.durable().unwrap(), before);
+        observed
+            .receive_from(
+                TransportOrigin::UntrustedPresence(sibling.device_public_key),
+                NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                    cert: Box::new(sibling),
+                    revocations: vec![entry],
+                },
+                now,
+            )
+            .unwrap();
+        assert!(
+            observed
+                .core
+                .revocations
+                .is_revoked(&peer.owner(), &owner.device_public_key)
+        );
+        assert!(
+            media::parse(observed.admitted_workspace().unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+        // The revoked device's workspace reopens; the device itself writes nothing more.
+        let reopened = StatePeer::restore(
+            &observed.durable().unwrap(),
+            peer.workspace_id(),
+            owner.clone(),
+            vec![],
+            RevocationList::new(),
             now,
         )
         .unwrap();
-    assert!(
-        observed
-            .core
-            .revocations
-            .is_revoked(&peer.owner(), &owner.device_public_key)
-    );
-    assert!(
-        media::parse(observed.admitted_workspace().unwrap())
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(peer.durable().unwrap(), before);
-    // The revoked device's workspace reopens; the device itself writes nothing more.
-    let reopened = StatePeer::restore(
-        &observed.durable().unwrap(),
-        peer.workspace_id(),
-        owner.clone(),
-        vec![],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert!(reopened.permissions(owner.device_public_key, now).is_err());
-}
+        assert!(reopened.permissions(owner.device_public_key, now).is_err());
+    }
 
-#[test]
-fn workspace_media_security_no_policy_refuses_foreign_and_forged_revocations() {
-    let (peer, root, _, now) = no_policy_document_fixture();
-    let candidate = revoked(&peer, &root, now);
-    let foreign_root = SigningKey::from_bytes(&[210; 32]);
-    let mut foreign = RevocationEntry {
-        user_public_key: foreign_root.verifying_key().to_bytes(),
-        revoked_device_public_key: peer.owner_certificates()[0].device_public_key,
-        revoked_at_ns: 3,
-        reason: RevocationReason::Retired,
-        signature: [0; 64],
-    };
-    sign_revocation_entry(&mut foreign, &foreign_root).unwrap();
-    let mut received = peer.clone();
-    assert!(
-        received
-            .receive_from(
-                TransportOrigin::UntrustedPresence(peer.owner_certificates()[0].device_public_key),
-                NeighbourMsg::IdentityHello {
-                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                    cert: Box::new(peer.owner_certificates()[0].clone()),
-                    revocations: vec![foreign],
-                },
-                now,
-            )
-            .is_err()
-    );
-    assert_eq!(received.durable().unwrap(), peer.durable().unwrap());
-    let mut invalid_signature = candidate.core.revocations.iter().next().unwrap().clone();
-    invalid_signature.signature[0] ^= 1;
-    assert!(
-        received
-            .receive_from(
-                TransportOrigin::UntrustedPresence(peer.owner_certificates()[0].device_public_key),
-                NeighbourMsg::IdentityHello {
-                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                    cert: Box::new(peer.owner_certificates()[0].clone()),
-                    revocations: vec![invalid_signature],
-                },
-                now,
-            )
-            .is_err()
-    );
-    assert_eq!(received.durable().unwrap(), peer.durable().unwrap());
-}
+    phase workspace_media_security_no_policy_refuses_foreign_and_forged_revocations;
+    {
+        let (peer, root, _, now) = no_policy_document_fixture();
+        let candidate = revoked(&peer, &root, now);
+        let foreign_root = SigningKey::from_bytes(&[210; 32]);
+        let mut foreign = RevocationEntry {
+            user_public_key: foreign_root.verifying_key().to_bytes(),
+            revoked_device_public_key: peer.owner_certificates()[0].device_public_key,
+            revoked_at_ns: 3,
+            reason: RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut foreign, &foreign_root).unwrap();
+        let mut received = peer.clone();
+        assert!(
+            received
+                .receive_from(
+                    TransportOrigin::UntrustedPresence(peer.owner_certificates()[0].device_public_key),
+                    NeighbourMsg::IdentityHello {
+                        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                        cert: Box::new(peer.owner_certificates()[0].clone()),
+                        revocations: vec![foreign],
+                    },
+                    now,
+                )
+                .is_err()
+        );
+        assert_eq!(received.durable().unwrap(), peer.durable().unwrap());
+        let mut invalid_signature = candidate.core.revocations.iter().next().unwrap().clone();
+        invalid_signature.signature[0] ^= 1;
+        assert!(
+            received
+                .receive_from(
+                    TransportOrigin::UntrustedPresence(peer.owner_certificates()[0].device_public_key),
+                    NeighbourMsg::IdentityHello {
+                        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                        cert: Box::new(peer.owner_certificates()[0].clone()),
+                        revocations: vec![invalid_signature],
+                    },
+                    now,
+                )
+                .is_err()
+        );
+        assert_eq!(received.durable().unwrap(), peer.durable().unwrap());
+    }
 
-#[test]
-fn workspace_media_security_basis_ignores_a_revocation_the_workspace_already_carries() {
-    let (peer, root, key, now) = fixture(0);
-    let mut governed = revoked(&peer, &root, now);
-    assert!(
-        governed
-            .media_mut()
-            .reconcile_media_governance(&key, now)
+    phase workspace_media_security_basis_ignores_a_revocation_the_workspace_already_carries;
+    {
+        let (peer, root, key, now) = fixture(0);
+        let mut governed = revoked(&peer, &root, now);
+        assert!(
+            governed
+                .media_mut()
+                .reconcile_media_governance(&key, now)
+                .unwrap()
+        );
+        // The signed workspace already carries this revocation. Adding the same entry
+        // only to its durable sidecar is not a new effective security change.
+        governed.core.revocations = RevocationList::new();
+        let duplicate = revoked(&governed, &root, now);
+        assert_eq!(
+            media::security_basis(
+                governed.admitted_workspace().unwrap(),
+                &governed.revocations()
+            )
+            .unwrap(),
+            media::security_basis(
+                duplicate.admitted_workspace().unwrap(),
+                &duplicate.revocations()
+            )
             .unwrap()
-    );
-    // The signed workspace already carries this revocation. Adding the same entry
-    // only to its durable sidecar is not a new effective security change.
-    governed.core.revocations = RevocationList::new();
-    let duplicate = revoked(&governed, &root, now);
-    assert_eq!(
-        media::security_basis(
-            governed.admitted_workspace().unwrap(),
-            &governed.revocations()
-        )
-        .unwrap(),
-        media::security_basis(
-            duplicate.admitted_workspace().unwrap(),
-            &duplicate.revocations()
-        )
-        .unwrap()
-    );
+        );
+    }
 }

@@ -339,68 +339,157 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_base_holds_the_state_and_none_of_the_history() {
-        let mut doc = AutoCommit::new();
-        let strips = doc
-            .put_object(ROOT, "strips", automerge::ObjType::Map)
-            .unwrap();
-        doc.put(&strips, "1", "ssh prod-db").unwrap();
-        doc.commit();
-        doc.delete(&strips, "1").unwrap();
-        doc.put(&strips, "2", "notes").unwrap();
-        doc.commit();
+    tilo_test_env::scenario! {
+        fn a_base_replaces_the_history_before_it;
 
-        let mut base = rebase(&doc, ActorId::random()).unwrap();
-        assert_eq!(generation(&base), 1);
-        let history = base.get_changes(&[]);
-        assert_eq!(history.len(), 1);
-        assert!(!format!("{:?}", history[0].decode()).contains("ssh prod-db"));
-        let strips = base.get(ROOT, "strips").unwrap().unwrap().1;
-        assert_eq!(
-            base.get(&strips, "2").unwrap().unwrap().0.as_str(),
-            Some("notes")
-        );
-        assert_eq!(root(&mut base), Some(history[0].hash()));
-        assert_eq!(generation(&rebase(&base, ActorId::random()).unwrap()), 2);
-    }
+        phase a_base_holds_the_state_and_none_of_the_history;
+        {
+            let mut doc = AutoCommit::new();
+            let strips = doc
+                .put_object(ROOT, "strips", automerge::ObjType::Map)
+                .unwrap();
+            doc.put(&strips, "1", "ssh prod-db").unwrap();
+            doc.commit();
+            doc.delete(&strips, "1").unwrap();
+            doc.put(&strips, "2", "notes").unwrap();
+            doc.commit();
 
-    #[test]
-    fn a_newer_base_replaces_and_an_older_history_is_left_out() {
-        let mut old = AutoCommit::new();
-        old.put(ROOT, "name", "Team").unwrap();
-        old.commit();
-        let history = changes(&mut old, &[]);
-        let mut base = rebase(&old, ActorId::random()).unwrap();
-        let based = changes(&mut base, &[]);
-
-        for held in [Some(&old), None] {
-            let Lineage::Newer {
-                base: mut built,
-                changes,
-            } = lineage(held, &based)
-            else {
-                panic!("a newer base replaces what is held");
-            };
-            assert!(changes.is_empty(), "the base is all the batch carries");
-            assert_eq!(built.get_heads(), base.get_heads());
+            let mut base = rebase(&doc, ActorId::random()).unwrap();
+            assert_eq!(generation(&base), 1);
+            let history = base.get_changes(&[]);
+            assert_eq!(history.len(), 1);
+            assert!(!format!("{:?}", history[0].decode()).contains("ssh prod-db"));
+            let strips = base.get(ROOT, "strips").unwrap().unwrap().1;
+            assert_eq!(
+                base.get(&strips, "2").unwrap().unwrap().0.as_str(),
+                Some("notes")
+            );
+            assert_eq!(root(&mut base), Some(history[0].hash()));
+            assert_eq!(generation(&rebase(&base, ActorId::random()).unwrap()), 2);
         }
-        assert!(matches!(
-            lineage(Some(&base), &history),
-            Lineage::Same { changes: kept, replaced } if kept.is_empty() && replaced.is_empty()
-        ));
-        assert!(matches!(
-            lineage(Some(&base), &based),
-            Lineage::Same { changes: kept, replaced } if kept == based && replaced.is_empty()
-        ));
-        let heads = base.get_heads();
-        base.put(ROOT, "name", "Crew").unwrap();
-        base.commit();
-        let after = changes(&mut base, &heads);
-        assert!(matches!(
-            lineage(Some(&old), &after),
-            Lineage::Same { changes: kept, replaced } if kept == after && replaced.is_empty()
-        ));
+
+        phase a_newer_base_replaces_and_an_older_history_is_left_out;
+        {
+            let mut old = AutoCommit::new();
+            old.put(ROOT, "name", "Team").unwrap();
+            old.commit();
+            let history = changes(&mut old, &[]);
+            let mut base = rebase(&old, ActorId::random()).unwrap();
+            let based = changes(&mut base, &[]);
+
+            for held in [Some(&old), None] {
+                let Lineage::Newer {
+                    base: mut built,
+                    changes,
+                } = lineage(held, &based)
+                else {
+                    panic!("a newer base replaces what is held");
+                };
+                assert!(changes.is_empty(), "the base is all the batch carries");
+                assert_eq!(built.get_heads(), base.get_heads());
+            }
+            assert!(matches!(
+                lineage(Some(&base), &history),
+                Lineage::Same { changes: kept, replaced } if kept.is_empty() && replaced.is_empty()
+            ));
+            assert!(matches!(
+                lineage(Some(&base), &based),
+                Lineage::Same { changes: kept, replaced } if kept == based && replaced.is_empty()
+            ));
+            let heads = base.get_heads();
+            base.put(ROOT, "name", "Crew").unwrap();
+            base.commit();
+            let after = changes(&mut base, &heads);
+            assert!(matches!(
+                lineage(Some(&old), &after),
+                Lineage::Same { changes: kept, replaced } if kept == after && replaced.is_empty()
+            ));
+        }
+
+        phase a_change_of_the_history_a_base_replaced_never_holds_back_the_governors_next;
+        // The governor writes each base's history afresh under its own actor,
+        // so the history a base replaced numbers its changes as the new one
+        // does. A change of the old history that reaches a member after the
+        // base, or with it, never holds the governor's change at its sequence
+        // number back: once a change built on the base holds that number, the
+        // old one is dropped, waiting or arriving.
+        {
+            let RebasedWorkspace {
+                old,
+                history,
+                base,
+                based,
+                new_history,
+            } = rebased_workspace();
+            let old_third = vec![history[2].clone()];
+            let seq = |bytes: &Vec<u8>| change(bytes).seq();
+            assert_eq!(
+                (seq(&old_third[0]), seq(&new_history[1])),
+                (3, 3),
+                "both histories hold the governor's third change"
+            );
+
+            // The old change after the base, before the governor's third: it
+            // may yet be of the base's history, so it waits. The governor's
+            // third change, built on the base, shows it is not, and it goes.
+            let member = take(None, &base);
+            let member = take(Some(&member), &old_third);
+            assert_eq!(member.committed_document().queued_changes().count(), 1);
+            let member = take(Some(&member), &new_history);
+            assert_eq!(member.committed_heads(), based.committed_heads());
+            assert_eq!(member.committed_document().queued_changes().count(), 0);
+            assert_eq!(
+                member.get(ROOT, "grace").unwrap().unwrap().0.as_str(),
+                Some("agent")
+            );
+
+            // The old change after the governor's third: left out, the batch
+            // is not refused.
+            let late = take(Some(&member), &old_third);
+            assert_eq!(late.committed_heads(), based.committed_heads());
+            assert_eq!(late.committed_document().queued_changes().count(), 0);
+
+            // The old change with what is left of its history, in the same batch
+            // as the base: only what builds on the base is applied, and the old
+            // changes go once the governor's history claims their numbers.
+            let mut batch = history[1..].to_vec();
+            batch.extend(base.iter().cloned());
+            let member = take(Some(&old), &batch);
+            assert_eq!(member.committed_heads(), vec![change(&base[0]).hash()]);
+            assert_eq!(member.committed_document().queued_changes().count(), 2);
+            let member = take(Some(&member), &new_history);
+            assert_eq!(member.committed_heads(), based.committed_heads());
+            assert_eq!(member.committed_document().queued_changes().count(), 0);
+        }
+
+        phase a_change_of_the_bases_history_ahead_of_its_parent_applies_once_the_parent_arrives;
+        // A change of the base's own history that arrives before what it builds
+        // on waits, and applies once that arrives: nothing is dropped for being
+        // early.
+        {
+            let RebasedWorkspace {
+                base,
+                based,
+                new_history,
+                ..
+            } = rebased_workspace();
+            let member = take(None, &base);
+
+            let ahead = take(Some(&member), &new_history[1..]);
+            assert_eq!(ahead.committed_document().queued_changes().count(), 2);
+            let member = take(Some(&ahead), &new_history[..1]);
+            assert_eq!(member.committed_heads(), based.committed_heads());
+            assert_eq!(member.committed_document().queued_changes().count(), 0);
+            assert_eq!(
+                member.get(ROOT, "grace").unwrap().unwrap().0.as_str(),
+                Some("agent")
+            );
+
+            // The same in one batch, last first.
+            let reversed: Vec<Vec<u8>> = new_history.iter().rev().cloned().collect();
+            let member = take(Some(&take(None, &base)), &reversed);
+            assert_eq!(member.committed_heads(), based.committed_heads());
+        }
     }
 
     /// What a receiver holding `doc` keeps of `batch`, as the admission
@@ -460,90 +549,5 @@ mod tests {
             based,
             new_history,
         }
-    }
-
-    /// The governor writes each base's history afresh under its own actor,
-    /// so the history a base replaced numbers its changes as the new one
-    /// does. A change of the old history that reaches a member after the
-    /// base, or with it, never holds the governor's change at its sequence
-    /// number back: once a change built on the base holds that number, the
-    /// old one is dropped, waiting or arriving.
-    #[test]
-    fn a_change_of_the_history_a_base_replaced_never_holds_back_the_governors_next() {
-        let RebasedWorkspace {
-            old,
-            history,
-            base,
-            based,
-            new_history,
-        } = rebased_workspace();
-        let old_third = vec![history[2].clone()];
-        let seq = |bytes: &Vec<u8>| change(bytes).seq();
-        assert_eq!(
-            (seq(&old_third[0]), seq(&new_history[1])),
-            (3, 3),
-            "both histories hold the governor's third change"
-        );
-
-        // The old change after the base, before the governor's third: it
-        // may yet be of the base's history, so it waits. The governor's
-        // third change, built on the base, shows it is not, and it goes.
-        let member = take(None, &base);
-        let member = take(Some(&member), &old_third);
-        assert_eq!(member.committed_document().queued_changes().count(), 1);
-        let member = take(Some(&member), &new_history);
-        assert_eq!(member.committed_heads(), based.committed_heads());
-        assert_eq!(member.committed_document().queued_changes().count(), 0);
-        assert_eq!(
-            member.get(ROOT, "grace").unwrap().unwrap().0.as_str(),
-            Some("agent")
-        );
-
-        // The old change after the governor's third: left out, the batch
-        // is not refused.
-        let late = take(Some(&member), &old_third);
-        assert_eq!(late.committed_heads(), based.committed_heads());
-        assert_eq!(late.committed_document().queued_changes().count(), 0);
-
-        // The old change with what is left of its history, in the same batch
-        // as the base: only what builds on the base is applied, and the old
-        // changes go once the governor's history claims their numbers.
-        let mut batch = history[1..].to_vec();
-        batch.extend(base.iter().cloned());
-        let member = take(Some(&old), &batch);
-        assert_eq!(member.committed_heads(), vec![change(&base[0]).hash()]);
-        assert_eq!(member.committed_document().queued_changes().count(), 2);
-        let member = take(Some(&member), &new_history);
-        assert_eq!(member.committed_heads(), based.committed_heads());
-        assert_eq!(member.committed_document().queued_changes().count(), 0);
-    }
-
-    /// A change of the base's own history that arrives before what it builds
-    /// on waits, and applies once that arrives: nothing is dropped for being
-    /// early.
-    #[test]
-    fn a_change_of_the_bases_history_ahead_of_its_parent_applies_once_the_parent_arrives() {
-        let RebasedWorkspace {
-            base,
-            based,
-            new_history,
-            ..
-        } = rebased_workspace();
-        let member = take(None, &base);
-
-        let ahead = take(Some(&member), &new_history[1..]);
-        assert_eq!(ahead.committed_document().queued_changes().count(), 2);
-        let member = take(Some(&ahead), &new_history[..1]);
-        assert_eq!(member.committed_heads(), based.committed_heads());
-        assert_eq!(member.committed_document().queued_changes().count(), 0);
-        assert_eq!(
-            member.get(ROOT, "grace").unwrap().unwrap().0.as_str(),
-            Some("agent")
-        );
-
-        // The same in one batch, last first.
-        let reversed: Vec<Vec<u8>> = new_history.iter().rev().cloned().collect();
-        let member = take(Some(&take(None, &base)), &reversed);
-        assert_eq!(member.committed_heads(), based.committed_heads());
     }
 }

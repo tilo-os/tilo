@@ -27,79 +27,83 @@ fn roster(
     .unwrap()
 }
 
-#[test]
-fn revocations_preserves_independent_verified_union_and_earliest_floor() {
-    let (peer, _, _, member, now) = crate::admission_tests::seeded();
-    let roster = roster(&peer, now);
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let independent = SigningKey::from_bytes(&[8; 32]);
-    let stored = vec![
-        signed(member.device_public_key, 30, &root),
-        signed([99; 32], 10, &independent),
-    ];
-    let mut enrollment = RevocationList::new();
-    enrollment
-        .insert(signed(member.device_public_key, 20, &root))
-        .unwrap();
-    let union = restore_legacy(stored.clone(), &enrollment, &roster).unwrap();
-    drop(stored);
-    drop(enrollment);
-    assert_eq!(union.iter().count(), 2);
-    assert_eq!(
-        union
-            .iter()
-            .find(|v| v.revoked_device_public_key == member.device_public_key)
-            .unwrap()
-            .revoked_at_ns,
-        20
-    );
-    assert_eq!(
-        union
-            .iter()
-            .find(|v| v.revoked_device_public_key == [99; 32])
-            .unwrap()
-            .user_public_key,
-        independent.verifying_key().to_bytes()
-    );
-}
+tilo_test_env::scenario! {
+    fn revocations_keep_the_verified_union_and_refuse_the_rest;
 
-#[test]
-fn revocations_rejects_mismatched_root_and_bad_signature() {
-    let (peer, _, _, member, now) = crate::admission_tests::seeded();
-    let roster = roster(&peer, now);
-    let empty = RevocationList::new();
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let other = SigningKey::from_bytes(&[8; 32]);
-    let mismatch = [signed(member.device_public_key, 1, &other)];
-    let mut forged = [signed([99; 32], 1, &root)];
-    forged[0].signature[0] ^= 1;
-    for (entries, expected) in [
-        (&mismatch[..], RestoreRevocationsError::RootMismatch),
-        (
-            &forged[..],
-            RestoreRevocationsError::Signature(RevocationError::BadSignature),
-        ),
-    ] {
-        let result = restore_legacy(entries.to_vec(), &empty, &roster);
-        assert!(matches!(result, Err(error) if error == expected));
+    phase revocations_preserves_independent_verified_union_and_earliest_floor;
+    {
+        let (peer, _, _, member, now) = crate::admission_tests::seeded();
+        let roster = roster(&peer, now);
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let independent = SigningKey::from_bytes(&[8; 32]);
+        let stored = vec![
+            signed(member.device_public_key, 30, &root),
+            signed([99; 32], 10, &independent),
+        ];
+        let mut enrollment = RevocationList::new();
+        enrollment
+            .insert(signed(member.device_public_key, 20, &root))
+            .unwrap();
+        let union = restore_legacy(stored.clone(), &enrollment, &roster).unwrap();
+        drop(stored);
+        drop(enrollment);
+        assert_eq!(union.iter().count(), 2);
+        assert_eq!(
+            union
+                .iter()
+                .find(|v| v.revoked_device_public_key == member.device_public_key)
+                .unwrap()
+                .revoked_at_ns,
+            20
+        );
+        assert_eq!(
+            union
+                .iter()
+                .find(|v| v.revoked_device_public_key == [99; 32])
+                .unwrap()
+                .user_public_key,
+            independent.verifying_key().to_bytes()
+        );
     }
-}
 
-#[test]
-fn revocations_restores_growing_real_tables() {
-    let (peer, _, _, _, now) = crate::admission_tests::seeded();
-    let roster = roster(&peer, now);
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let entries = (0u32..129)
-        .map(|n| {
-            let mut key = [91; 32];
-            key[..4].copy_from_slice(&n.to_le_bytes());
-            signed(key, 1, &root)
-        })
-        .collect::<Vec<_>>();
-    let empty = RevocationList::new();
-    for count in [0, 1, 3, 4, 7, 8, 14, 15, 28, 29, 128, 129] {
-        let value = restore_legacy(entries[..count].to_vec(), &empty, &roster).unwrap();
-        assert_eq!(value.iter().count(), count);
+    phase revocations_rejects_mismatched_root_and_bad_signature;
+    {
+        let (peer, _, _, member, now) = crate::admission_tests::seeded();
+        let roster = roster(&peer, now);
+        let empty = RevocationList::new();
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let other = SigningKey::from_bytes(&[8; 32]);
+        let mismatch = [signed(member.device_public_key, 1, &other)];
+        let mut forged = [signed([99; 32], 1, &root)];
+        forged[0].signature[0] ^= 1;
+        for (entries, expected) in [
+            (&mismatch[..], RestoreRevocationsError::RootMismatch),
+            (
+                &forged[..],
+                RestoreRevocationsError::Signature(RevocationError::BadSignature),
+            ),
+        ] {
+            let result = restore_legacy(entries.to_vec(), &empty, &roster);
+            assert!(matches!(result, Err(error) if error == expected));
+        }
+    }
+
+    phase revocations_restores_growing_real_tables;
+    {
+        let (peer, _, _, _, now) = crate::admission_tests::seeded();
+        let roster = roster(&peer, now);
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let entries = (0u32..129)
+            .map(|n| {
+                let mut key = [91; 32];
+                key[..4].copy_from_slice(&n.to_le_bytes());
+                signed(key, 1, &root)
+            })
+            .collect::<Vec<_>>();
+        let empty = RevocationList::new();
+        for count in [0, 1, 3, 4, 7, 8, 14, 15, 28, 29, 128, 129] {
+            let value = restore_legacy(entries[..count].to_vec(), &empty, &roster).unwrap();
+            assert_eq!(value.iter().count(), count);
+        }
     }
 }

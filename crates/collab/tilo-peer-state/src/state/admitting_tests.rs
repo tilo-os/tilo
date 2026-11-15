@@ -78,75 +78,197 @@ fn received(peer: &StatePeer) -> crate::workspace::WorkspaceGovernance {
     crate::workspace::governance_of(Some(&crate::workspace::candidate(None, &changes).unwrap()))
 }
 
-#[test]
-fn an_administrator_admits_an_owners_invitation_and_an_editor_does_not() {
-    let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
-    let owner = peer.owner_certificates()[0].clone();
-    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
-    let editor_key = SigningKey::from_bytes(&[6; 32]);
-    let guest = device(70, 71);
-    let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Viewer, 72, now);
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_device_is_admitted_only_by_who_may_admit_it;
 
-    let refused = peer
-        .clone()
-        .governance_mut()
-        .admit_invited_member(&invited, &editor_key, now)
-        .unwrap_err();
-    assert!(refused.contains("may not invite"), "{refused}");
+    phase an_administrator_admits_an_owners_invitation_and_an_editor_does_not;
+    {
+        let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
+        let owner = peer.owner_certificates()[0].clone();
+        let (editor, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
+        let editor_key = SigningKey::from_bytes(&[6; 32]);
+        let guest = device(70, 71);
+        let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Viewer, 72, now);
 
-    peer.governance_mut()
-        .set_member_administrator(user, None, &owner_key, now)
-        .unwrap();
-    assert!(
-        peer.governance_mut()
+        let refused = peer
+            .clone()
+            .governance_mut()
             .admit_invited_member(&invited, &editor_key, now)
-            .unwrap()
-    );
-    assert_eq!(
-        peer.role(&guest.1.device_public_key, now).unwrap(),
-        Role::Viewer
-    );
-    let governance = received(&peer);
-    let ledgered = crate::state::LedgerReceipt::decode(
-        &governance.invitation_receipts[&hex::encode(invited.join().invite_id())][0],
-    )
-    .unwrap();
-    assert_eq!(
-        ledgered
-            .invitation(|digest| invitation_ledger::part_in(&governance.invitation_parts, digest))
-            .as_deref(),
-        Some(invited.join().signed_invitation()),
-        "the ledger keeps the invitation, its issuer's certificate named once"
-    );
-    assert_eq!(editor.user_public_key, user);
+            .unwrap_err();
+        assert!(refused.contains("may not invite"), "{refused}");
 
-    // Spent: no participant admits another device with it.
-    let other = device(73, 74);
-    let replay = redemption(&peer, &owner, &owner_key, &other, Role::Viewer, 72, now);
-    assert_eq!(replay.join().invite_id(), invited.join().invite_id());
-    assert!(
         peer.governance_mut()
-            .admit_invited_member(&replay, &owner_key, now)
-            .unwrap_err()
-            .contains("already redeemed")
-    );
-}
+            .set_member_administrator(user, None, &owner_key, now)
+            .unwrap();
+        assert!(
+            peer.governance_mut()
+                .admit_invited_member(&invited, &editor_key, now)
+                .unwrap()
+        );
+        assert_eq!(
+            peer.role(&guest.1.device_public_key, now).unwrap(),
+            Role::Viewer
+        );
+        let governance = received(&peer);
+        let ledgered = crate::state::LedgerReceipt::decode(
+            &governance.invitation_receipts[&hex::encode(invited.join().invite_id())][0],
+        )
+        .unwrap();
+        assert_eq!(
+            ledgered
+                .invitation(|digest| invitation_ledger::part_in(&governance.invitation_parts, digest))
+                .as_deref(),
+            Some(invited.join().signed_invitation()),
+            "the ledger keeps the invitation, its issuer's certificate named once"
+        );
+        assert_eq!(editor.user_public_key, user);
 
-#[test]
-fn an_invitation_admits_only_what_its_issuer_could_invite() {
-    let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
-    let (editor, _) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
-    let editor_key = SigningKey::from_bytes(&[6; 32]);
-    let guest = device(75, 76);
-    // An editor holds no invite: what they sign admits no one, whoever
-    // writes it.
-    let invited = redemption(&peer, &editor, &editor_key, &guest, Role::Viewer, 77, now);
-    let refused = peer
-        .governance_mut()
-        .admit_invited_member(&invited, &owner_key, now)
-        .unwrap_err();
-    assert!(refused.contains("issuer may not invite"), "{refused}");
-    assert!(peer.permissions(guest.1.device_public_key, now).is_err());
+        // Spent: no participant admits another device with it.
+        let other = device(73, 74);
+        let replay = redemption(&peer, &owner, &owner_key, &other, Role::Viewer, 72, now);
+        assert_eq!(replay.join().invite_id(), invited.join().invite_id());
+        assert!(
+            peer.governance_mut()
+                .admit_invited_member(&replay, &owner_key, now)
+                .unwrap_err()
+                .contains("already redeemed")
+        );
+    }
+
+    phase an_invitation_admits_only_what_its_issuer_could_invite;
+    {
+        let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
+        let (editor, _) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
+        let editor_key = SigningKey::from_bytes(&[6; 32]);
+        let guest = device(75, 76);
+        // An editor holds no invite: what they sign admits no one, whoever
+        // writes it.
+        let invited = redemption(&peer, &editor, &editor_key, &guest, Role::Viewer, 77, now);
+        let refused = peer
+            .governance_mut()
+            .admit_invited_member(&invited, &owner_key, now)
+            .unwrap_err();
+        assert!(refused.contains("issuer may not invite"), "{refused}");
+        assert!(peer.permissions(guest.1.device_public_key, now).is_err());
+    }
+
+    phase any_participant_admits_a_members_further_device;
+    {
+        let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
+        let (_, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
+        let editor_key = SigningKey::from_bytes(&[6; 32]);
+        // Someone else's second device: the editor holds no governance, yet
+        // writes it in, for its root certifies it as a member's.
+        let owner = peer.owner_certificates()[0].clone();
+        let guest = device(82, 83);
+        let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Viewer, 84, now);
+        peer.governance_mut()
+            .admit_invited_member(&invited, &owner_key, now)
+            .unwrap();
+        let (_, further) = device(82, 85);
+        assert!(
+            peer.governance_mut()
+                .admit_member_device(&further, &editor_key, now)
+                .unwrap()
+        );
+        assert_eq!(
+            peer.role(&further.device_public_key, now).unwrap(),
+            Role::Viewer
+        );
+        assert!(
+            !peer
+                .governance_mut()
+                .admit_member_device(&further, &editor_key, now)
+                .unwrap(),
+            "admitted once"
+        );
+        // A stranger's device is no member's.
+        let (_, stranger) = device(86, 87);
+        assert!(
+            peer.governance_mut()
+                .admit_member_device(&stranger, &editor_key, now)
+                .is_err()
+        );
+        assert_ne!(user, stranger.user_public_key);
+    }
+
+    phase a_workspace_forgets_an_expired_page_devices_row_and_keeps_admitted_ones;
+    // A page's device certificate lasts an hour and a page certifies a fresh one
+    // on every load: the workspace forgets an expired row nothing keeps, and keeps
+    // every row that records an admission.
+    {
+        let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
+        let owner = peer.owner_certificates()[0].clone();
+        crate::admission_tests::add_editor(&mut peer, &owner_key, now);
+        let hour = 3_600_000_000_000;
+        let expires = |cert: &mut DeviceCert, root: u8| {
+            cert.expires_at_ns = Some(now_ns(now).checked_add(hour).unwrap());
+            sign_device_cert(cert, &SigningKey::from_bytes(&[root; 32])).unwrap();
+        };
+
+        // A visitor's person joins as a member with the Viewer role the host gives
+        // visitors; its member device and the page device it certifies for a visit.
+        let member = device(80, 81);
+        let invited = redemption(&peer, &owner, &owner_key, &member, Role::Viewer, 82, now);
+        peer.governance_mut()
+            .admit_invited_member(&invited, &owner_key, now)
+            .unwrap();
+        let (_, mut page) = device(80, 83);
+        expires(&mut page, 80);
+        peer.governance_mut()
+            .admit_member_device(&page, &owner_key, now)
+            .unwrap();
+        // A person the invitation admitted with a certificate that also expires:
+        // their row records the admission, so it stays.
+        let (invited_key, mut expiring_invitee) = device(84, 85);
+        expires(&mut expiring_invitee, 84);
+        let admitted = redemption(
+            &peer,
+            &owner,
+            &owner_key,
+            &(invited_key, expiring_invitee.clone()),
+            Role::Viewer,
+            86,
+            now,
+        );
+        peer.governance_mut()
+            .admit_invited_member(&admitted, &owner_key, now)
+            .unwrap();
+
+        let rows = |peer: &StatePeer| received(peer).identities;
+        let before = rows(&peer);
+        assert!(
+            !peer
+                .governance_mut()
+                .forget_expired_devices(&owner_key, now)
+                .unwrap()
+        );
+        assert_eq!(rows(&peer).len(), before.len(), "live rows stay");
+
+        let later = now + std::time::Duration::from_secs(2 * 60 * 60);
+        assert!(
+            peer.governance_mut()
+                .forget_expired_devices(&owner_key, later)
+                .unwrap()
+        );
+        let after = rows(&peer);
+        assert!(
+            !after.contains_key(&hex::encode(page.device_public_key)),
+            "an expired page device's row is gone"
+        );
+        for kept in [
+            owner.device_public_key,
+            member.1.device_public_key,
+            expiring_invitee.device_public_key,
+        ] {
+            assert!(after.contains_key(&hex::encode(kept)));
+        }
+        assert_eq!(
+            peer.role(&member.1.device_public_key, later).unwrap(),
+            Role::Viewer
+        );
+    }
 }
 
 /// What a receiver says to an administrator's admission of a guest, its
@@ -283,122 +405,5 @@ fn a_receiver_refuses_a_members_admission_whose_ledger_was_changed() {
                 stray,
             );
         }),
-    );
-}
-
-#[test]
-fn any_participant_admits_a_members_further_device() {
-    let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
-    let (_, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
-    let editor_key = SigningKey::from_bytes(&[6; 32]);
-    // Someone else's second device: the editor holds no governance, yet
-    // writes it in, for its root certifies it as a member's.
-    let owner = peer.owner_certificates()[0].clone();
-    let guest = device(82, 83);
-    let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Viewer, 84, now);
-    peer.governance_mut()
-        .admit_invited_member(&invited, &owner_key, now)
-        .unwrap();
-    let (_, further) = device(82, 85);
-    assert!(
-        peer.governance_mut()
-            .admit_member_device(&further, &editor_key, now)
-            .unwrap()
-    );
-    assert_eq!(
-        peer.role(&further.device_public_key, now).unwrap(),
-        Role::Viewer
-    );
-    assert!(
-        !peer
-            .governance_mut()
-            .admit_member_device(&further, &editor_key, now)
-            .unwrap(),
-        "admitted once"
-    );
-    // A stranger's device is no member's.
-    let (_, stranger) = device(86, 87);
-    assert!(
-        peer.governance_mut()
-            .admit_member_device(&stranger, &editor_key, now)
-            .is_err()
-    );
-    assert_ne!(user, stranger.user_public_key);
-}
-
-/// A page's device certificate lasts an hour and a page certifies a fresh one
-/// on every load: the workspace forgets an expired row nothing keeps, and keeps
-/// every row that records an admission.
-#[test]
-fn a_workspace_forgets_an_expired_page_devices_row_and_keeps_admitted_ones() {
-    let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
-    let owner = peer.owner_certificates()[0].clone();
-    crate::admission_tests::add_editor(&mut peer, &owner_key, now);
-    let hour = 3_600_000_000_000;
-    let expires = |cert: &mut DeviceCert, root: u8| {
-        cert.expires_at_ns = Some(now_ns(now).checked_add(hour).unwrap());
-        sign_device_cert(cert, &SigningKey::from_bytes(&[root; 32])).unwrap();
-    };
-
-    // A visitor's person joins as a member with the Viewer role the host gives
-    // visitors; its member device and the page device it certifies for a visit.
-    let member = device(80, 81);
-    let invited = redemption(&peer, &owner, &owner_key, &member, Role::Viewer, 82, now);
-    peer.governance_mut()
-        .admit_invited_member(&invited, &owner_key, now)
-        .unwrap();
-    let (_, mut page) = device(80, 83);
-    expires(&mut page, 80);
-    peer.governance_mut()
-        .admit_member_device(&page, &owner_key, now)
-        .unwrap();
-    // A person the invitation admitted with a certificate that also expires:
-    // their row records the admission, so it stays.
-    let (invited_key, mut expiring_invitee) = device(84, 85);
-    expires(&mut expiring_invitee, 84);
-    let admitted = redemption(
-        &peer,
-        &owner,
-        &owner_key,
-        &(invited_key, expiring_invitee.clone()),
-        Role::Viewer,
-        86,
-        now,
-    );
-    peer.governance_mut()
-        .admit_invited_member(&admitted, &owner_key, now)
-        .unwrap();
-
-    let rows = |peer: &StatePeer| received(peer).identities;
-    let before = rows(&peer);
-    assert!(
-        !peer
-            .governance_mut()
-            .forget_expired_devices(&owner_key, now)
-            .unwrap()
-    );
-    assert_eq!(rows(&peer).len(), before.len(), "live rows stay");
-
-    let later = now + std::time::Duration::from_secs(2 * 60 * 60);
-    assert!(
-        peer.governance_mut()
-            .forget_expired_devices(&owner_key, later)
-            .unwrap()
-    );
-    let after = rows(&peer);
-    assert!(
-        !after.contains_key(&hex::encode(page.device_public_key)),
-        "an expired page device's row is gone"
-    );
-    for kept in [
-        owner.device_public_key,
-        member.1.device_public_key,
-        expiring_invitee.device_public_key,
-    ] {
-        assert!(after.contains_key(&hex::encode(kept)));
-    }
-    assert_eq!(
-        peer.role(&member.1.device_public_key, later).unwrap(),
-        Role::Viewer
     );
 }

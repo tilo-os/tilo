@@ -136,18 +136,38 @@ fn publications(admitted: &mut AutoCommit, seed: u64) -> Vec<DocumentMutation> {
     publications
 }
 
-#[test]
-fn the_history_is_the_walked_history_byte_for_byte() {
-    for seed in 0..24_u64 {
-        let writers = usize::try_from(seed % 3).unwrap().saturating_add(2);
-        let edits = usize::try_from(seed).unwrap().saturating_add(30);
-        let mut admitted = record(seed, writers, edits);
-        for mutation in publications(&mut admitted, seed) {
-            let record = admitted.committed_document();
-            let expected = walked(&mutation, record).map(|history| history.save());
-            let built = build(&mutation, record).map(|history| history.save());
-            assert_eq!(built, expected, "seed {seed}");
+tilo_test_env::scenario! {
+    fn a_built_history_is_the_walked_history_or_its_refusal;
+
+    phase the_history_is_the_walked_history_byte_for_byte;
+    {
+        for seed in 0..24_u64 {
+            let writers = usize::try_from(seed % 3).unwrap().saturating_add(2);
+            let edits = usize::try_from(seed).unwrap().saturating_add(30);
+            let mut admitted = record(seed, writers, edits);
+            for mutation in publications(&mut admitted, seed) {
+                let record = admitted.committed_document();
+                let expected = walked(&mutation, record).map(|history| history.save());
+                let built = build(&mutation, record).map(|history| history.save());
+                assert_eq!(built, expected, "seed {seed}");
+            }
         }
+    }
+
+    phase a_dependency_the_record_lacks_is_refused_as_the_walk_refuses_it;
+    {
+        let mut admitted = record(7, 3, 40);
+        let mutation = publications(&mut admitted, 7).swap_remove(0);
+        // A record without the publication's history at all.
+        let mut other = AutoCommit::new();
+        other.put(ROOT, "unrelated", true).unwrap();
+        other.commit();
+        let other = other.committed_document();
+        assert_eq!(
+            build(&mutation, other).map(|history| history.save()),
+            walked(&mutation, other).map(|history| history.save()),
+        );
+        assert!(build(&mutation, other).is_err());
     }
 }
 
@@ -206,22 +226,6 @@ fn an_extended_history_is_the_walked_history_byte_for_byte() {
         }
     }
     assert!(extended_any);
-}
-
-#[test]
-fn a_dependency_the_record_lacks_is_refused_as_the_walk_refuses_it() {
-    let mut admitted = record(7, 3, 40);
-    let mutation = publications(&mut admitted, 7).swap_remove(0);
-    // A record without the publication's history at all.
-    let mut other = AutoCommit::new();
-    other.put(ROOT, "unrelated", true).unwrap();
-    other.commit();
-    let other = other.committed_document();
-    assert_eq!(
-        build(&mutation, other).map(|history| history.save()),
-        walked(&mutation, other).map(|history| history.save()),
-    );
-    assert!(build(&mutation, other).is_err());
 }
 
 #[test]

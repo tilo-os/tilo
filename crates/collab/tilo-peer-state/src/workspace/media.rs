@@ -822,121 +822,266 @@ mod workspace_media_tests {
         value
     }
 
-    #[test]
-    fn legacy_identity_absence_permits_first_media_checkpoint() {
-        // A joined shell guest can project its workspace id before receiving the
-        // owner's governance. No identity map has existed in this projection.
-        let before = workspace();
-        let (mut after, _, _) = governed_legacy_workspace();
-        let value = enable_media(&mut after);
-        assert_eq!(
-            validate_transition(Some(&before), &after, TransitionMode::Admission),
-            Ok(Some(value)),
-        );
-    }
+    tilo_test_env::scenario! {
+        fn legacy_identity_evidence_is_absent_whole_or_rejected;
 
-    #[test]
-    fn legacy_identity_present_malformed_or_conflicting_evidence_is_rejected() {
-        let (mut after, _, _) = governed_legacy_workspace();
-        let value = enable_media(&mut after);
-        assert_eq!(
-            validate_transition(None, &after, TransitionMode::Restore),
-            Ok(Some(value))
-        );
-        let mut scalar = workspace();
-        scalar.put(ROOT, "peer_identities_v1", "not a map").unwrap();
-        let mut list = workspace();
-        list.put_object(ROOT, "peer_identities_v1", ObjType::List)
-            .unwrap();
-        let mut left = workspace();
-        let mut right = left.fork();
-        left.put_object(ROOT, "peer_identities_v1", ObjType::Map)
-            .unwrap();
-        right
-            .put_object(ROOT, "peer_identities_v1", ObjType::Map)
-            .unwrap();
-        left.merge_incoming(&mut right).unwrap();
-        assert_eq!(left.get_all(ROOT, "peer_identities_v1").unwrap().len(), 2);
-        let (mut row, _, device) = governed_legacy_workspace();
-        let identities = row.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-        row.put(&identities, device, "not identity bytes").unwrap();
-        for before in [&scalar, &list, &left, &row] {
-            assert!(validate_transition(Some(before), &after, TransitionMode::Admission).is_err());
+        phase legacy_identity_absence_permits_first_media_checkpoint;
+        {
+            // A joined shell guest can project its workspace id before receiving the
+            // owner's governance. No identity map has existed in this projection.
+            let before = workspace();
+            let (mut after, _, _) = governed_legacy_workspace();
+            let value = enable_media(&mut after);
+            assert_eq!(
+                validate_transition(Some(&before), &after, TransitionMode::Admission),
+                Ok(Some(value)),
+            );
         }
-    }
 
-    #[test]
-    fn legacy_identity_revocation_floor_survives_media_bootstrap() {
-        let (mut before, root, device) = governed_legacy_workspace();
-        let identities = before.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-        let mut row = crate::state::GovernedIdentity::decode(
-            &strict_bytes(&before, &identities, &device).unwrap(),
-        )
-        .unwrap();
-        let mut revoked = tilo_user_identity::RevocationEntry {
-            user_public_key: root.verifying_key().to_bytes(),
-            revoked_device_public_key: [99; 32],
-            revoked_at_ns: 10,
-            reason: tilo_user_identity::RevocationReason::Retired,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
-        row.revocations.push(revoked.clone());
-        before
-            .put(
-                &identities,
-                &device,
-                ScalarValue::Bytes(row.encode().unwrap()),
+        phase legacy_identity_present_malformed_or_conflicting_evidence_is_rejected;
+        {
+            let (mut after, _, _) = governed_legacy_workspace();
+            let value = enable_media(&mut after);
+            assert_eq!(
+                validate_transition(None, &after, TransitionMode::Restore),
+                Ok(Some(value))
+            );
+            let mut scalar = workspace();
+            scalar.put(ROOT, "peer_identities_v1", "not a map").unwrap();
+            let mut list = workspace();
+            list.put_object(ROOT, "peer_identities_v1", ObjType::List)
+                .unwrap();
+            let mut left = workspace();
+            let mut right = left.fork();
+            left.put_object(ROOT, "peer_identities_v1", ObjType::Map)
+                .unwrap();
+            right
+                .put_object(ROOT, "peer_identities_v1", ObjType::Map)
+                .unwrap();
+            left.merge_incoming(&mut right).unwrap();
+            assert_eq!(left.get_all(ROOT, "peer_identities_v1").unwrap().len(), 2);
+            let (mut row, _, device) = governed_legacy_workspace();
+            let identities = row.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+            row.put(&identities, device, "not identity bytes").unwrap();
+            for before in [&scalar, &list, &left, &row] {
+                assert!(validate_transition(Some(before), &after, TransitionMode::Admission).is_err());
+            }
+        }
+
+        phase legacy_identity_revocation_floor_survives_media_bootstrap;
+        {
+            let (mut before, root, device) = governed_legacy_workspace();
+            let identities = before.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+            let mut row = crate::state::GovernedIdentity::decode(
+                &strict_bytes(&before, &identities, &device).unwrap(),
             )
             .unwrap();
-        before.commit();
-        assert_eq!(parse(&before), Ok(None));
-        let mut retained = before.clone();
-        let expected = enable_media(&mut retained);
-        assert_eq!(
-            validate_transition(Some(&before), &retained, TransitionMode::Admission),
-            Ok(Some(expected)),
-        );
-        // A self-consistent first media checkpoint cannot erase a revocation
-        // observed while the workspace was still legacy/disabled, or delay its floor.
-        revoked.revoked_at_ns = 20;
-        tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
-        for revocations in [Vec::new(), vec![revoked]] {
-            let mut after = before.clone();
-            row.revocations = revocations;
-            after
+            let mut revoked = tilo_user_identity::RevocationEntry {
+                user_public_key: root.verifying_key().to_bytes(),
+                revoked_device_public_key: [99; 32],
+                revoked_at_ns: 10,
+                reason: tilo_user_identity::RevocationReason::Retired,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
+            row.revocations.push(revoked.clone());
+            before
                 .put(
                     &identities,
                     &device,
                     ScalarValue::Bytes(row.encode().unwrap()),
                 )
                 .unwrap();
-            let value = enable_media(&mut after);
+            before.commit();
+            assert_eq!(parse(&before), Ok(None));
+            let mut retained = before.clone();
+            let expected = enable_media(&mut retained);
             assert_eq!(
-                validate_transition(None, &after, TransitionMode::Restore),
-                Ok(Some(value))
+                validate_transition(Some(&before), &retained, TransitionMode::Admission),
+                Ok(Some(expected)),
             );
-            assert_eq!(
-                validate_transition(Some(&before), &after, TransitionMode::Admission),
-                Err(MediaPolicyError::Binding),
-            );
+            // A self-consistent first media checkpoint cannot erase a revocation
+            // observed while the workspace was still legacy/disabled, or delay its floor.
+            revoked.revoked_at_ns = 20;
+            tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
+            for revocations in [Vec::new(), vec![revoked]] {
+                let mut after = before.clone();
+                row.revocations = revocations;
+                after
+                    .put(
+                        &identities,
+                        &device,
+                        ScalarValue::Bytes(row.encode().unwrap()),
+                    )
+                    .unwrap();
+                let value = enable_media(&mut after);
+                assert_eq!(
+                    validate_transition(None, &after, TransitionMode::Restore),
+                    Ok(Some(value))
+                );
+                assert_eq!(
+                    validate_transition(Some(&before), &after, TransitionMode::Admission),
+                    Err(MediaPolicyError::Binding),
+                );
+            }
         }
     }
 
-    #[test]
-    fn canonical_policy_round_trips_and_bound_route_is_exact() {
-        let value = policy();
-        let mut doc = workspace();
-        doc.put(ROOT, FIELD, ScalarValue::Bytes(encode(&value).unwrap()))
-            .unwrap();
-        assert_eq!(parse(&doc), Ok(Some(value)));
-        for changed in [
-            edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.app_id = "so.tilo.notes".into()),
-            edited(|v| v.workspace = [2; 16]),
-            edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.channel_object = "_root".into()),
-        ] {
-            raw(&mut doc, &changed);
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_media_policy_value_is_canonical_governed_and_bounded;
+
+        phase canonical_policy_round_trips_and_bound_route_is_exact;
+        {
+            let value = policy();
+            let mut doc = workspace();
+            doc.put(ROOT, FIELD, ScalarValue::Bytes(encode(&value).unwrap()))
+                .unwrap();
+            assert_eq!(parse(&doc), Ok(Some(value)));
+            for changed in [
+                edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.app_id = "so.tilo.notes".into()),
+                edited(|v| v.workspace = [2; 16]),
+                edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.channel_object = "_root".into()),
+            ] {
+                raw(&mut doc, &changed);
+                assert!(parse(&doc).is_err());
+            }
+        }
+
+        phase malformed_conflicting_and_trailing_values_are_never_legacy_absence;
+        {
+            let mut doc = workspace();
+            doc.put(ROOT, FIELD, "bad").unwrap();
             assert!(parse(&doc).is_err());
+            doc.put_object(ROOT, FIELD, ObjType::Map).unwrap();
+            assert!(parse(&doc).is_err());
+            let mut bytes = postcard::to_allocvec(&policy()).unwrap();
+            bytes.push(0);
+            doc.put(ROOT, FIELD, ScalarValue::Bytes(bytes)).unwrap();
+            assert_eq!(parse(&doc), Err(MediaPolicyError::Malformed));
+            let mut left = workspace();
+            let mut right = left.fork();
+            left.set_actor(ActorId::from(vec![1]));
+            right.set_actor(ActorId::from(vec![2]));
+            raw(&mut left, &policy());
+            raw(&mut right, &edited(|v| v.authorization_revision = 2));
+            left.merge_incoming(&mut right).unwrap();
+            assert_eq!(parse(&left), Err(MediaPolicyError::Conflict));
+        }
+
+        phase identical_governed_values_collapse_without_actor_authority;
+        {
+            let mut left = workspace();
+            let mut right = left.fork();
+            left.set_actor(ActorId::from(vec![1]));
+            right.set_actor(ActorId::from(vec![2]));
+            raw(&mut left, &policy());
+            raw(&mut right, &policy());
+            left.merge_incoming(&mut right).unwrap();
+            assert_eq!(parse(&left), Ok(Some(policy())));
+        }
+
+        phase unknown_hidden_shapes_and_changed_policy_are_governed;
+        {
+            let before = workspace();
+            let mut after = before.clone();
+            raw(&mut after, &policy());
+            assert_ne!(
+                super::super::governance_of(Some(&before)),
+                super::super::governance_of(Some(&after))
+            );
+            assert!(!super::super::governance_unchanged(Some(&before), &after));
+            let mut malformed = before.clone();
+            malformed.put_object(ROOT, FIELD, ObjType::Map).unwrap();
+            assert_ne!(
+                super::super::governance_of(Some(&before)),
+                super::super::governance_of(Some(&malformed))
+            );
+        }
+
+        phase counter_exhaustion_is_not_wraparound_or_implicit_reset;
+        {
+            assert_eq!(next_counter(u64::MAX), Err(MediaPolicyError::Exhausted));
+            assert_eq!(next_counter(0), Err(MediaPolicyError::Counter));
+            assert_eq!(next_counter(1), Ok(2));
+            let mut old = policy();
+            old.authorization_revision = u64::MAX;
+            assert!(
+                validate_policy_transition(Some(&old), Some(&policy()), TransitionMode::Admission)
+                    .is_err()
+            );
+            let mut rebased = old.clone();
+            rebased.authorization_basis = [4; 32];
+            assert_eq!(
+                validate_policy_transition(Some(&old), Some(&rebased), TransitionMode::Authoring),
+                Err(MediaPolicyError::Exhausted),
+                "an authored change at the last revision has no next one"
+            );
+        }
+
+        phase total_denial_bound_and_maximum_definition_inventory_are_enforced;
+        {
+            let mut value = policy();
+            value.calls.clear();
+            for key in 1u8..=64 {
+                let mut call = policy().calls.remove(&[7; 32]).unwrap();
+                call.binding.channel_id = format!("voice-{key}");
+                call.binding.channel_object = format!("{key}@01");
+                if key <= 4 {
+                    for root in 1u8..=128 {
+                        call.denied.insert(
+                            [root; 32],
+                            DirectionsV1 {
+                                publish: true,
+                                subscribe: false,
+                            },
+                        );
+                    }
+                }
+                value.calls.insert([key; 32], call);
+            }
+            let mut doc = workspace();
+            raw(&mut doc, &value);
+            assert_eq!(parse(&doc), Ok(Some(value.clone())));
+            value.calls.get_mut(&[5; 32]).unwrap().denied.insert(
+                [8; 32],
+                DirectionsV1 {
+                    publish: true,
+                    subscribe: false,
+                },
+            );
+            assert_eq!(encode(&value), Err(MediaPolicyError::Capacity));
+            raw(&mut doc, &value);
+            assert_eq!(parse(&doc), Err(MediaPolicyError::Capacity));
+        }
+
+        phase excessive_wire_string_lengths_are_capacity_before_text_allocation;
+        {
+            let fields = [
+                ("so.tilo.chat", 64usize),
+                ("", 1024),
+                ("voice", 128),
+                ("1@01", 256),
+                ("main", 128),
+            ];
+            for index in 0..fields.len() {
+                let mut prefix = Vec::new();
+                for (value, _) in fields.iter().take(index) {
+                    prefix.extend(postcard::to_allocvec(value).unwrap());
+                }
+                prefix.extend(postcard::to_allocvec(&(fields[index].1 + 1)).unwrap());
+                let mut policy = wire_prefix(1);
+                policy.extend([7; 32]);
+                policy.extend(&prefix);
+                assert_eq!(parse_wire(policy), Err(MediaPolicyError::Capacity));
+                let mut receipt = vec![1];
+                receipt.extend([7; 32]);
+                receipt.extend(prefix);
+                assert_eq!(
+                    MediaCallResultV1::decode(&receipt),
+                    Err(MediaPolicyError::Capacity)
+                );
+            }
         }
     }
 
@@ -1031,57 +1176,6 @@ mod workspace_media_tests {
             raw(&mut doc, &changed);
             assert!(parse(&doc).is_err(), "{case} parses");
         }
-    }
-
-    #[test]
-    fn malformed_conflicting_and_trailing_values_are_never_legacy_absence() {
-        let mut doc = workspace();
-        doc.put(ROOT, FIELD, "bad").unwrap();
-        assert!(parse(&doc).is_err());
-        doc.put_object(ROOT, FIELD, ObjType::Map).unwrap();
-        assert!(parse(&doc).is_err());
-        let mut bytes = postcard::to_allocvec(&policy()).unwrap();
-        bytes.push(0);
-        doc.put(ROOT, FIELD, ScalarValue::Bytes(bytes)).unwrap();
-        assert_eq!(parse(&doc), Err(MediaPolicyError::Malformed));
-        let mut left = workspace();
-        let mut right = left.fork();
-        left.set_actor(ActorId::from(vec![1]));
-        right.set_actor(ActorId::from(vec![2]));
-        raw(&mut left, &policy());
-        raw(&mut right, &edited(|v| v.authorization_revision = 2));
-        left.merge_incoming(&mut right).unwrap();
-        assert_eq!(parse(&left), Err(MediaPolicyError::Conflict));
-    }
-
-    #[test]
-    fn identical_governed_values_collapse_without_actor_authority() {
-        let mut left = workspace();
-        let mut right = left.fork();
-        left.set_actor(ActorId::from(vec![1]));
-        right.set_actor(ActorId::from(vec![2]));
-        raw(&mut left, &policy());
-        raw(&mut right, &policy());
-        left.merge_incoming(&mut right).unwrap();
-        assert_eq!(parse(&left), Ok(Some(policy())));
-    }
-
-    #[test]
-    fn unknown_hidden_shapes_and_changed_policy_are_governed() {
-        let before = workspace();
-        let mut after = before.clone();
-        raw(&mut after, &policy());
-        assert_ne!(
-            super::super::governance_of(Some(&before)),
-            super::super::governance_of(Some(&after))
-        );
-        assert!(!super::super::governance_unchanged(Some(&before), &after));
-        let mut malformed = before.clone();
-        malformed.put_object(ROOT, FIELD, ObjType::Map).unwrap();
-        assert_ne!(
-            super::super::governance_of(Some(&before)),
-            super::super::governance_of(Some(&malformed))
-        );
     }
 
     /// One row per transition: the policy before, the policy after, the mode
@@ -1321,120 +1415,68 @@ mod workspace_media_tests {
         }
     }
 
-    #[test]
-    fn counter_exhaustion_is_not_wraparound_or_implicit_reset() {
-        assert_eq!(next_counter(u64::MAX), Err(MediaPolicyError::Exhausted));
-        assert_eq!(next_counter(0), Err(MediaPolicyError::Counter));
-        assert_eq!(next_counter(1), Ok(2));
-        let mut old = policy();
-        old.authorization_revision = u64::MAX;
-        assert!(
-            validate_policy_transition(Some(&old), Some(&policy()), TransitionMode::Admission)
-                .is_err()
-        );
-        let mut rebased = old.clone();
-        rebased.authorization_basis = [4; 32];
-        assert_eq!(
-            validate_policy_transition(Some(&old), Some(&rebased), TransitionMode::Authoring),
-            Err(MediaPolicyError::Exhausted),
-            "an authored change at the last revision has no next one"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn media_call_ids_and_results_keep_their_exact_shapes;
 
-    #[test]
-    fn call_id_strings_accept_only_exact_nonzero_lowercase_hex() {
-        assert_eq!(parse_call_id(&"07".repeat(32)), Ok([7; 32]));
-        for input in [
-            "00".repeat(32),
-            "AB".repeat(32),
-            "07".repeat(31),
-            format!("{} ", "07".repeat(32)),
-        ] {
-            assert!(parse_call_id(&input).is_err());
-        }
-    }
-
-    #[test]
-    fn safe_media_result_has_frozen_v1_postcard_shape() {
-        let result = MediaCallResultV1 {
-            version: 1,
-            call_id: [7; 32],
-            binding: policy().calls[&[7; 32]].binding.clone(),
-            epoch: 2,
-            authorization_revision: 3,
-            phase: CallPhaseV1::Ended,
-        };
-        let mut expected = vec![1];
-        expected.extend([7; 32]);
-        expected.extend(b"\x0cso.tilo.chat\x00\x05voice\x041@01\x04main\x02\x03\x01");
-        assert_eq!(result.encode().unwrap(), expected);
-        assert_eq!(MediaCallResultV1::decode(&expected), Ok(result));
-        let mut extra = expected;
-        extra.push(0);
-        assert_eq!(
-            MediaCallResultV1::decode(&extra),
-            Err(MediaPolicyError::Malformed)
-        );
-    }
-
-    #[test]
-    fn receipt_restore_rejects_semantically_invalid_nested_results() {
-        let result = MediaCallResultV1 {
-            version: 1,
-            call_id: [7; 32],
-            binding: policy().calls[&[7; 32]].binding.clone(),
-            epoch: 1,
-            authorization_revision: 1,
-            phase: CallPhaseV1::Active,
-        };
-        for index in 0..5 {
-            let mut invalid = result.clone();
-            match index {
-                0 => invalid.version = 2,
-                1 => invalid.call_id = [0; 32],
-                2 => invalid.epoch = 0,
-                3 => invalid.authorization_revision = 0,
-                _ => invalid.binding.app_id = "so.tilo.notes".into(),
+        phase call_id_strings_accept_only_exact_nonzero_lowercase_hex;
+        {
+            assert_eq!(parse_call_id(&"07".repeat(32)), Ok([7; 32]));
+            for input in [
+                "00".repeat(32),
+                "AB".repeat(32),
+                "07".repeat(31),
+                format!("{} ", "07".repeat(32)),
+            ] {
+                assert!(parse_call_id(&input).is_err());
             }
-            assert!(invalid.validate().is_err());
-            assert!(MediaCallResultV1::decode(&postcard::to_allocvec(&invalid).unwrap()).is_err());
         }
-    }
 
-    #[test]
-    fn total_denial_bound_and_maximum_definition_inventory_are_enforced() {
-        let mut value = policy();
-        value.calls.clear();
-        for key in 1u8..=64 {
-            let mut call = policy().calls.remove(&[7; 32]).unwrap();
-            call.binding.channel_id = format!("voice-{key}");
-            call.binding.channel_object = format!("{key}@01");
-            if key <= 4 {
-                for root in 1u8..=128 {
-                    call.denied.insert(
-                        [root; 32],
-                        DirectionsV1 {
-                            publish: true,
-                            subscribe: false,
-                        },
-                    );
+        phase safe_media_result_has_frozen_v1_postcard_shape;
+        {
+            let result = MediaCallResultV1 {
+                version: 1,
+                call_id: [7; 32],
+                binding: policy().calls[&[7; 32]].binding.clone(),
+                epoch: 2,
+                authorization_revision: 3,
+                phase: CallPhaseV1::Ended,
+            };
+            let mut expected = vec![1];
+            expected.extend([7; 32]);
+            expected.extend(b"\x0cso.tilo.chat\x00\x05voice\x041@01\x04main\x02\x03\x01");
+            assert_eq!(result.encode().unwrap(), expected);
+            assert_eq!(MediaCallResultV1::decode(&expected), Ok(result));
+            let mut extra = expected;
+            extra.push(0);
+            assert_eq!(
+                MediaCallResultV1::decode(&extra),
+                Err(MediaPolicyError::Malformed)
+            );
+        }
+
+        phase receipt_restore_rejects_semantically_invalid_nested_results;
+        {
+            let result = MediaCallResultV1 {
+                version: 1,
+                call_id: [7; 32],
+                binding: policy().calls[&[7; 32]].binding.clone(),
+                epoch: 1,
+                authorization_revision: 1,
+                phase: CallPhaseV1::Active,
+            };
+            for index in 0..5 {
+                let mut invalid = result.clone();
+                match index {
+                    0 => invalid.version = 2,
+                    1 => invalid.call_id = [0; 32],
+                    2 => invalid.epoch = 0,
+                    3 => invalid.authorization_revision = 0,
+                    _ => invalid.binding.app_id = "so.tilo.notes".into(),
                 }
+                assert!(invalid.validate().is_err());
+                assert!(MediaCallResultV1::decode(&postcard::to_allocvec(&invalid).unwrap()).is_err());
             }
-            value.calls.insert([key; 32], call);
         }
-        let mut doc = workspace();
-        raw(&mut doc, &value);
-        assert_eq!(parse(&doc), Ok(Some(value.clone())));
-        value.calls.get_mut(&[5; 32]).unwrap().denied.insert(
-            [8; 32],
-            DirectionsV1 {
-                publish: true,
-                subscribe: false,
-            },
-        );
-        assert_eq!(encode(&value), Err(MediaPolicyError::Capacity));
-        raw(&mut doc, &value);
-        assert_eq!(parse(&doc), Err(MediaPolicyError::Capacity));
     }
 
     fn wire_prefix(calls: usize) -> Vec<u8> {
@@ -1536,35 +1578,6 @@ mod workspace_media_tests {
             ("version 2 on the wire", version_two, UnsupportedVersion),
         ] {
             assert_eq!(parse_wire(bytes), Err(expected), "{case}");
-        }
-    }
-
-    #[test]
-    fn excessive_wire_string_lengths_are_capacity_before_text_allocation() {
-        let fields = [
-            ("so.tilo.chat", 64usize),
-            ("", 1024),
-            ("voice", 128),
-            ("1@01", 256),
-            ("main", 128),
-        ];
-        for index in 0..fields.len() {
-            let mut prefix = Vec::new();
-            for (value, _) in fields.iter().take(index) {
-                prefix.extend(postcard::to_allocvec(value).unwrap());
-            }
-            prefix.extend(postcard::to_allocvec(&(fields[index].1 + 1)).unwrap());
-            let mut policy = wire_prefix(1);
-            policy.extend([7; 32]);
-            policy.extend(&prefix);
-            assert_eq!(parse_wire(policy), Err(MediaPolicyError::Capacity));
-            let mut receipt = vec![1];
-            receipt.extend([7; 32]);
-            receipt.extend(prefix);
-            assert_eq!(
-                MediaCallResultV1::decode(&receipt),
-                Err(MediaPolicyError::Capacity)
-            );
         }
     }
 }

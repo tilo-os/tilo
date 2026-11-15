@@ -18,64 +18,227 @@ fn fixture() -> AutoCommit {
     doc.commit();
     doc
 }
-#[test]
-fn media_binding_retains_exact_object_strings_after_document_drop() {
-    let doc = fixture();
-    let expected = historical_resolve("so.tilo.chat", "tab:voice", "voice", &doc).unwrap();
-    let native = doc.clone();
-    let binding = resolve_legacy("so.tilo.chat", "tab:voice", "voice", &native).unwrap();
-    assert!(binding.matches(&expected));
-    drop(native);
-    drop(doc);
-    assert!(binding.matches(&expected));
-}
-#[test]
-fn media_binding_matches_original_archival_wrong_type_conflict_and_route_errors() {
-    for mode in 0..7 {
+tilo_test_env::scenario! {
+    fn media_binding_binds_a_call_to_its_exact_voice_channel;
+
+    phase media_binding_retains_exact_object_strings_after_document_drop;
+    {
+        let doc = fixture();
+        let expected = historical_resolve("so.tilo.chat", "tab:voice", "voice", &doc).unwrap();
+        let native = doc.clone();
+        let binding = resolve_legacy("so.tilo.chat", "tab:voice", "voice", &native).unwrap();
+        assert!(binding.matches(&expected));
+        drop(native);
+        drop(doc);
+        assert!(binding.matches(&expected));
+    }
+
+    phase media_binding_matches_original_archival_wrong_type_conflict_and_route_errors;
+    {
+        for mode in 0..7 {
+            let mut doc = fixture();
+            let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
+            let voice = {
+                let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
+                doc.get(&entry, "v").unwrap().unwrap().1
+            };
+            match mode {
+                0 => {
+                    doc.put(&voice, "archived", true).unwrap();
+                }
+                1 => {
+                    doc.put(&voice, "kind", "text").unwrap();
+                }
+                2 => {
+                    doc.put(&voice, "workspace", true).unwrap();
+                }
+                3 => {
+                    doc.delete(&channels, "voice").unwrap();
+                }
+                4 => {
+                    let mut fork = doc.fork();
+                    doc.put(&voice, "archived", false).unwrap();
+                    doc.commit();
+                    fork.put(&voice, "archived", false).unwrap();
+                    fork.commit();
+                    doc.merge_incoming(&mut fork).unwrap();
+                }
+                5 => {
+                    doc.put(&voice, "archived", false).unwrap();
+                }
+                _ => {}
+            }
+            doc.commit();
+            let app = if mode == 6 {
+                "wrong.app"
+            } else {
+                "so.tilo.chat"
+            };
+            let expected = historical_resolve(app, "", "voice", &doc);
+            let native = doc.clone();
+            let actual = resolve_legacy(app, "", "voice", &native);
+            match expected {
+                Ok(expected) => assert!(actual.unwrap().matches(&expected)),
+                Err(error) => assert!(matches!(actual, Err(actual) if actual == error)),
+            }
+        }
+    }
+
+    phase a_call_stays_its_channels_when_the_channel_is_remade_but_not_when_it_stops_being_voice;
+    {
         let mut doc = fixture();
+        let binding = historical_resolve("so.tilo.chat", "", "voice", &doc).unwrap();
+        let mut policy = policy_for(binding);
+        let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
+        let voice = {
+            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+            doc.put_object(&entry, "v", ObjType::Map).unwrap()
+        };
+        doc.put(&voice, "kind", "voice").unwrap();
+        doc.commit();
+        let native = doc.clone();
+        assert_eq!(
+            validate_legacy(&policy, "so.tilo.chat", "", &native),
+            Ok(()),
+            "the channel id names the call's channel, whatever object holds it"
+        );
+        doc.put(&voice, "kind", "text").unwrap();
+        doc.commit();
+        let native = doc.clone();
+        assert_eq!(
+            validate_legacy(&policy, "so.tilo.chat", "", &native),
+            Err(MediaPolicyError::Binding)
+        );
+        assert_eq!(
+            validate_legacy(&policy, "so.tilo.chat", "other", &native),
+            Ok(())
+        );
+        policy.calls.values_mut().next().unwrap().phase = CallPhaseV1::Ended;
+        assert_eq!(
+            validate_legacy(&policy, "so.tilo.chat", "", &native),
+            Ok(())
+        );
+    }
+
+    phase a_chat_without_workspaces_binds_its_voice_channels_and_keeps_its_earlier_calls;
+    {
+        // A call bound while the chat still named its workspace...
+        let mut doc = fixture();
+        let earlier = historical_resolve("so.tilo.chat", "", "voice", &doc).unwrap();
+        assert_eq!(earlier.chat_workspace_id, "main");
+        let policy = policy_for(earlier.clone());
+        // ...stays bound once the chat's migration drops the workspace field.
+        let voice = voice_value(&doc);
+        doc.delete(&voice, "workspace").unwrap();
+        doc.commit();
+        let native = doc.clone();
+        assert_eq!(
+            validate_legacy(&policy, "so.tilo.chat", "", &native),
+            Ok(())
+        );
+        let now = resolve_legacy("so.tilo.chat", "", "voice", &native).unwrap();
+        assert!(now.matches(&earlier));
+        let fresh = now.into_legacy();
+        assert_eq!(fresh.chat_workspace_id, "");
+        fresh.validate().unwrap();
+        assert!(fresh.same_channel(&earlier));
+    }
+
+    phase a_voice_channel_two_devices_made_binds_the_same_on_both;
+    {
+        let mut first = AutoCommit::new();
+        first.set_actor(ActorId::from(vec![17; 32]));
+        let mut second = AutoCommit::new();
+        second.set_actor(ActorId::from(vec![18; 32]));
+        for doc in [&mut first, &mut second] {
+            let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
+            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+            let voice = doc.put_object(&entry, "v", ObjType::Map).unwrap();
+            doc.put(&voice, "kind", "voice").unwrap();
+            doc.put(&voice, "archived", false).unwrap();
+            doc.commit();
+        }
+        let mut merged_first = first.fork();
+        merged_first.merge_incoming(&mut second.fork()).unwrap();
+        let mut merged_second = second.fork();
+        merged_second.merge_incoming(&mut first.fork()).unwrap();
+        let on_first = resolve_legacy("so.tilo.chat", "", "voice", &merged_first)
+            .unwrap()
+            .into_legacy();
+        let on_second = resolve_legacy("so.tilo.chat", "", "voice", &merged_second)
+            .unwrap()
+            .into_legacy();
+        assert_eq!(on_first, on_second);
+        assert_eq!(
+            historical_resolve("so.tilo.chat", "", "voice", &merged_first).unwrap(),
+            on_first
+        );
+    }
+
+    phase media_binding_rejects_orphan_history_before_channel_lookup;
+    {
+        let mut doc = fixture();
+        let before = doc.get_heads();
         let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
         let voice = {
             let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
             doc.get(&entry, "v").unwrap().unwrap().1
         };
-        match mode {
-            0 => {
-                doc.put(&voice, "archived", true).unwrap();
-            }
-            1 => {
-                doc.put(&voice, "kind", "text").unwrap();
-            }
-            2 => {
-                doc.put(&voice, "workspace", true).unwrap();
-            }
-            3 => {
-                doc.delete(&channels, "voice").unwrap();
-            }
-            4 => {
-                let mut fork = doc.fork();
-                doc.put(&voice, "archived", false).unwrap();
-                doc.commit();
-                fork.put(&voice, "archived", false).unwrap();
-                fork.commit();
-                doc.merge_incoming(&mut fork).unwrap();
-            }
-            5 => {
-                doc.put(&voice, "archived", false).unwrap();
-            }
-            _ => {}
-        }
+        doc.put(&voice, "workspace", "later").unwrap();
         doc.commit();
-        let app = if mode == 6 {
-            "wrong.app"
-        } else {
-            "so.tilo.chat"
-        };
-        let expected = historical_resolve(app, "", "voice", &doc);
-        let native = doc.clone();
-        let actual = resolve_legacy(app, "", "voice", &native);
-        match expected {
-            Ok(expected) => assert!(actual.unwrap().matches(&expected)),
-            Err(error) => assert!(matches!(actual, Err(actual) if actual == error)),
+        let child = doc.get_changes(&before)[0].raw_bytes().to_vec();
+        let mut orphan = AutoCommit::new();
+        orphan.load_incoming(&child).unwrap();
+        assert!(!orphan.get_missing_deps(&[]).is_empty());
+        assert_eq!(
+            historical_resolve("so.tilo.chat", "", "voice", &orphan),
+            Err(MediaPolicyError::Binding)
+        );
+        let native = orphan.clone();
+        assert!(!native.get_missing_deps(&[]).is_empty());
+        assert!(matches!(
+            resolve_legacy("so.tilo.chat", "", "voice", &native),
+            Err(MediaPolicyError::Binding)
+        ));
+    }
+
+    phase media_binding_exact_object_limit_preserves_workspace_error_precedence;
+    {
+        for (actor_bytes, wrong_workspace) in [(127, false), (128, false), (128, true)] {
+            let mut doc = AutoCommit::new();
+            doc.set_actor(ActorId::from(vec![17; actor_bytes]));
+            let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
+            let voice = {
+                let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+                doc.put_object(&entry, "v", ObjType::Map).unwrap()
+            };
+            doc.put(&voice, "kind", "voice").unwrap();
+            if wrong_workspace {
+                doc.put(&voice, "workspace", true).unwrap();
+            } else {
+                doc.put(&voice, "workspace", "main").unwrap();
+            }
+            doc.commit();
+            let expected = historical_resolve("so.tilo.chat", "", "voice", &doc);
+            let native = doc.clone();
+            let actual = resolve_legacy("so.tilo.chat", "", "voice", &native);
+            match expected {
+                Ok(expected) => {
+                    assert_eq!(expected.channel_object.len(), 256);
+                    assert!(actual.unwrap().matches(&expected));
+                }
+                Err(error) => {
+                    assert_eq!(
+                        error,
+                        if wrong_workspace {
+                            MediaPolicyError::Malformed
+                        } else {
+                            MediaPolicyError::Binding
+                        }
+                    );
+                    assert!(matches!(actual, Err(actual) if actual == error));
+                }
+            }
         }
     }
 }
@@ -104,159 +267,6 @@ fn voice_value(doc: &AutoCommit) -> automerge::ObjId {
     let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
     let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
     doc.get(&entry, "v").unwrap().unwrap().1
-}
-#[test]
-fn a_call_stays_its_channels_when_the_channel_is_remade_but_not_when_it_stops_being_voice() {
-    let mut doc = fixture();
-    let binding = historical_resolve("so.tilo.chat", "", "voice", &doc).unwrap();
-    let mut policy = policy_for(binding);
-    let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-    let voice = {
-        let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
-        doc.put_object(&entry, "v", ObjType::Map).unwrap()
-    };
-    doc.put(&voice, "kind", "voice").unwrap();
-    doc.commit();
-    let native = doc.clone();
-    assert_eq!(
-        validate_legacy(&policy, "so.tilo.chat", "", &native),
-        Ok(()),
-        "the channel id names the call's channel, whatever object holds it"
-    );
-    doc.put(&voice, "kind", "text").unwrap();
-    doc.commit();
-    let native = doc.clone();
-    assert_eq!(
-        validate_legacy(&policy, "so.tilo.chat", "", &native),
-        Err(MediaPolicyError::Binding)
-    );
-    assert_eq!(
-        validate_legacy(&policy, "so.tilo.chat", "other", &native),
-        Ok(())
-    );
-    policy.calls.values_mut().next().unwrap().phase = CallPhaseV1::Ended;
-    assert_eq!(
-        validate_legacy(&policy, "so.tilo.chat", "", &native),
-        Ok(())
-    );
-}
-#[test]
-fn a_chat_without_workspaces_binds_its_voice_channels_and_keeps_its_earlier_calls() {
-    // A call bound while the chat still named its workspace...
-    let mut doc = fixture();
-    let earlier = historical_resolve("so.tilo.chat", "", "voice", &doc).unwrap();
-    assert_eq!(earlier.chat_workspace_id, "main");
-    let policy = policy_for(earlier.clone());
-    // ...stays bound once the chat's migration drops the workspace field.
-    let voice = voice_value(&doc);
-    doc.delete(&voice, "workspace").unwrap();
-    doc.commit();
-    let native = doc.clone();
-    assert_eq!(
-        validate_legacy(&policy, "so.tilo.chat", "", &native),
-        Ok(())
-    );
-    let now = resolve_legacy("so.tilo.chat", "", "voice", &native).unwrap();
-    assert!(now.matches(&earlier));
-    let fresh = now.into_legacy();
-    assert_eq!(fresh.chat_workspace_id, "");
-    fresh.validate().unwrap();
-    assert!(fresh.same_channel(&earlier));
-}
-#[test]
-fn a_voice_channel_two_devices_made_binds_the_same_on_both() {
-    let mut first = AutoCommit::new();
-    first.set_actor(ActorId::from(vec![17; 32]));
-    let mut second = AutoCommit::new();
-    second.set_actor(ActorId::from(vec![18; 32]));
-    for doc in [&mut first, &mut second] {
-        let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
-        let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
-        let voice = doc.put_object(&entry, "v", ObjType::Map).unwrap();
-        doc.put(&voice, "kind", "voice").unwrap();
-        doc.put(&voice, "archived", false).unwrap();
-        doc.commit();
-    }
-    let mut merged_first = first.fork();
-    merged_first.merge_incoming(&mut second.fork()).unwrap();
-    let mut merged_second = second.fork();
-    merged_second.merge_incoming(&mut first.fork()).unwrap();
-    let on_first = resolve_legacy("so.tilo.chat", "", "voice", &merged_first)
-        .unwrap()
-        .into_legacy();
-    let on_second = resolve_legacy("so.tilo.chat", "", "voice", &merged_second)
-        .unwrap()
-        .into_legacy();
-    assert_eq!(on_first, on_second);
-    assert_eq!(
-        historical_resolve("so.tilo.chat", "", "voice", &merged_first).unwrap(),
-        on_first
-    );
-}
-#[test]
-fn media_binding_rejects_orphan_history_before_channel_lookup() {
-    let mut doc = fixture();
-    let before = doc.get_heads();
-    let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-    let voice = {
-        let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
-        doc.get(&entry, "v").unwrap().unwrap().1
-    };
-    doc.put(&voice, "workspace", "later").unwrap();
-    doc.commit();
-    let child = doc.get_changes(&before)[0].raw_bytes().to_vec();
-    let mut orphan = AutoCommit::new();
-    orphan.load_incoming(&child).unwrap();
-    assert!(!orphan.get_missing_deps(&[]).is_empty());
-    assert_eq!(
-        historical_resolve("so.tilo.chat", "", "voice", &orphan),
-        Err(MediaPolicyError::Binding)
-    );
-    let native = orphan.clone();
-    assert!(!native.get_missing_deps(&[]).is_empty());
-    assert!(matches!(
-        resolve_legacy("so.tilo.chat", "", "voice", &native),
-        Err(MediaPolicyError::Binding)
-    ));
-}
-#[test]
-fn media_binding_exact_object_limit_preserves_workspace_error_precedence() {
-    for (actor_bytes, wrong_workspace) in [(127, false), (128, false), (128, true)] {
-        let mut doc = AutoCommit::new();
-        doc.set_actor(ActorId::from(vec![17; actor_bytes]));
-        let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
-        let voice = {
-            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
-            doc.put_object(&entry, "v", ObjType::Map).unwrap()
-        };
-        doc.put(&voice, "kind", "voice").unwrap();
-        if wrong_workspace {
-            doc.put(&voice, "workspace", true).unwrap();
-        } else {
-            doc.put(&voice, "workspace", "main").unwrap();
-        }
-        doc.commit();
-        let expected = historical_resolve("so.tilo.chat", "", "voice", &doc);
-        let native = doc.clone();
-        let actual = resolve_legacy("so.tilo.chat", "", "voice", &native);
-        match expected {
-            Ok(expected) => {
-                assert_eq!(expected.channel_object.len(), 256);
-                assert!(actual.unwrap().matches(&expected));
-            }
-            Err(error) => {
-                assert_eq!(
-                    error,
-                    if wrong_workspace {
-                        MediaPolicyError::Malformed
-                    } else {
-                        MediaPolicyError::Binding
-                    }
-                );
-                assert!(matches!(actual, Err(actual) if actual == error));
-            }
-        }
-    }
 }
 // Original public resolver retained as independent identity/shape oracle.
 use super::super::strict_string;

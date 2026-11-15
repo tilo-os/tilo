@@ -310,44 +310,77 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_governor_saves_the_workspaces_grant_sets_and_members_read_them() {
-        let (_, key, mut peer) = governor();
-        let now = tilo_clock::wall();
-        assert!(
-            peer.governance_mut()
-                .put_governed_presets(&[preset("Reviewers")], &key, now)
-                .unwrap()
-        );
-        let names: Vec<String> = peer
-            .governance()
-            .governed_presets()
-            .into_iter()
-            .map(|preset| preset.name)
-            .collect();
-        assert_eq!(names, ["Reviewers"]);
-        assert!(
-            !peer
-                .governance_mut()
-                .put_governed_presets(&[preset("Reviewers")], &key, now)
-                .unwrap(),
-            "saving the same sets again changes nothing"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_owners_devices_write_the_workspaces_settings;
 
-    #[test]
-    fn any_device_of_the_owner_writes_the_workspaces_sandbox() {
-        let (_, _, mut peer) = governor();
-        let other = SigningKey::from_bytes(&[13; 32]);
-        peer.governance_mut()
-            .put_governed_sandbox(&[], &other, tilo_clock::wall())
-            .unwrap();
-        let stranger = SigningKey::from_bytes(&[99; 32]);
-        assert!(
+        phase the_governor_saves_the_workspaces_grant_sets_and_members_read_them;
+        {
+            let (_, key, mut peer) = governor();
+            let now = tilo_clock::wall();
+            assert!(
+                peer.governance_mut()
+                    .put_governed_presets(&[preset("Reviewers")], &key, now)
+                    .unwrap()
+            );
+            let names: Vec<String> = peer
+                .governance()
+                .governed_presets()
+                .into_iter()
+                .map(|preset| preset.name)
+                .collect();
+            assert_eq!(names, ["Reviewers"]);
+            assert!(
+                !peer
+                    .governance_mut()
+                    .put_governed_presets(&[preset("Reviewers")], &key, now)
+                    .unwrap(),
+                "saving the same sets again changes nothing"
+            );
+        }
+
+        phase any_device_of_the_owner_writes_the_workspaces_sandbox;
+        {
+            let (_, _, mut peer) = governor();
+            let other = SigningKey::from_bytes(&[13; 32]);
             peer.governance_mut()
-                .put_governed_sandbox(&[], &stranger, tilo_clock::wall())
-                .is_err()
-        );
+                .put_governed_sandbox(&[], &other, tilo_clock::wall())
+                .unwrap();
+            let stranger = SigningKey::from_bytes(&[99; 32]);
+            assert!(
+                peer.governance_mut()
+                    .put_governed_sandbox(&[], &stranger, tilo_clock::wall())
+                    .is_err()
+            );
+        }
+
+        phase any_device_of_the_owner_renames_the_workspace_and_rewrites_its_grant_sets;
+        {
+            let (_, key, mut peer) = governor();
+            let (_, other) = device(13);
+            write(
+                &mut peer,
+                &other,
+                "scratch",
+                ScalarValue::Str("mine".into()),
+            )
+            .unwrap();
+            write(
+                &mut peer,
+                &other,
+                WORKSPACE_NAME_KEY,
+                ScalarValue::Str("Mine".into()),
+            )
+            .unwrap();
+            assert_eq!(peer.governance().workspace_name().as_deref(), Some("Mine"));
+            write(
+                &mut peer,
+                &key,
+                WORKSPACE_NAME_KEY,
+                ScalarValue::Str("Ours".into()),
+            )
+            .unwrap();
+            assert_eq!(peer.governance().workspace_name().as_deref(), Some("Ours"));
+        }
     }
 
     /// A change `key` makes to the workspace: `field` set to `value`, delivered
@@ -380,34 +413,5 @@ mod tests {
         )
         .map(|_| ())
         .map_err(|error| error.to_string())
-    }
-
-    #[test]
-    fn any_device_of_the_owner_renames_the_workspace_and_rewrites_its_grant_sets() {
-        let (_, key, mut peer) = governor();
-        let (_, other) = device(13);
-        write(
-            &mut peer,
-            &other,
-            "scratch",
-            ScalarValue::Str("mine".into()),
-        )
-        .unwrap();
-        write(
-            &mut peer,
-            &other,
-            WORKSPACE_NAME_KEY,
-            ScalarValue::Str("Mine".into()),
-        )
-        .unwrap();
-        assert_eq!(peer.governance().workspace_name().as_deref(), Some("Mine"));
-        write(
-            &mut peer,
-            &key,
-            WORKSPACE_NAME_KEY,
-            ScalarValue::Str("Ours".into()),
-        )
-        .unwrap();
-        assert_eq!(peer.governance().workspace_name().as_deref(), Some("Ours"));
     }
 }

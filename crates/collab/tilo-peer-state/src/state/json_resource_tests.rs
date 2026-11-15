@@ -64,26 +64,30 @@ fn verify_identity(identity: &GovernedIdentity, now: SystemTime) {
     }
 }
 
-#[test]
-fn json_resource_fixture_signed_nested_identity_roundtrip_preserves_canonical_bytes() {
-    let (identity, now) = identity_fixture();
-    verify_identity(&identity, now);
-    let wire = identity.encode().unwrap();
-    let decoded = GovernedIdentity::decode(&wire).unwrap();
-    assert_eq!(decoded.encode().unwrap(), wire);
-    assert_eq!(decoded.device_cert, identity.device_cert);
-    assert_eq!(decoded.revocations, identity.revocations);
-    verify_identity(&decoded, now);
-}
+tilo_test_env::scenario! {
+    fn json_resource_fixtures_roundtrip_to_their_canonical_bytes;
 
-#[test]
-fn json_resource_fixture_grant_control_utf8_and_maximum_u64_roundtrip() {
-    let capability = grant_fixture();
-    let wire = serde_json::to_string(&capability).unwrap();
-    assert!(wire.contains("\\u0001"));
-    assert!(wire.contains("18446744073709551615"));
-    let escaped = wire.replace('🦀', "\\uD83E\\uDD80");
-    let decoded: tilo_action_policy::Grant = serde_json::from_str(&escaped).unwrap();
-    assert_eq!(decoded, capability);
-    assert_eq!(serde_json::to_string(&decoded).unwrap(), wire);
+    phase json_resource_fixture_signed_nested_identity_roundtrip_preserves_canonical_bytes;
+    {
+        let (identity, now) = identity_fixture();
+        verify_identity(&identity, now);
+        let wire = identity.encode().unwrap();
+        let decoded = GovernedIdentity::decode(&wire).unwrap();
+        assert_eq!(decoded.encode().unwrap(), wire);
+        assert_eq!(decoded.device_cert, identity.device_cert);
+        assert_eq!(decoded.revocations, identity.revocations);
+        verify_identity(&decoded, now);
+    }
+
+    phase json_resource_fixture_grant_control_utf8_and_maximum_u64_roundtrip;
+    {
+        let capability = grant_fixture();
+        let wire = serde_json::to_string(&capability).unwrap();
+        assert!(wire.contains("\\u0001"));
+        assert!(wire.contains("18446744073709551615"));
+        let escaped = wire.replace('🦀', "\\uD83E\\uDD80");
+        let decoded: tilo_action_policy::Grant = serde_json::from_str(&escaped).unwrap();
+        assert_eq!(decoded, capability);
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), wire);
+    }
 }

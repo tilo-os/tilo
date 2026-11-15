@@ -59,210 +59,214 @@ fn parsed(workspace: &AutoCommit) -> Result<Option<WorkspaceMediaV1>, Error> {
     parse(&LegacyRead(workspace), &LegacyPolicy)
 }
 
-#[test]
-fn media_reader_matches_legacy_absence_malformed_binding_and_canonical_rejection() {
-    let bytes = super::super::encode(&policy()).unwrap();
-    for mode in 0..6 {
-        let mut doc = workspace(Some(bytes.clone()));
-        match mode {
-            0 => {
-                doc.delete(ROOT, FIELD).unwrap();
-            }
-            1 => {
-                doc.put(ROOT, FIELD, "wrong scalar").unwrap();
-            }
-            2 => {
-                doc.put(ROOT, FIELD, ScalarValue::Bytes(vec![0xff]))
-                    .unwrap();
-            }
-            3 => {
-                doc.put(ROOT, "workspace", "wrong workspace").unwrap();
-            }
-            4 => {
-                let mut tail = bytes.clone();
-                tail.push(0);
-                doc.put(ROOT, FIELD, ScalarValue::Bytes(tail)).unwrap();
-            }
-            _ => {}
-        }
-        doc.commit();
-        let legacy = historical_parse(&doc);
-        let native = parsed(&doc);
-        match legacy {
-            Ok(value) => assert_eq!(native.unwrap(), value),
-            Err(error) => assert_eq!(native.err(), Some(Error::Policy(error))),
-        }
-    }
-}
+tilo_test_env::scenario! {
+    fn media_reader_reads_and_refuses_as_the_original_parser_did;
 
-#[test]
-fn media_reader_conflict_precedes_decoding_and_equal_conflicts_remain_valid() {
-    for equal in [false, true] {
+    phase media_reader_matches_legacy_absence_malformed_binding_and_canonical_rejection;
+    {
         let bytes = super::super::encode(&policy()).unwrap();
-        let mut base = workspace(None);
-        base.set_actor(ActorId::from(vec![1]));
-        let mut fork = base.fork();
-        fork.set_actor(ActorId::from(vec![2]));
-        base.put(ROOT, FIELD, ScalarValue::Bytes(bytes.clone()))
+        for mode in 0..6 {
+            let mut doc = workspace(Some(bytes.clone()));
+            match mode {
+                0 => {
+                    doc.delete(ROOT, FIELD).unwrap();
+                }
+                1 => {
+                    doc.put(ROOT, FIELD, "wrong scalar").unwrap();
+                }
+                2 => {
+                    doc.put(ROOT, FIELD, ScalarValue::Bytes(vec![0xff]))
+                        .unwrap();
+                }
+                3 => {
+                    doc.put(ROOT, "workspace", "wrong workspace").unwrap();
+                }
+                4 => {
+                    let mut tail = bytes.clone();
+                    tail.push(0);
+                    doc.put(ROOT, FIELD, ScalarValue::Bytes(tail)).unwrap();
+                }
+                _ => {}
+            }
+            doc.commit();
+            let legacy = historical_parse(&doc);
+            let native = parsed(&doc);
+            match legacy {
+                Ok(value) => assert_eq!(native.unwrap(), value),
+                Err(error) => assert_eq!(native.err(), Some(Error::Policy(error))),
+            }
+        }
+    }
+
+    phase media_reader_conflict_precedes_decoding_and_equal_conflicts_remain_valid;
+    {
+        for equal in [false, true] {
+            let bytes = super::super::encode(&policy()).unwrap();
+            let mut base = workspace(None);
+            base.set_actor(ActorId::from(vec![1]));
+            let mut fork = base.fork();
+            fork.set_actor(ActorId::from(vec![2]));
+            base.put(ROOT, FIELD, ScalarValue::Bytes(bytes.clone()))
+                .unwrap();
+            base.commit();
+            fork.put(
+                ROOT,
+                FIELD,
+                ScalarValue::Bytes(if equal { bytes } else { vec![0xff] }),
+            )
             .unwrap();
-        base.commit();
-        fork.put(
-            ROOT,
-            FIELD,
-            ScalarValue::Bytes(if equal { bytes } else { vec![0xff] }),
-        )
-        .unwrap();
-        fork.commit();
-        base.merge_incoming(&mut fork).unwrap();
-        let legacy = historical_parse(&base);
-        assert_eq!(
-            legacy.as_ref().err(),
-            if equal {
-                None
-            } else {
-                Some(&MediaPolicyError::Conflict)
-            }
-        );
-        let native = parsed(&base);
-        if equal {
-            assert_eq!(native.unwrap(), legacy.unwrap());
-        } else {
+            fork.commit();
+            base.merge_incoming(&mut fork).unwrap();
+            let legacy = historical_parse(&base);
             assert_eq!(
-                native.err(),
-                Some(Error::Policy(MediaPolicyError::Conflict))
+                legacy.as_ref().err(),
+                if equal {
+                    None
+                } else {
+                    Some(&MediaPolicyError::Conflict)
+                }
             );
+            let native = parsed(&base);
+            if equal {
+                assert_eq!(native.unwrap(), legacy.unwrap());
+            } else {
+                assert_eq!(
+                    native.err(),
+                    Some(Error::Policy(MediaPolicyError::Conflict))
+                );
+            }
         }
     }
-}
 
-#[test]
-fn media_reader_validation_refuses_noncanonical_counters_and_duplicate_objects() {
-    let mut value = policy();
-    let call = value.calls.values().next().unwrap().clone();
-    value.calls.clear();
-    for id in 1..=64 {
-        let mut call = call.clone();
-        call.binding.channel_object = format!("{id}@01");
-        value.calls.insert([id; 32], call);
-    }
-    super::super::validate(&value).unwrap();
-    for counter in ["0", "00", "01", "+1", "-1", "18446744073709551616", ""] {
-        let mut invalid = call.binding.clone();
-        invalid.channel_object = format!("{counter}@01");
-        assert_eq!(invalid.validate(), Err(MediaPolicyError::Binding));
-    }
-    let mut valid = call.binding;
-    valid.channel_object = "18446744073709551615@01".into();
-    valid.validate().unwrap();
-    value
-        .calls
-        .get_mut(&[64; 32])
-        .unwrap()
-        .binding
-        .channel_object = "1@01".into();
-    assert_eq!(
-        super::super::validate(&value),
-        Err(MediaPolicyError::Binding)
-    );
-}
-
-#[test]
-fn media_reader_reads_a_workspace_without_policy_as_disabled() {
-    let absent = workspace(None);
-    assert!(
-        parse(&LegacyRead(&absent), &LegacyPolicy)
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn media_reader_checks_maximum_maps_and_noncanonical_varints_against_original_parser() {
-    let mut value = policy();
-    let call = value.calls.values().next().unwrap().clone();
-    value.calls.clear();
-    for id in 1..=64 {
-        let mut call = call.clone();
-        call.binding.channel_object = format!("{id}@01");
-        call.denied.clear();
-        for root in 1..=8 {
-            call.denied.insert(
-                [root; 32],
-                DirectionsV1 {
-                    publish: true,
-                    subscribe: false,
-                },
-            );
-        }
-        value.calls.insert([id; 32], call);
-    }
-    let bytes = historical_encode(&value).unwrap();
-    let doc = workspace(Some(bytes));
-    let read = parsed(&doc).unwrap().unwrap();
-    assert_eq!(read, value);
-    assert_eq!(historical_parse(&doc).unwrap(), Some(read));
-    let mut single = historical_encode(&policy()).unwrap();
-    // Revision1 at offset17: valid Postcard non-minimal varint, invalid canonical bytes.
-    assert_eq!(single[17], 1);
-    single.splice(17..18, [0x81, 0]);
-    let noncanonical = workspace(Some(single));
-    assert_eq!(
-        historical_parse(&noncanonical),
-        Err(MediaPolicyError::Malformed)
-    );
-    assert_eq!(
-        parsed(&noncanonical).err(),
-        Some(Error::Policy(MediaPolicyError::Malformed))
-    );
-}
-
-#[test]
-fn media_reader_preserves_validation_error_order_for_binding_counter_and_capacity() {
-    for mode in 0..8 {
+    phase media_reader_validation_refuses_noncanonical_counters_and_duplicate_objects;
+    {
         let mut value = policy();
-        match mode {
-            0 => value.version = 2,
-            1 => value.workspace = [0; 16],
-            2 => value.authorization_revision = 0,
-            3 => {
-                value.calls.values_mut().next().unwrap().epoch = 0;
-            }
-            4 => {
-                value
-                    .calls
-                    .values_mut()
-                    .next()
-                    .unwrap()
-                    .binding
-                    .channel_object = "01@01".into();
-            }
-            5 => {
-                value.calls.values_mut().next().unwrap().denied.insert(
-                    [0; 32],
+        let call = value.calls.values().next().unwrap().clone();
+        value.calls.clear();
+        for id in 1..=64 {
+            let mut call = call.clone();
+            call.binding.channel_object = format!("{id}@01");
+            value.calls.insert([id; 32], call);
+        }
+        super::super::validate(&value).unwrap();
+        for counter in ["0", "00", "01", "+1", "-1", "18446744073709551616", ""] {
+            let mut invalid = call.binding.clone();
+            invalid.channel_object = format!("{counter}@01");
+            assert_eq!(invalid.validate(), Err(MediaPolicyError::Binding));
+        }
+        let mut valid = call.binding;
+        valid.channel_object = "18446744073709551615@01".into();
+        valid.validate().unwrap();
+        value
+            .calls
+            .get_mut(&[64; 32])
+            .unwrap()
+            .binding
+            .channel_object = "1@01".into();
+        assert_eq!(
+            super::super::validate(&value),
+            Err(MediaPolicyError::Binding)
+        );
+    }
+
+    phase media_reader_reads_a_workspace_without_policy_as_disabled;
+    {
+        let absent = workspace(None);
+        assert!(
+            parse(&LegacyRead(&absent), &LegacyPolicy)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    phase media_reader_checks_maximum_maps_and_noncanonical_varints_against_original_parser;
+    {
+        let mut value = policy();
+        let call = value.calls.values().next().unwrap().clone();
+        value.calls.clear();
+        for id in 1..=64 {
+            let mut call = call.clone();
+            call.binding.channel_object = format!("{id}@01");
+            call.denied.clear();
+            for root in 1..=8 {
+                call.denied.insert(
+                    [root; 32],
                     DirectionsV1 {
                         publish: true,
                         subscribe: false,
                     },
                 );
             }
-            6 => {
-                let call = value.calls.values().next().unwrap().clone();
-                value.calls.insert([9; 32], call);
-            }
-            _ => {
-                value.calls.values_mut().next().unwrap().denied.insert(
-                    [9; 32],
-                    DirectionsV1 {
-                        publish: false,
-                        subscribe: false,
-                    },
-                );
-            }
+            value.calls.insert([id; 32], call);
         }
-        let doc = workspace(Some(postcard::to_allocvec(&value).unwrap()));
-        let original = historical_parse(&doc).unwrap_err();
-        assert_eq!(parsed(&doc).err(), Some(Error::Policy(original)));
-        assert_eq!(super::super::validate(&value), historical_validate(&value));
+        let bytes = historical_encode(&value).unwrap();
+        let doc = workspace(Some(bytes));
+        let read = parsed(&doc).unwrap().unwrap();
+        assert_eq!(read, value);
+        assert_eq!(historical_parse(&doc).unwrap(), Some(read));
+        let mut single = historical_encode(&policy()).unwrap();
+        // Revision1 at offset17: valid Postcard non-minimal varint, invalid canonical bytes.
+        assert_eq!(single[17], 1);
+        single.splice(17..18, [0x81, 0]);
+        let noncanonical = workspace(Some(single));
+        assert_eq!(
+            historical_parse(&noncanonical),
+            Err(MediaPolicyError::Malformed)
+        );
+        assert_eq!(
+            parsed(&noncanonical).err(),
+            Some(Error::Policy(MediaPolicyError::Malformed))
+        );
+    }
+
+    phase media_reader_preserves_validation_error_order_for_binding_counter_and_capacity;
+    {
+        for mode in 0..8 {
+            let mut value = policy();
+            match mode {
+                0 => value.version = 2,
+                1 => value.workspace = [0; 16],
+                2 => value.authorization_revision = 0,
+                3 => {
+                    value.calls.values_mut().next().unwrap().epoch = 0;
+                }
+                4 => {
+                    value
+                        .calls
+                        .values_mut()
+                        .next()
+                        .unwrap()
+                        .binding
+                        .channel_object = "01@01".into();
+                }
+                5 => {
+                    value.calls.values_mut().next().unwrap().denied.insert(
+                        [0; 32],
+                        DirectionsV1 {
+                            publish: true,
+                            subscribe: false,
+                        },
+                    );
+                }
+                6 => {
+                    let call = value.calls.values().next().unwrap().clone();
+                    value.calls.insert([9; 32], call);
+                }
+                _ => {
+                    value.calls.values_mut().next().unwrap().denied.insert(
+                        [9; 32],
+                        DirectionsV1 {
+                            publish: false,
+                            subscribe: false,
+                        },
+                    );
+                }
+            }
+            let doc = workspace(Some(postcard::to_allocvec(&value).unwrap()));
+            let original = historical_parse(&doc).unwrap_err();
+            assert_eq!(parsed(&doc).err(), Some(Error::Policy(original)));
+            assert_eq!(super::super::validate(&value), historical_validate(&value));
+        }
     }
 }
 

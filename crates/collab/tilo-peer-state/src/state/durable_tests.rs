@@ -59,26 +59,48 @@ fn kept_sealed() -> SealedHistory {
     )]
 }
 
-#[test]
-fn a_durable_state_with_a_sealed_history_kept_here_reads_and_writes_as_it_is() {
-    let exact = kept_exact();
-    assert_golden_bytes(
-        "a peer's durable state with a sealed history",
-        &kept(KEPT_SEALED),
-        |bytes| {
-            let (value, tail): (Durable<'_>, _) =
-                postcard::take_from_bytes(bytes).expect("the kept state reads");
-            assert!(tail.is_empty(), "the kept state is all of the file");
-            assert_eq!(value.version, DURABLE_VERSION);
-            assert_eq!(value.workspace, KEPT_WORKSPACE);
-            let index = crate::admission::ExactAdmissions::decode(value.exact.unwrap()).unwrap();
-            assert_eq!(index.len(), 1);
-            assert_eq!(value.sealed.len(), 1);
-            assert_eq!(value.sealed[0].0.app, "so.tilo.chat");
-            assert_eq!(value.sealed[0].1.len(), 1);
-        },
-        || postcard::to_stdvec(&kept_state(Some(&exact), kept_sealed())).unwrap(),
-    );
+tilo_test_env::scenario! {
+    fn kept_durable_states_read_and_write_as_they_are;
+
+    phase a_durable_state_with_a_sealed_history_kept_here_reads_and_writes_as_it_is;
+    {
+        let exact = kept_exact();
+        assert_golden_bytes(
+            "a peer's durable state with a sealed history",
+            &kept(KEPT_SEALED),
+            |bytes| {
+                let (value, tail): (Durable<'_>, _) =
+                    postcard::take_from_bytes(bytes).expect("the kept state reads");
+                assert!(tail.is_empty(), "the kept state is all of the file");
+                assert_eq!(value.version, DURABLE_VERSION);
+                assert_eq!(value.workspace, KEPT_WORKSPACE);
+                let index = crate::admission::ExactAdmissions::decode(value.exact.unwrap()).unwrap();
+                assert_eq!(index.len(), 1);
+                assert_eq!(value.sealed.len(), 1);
+                assert_eq!(value.sealed[0].0.app, "so.tilo.chat");
+                assert_eq!(value.sealed[0].1.len(), 1);
+            },
+            || postcard::to_stdvec(&kept_state(Some(&exact), kept_sealed())).unwrap(),
+        );
+    }
+
+    phase the_state_kept_here_reads_and_writes_as_it_is;
+    {
+        assert_golden_bytes(
+            "the durable admission state",
+            &kept(KEPT),
+            |bytes| {
+                let (value, tail): (Durable<'_>, _) = postcard::take_from_bytes(bytes).unwrap();
+                assert!(tail.is_empty());
+                assert_eq!(value.version, DURABLE_VERSION);
+                assert_eq!(value.workspace, KEPT_WORKSPACE);
+                assert_eq!(value.owner, [1; 32]);
+                assert_eq!(value.pending_bytes, 12);
+                assert!(value.exact.is_none());
+            },
+            || postcard::to_stdvec(&kept_state(None, Vec::new())).unwrap(),
+        );
+    }
 }
 
 /// One write waiting to be sent, in both kept states.
@@ -107,22 +129,4 @@ fn kept_state(exact: Option<&[u8]>, sealed: SealedHistory) -> Durable<'_> {
         exact,
         sealed,
     }
-}
-
-#[test]
-fn the_state_kept_here_reads_and_writes_as_it_is() {
-    assert_golden_bytes(
-        "the durable admission state",
-        &kept(KEPT),
-        |bytes| {
-            let (value, tail): (Durable<'_>, _) = postcard::take_from_bytes(bytes).unwrap();
-            assert!(tail.is_empty());
-            assert_eq!(value.version, DURABLE_VERSION);
-            assert_eq!(value.workspace, KEPT_WORKSPACE);
-            assert_eq!(value.owner, [1; 32]);
-            assert_eq!(value.pending_bytes, 12);
-            assert!(value.exact.is_none());
-        },
-        || postcard::to_stdvec(&kept_state(None, Vec::new())).unwrap(),
-    );
 }

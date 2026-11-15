@@ -128,104 +128,108 @@ fn fixture() -> Fixture {
     }
 }
 
-#[test]
-fn a_renewed_certificate_takes_the_place_of_the_expired_one_and_keeps_the_role() {
-    let Fixture {
-        mut peer,
-        authority,
-        device,
-        held,
-        renewed,
-        now,
-        ..
-    } = fixture();
-    assert!(
-        peer.permissions(held.device_public_key, now).is_err(),
-        "an expired certificate acts in nothing"
-    );
-    assert_eq!(
-        peer.governance().renewal_of(&renewed, now).unwrap(),
-        Some(held.clone())
-    );
+tilo_test_env::scenario! {
+    fn a_certificate_is_renewed_only_by_a_later_one_of_its_root_and_role;
 
-    assert!(
-        peer.governance_mut()
-            .renew_member_certificate(&renewed, &authority, now)
-            .unwrap()
-    );
+    phase a_renewed_certificate_takes_the_place_of_the_expired_one_and_keeps_the_role;
+    {
+        let Fixture {
+            mut peer,
+            authority,
+            device,
+            held,
+            renewed,
+            now,
+            ..
+        } = fixture();
+        assert!(
+            peer.permissions(held.device_public_key, now).is_err(),
+            "an expired certificate acts in nothing"
+        );
+        assert_eq!(
+            peer.governance().renewal_of(&renewed, now).unwrap(),
+            Some(held.clone())
+        );
 
-    assert!(peer.certificates().contains(&renewed));
-    assert!(!peer.certificates().contains(&held));
-    assert_eq!(
-        peer.role(&device.verifying_key().to_bytes(), now).unwrap(),
-        Role::Editor,
-        "the same member, with the same role"
-    );
-    assert_eq!(peer.governance().renewal_of(&renewed, now).unwrap(), None);
-    assert!(
-        !peer
-            .governance_mut()
-            .renew_member_certificate(&renewed, &authority, now)
-            .unwrap(),
-        "renewing again changes nothing"
-    );
-}
+        assert!(
+            peer.governance_mut()
+                .renew_member_certificate(&renewed, &authority, now)
+                .unwrap()
+        );
 
-#[test]
-fn a_certificate_from_another_root_is_not_a_renewal() {
-    let Fixture {
-        mut peer,
-        authority,
-        device,
-        now,
-        ..
-    } = fixture();
-    let stranger = SigningKey::from_bytes(&[9; 32]);
-    let forged = cert(&stranger, &device, 1900 * SECOND, Some(2900 * SECOND));
-    assert!(peer.governance().renewal_of(&forged, now).is_err());
-    assert!(
-        peer.governance_mut()
-            .renew_member_certificate(&forged, &authority, now)
-            .is_err()
-    );
-}
-
-#[test]
-fn an_older_certificate_is_refused_after_a_newer_one() {
-    let Fixture {
-        mut peer,
-        authority,
-        root,
-        device,
-        held,
-        renewed,
-        now,
-    } = fixture();
-    peer.governance_mut()
-        .renew_member_certificate(&renewed, &authority, now)
-        .unwrap();
-    // The certificate it replaced, and one issued between the two.
-    let between = cert(&root, &device, 1800 * SECOND, Some(2800 * SECOND));
-    for stale in [&held, &between] {
-        let refused = peer.governance().renewal_of(stale, now).unwrap_err();
-        assert!(refused.contains("newer"), "{refused}");
+        assert!(peer.certificates().contains(&renewed));
+        assert!(!peer.certificates().contains(&held));
+        assert_eq!(
+            peer.role(&device.verifying_key().to_bytes(), now).unwrap(),
+            Role::Editor,
+            "the same member, with the same role"
+        );
+        assert_eq!(peer.governance().renewal_of(&renewed, now).unwrap(), None);
+        assert!(
+            !peer
+                .governance_mut()
+                .renew_member_certificate(&renewed, &authority, now)
+                .unwrap(),
+            "renewing again changes nothing"
+        );
     }
-    assert!(peer.certificates().contains(&renewed));
-}
 
-#[test]
-fn a_renewal_grants_no_more_than_the_certificate_it_replaces() {
-    let Fixture {
-        peer,
-        root,
-        device,
-        now,
-        ..
-    } = fixture();
-    let mut wider = cert(&root, &device, 1900 * SECOND, Some(2900 * SECOND));
-    wider.capabilities.can_admit_devices = true;
-    sign_device_cert(&mut wider, &root).unwrap();
-    assert!(peer.governance().renewal_of(&wider, now).is_err());
+    phase a_certificate_from_another_root_is_not_a_renewal;
+    {
+        let Fixture {
+            mut peer,
+            authority,
+            device,
+            now,
+            ..
+        } = fixture();
+        let stranger = SigningKey::from_bytes(&[9; 32]);
+        let forged = cert(&stranger, &device, 1900 * SECOND, Some(2900 * SECOND));
+        assert!(peer.governance().renewal_of(&forged, now).is_err());
+        assert!(
+            peer.governance_mut()
+                .renew_member_certificate(&forged, &authority, now)
+                .is_err()
+        );
+    }
+
+    phase an_older_certificate_is_refused_after_a_newer_one;
+    {
+        let Fixture {
+            mut peer,
+            authority,
+            root,
+            device,
+            held,
+            renewed,
+            now,
+        } = fixture();
+        peer.governance_mut()
+            .renew_member_certificate(&renewed, &authority, now)
+            .unwrap();
+        // The certificate it replaced, and one issued between the two.
+        let between = cert(&root, &device, 1800 * SECOND, Some(2800 * SECOND));
+        for stale in [&held, &between] {
+            let refused = peer.governance().renewal_of(stale, now).unwrap_err();
+            assert!(refused.contains("newer"), "{refused}");
+        }
+        assert!(peer.certificates().contains(&renewed));
+    }
+
+    phase a_renewal_grants_no_more_than_the_certificate_it_replaces;
+    {
+        let Fixture {
+            peer,
+            root,
+            device,
+            now,
+            ..
+        } = fixture();
+        let mut wider = cert(&root, &device, 1900 * SECOND, Some(2900 * SECOND));
+        wider.capabilities.can_admit_devices = true;
+        sign_device_cert(&mut wider, &root).unwrap();
+        assert!(peer.governance().renewal_of(&wider, now).is_err());
+    }
 }
 
 /// The membership exchange is how a member brings its renewal: challenged

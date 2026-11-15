@@ -69,45 +69,359 @@ fn message(doc: &mut AutoCommit) -> NeighbourMsg {
             .collect(),
     }
 }
-#[test]
-fn workspace_media_native_rejects_malformed_policy_before_any_mutation() {
-    let (mut peer, key, now) = fixture();
-    let before = peer.durable().unwrap();
-    let mut workspace = peer.admitted_workspace().unwrap().clone();
-    workspace
-        .put(ROOT, media::FIELD, "not policy bytes")
-        .unwrap();
-    assert!(
-        peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            message(&mut workspace),
-            now
-        )
-        .is_err()
-    );
-    assert_eq!(before, peer.durable().unwrap());
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn workspace_media_policy_is_published_only_whole_by_its_standing_governor;
+
+    phase workspace_media_native_rejects_malformed_policy_before_any_mutation;
+    {
+        let (mut peer, key, now) = fixture();
+        let before = peer.durable().unwrap();
+        let mut workspace = peer.admitted_workspace().unwrap().clone();
+        workspace
+            .put(ROOT, media::FIELD, "not policy bytes")
+            .unwrap();
+        assert!(
+            peer.receive_from(
+                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                message(&mut workspace),
+                now
+            )
+            .is_err()
+        );
+        assert_eq!(before, peer.durable().unwrap());
+    }
+
+    phase workspace_media_workspace_policy_cannot_activate_a_present_mismatched_binding;
+    {
+        let (mut peer, key, now) = fixture();
+        let mut value = policy(&peer);
+        value.calls.get_mut(&[7; 32]).unwrap().binding.channel_id = "missing".into();
+        let before = peer.durable().unwrap();
+        assert!(install_policy(&mut peer, &key, now, &value).is_err());
+        assert_eq!(before, peer.durable().unwrap());
+    }
+
+    phase workspace_media_policy_epoch_and_basis_cannot_change_at_equal_revision;
+    {
+        let (mut peer, key, now) = fixture();
+        let value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let before = peer.durable().unwrap();
+        let mut changed = value.clone();
+        changed.calls.get_mut(&[7; 32]).unwrap().allowed.publish = false;
+        assert!(install_policy(&mut peer, &key, now, &changed).is_err());
+        assert_eq!(before, peer.durable().unwrap());
+        changed = value;
+        changed.authorization_basis[0] ^= 1;
+        assert!(install_policy(&mut peer, &key, now, &changed).is_err());
+        assert_eq!(before, peer.durable().unwrap());
+    }
+
+    phase workspace_media_policy_changes_only_from_the_owners_devices;
+    {
+        let (mut peer, authority, members, now) = members();
+        let value = policy(&peer);
+        // The third member is another device of the owner's.
+        let [editor, viewer, own] = members;
+        assert_eq!(own.1.user_public_key, peer.owner());
+        let members = [editor, viewer];
+        for (key, _) in &members {
+            let before = peer.durable().unwrap();
+            assert!(install_policy(&mut peer, key, now, &value).is_err());
+            assert_eq!(before, peer.durable().unwrap());
+        }
+        install_policy(&mut peer, &own.0, now, &value).unwrap();
+        install_policy(&mut peer, &authority, now, &value).unwrap();
+        for (key, _) in members {
+            for delete in [false, true] {
+                let before = peer.durable().unwrap();
+                let mut doc = peer.admitted_workspace().unwrap().clone();
+                if delete {
+                    doc.delete(ROOT, media::FIELD).unwrap();
+                } else {
+                    let mut changed = value.clone();
+                    changed.calls.get_mut(&[7; 32]).unwrap().epoch += 1;
+                    changed.calls.get_mut(&[7; 32]).unwrap().phase = media::CallPhaseV1::Ended;
+                    doc.put(
+                        ROOT,
+                        media::FIELD,
+                        automerge::ScalarValue::Bytes(media::encode(&changed).unwrap()),
+                    )
+                    .unwrap();
+                }
+                assert!(
+                    peer.receive_from(
+                        TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                        message(&mut doc),
+                        now
+                    )
+                    .is_err()
+                );
+                assert_eq!(before, peer.durable().unwrap());
+            }
+        }
+    }
+
+    phase workspace_media_current_revoked_or_expired_governor_cannot_publish_policy;
+    {
+        for expired in [false, true] {
+            let (mut peer, key, now) = fixture();
+            let value = policy(&peer);
+            let validation_time = if expired {
+                // Construct a genuinely root-signed finite certificate and rebuild
+                // its governed seed, rather than mutating trusted certificate data.
+                let mut cert = peer.owner_certificates()[0].clone();
+                cert.expires_at_ns = Some(now_ns(now) + 1);
+                sign_device_cert(&mut cert, &SigningKey::from_bytes(&[101; 32])).unwrap();
+                let doc = peer.document(APP, "").unwrap();
+                peer = StatePeer::new(WORKSPACE, cert.clone(), vec![], RevocationList::new(), now)
+                    .unwrap();
+                peer.install_seed(
+                    SeedState {
+                        workspace_changes: seed_workspace(WORKSPACE, &cert, &[cert.clone()]).unwrap(),
+                        documents: vec![SeedDocument {
+                            app_id: APP.into(),
+                            record_id: String::new(),
+                            kind: "chat".into(),
+                            bytes: doc,
+                        }],
+                    },
+                    &key,
+                    now,
+                )
+                .unwrap();
+                now + Duration::from_nanos(1)
+            } else {
+                let mut entry = tilo_user_identity::RevocationEntry {
+                    user_public_key: peer.owner(),
+                    revoked_device_public_key: peer.owner_certificates()[0].device_public_key,
+                    revoked_at_ns: 2,
+                    reason: tilo_user_identity::RevocationReason::Retired,
+                    signature: [0; 64],
+                };
+                tilo_user_identity::sign_revocation_entry(
+                    &mut entry,
+                    &SigningKey::from_bytes(&[101; 32]),
+                )
+                .unwrap();
+                peer.core.revocations.insert(entry).unwrap();
+                now
+            };
+            let before = peer.durable().unwrap();
+            assert!(install_policy(&mut peer, &key, validation_time, &value).is_err());
+            assert_eq!(before, peer.durable().unwrap());
+        }
+    }
+
+    phase workspace_media_governed_security_change_without_revision_rejected_and_exhaustion_atomic;
+    {
+        let (mut peer, key, members, now) = members();
+        let mut value = policy(&peer);
+        value.authorization_revision = u64::MAX;
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let before = peer.durable().unwrap();
+        assert!(
+            peer.governance_mut()
+                .remove_member(members[0].1.user_public_key, &key, now)
+                .is_err()
+        );
+        assert_eq!(before, peer.durable().unwrap());
+        let mut document = peer.admitted_workspace().unwrap().clone();
+        let governor = (key.clone(), peer.owner_certificates()[0].clone());
+        set_member(
+            &mut document,
+            &governor,
+            &hex::encode(members[0].1.user_public_key),
+            Role::Viewer,
+        );
+        assert!(
+            peer.receive_from(
+                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                message(&mut document),
+                now
+            )
+            .is_err()
+        );
+        assert_eq!(before, peer.durable().unwrap());
+    }
+
+    phase workspace_media_signed_present_policy_schema_matrix_is_rejected_atomically;
+    {
+        let (mut peer, key, now) = fixture();
+        let value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let valid = media::encode(&value).unwrap();
+        let mut unknown = valid.clone();
+        unknown[0] = 2;
+        let mut trailing = valid.clone();
+        trailing.push(0);
+        let mut zero = value.clone();
+        zero.authorization_revision = 0;
+        let mut duplicate = value.clone();
+        duplicate
+            .calls
+            .insert([8; 32], duplicate.calls[&[7; 32]].clone());
+        let mut wrong_basis = value.clone();
+        wrong_basis.authorization_basis[0] ^= 1;
+        wrong_basis.authorization_revision += 1;
+        for bytes in [
+            unknown,
+            trailing,
+            postcard::to_allocvec(&zero).unwrap(),
+            postcard::to_allocvec(&duplicate).unwrap(),
+            media::encode(&wrong_basis).unwrap(),
+            vec![0; media::MAX_POLICY_BYTES + 1],
+        ] {
+            let mut doc = peer.admitted_workspace().unwrap().clone();
+            doc.put(ROOT, media::FIELD, automerge::ScalarValue::Bytes(bytes))
+                .unwrap();
+            let before = peer.durable().unwrap();
+            assert!(
+                peer.receive_from(
+                    TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                    message(&mut doc),
+                    now
+                )
+                .is_err()
+            );
+            assert_eq!(before, peer.durable().unwrap());
+        }
+        let mut doc = AutoCommit::load(&peer.core.workspace_doc.as_ref().unwrap().saved()).unwrap();
+        let mut branch = doc.fork();
+        doc.set_actor(automerge::ActorId::from(vec![31]));
+        branch.set_actor(automerge::ActorId::from(vec![32]));
+        doc.put(ROOT, media::FIELD, automerge::ScalarValue::Bytes(valid))
+            .unwrap();
+        branch
+            .put(ROOT, media::FIELD, "hidden malformed conflict")
+            .unwrap();
+        doc.commit_edit("fixture", "fixture");
+        branch.commit_edit("fixture", "fixture");
+        doc.reset_diff_cursor();
+        branch.reset_diff_cursor();
+        doc.merge_incoming(&mut branch).unwrap();
+        assert!(
+            peer.receive_from(
+                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                message(&mut doc),
+                now
+            )
+            .is_err()
+        );
+    }
+
+    phase workspace_media_governed_revocation_fence_cannot_be_removed_by_higher_revision;
+    {
+        let (mut peer, key, _, now) = members();
+        let value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let mut revocation = tilo_user_identity::RevocationEntry {
+            user_public_key: peer.owner(),
+            revoked_device_public_key: [99; 32],
+            revoked_at_ns: 10,
+            reason: tilo_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[101; 32]))
+            .unwrap();
+        peer.governance_mut()
+            .publish_governed_revocations(&[revocation], &key, now)
+            .unwrap();
+        // The relay's historical retention proof refuses the same candidate; that
+        // half lives beside the proof, in `tilo_workspace_host::payloads`.
+        let mut current = peer.admitted_workspace().unwrap().clone();
+        let ids = current.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+        // Every owner device's row carries the owner's revocations: clear them all.
+        for cert in peer.owner_certificates() {
+            let id = hex::encode(cert.device_public_key);
+            let mut row =
+                GovernedIdentity::decode(&workspace::governance_of(Some(&current)).identities[&id])
+                    .unwrap();
+            row.revocations.clear();
+            current
+                .put(
+                    &ids,
+                    id,
+                    automerge::ScalarValue::Bytes(row.encode().unwrap()),
+                )
+                .unwrap();
+        }
+        // A malicious pinned writer supplies a self-consistent higher counter.
+        let mut changed = media::parse(&current).unwrap().unwrap();
+        changed.authorization_revision += 1;
+        changed.authorization_basis = media::security_basis(&current, &[]).unwrap();
+        current
+            .put(
+                ROOT,
+                media::FIELD,
+                automerge::ScalarValue::Bytes(media::encode(&changed).unwrap()),
+            )
+            .unwrap();
+        let durable = peer.durable().unwrap();
+        assert!(
+            peer.receive_from(
+                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                message(&mut current),
+                now
+            )
+            .is_err()
+        );
+        assert_eq!(durable, peer.durable().unwrap());
+    }
 }
-#[test]
-fn workspace_media_restore_rejects_malformed_present_policy() {
-    let (mut peer, _, now) = fixture();
-    peer.core
-        .workspace_doc
-        .as_mut()
-        .unwrap()
-        .put(ROOT, media::FIELD, "not policy bytes")
-        .unwrap();
-    let bytes = peer.durable().unwrap();
-    assert!(
-        StatePeer::restore(
-            &bytes,
-            WORKSPACE,
-            peer.owner_certificates()[0].clone(),
-            vec![],
-            RevocationList::new(),
-            now
-        )
-        .is_err()
-    );
+tilo_test_env::scenario! {
+    fn workspace_media_restore_rejects_what_admission_would;
+
+    phase workspace_media_restore_rejects_malformed_present_policy;
+    {
+        let (mut peer, _, now) = fixture();
+        peer.core
+            .workspace_doc
+            .as_mut()
+            .unwrap()
+            .put(ROOT, media::FIELD, "not policy bytes")
+            .unwrap();
+        let bytes = peer.durable().unwrap();
+        assert!(
+            StatePeer::restore(
+                &bytes,
+                WORKSPACE,
+                peer.owner_certificates()[0].clone(),
+                vec![],
+                RevocationList::new(),
+                now
+            )
+            .is_err()
+        );
+    }
+
+    phase workspace_media_restore_rejects_present_mismatched_bound_chat;
+    {
+        let (mut peer, key, now) = fixture();
+        let value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let bytes = edited_chat(&peer, 0).0;
+        peer.core
+            .documents
+            .get_mut(&Route {
+                app: APP.into(),
+                record: String::new(),
+            })
+            .unwrap()
+            .doc = AutoCommit::load(&bytes).unwrap().into();
+        assert!(
+            StatePeer::restore(
+                &peer.durable().unwrap(),
+                WORKSPACE,
+                peer.owner_certificates()[0].clone(),
+                vec![],
+                RevocationList::new(),
+                now
+            )
+            .is_err()
+        );
+    }
 }
 fn policy(peer: &StatePeer) -> media::WorkspaceMediaV1 {
     let chat = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
@@ -194,95 +508,171 @@ fn edited_chat(peer: &StatePeer, operation: u8) -> (Vec<u8>, Vec<u8>) {
         .collect();
     (chat.save(), changes)
 }
-#[test]
-fn workspace_media_active_chat_publication_rejects_destructive_edits_atomically() {
-    for operation in [0, 1, 2, 4] {
-        for snapshot in [false, true] {
-            let (mut peer, key, now) = fixture();
-            let value = policy(&peer);
-            install_policy(&mut peer, &key, now, &value).unwrap();
-            let before = peer.durable().unwrap();
-            let (snapshot_bytes, incremental) = edited_chat(&peer, operation);
-            let result = if snapshot {
-                peer.publication_mut()
-                    .publish_document(APP, "", snapshot_bytes, &key, now)
-            } else {
-                peer.publication_mut()
-                    .publish_incremental(APP, "", incremental, &key, now)
-            };
-            assert!(
-                result.is_err(),
-                "operation {operation}, snapshot {snapshot}"
-            );
-            assert_eq!(
-                before,
-                peer.durable().unwrap(),
-                "coverage, floors and index must remain atomic"
-            );
-        }
-    }
-    // Chat dropped its workspaces: a channel's former workspace changing
-    // keeps the call bound.
-    let (mut peer, key, now) = fixture();
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let (_, incremental) = edited_chat(&peer, 3);
-    peer.publication_mut()
-        .publish_incremental(APP, "", incremental, &key, now)
-        .unwrap();
-    assert_eq!(peer.validated_media_policy().unwrap(), Some(value));
-}
-#[test]
-fn workspace_media_workspace_policy_cannot_activate_a_present_mismatched_binding() {
-    let (mut peer, key, now) = fixture();
-    let mut value = policy(&peer);
-    value.calls.get_mut(&[7; 32]).unwrap().binding.channel_id = "missing".into();
-    let before = peer.durable().unwrap();
-    assert!(install_policy(&mut peer, &key, now, &value).is_err());
-    assert_eq!(before, peer.durable().unwrap());
-}
-#[test]
-fn workspace_media_policy_epoch_and_basis_cannot_change_at_equal_revision() {
-    let (mut peer, key, now) = fixture();
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let before = peer.durable().unwrap();
-    let mut changed = value.clone();
-    changed.calls.get_mut(&[7; 32]).unwrap().allowed.publish = false;
-    assert!(install_policy(&mut peer, &key, now, &changed).is_err());
-    assert_eq!(before, peer.durable().unwrap());
-    changed = value;
-    changed.authorization_basis[0] ^= 1;
-    assert!(install_policy(&mut peer, &key, now, &changed).is_err());
-    assert_eq!(before, peer.durable().unwrap());
-}
-#[test]
-fn workspace_media_restore_rejects_present_mismatched_bound_chat() {
-    let (mut peer, key, now) = fixture();
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let bytes = edited_chat(&peer, 0).0;
-    peer.core
-        .documents
-        .get_mut(&Route {
-            app: APP.into(),
-            record: String::new(),
-        })
-        .unwrap()
-        .doc = AutoCommit::load(&bytes).unwrap().into();
-    assert!(
-        StatePeer::restore(
-            &peer.durable().unwrap(),
-            WORKSPACE,
-            peer.owner_certificates()[0].clone(),
-            vec![],
-            RevocationList::new(),
-            now
-        )
-        .is_err()
-    );
-}
+tilo_test_env::scenario! {
+    fn workspace_media_chat_writes_keep_the_exact_call_binding;
 
+    phase workspace_media_active_chat_publication_rejects_destructive_edits_atomically;
+    {
+        for operation in [0, 1, 2, 4] {
+            for snapshot in [false, true] {
+                let (mut peer, key, now) = fixture();
+                let value = policy(&peer);
+                install_policy(&mut peer, &key, now, &value).unwrap();
+                let before = peer.durable().unwrap();
+                let (snapshot_bytes, incremental) = edited_chat(&peer, operation);
+                let result = if snapshot {
+                    peer.publication_mut()
+                        .publish_document(APP, "", snapshot_bytes, &key, now)
+                } else {
+                    peer.publication_mut()
+                        .publish_incremental(APP, "", incremental, &key, now)
+                };
+                assert!(
+                    result.is_err(),
+                    "operation {operation}, snapshot {snapshot}"
+                );
+                assert_eq!(
+                    before,
+                    peer.durable().unwrap(),
+                    "coverage, floors and index must remain atomic"
+                );
+            }
+        }
+        // Chat dropped its workspaces: a channel's former workspace changing
+        // keeps the call bound.
+        let (mut peer, key, now) = fixture();
+        let value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let (_, incremental) = edited_chat(&peer, 3);
+        peer.publication_mut()
+            .publish_incremental(APP, "", incremental, &key, now)
+            .unwrap();
+        assert_eq!(peer.validated_media_policy().unwrap(), Some(value));
+    }
+
+    phase workspace_media_signed_editor_edits_preserve_call_binding_and_reader_cannot_write;
+    {
+        let (mut peer, authority, members, now) = members();
+        let value = policy(&peer);
+        install_policy(&mut peer, &authority, now, &value).unwrap();
+        for operation in [0, 1, 2, 4] {
+            let (_, delta) = edited_chat(&peer, operation);
+            let (message, _) = peer
+                .prepare_signed_mutation(
+                    APP,
+                    "",
+                    DocumentMutation::Incremental(delta),
+                    &members[0].0,
+                    now,
+                )
+                .unwrap();
+            let before = peer.durable().unwrap();
+            assert!(
+                peer.receive_from_report(
+                    TransportOrigin::RelayDelta(members[0].1.device_public_key),
+                    message,
+                    now
+                )
+                .is_err()
+            );
+            assert_eq!(before, peer.durable().unwrap());
+        }
+        let (_, delta) = edited_chat(&peer, 5);
+        assert!(
+            peer.publication_mut()
+                .publish_incremental(APP, "", delta.clone(), &members[1].0, now)
+                .is_err()
+        );
+        peer.publication_mut()
+            .publish_incremental(APP, "", delta, &members[0].0, now)
+            .unwrap();
+        assert_eq!(peer.validated_media_policy().unwrap(), Some(value));
+    }
+
+    phase workspace_media_exact_record_foreign_workspace_and_alias_are_not_substitutes;
+    {
+        let (mut peer, key, now) = fixture();
+        let other = edited_chat(&peer, 5).0;
+        peer.publication_mut()
+            .publish_document(APP, "second", other, &key, now)
+            .unwrap();
+        let value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let bad = edited_chat(&peer, 0).0;
+        peer.publication_mut()
+            .publish_document(APP, "second", bad.clone(), &key, now)
+            .unwrap();
+        peer.publication_mut()
+            .publish_document("dev.tilo.chat", "", bad, &key, now)
+            .unwrap();
+        assert_eq!(peer.validated_media_policy().unwrap(), Some(value.clone()));
+        let mut wrong = value;
+        wrong.workspace = *uuid::Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+            .unwrap()
+            .as_bytes();
+        let before = peer.durable().unwrap();
+        assert!(install_policy(&mut peer, &key, now, &wrong).is_err());
+        assert_eq!(before, peer.durable().unwrap());
+    }
+
+    phase workspace_media_ended_call_allows_delete_but_cannot_restart_missing_object;
+    {
+        let (mut peer, key, now) = fixture();
+        let mut value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        value.calls.get_mut(&[7; 32]).unwrap().phase = media::CallPhaseV1::Ended;
+        value.calls.get_mut(&[7; 32]).unwrap().epoch = 2;
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let deleted = edited_chat(&peer, 0).0;
+        peer.publication_mut()
+            .publish_document(APP, "", deleted, &key, now)
+            .unwrap();
+        assert_eq!(peer.validated_media_policy().unwrap(), Some(value.clone()));
+        value.calls.get_mut(&[7; 32]).unwrap().phase = media::CallPhaseV1::Active;
+        value.calls.get_mut(&[7; 32]).unwrap().epoch = 3;
+        assert!(install_policy(&mut peer, &key, now, &value).is_err());
+    }
+
+    phase workspace_media_sdk_snapshot_uses_same_binding_guard;
+    {
+        let (mut peer, key, now) = fixture();
+        let value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let bad = edited_chat(&peer, 4).0;
+        let (NeighbourMsg::AppDocument { envelope, .. }, _) = peer
+            .prepare_signed_mutation(APP, "", DocumentMutation::Snapshot(bad), &key, now)
+            .unwrap()
+        else {
+            panic!("unexpected fixture shape")
+        };
+        let before = peer.durable().unwrap();
+        assert!(
+            peer.admit_local_app_document(APP, "", *envelope, now)
+                .is_err()
+        );
+        assert_eq!(before, peer.durable().unwrap());
+    }
+
+    phase workspace_media_reader_uses_current_workspace_read_without_workspace_write;
+    {
+        let (mut peer, key, members, now) = members();
+        let value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let member = peer
+            .permissions(members[1].1.device_public_key, now)
+            .unwrap();
+        let workspace_node = TreePath::workspace(WORKSPACE);
+        assert!(member.allows(&workspace_node, ActionKind::Read, now));
+        assert!(!member.allows(&workspace_node, ActionKind::Undoable, now));
+        peer.governance_mut()
+            .remove_member(members[1].1.user_public_key, &key, now)
+            .unwrap();
+        assert!(
+            peer.permissions(members[1].1.device_public_key, now)
+                .is_err()
+        );
+    }
+}
 fn member(root_seed: u8, device_seed: u8) -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[root_seed; 32]);
     let key = SigningKey::from_bytes(&[device_seed; 32]);
@@ -351,88 +741,6 @@ fn members() -> (
     .unwrap();
     peer.select_exact_admissions().unwrap();
     (peer, key, members, now)
-}
-#[test]
-fn workspace_media_policy_changes_only_from_the_owners_devices() {
-    let (mut peer, authority, members, now) = members();
-    let value = policy(&peer);
-    // The third member is another device of the owner's.
-    let [editor, viewer, own] = members;
-    assert_eq!(own.1.user_public_key, peer.owner());
-    let members = [editor, viewer];
-    for (key, _) in &members {
-        let before = peer.durable().unwrap();
-        assert!(install_policy(&mut peer, key, now, &value).is_err());
-        assert_eq!(before, peer.durable().unwrap());
-    }
-    install_policy(&mut peer, &own.0, now, &value).unwrap();
-    install_policy(&mut peer, &authority, now, &value).unwrap();
-    for (key, _) in members {
-        for delete in [false, true] {
-            let before = peer.durable().unwrap();
-            let mut doc = peer.admitted_workspace().unwrap().clone();
-            if delete {
-                doc.delete(ROOT, media::FIELD).unwrap();
-            } else {
-                let mut changed = value.clone();
-                changed.calls.get_mut(&[7; 32]).unwrap().epoch += 1;
-                changed.calls.get_mut(&[7; 32]).unwrap().phase = media::CallPhaseV1::Ended;
-                doc.put(
-                    ROOT,
-                    media::FIELD,
-                    automerge::ScalarValue::Bytes(media::encode(&changed).unwrap()),
-                )
-                .unwrap();
-            }
-            assert!(
-                peer.receive_from(
-                    TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-                    message(&mut doc),
-                    now
-                )
-                .is_err()
-            );
-            assert_eq!(before, peer.durable().unwrap());
-        }
-    }
-}
-#[test]
-fn workspace_media_signed_editor_edits_preserve_call_binding_and_reader_cannot_write() {
-    let (mut peer, authority, members, now) = members();
-    let value = policy(&peer);
-    install_policy(&mut peer, &authority, now, &value).unwrap();
-    for operation in [0, 1, 2, 4] {
-        let (_, delta) = edited_chat(&peer, operation);
-        let (message, _) = peer
-            .prepare_signed_mutation(
-                APP,
-                "",
-                DocumentMutation::Incremental(delta),
-                &members[0].0,
-                now,
-            )
-            .unwrap();
-        let before = peer.durable().unwrap();
-        assert!(
-            peer.receive_from_report(
-                TransportOrigin::RelayDelta(members[0].1.device_public_key),
-                message,
-                now
-            )
-            .is_err()
-        );
-        assert_eq!(before, peer.durable().unwrap());
-    }
-    let (_, delta) = edited_chat(&peer, 5);
-    assert!(
-        peer.publication_mut()
-            .publish_incremental(APP, "", delta.clone(), &members[1].0, now)
-            .is_err()
-    );
-    peer.publication_mut()
-        .publish_incremental(APP, "", delta, &members[0].0, now)
-        .unwrap();
-    assert_eq!(peer.validated_media_policy().unwrap(), Some(value));
 }
 fn workspace_first_receiver(author: &StatePeer, key: &SigningKey, now: SystemTime) -> StatePeer {
     let mut receiver = StatePeer::new(
@@ -555,86 +863,114 @@ fn workspace_media_workspace_first_receiver_reaches_binding_guard_restored_and_l
     assert_invalid_then_valid_chat("restored", restored, &author, &key, now, value.clone());
     assert_invalid_then_valid_chat("live", receiver, &author, &key, now, value);
 }
-#[test]
-fn workspace_media_exact_record_foreign_workspace_and_alias_are_not_substitutes() {
-    let (mut peer, key, now) = fixture();
-    let other = edited_chat(&peer, 5).0;
-    peer.publication_mut()
-        .publish_document(APP, "second", other, &key, now)
-        .unwrap();
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let bad = edited_chat(&peer, 0).0;
-    peer.publication_mut()
-        .publish_document(APP, "second", bad.clone(), &key, now)
-        .unwrap();
-    peer.publication_mut()
-        .publish_document("dev.tilo.chat", "", bad, &key, now)
-        .unwrap();
-    assert_eq!(peer.validated_media_policy().unwrap(), Some(value.clone()));
-    let mut wrong = value;
-    wrong.workspace = *uuid::Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
-        .unwrap()
-        .as_bytes();
-    let before = peer.durable().unwrap();
-    assert!(install_policy(&mut peer, &key, now, &wrong).is_err());
-    assert_eq!(before, peer.durable().unwrap());
-}
-#[test]
-fn workspace_media_ended_call_allows_delete_but_cannot_restart_missing_object() {
-    let (mut peer, key, now) = fixture();
-    let mut value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    value.calls.get_mut(&[7; 32]).unwrap().phase = media::CallPhaseV1::Ended;
-    value.calls.get_mut(&[7; 32]).unwrap().epoch = 2;
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let deleted = edited_chat(&peer, 0).0;
-    peer.publication_mut()
-        .publish_document(APP, "", deleted, &key, now)
-        .unwrap();
-    assert_eq!(peer.validated_media_policy().unwrap(), Some(value.clone()));
-    value.calls.get_mut(&[7; 32]).unwrap().phase = media::CallPhaseV1::Active;
-    value.calls.get_mut(&[7; 32]).unwrap().epoch = 3;
-    assert!(install_policy(&mut peer, &key, now, &value).is_err());
-}
-#[test]
-fn workspace_media_security_basis_excludes_labels_and_reads_identity_rows_by_value() {
-    let (peer, key, _) = fixture();
-    let mut workspace = peer.admitted_workspace().unwrap().clone();
-    let initial = media::security_basis(&workspace, &[]).unwrap();
-    workspace.put(ROOT, "name", "renamed").unwrap();
-    let peers = workspace.get(ROOT, "peers").unwrap().unwrap().1;
-    workspace
-        .put(
-            &peers,
-            hex::encode(peer.owner_certificates()[0].device_public_key),
-            "label",
+tilo_test_env::scenario! {
+    fn workspace_media_security_basis_follows_governance_and_revocations;
+
+    phase workspace_media_security_basis_excludes_labels_and_reads_identity_rows_by_value;
+    {
+        let (peer, key, _) = fixture();
+        let mut workspace = peer.admitted_workspace().unwrap().clone();
+        let initial = media::security_basis(&workspace, &[]).unwrap();
+        workspace.put(ROOT, "name", "renamed").unwrap();
+        let peers = workspace.get(ROOT, "peers").unwrap().unwrap().1;
+        workspace
+            .put(
+                &peers,
+                hex::encode(peer.owner_certificates()[0].device_public_key),
+                "label",
+            )
+            .unwrap();
+        let ids = workspace
+            .get(ROOT, "peer_identities_v1")
+            .unwrap()
+            .unwrap()
+            .1;
+        let id = hex::encode(peer.owner_certificates()[0].device_public_key);
+        let row = GovernedIdentity::decode(&workspace::governance_of(Some(&workspace)).identities[&id])
+            .unwrap();
+        workspace
+            .put(
+                &ids,
+                id,
+                automerge::ScalarValue::Bytes(row.encode().unwrap()),
+            )
+            .unwrap();
+        assert_eq!(initial, media::security_basis(&workspace, &[]).unwrap());
+        let governor = (key, peer.owner_certificates()[0].clone());
+        set_member(
+            &mut workspace,
+            &governor,
+            &hex::encode([44; 32]),
+            Role::Viewer,
+        );
+        assert_ne!(initial, media::security_basis(&workspace, &[]).unwrap());
+    }
+
+    phase workspace_media_verified_independent_revocation_denies_before_promotion;
+    {
+        let (mut peer, key, members, now) = members();
+        let value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let mut revoked = tilo_user_identity::RevocationEntry {
+            user_public_key: members[0].1.user_public_key,
+            revoked_device_public_key: [88; 32],
+            revoked_at_ns: 2,
+            reason: tilo_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut revoked, &SigningKey::from_bytes(&[110; 32]))
+            .unwrap();
+        peer.receive_from(
+            TransportOrigin::UntrustedPresence(members[0].1.device_public_key),
+            NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                cert: Box::new(members[0].1.clone()),
+                revocations: vec![revoked.clone()],
+            },
+            now,
         )
         .unwrap();
-    let ids = workspace
-        .get(ROOT, "peer_identities_v1")
-        .unwrap()
-        .unwrap()
-        .1;
-    let id = hex::encode(peer.owner_certificates()[0].device_public_key);
-    let row = GovernedIdentity::decode(&workspace::governance_of(Some(&workspace)).identities[&id])
-        .unwrap();
-    workspace
-        .put(
-            &ids,
-            id,
-            automerge::ScalarValue::Bytes(row.encode().unwrap()),
+        assert!(peer.validated_media_policy().is_err());
+        assert!(
+            peer.governance_mut()
+                .publish_governed_revocations(&[revoked.clone()], &key, now)
+                .is_err(),
+            "same-root public restriction remains"
+        );
+        let old = peer.admitted_workspace().unwrap().clone();
+        let mut workspace = old.clone();
+        let ids = workspace
+            .get(ROOT, "peer_identities_v1")
+            .unwrap()
+            .unwrap()
+            .1;
+        let id = hex::encode(members[0].1.device_public_key);
+        let mut row =
+            GovernedIdentity::decode(&workspace::governance_of(Some(&workspace)).identities[&id])
+                .unwrap();
+        row.revocations.push(revoked);
+        workspace
+            .put(
+                &ids,
+                id,
+                automerge::ScalarValue::Bytes(row.encode().unwrap()),
+            )
+            .unwrap();
+        media::refresh_authorization(&old, &mut workspace).unwrap();
+        peer.receive_from(
+            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            message(&mut workspace),
+            now,
         )
         .unwrap();
-    assert_eq!(initial, media::security_basis(&workspace, &[]).unwrap());
-    let governor = (key, peer.owner_certificates()[0].clone());
-    set_member(
-        &mut workspace,
-        &governor,
-        &hex::encode([44; 32]),
-        Role::Viewer,
-    );
-    assert_ne!(initial, media::security_basis(&workspace, &[]).unwrap());
+        assert_eq!(
+            peer.validated_media_policy()
+                .unwrap()
+                .unwrap()
+                .authorization_revision,
+            2
+        );
+    }
 }
 #[test]
 fn workspace_media_governance_role_removal_and_enrollment_refresh_once() {
@@ -697,122 +1033,6 @@ fn workspace_media_governance_role_removal_and_enrollment_refresh_once() {
     );
 }
 #[test]
-fn workspace_media_verified_independent_revocation_denies_before_promotion() {
-    let (mut peer, key, members, now) = members();
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let mut revoked = tilo_user_identity::RevocationEntry {
-        user_public_key: members[0].1.user_public_key,
-        revoked_device_public_key: [88; 32],
-        revoked_at_ns: 2,
-        reason: tilo_user_identity::RevocationReason::Retired,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut revoked, &SigningKey::from_bytes(&[110; 32]))
-        .unwrap();
-    peer.receive_from(
-        TransportOrigin::UntrustedPresence(members[0].1.device_public_key),
-        NeighbourMsg::IdentityHello {
-            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            cert: Box::new(members[0].1.clone()),
-            revocations: vec![revoked.clone()],
-        },
-        now,
-    )
-    .unwrap();
-    assert!(peer.validated_media_policy().is_err());
-    assert!(
-        peer.governance_mut()
-            .publish_governed_revocations(&[revoked.clone()], &key, now)
-            .is_err(),
-        "same-root public restriction remains"
-    );
-    let old = peer.admitted_workspace().unwrap().clone();
-    let mut workspace = old.clone();
-    let ids = workspace
-        .get(ROOT, "peer_identities_v1")
-        .unwrap()
-        .unwrap()
-        .1;
-    let id = hex::encode(members[0].1.device_public_key);
-    let mut row =
-        GovernedIdentity::decode(&workspace::governance_of(Some(&workspace)).identities[&id])
-            .unwrap();
-    row.revocations.push(revoked);
-    workspace
-        .put(
-            &ids,
-            id,
-            automerge::ScalarValue::Bytes(row.encode().unwrap()),
-        )
-        .unwrap();
-    media::refresh_authorization(&old, &mut workspace).unwrap();
-    peer.receive_from(
-        TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-        message(&mut workspace),
-        now,
-    )
-    .unwrap();
-    assert_eq!(
-        peer.validated_media_policy()
-            .unwrap()
-            .unwrap()
-            .authorization_revision,
-        2
-    );
-}
-#[test]
-fn workspace_media_current_revoked_or_expired_governor_cannot_publish_policy() {
-    for expired in [false, true] {
-        let (mut peer, key, now) = fixture();
-        let value = policy(&peer);
-        let validation_time = if expired {
-            // Construct a genuinely root-signed finite certificate and rebuild
-            // its governed seed, rather than mutating trusted certificate data.
-            let mut cert = peer.owner_certificates()[0].clone();
-            cert.expires_at_ns = Some(now_ns(now) + 1);
-            sign_device_cert(&mut cert, &SigningKey::from_bytes(&[101; 32])).unwrap();
-            let doc = peer.document(APP, "").unwrap();
-            peer = StatePeer::new(WORKSPACE, cert.clone(), vec![], RevocationList::new(), now)
-                .unwrap();
-            peer.install_seed(
-                SeedState {
-                    workspace_changes: seed_workspace(WORKSPACE, &cert, &[cert.clone()]).unwrap(),
-                    documents: vec![SeedDocument {
-                        app_id: APP.into(),
-                        record_id: String::new(),
-                        kind: "chat".into(),
-                        bytes: doc,
-                    }],
-                },
-                &key,
-                now,
-            )
-            .unwrap();
-            now + Duration::from_nanos(1)
-        } else {
-            let mut entry = tilo_user_identity::RevocationEntry {
-                user_public_key: peer.owner(),
-                revoked_device_public_key: peer.owner_certificates()[0].device_public_key,
-                revoked_at_ns: 2,
-                reason: tilo_user_identity::RevocationReason::Retired,
-                signature: [0; 64],
-            };
-            tilo_user_identity::sign_revocation_entry(
-                &mut entry,
-                &SigningKey::from_bytes(&[101; 32]),
-            )
-            .unwrap();
-            peer.core.revocations.insert(entry).unwrap();
-            now
-        };
-        let before = peer.durable().unwrap();
-        assert!(install_policy(&mut peer, &key, validation_time, &value).is_err());
-        assert_eq!(before, peer.durable().unwrap());
-    }
-}
-
-#[test]
 fn workspace_media_restore_rejects_governed_certificate_replacement() {
     let (mut peer, key, now) = fixture();
     let value = policy(&peer);
@@ -849,195 +1069,4 @@ fn workspace_media_restore_rejects_governed_certificate_replacement() {
         )
         .is_err()
     );
-}
-#[test]
-fn workspace_media_sdk_snapshot_uses_same_binding_guard() {
-    let (mut peer, key, now) = fixture();
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let bad = edited_chat(&peer, 4).0;
-    let (NeighbourMsg::AppDocument { envelope, .. }, _) = peer
-        .prepare_signed_mutation(APP, "", DocumentMutation::Snapshot(bad), &key, now)
-        .unwrap()
-    else {
-        panic!("unexpected fixture shape")
-    };
-    let before = peer.durable().unwrap();
-    assert!(
-        peer.admit_local_app_document(APP, "", *envelope, now)
-            .is_err()
-    );
-    assert_eq!(before, peer.durable().unwrap());
-}
-#[test]
-fn workspace_media_governed_security_change_without_revision_rejected_and_exhaustion_atomic() {
-    let (mut peer, key, members, now) = members();
-    let mut value = policy(&peer);
-    value.authorization_revision = u64::MAX;
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let before = peer.durable().unwrap();
-    assert!(
-        peer.governance_mut()
-            .remove_member(members[0].1.user_public_key, &key, now)
-            .is_err()
-    );
-    assert_eq!(before, peer.durable().unwrap());
-    let mut document = peer.admitted_workspace().unwrap().clone();
-    let governor = (key.clone(), peer.owner_certificates()[0].clone());
-    set_member(
-        &mut document,
-        &governor,
-        &hex::encode(members[0].1.user_public_key),
-        Role::Viewer,
-    );
-    assert!(
-        peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            message(&mut document),
-            now
-        )
-        .is_err()
-    );
-    assert_eq!(before, peer.durable().unwrap());
-}
-#[test]
-fn workspace_media_reader_uses_current_workspace_read_without_workspace_write() {
-    let (mut peer, key, members, now) = members();
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let member = peer
-        .permissions(members[1].1.device_public_key, now)
-        .unwrap();
-    let workspace_node = TreePath::workspace(WORKSPACE);
-    assert!(member.allows(&workspace_node, ActionKind::Read, now));
-    assert!(!member.allows(&workspace_node, ActionKind::Undoable, now));
-    peer.governance_mut()
-        .remove_member(members[1].1.user_public_key, &key, now)
-        .unwrap();
-    assert!(
-        peer.permissions(members[1].1.device_public_key, now)
-            .is_err()
-    );
-}
-#[test]
-fn workspace_media_signed_present_policy_schema_matrix_is_rejected_atomically() {
-    let (mut peer, key, now) = fixture();
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let valid = media::encode(&value).unwrap();
-    let mut unknown = valid.clone();
-    unknown[0] = 2;
-    let mut trailing = valid.clone();
-    trailing.push(0);
-    let mut zero = value.clone();
-    zero.authorization_revision = 0;
-    let mut duplicate = value.clone();
-    duplicate
-        .calls
-        .insert([8; 32], duplicate.calls[&[7; 32]].clone());
-    let mut wrong_basis = value.clone();
-    wrong_basis.authorization_basis[0] ^= 1;
-    wrong_basis.authorization_revision += 1;
-    for bytes in [
-        unknown,
-        trailing,
-        postcard::to_allocvec(&zero).unwrap(),
-        postcard::to_allocvec(&duplicate).unwrap(),
-        media::encode(&wrong_basis).unwrap(),
-        vec![0; media::MAX_POLICY_BYTES + 1],
-    ] {
-        let mut doc = peer.admitted_workspace().unwrap().clone();
-        doc.put(ROOT, media::FIELD, automerge::ScalarValue::Bytes(bytes))
-            .unwrap();
-        let before = peer.durable().unwrap();
-        assert!(
-            peer.receive_from(
-                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-                message(&mut doc),
-                now
-            )
-            .is_err()
-        );
-        assert_eq!(before, peer.durable().unwrap());
-    }
-    let mut doc = AutoCommit::load(&peer.core.workspace_doc.as_ref().unwrap().saved()).unwrap();
-    let mut branch = doc.fork();
-    doc.set_actor(automerge::ActorId::from(vec![31]));
-    branch.set_actor(automerge::ActorId::from(vec![32]));
-    doc.put(ROOT, media::FIELD, automerge::ScalarValue::Bytes(valid))
-        .unwrap();
-    branch
-        .put(ROOT, media::FIELD, "hidden malformed conflict")
-        .unwrap();
-    doc.commit_edit("fixture", "fixture");
-    branch.commit_edit("fixture", "fixture");
-    doc.reset_diff_cursor();
-    branch.reset_diff_cursor();
-    doc.merge_incoming(&mut branch).unwrap();
-    assert!(
-        peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            message(&mut doc),
-            now
-        )
-        .is_err()
-    );
-}
-#[test]
-fn workspace_media_governed_revocation_fence_cannot_be_removed_by_higher_revision() {
-    let (mut peer, key, _, now) = members();
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let mut revocation = tilo_user_identity::RevocationEntry {
-        user_public_key: peer.owner(),
-        revoked_device_public_key: [99; 32],
-        revoked_at_ns: 10,
-        reason: tilo_user_identity::RevocationReason::Retired,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[101; 32]))
-        .unwrap();
-    peer.governance_mut()
-        .publish_governed_revocations(&[revocation], &key, now)
-        .unwrap();
-    // The relay's historical retention proof refuses the same candidate; that
-    // half lives beside the proof, in `tilo_workspace_host::payloads`.
-    let mut current = peer.admitted_workspace().unwrap().clone();
-    let ids = current.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    // Every owner device's row carries the owner's revocations: clear them all.
-    for cert in peer.owner_certificates() {
-        let id = hex::encode(cert.device_public_key);
-        let mut row =
-            GovernedIdentity::decode(&workspace::governance_of(Some(&current)).identities[&id])
-                .unwrap();
-        row.revocations.clear();
-        current
-            .put(
-                &ids,
-                id,
-                automerge::ScalarValue::Bytes(row.encode().unwrap()),
-            )
-            .unwrap();
-    }
-    // A malicious pinned writer supplies a self-consistent higher counter.
-    let mut changed = media::parse(&current).unwrap().unwrap();
-    changed.authorization_revision += 1;
-    changed.authorization_basis = media::security_basis(&current, &[]).unwrap();
-    current
-        .put(
-            ROOT,
-            media::FIELD,
-            automerge::ScalarValue::Bytes(media::encode(&changed).unwrap()),
-        )
-        .unwrap();
-    let durable = peer.durable().unwrap();
-    assert!(
-        peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            message(&mut current),
-            now
-        )
-        .is_err()
-    );
-    assert_eq!(durable, peer.durable().unwrap());
 }

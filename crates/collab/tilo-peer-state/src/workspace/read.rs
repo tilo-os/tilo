@@ -617,86 +617,91 @@ mod tests {
         count
     }
 
-    #[test]
-    fn workspace_read_adapter_governance_ignores_list_and_text_but_reads_later_valid_fields() {
-        use automerge::transaction::Transactable;
-        for kind in [ObjType::List, ObjType::Text] {
-            let mut doc = automerge::AutoCommit::new();
-            doc.put(automerge::ROOT, "owner", "real owner").unwrap();
-            for field in ["sandbox", "peers"] {
-                let object = doc.put_object(automerge::ROOT, field, kind).unwrap();
-                if kind == ObjType::List {
-                    doc.insert(&object, 0, "not a map row").unwrap();
-                } else {
-                    doc.splice_text(&object, 0, 0, "not a map row").unwrap();
-                }
-            }
-            let identities = doc
-                .put_object(automerge::ROOT, "peer_identities_v1", ObjType::Map)
-                .unwrap();
-            doc.put(
-                &identities,
-                "later valid row",
-                ScalarValue::Bytes(vec![7, 8, 9]),
-            )
-            .unwrap();
-            doc.commit();
-            let legacy = super::super::governance_of(Some(&doc));
-            assert!(legacy.peers.is_empty());
-            assert_eq!(
-                legacy.identities.get("later valid row"),
-                Some(&vec![7, 8, 9])
-            );
-            assert_eq!(compare_governance_entries(&doc), 2);
-        }
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn workspace_read_adapter_governance_reads_valid_fields_and_conflict_winners;
 
-    #[test]
-    fn workspace_read_adapter_governance_preserves_scalar_and_conflicting_container_winners() {
-        use automerge::transaction::Transactable;
-        let mut scalar = automerge::AutoCommit::new();
-        scalar.put(automerge::ROOT, "owner", "owner").unwrap();
-        for field in ["sandbox", "peers", "peer_identities_v1"] {
-            scalar.put(automerge::ROOT, field, 42_u64).unwrap();
+        phase workspace_read_adapter_governance_ignores_list_and_text_but_reads_later_valid_fields;
+        {
+            use automerge::transaction::Transactable;
+            for kind in [ObjType::List, ObjType::Text] {
+                let mut doc = automerge::AutoCommit::new();
+                doc.put(automerge::ROOT, "owner", "real owner").unwrap();
+                for field in ["sandbox", "peers"] {
+                    let object = doc.put_object(automerge::ROOT, field, kind).unwrap();
+                    if kind == ObjType::List {
+                        doc.insert(&object, 0, "not a map row").unwrap();
+                    } else {
+                        doc.splice_text(&object, 0, 0, "not a map row").unwrap();
+                    }
+                }
+                let identities = doc
+                    .put_object(automerge::ROOT, "peer_identities_v1", ObjType::Map)
+                    .unwrap();
+                doc.put(
+                    &identities,
+                    "later valid row",
+                    ScalarValue::Bytes(vec![7, 8, 9]),
+                )
+                .unwrap();
+                doc.commit();
+                let legacy = super::super::governance_of(Some(&doc));
+                assert!(legacy.peers.is_empty());
+                assert_eq!(
+                    legacy.identities.get("later valid row"),
+                    Some(&vec![7, 8, 9])
+                );
+                assert_eq!(compare_governance_entries(&doc), 2);
+            }
         }
-        scalar.commit();
-        assert_eq!(compare_governance_entries(&scalar), 1);
-        let mut valid = scalar.clone();
-        let capabilities = valid
-            .put_object(automerge::ROOT, "sandbox", ObjType::Map)
-            .unwrap();
-        valid
-            .put(&capabilities, "valid cap", ScalarValue::Bytes(vec![3, 4]))
-            .unwrap();
-        valid.commit();
-        assert_eq!(compare_governance_entries(&valid), 2);
-        for map_wins in [false, true] {
-            let mut map = scalar
-                .clone()
-                .with_actor(automerge::ActorId::from(vec![if map_wins { 3 } else { 1 }]));
-            let mut list = scalar.clone().with_actor(automerge::ActorId::from(vec![2]));
-            let capabilities = map
+
+        phase workspace_read_adapter_governance_preserves_scalar_and_conflicting_container_winners;
+        {
+            use automerge::transaction::Transactable;
+            let mut scalar = automerge::AutoCommit::new();
+            scalar.put(automerge::ROOT, "owner", "owner").unwrap();
+            for field in ["sandbox", "peers", "peer_identities_v1"] {
+                scalar.put(automerge::ROOT, field, 42_u64).unwrap();
+            }
+            scalar.commit();
+            assert_eq!(compare_governance_entries(&scalar), 1);
+            let mut valid = scalar.clone();
+            let capabilities = valid
                 .put_object(automerge::ROOT, "sandbox", ObjType::Map)
                 .unwrap();
-            map.put(&capabilities, "winning cap", ScalarValue::Bytes(vec![1, 2]))
+            valid
+                .put(&capabilities, "valid cap", ScalarValue::Bytes(vec![3, 4]))
                 .unwrap();
-            map.commit();
-            let malformed = list
-                .put_object(automerge::ROOT, "sandbox", ObjType::List)
-                .unwrap();
-            list.insert(&malformed, 0, "not a capability").unwrap();
-            list.commit();
-            map.merge_incoming(&mut list).unwrap();
-            assert_eq!(map.get_all(automerge::ROOT, "sandbox").unwrap().len(), 2);
-            assert_eq!(
-                map.get(automerge::ROOT, "sandbox").unwrap().unwrap().0,
-                Value::Object(if map_wins {
-                    ObjType::Map
-                } else {
-                    ObjType::List
-                })
-            );
-            assert_eq!(compare_governance_entries(&map), 1 + usize::from(map_wins));
+            valid.commit();
+            assert_eq!(compare_governance_entries(&valid), 2);
+            for map_wins in [false, true] {
+                let mut map = scalar
+                    .clone()
+                    .with_actor(automerge::ActorId::from(vec![if map_wins { 3 } else { 1 }]));
+                let mut list = scalar.clone().with_actor(automerge::ActorId::from(vec![2]));
+                let capabilities = map
+                    .put_object(automerge::ROOT, "sandbox", ObjType::Map)
+                    .unwrap();
+                map.put(&capabilities, "winning cap", ScalarValue::Bytes(vec![1, 2]))
+                    .unwrap();
+                map.commit();
+                let malformed = list
+                    .put_object(automerge::ROOT, "sandbox", ObjType::List)
+                    .unwrap();
+                list.insert(&malformed, 0, "not a capability").unwrap();
+                list.commit();
+                map.merge_incoming(&mut list).unwrap();
+                assert_eq!(map.get_all(automerge::ROOT, "sandbox").unwrap().len(), 2);
+                assert_eq!(
+                    map.get(automerge::ROOT, "sandbox").unwrap().unwrap().0,
+                    Value::Object(if map_wins {
+                        ObjType::Map
+                    } else {
+                        ObjType::List
+                    })
+                );
+                assert_eq!(compare_governance_entries(&map), 1 + usize::from(map_wins));
+            }
         }
     }
 }

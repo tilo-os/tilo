@@ -311,219 +311,224 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     assert!(restored.permissions(device, after).is_err());
 }
 
-#[test]
-fn admit_agent_refuses_a_bot_delegation() {
-    let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();
-    let workspace = governor.workspace_id().to_owned();
-    let person = SigningKey::from_bytes(&ROOT_SEED);
-    let (_, cert) = agent(&person, 8);
-    let bot = Delegation::sign(
-        &person,
-        cert.device_public_key,
-        tilo_workspace_join::delegation::Delegate::Bot {
-            installation: "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into(),
-        },
-        "Bridge",
-        [0; 3],
-        DelegateScope {
-            workspaces: vec![WorkspaceId::parse(&workspace).unwrap()],
-            apps: vec![],
-        },
-        ns(now - Duration::from_secs(1)),
-        ns(now + Duration::from_secs(10)),
-    )
-    .unwrap();
-    assert_eq!(
-        governor
-            .governance_mut()
-            .admit_agent(cert, bot, &authority, now),
-        Err("the delegation is not an agent's".into())
-    );
-}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn an_agent_is_admitted_and_withdrawn_only_as_an_agent;
 
-#[test]
-fn a_withdrawn_agent_is_dead_at_once_and_never_readmitted() {
-    let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();
-    // A device the workspace has no certificate for: not one of the owner's.
-    let other_device = SigningKey::from_bytes(&[0x5a; 32]);
-    let workspace = governor.workspace_id().to_owned();
-    let person = SigningKey::from_bytes(&ROOT_SEED);
-    let (key, cert) = agent(&person, 8);
-    let device = cert.device_public_key;
-    let granted = delegation(
-        &person,
-        device,
-        &workspace,
-        now - Duration::from_secs(1),
-        now + Duration::from_secs(3600),
-    );
-    governor
-        .governance_mut()
-        .admit_agent(cert.clone(), granted, &authority, now)
+    phase admit_agent_refuses_a_bot_delegation;
+    {
+        let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();
+        let workspace = governor.workspace_id().to_owned();
+        let person = SigningKey::from_bytes(&ROOT_SEED);
+        let (_, cert) = agent(&person, 8);
+        let bot = Delegation::sign(
+            &person,
+            cert.device_public_key,
+            tilo_workspace_join::delegation::Delegate::Bot {
+                installation: "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into(),
+            },
+            "Bridge",
+            [0; 3],
+            DelegateScope {
+                workspaces: vec![WorkspaceId::parse(&workspace).unwrap()],
+                apps: vec![],
+            },
+            ns(now - Duration::from_secs(1)),
+            ns(now + Duration::from_secs(10)),
+        )
         .unwrap();
-    let mut member = governor.clone();
-    let before = edit(&mut member, &key, now);
+        assert_eq!(
+            governor
+                .governance_mut()
+                .admit_agent(cert, bot, &authority, now),
+            Err("the delegation is not an agent's".into())
+        );
+    }
 
-    assert!(
-        governor
-            .governance_mut()
-            .withdraw_agent(device, &other_device, now)
-            .is_err()
-    );
-    let withdrawn = now + Duration::from_secs(5);
-    assert!(
-        governor
-            .governance_mut()
-            .withdraw_agent(device, &authority, withdrawn)
-            .unwrap()
-    );
-    assert!(
-        !governor
-            .governance_mut()
-            .withdraw_agent(device, &authority, withdrawn)
-            .unwrap()
-    );
-    assert!(matches!(
-        governor.permissions(device, withdrawn),
-        Err(MembershipError::Delegate(DelegateInactive::Withdrawn))
-    ));
-    assert!(
-        !governor
-            .governance()
-            .governed_access(withdrawn)
-            .unwrap()
-            .member_devices
-            .contains(&device)
-    );
-    let roster = governor.governance().governed_agents(withdrawn).unwrap();
-    assert_eq!(roster[0].withdrawn_at_ns, Some(ns(withdrawn)));
-    assert!(!roster[0].acting);
-    assert_eq!(
-        governor
-            .governance()
-            .governed_agent(&device)
-            .map(|(_, _, at)| at),
-        Some(Some(ns(withdrawn)))
-    );
-    // What it wrote before the withdrawal is still its own.
-    assert!(
-        governor
-            .receive_from(TransportOrigin::RelayDelta(device), before, now)
-            .unwrap()
-            .changed
-    );
-    let after = edit(&mut member, &key, withdrawn);
-    assert!(
-        governor
-            .receive_from(TransportOrigin::RelayDelta(device), after, withdrawn)
-            .is_err()
-    );
-
-    // Withdrawal is final: not even a newer delegation brings it back.
-    let renewed = delegation(
-        &person,
-        device,
-        &workspace,
-        withdrawn,
-        withdrawn + Duration::from_secs(3600),
-    );
-    assert!(
-        governor
-            .governance_mut()
-            .admit_agent(cert.clone(), renewed, &authority, withdrawn)
-            .unwrap_err()
-            .contains("withdrawn")
-    );
-    // Nor does admitting its certificate as an ordinary device.
-    assert!(
-        !governor
-            .admit_certificate(cert, &authority, withdrawn)
-            .unwrap()
-    );
-    assert!(governor.permissions(device, withdrawn).is_err());
-}
-
-#[test]
-fn members_and_agents_never_trade_places() {
-    let (mut governor, authority, _, member_cert, now) = crate::admission_tests::seeded();
-    let workspace = governor.workspace_id().to_owned();
-    let person = SigningKey::from_bytes(&ROOT_SEED);
-    let window = |device| {
-        delegation(
+    phase a_withdrawn_agent_is_dead_at_once_and_never_readmitted;
+    {
+        let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();
+        // A device the workspace has no certificate for: not one of the owner's.
+        let other_device = SigningKey::from_bytes(&[0x5a; 32]);
+        let workspace = governor.workspace_id().to_owned();
+        let person = SigningKey::from_bytes(&ROOT_SEED);
+        let (key, cert) = agent(&person, 8);
+        let device = cert.device_public_key;
+        let granted = delegation(
             &person,
             device,
             &workspace,
             now - Duration::from_secs(1),
-            now + Duration::from_secs(60),
-        )
-    };
-    // A person's ordinary device, admitted as one, never becomes an agent.
-    let (_, plain) = agent(&person, 12);
-    assert!(
-        governor
-            .admit_certificate(plain.clone(), &authority, now)
-            .unwrap()
-    );
-    assert!(
+            now + Duration::from_secs(3600),
+        );
         governor
             .governance_mut()
-            .admit_agent(
-                plain.clone(),
-                window(plain.device_public_key),
-                &authority,
-                now
-            )
-            .unwrap_err()
-            .contains("member, not an agent")
-    );
-    // Nor is a member withdrawn as an agent.
-    assert!(
-        governor
-            .governance_mut()
-            .withdraw_agent(member_cert.device_public_key, &authority, now)
-            .unwrap_err()
-            .contains("member, not an agent")
-    );
-    // Another certificate under a member's key is a conflict.
-    let mut as_agent = member_cert.clone();
-    as_agent.capabilities = no_capabilities();
-    sign_device_cert(&mut as_agent, &person).unwrap();
-    assert!(
-        governor
-            .governance_mut()
-            .admit_agent(
-                as_agent,
-                window(member_cert.device_public_key),
-                &authority,
-                now
-            )
-            .unwrap_err()
-            .contains("conflict")
-    );
-    assert_eq!(
-        governor.role(&member_cert.device_public_key, now).unwrap(),
-        collab_types::Role::Owner,
-        "the person's own device keeps its role"
-    );
-}
+            .admit_agent(cert.clone(), granted, &authority, now)
+            .unwrap();
+        let mut member = governor.clone();
+        let before = edit(&mut member, &key, now);
 
-#[test]
-fn identities_without_an_agent_keep_their_bytes() {
-    let (_, cert) = agent(&SigningKey::from_bytes(&ROOT_SEED), 8);
-    let identity = crate::state::GovernedIdentity {
-        device_cert: cert,
-        revocations: vec![],
-        admission: None,
-        admissions: vec![],
-        delegate: None,
-        workspace_delegations: vec![],
-    };
-    let bytes = identity.encode().unwrap();
-    let back = crate::state::GovernedIdentity::decode(&bytes).unwrap();
-    assert!(back.delegate.is_none());
-    assert_eq!(
-        back.encode().unwrap(),
-        bytes,
-        "an ordinary identity's governed bytes read and write back alike"
-    );
+        assert!(
+            governor
+                .governance_mut()
+                .withdraw_agent(device, &other_device, now)
+                .is_err()
+        );
+        let withdrawn = now + Duration::from_secs(5);
+        assert!(
+            governor
+                .governance_mut()
+                .withdraw_agent(device, &authority, withdrawn)
+                .unwrap()
+        );
+        assert!(
+            !governor
+                .governance_mut()
+                .withdraw_agent(device, &authority, withdrawn)
+                .unwrap()
+        );
+        assert!(matches!(
+            governor.permissions(device, withdrawn),
+            Err(MembershipError::Delegate(DelegateInactive::Withdrawn))
+        ));
+        assert!(
+            !governor
+                .governance()
+                .governed_access(withdrawn)
+                .unwrap()
+                .member_devices
+                .contains(&device)
+        );
+        let roster = governor.governance().governed_agents(withdrawn).unwrap();
+        assert_eq!(roster[0].withdrawn_at_ns, Some(ns(withdrawn)));
+        assert!(!roster[0].acting);
+        assert_eq!(
+            governor
+                .governance()
+                .governed_agent(&device)
+                .map(|(_, _, at)| at),
+            Some(Some(ns(withdrawn)))
+        );
+        // What it wrote before the withdrawal is still its own.
+        assert!(
+            governor
+                .receive_from(TransportOrigin::RelayDelta(device), before, now)
+                .unwrap()
+                .changed
+        );
+        let after = edit(&mut member, &key, withdrawn);
+        assert!(
+            governor
+                .receive_from(TransportOrigin::RelayDelta(device), after, withdrawn)
+                .is_err()
+        );
+
+        // Withdrawal is final: not even a newer delegation brings it back.
+        let renewed = delegation(
+            &person,
+            device,
+            &workspace,
+            withdrawn,
+            withdrawn + Duration::from_secs(3600),
+        );
+        assert!(
+            governor
+                .governance_mut()
+                .admit_agent(cert.clone(), renewed, &authority, withdrawn)
+                .unwrap_err()
+                .contains("withdrawn")
+        );
+        // Nor does admitting its certificate as an ordinary device.
+        assert!(
+            !governor
+                .admit_certificate(cert, &authority, withdrawn)
+                .unwrap()
+        );
+        assert!(governor.permissions(device, withdrawn).is_err());
+    }
+
+    phase members_and_agents_never_trade_places;
+    {
+        let (mut governor, authority, _, member_cert, now) = crate::admission_tests::seeded();
+        let workspace = governor.workspace_id().to_owned();
+        let person = SigningKey::from_bytes(&ROOT_SEED);
+        let window = |device| {
+            delegation(
+                &person,
+                device,
+                &workspace,
+                now - Duration::from_secs(1),
+                now + Duration::from_secs(60),
+            )
+        };
+        // A person's ordinary device, admitted as one, never becomes an agent.
+        let (_, plain) = agent(&person, 12);
+        assert!(
+            governor
+                .admit_certificate(plain.clone(), &authority, now)
+                .unwrap()
+        );
+        assert!(
+            governor
+                .governance_mut()
+                .admit_agent(
+                    plain.clone(),
+                    window(plain.device_public_key),
+                    &authority,
+                    now
+                )
+                .unwrap_err()
+                .contains("member, not an agent")
+        );
+        // Nor is a member withdrawn as an agent.
+        assert!(
+            governor
+                .governance_mut()
+                .withdraw_agent(member_cert.device_public_key, &authority, now)
+                .unwrap_err()
+                .contains("member, not an agent")
+        );
+        // Another certificate under a member's key is a conflict.
+        let mut as_agent = member_cert.clone();
+        as_agent.capabilities = no_capabilities();
+        sign_device_cert(&mut as_agent, &person).unwrap();
+        assert!(
+            governor
+                .governance_mut()
+                .admit_agent(
+                    as_agent,
+                    window(member_cert.device_public_key),
+                    &authority,
+                    now
+                )
+                .unwrap_err()
+                .contains("conflict")
+        );
+        assert_eq!(
+            governor.role(&member_cert.device_public_key, now).unwrap(),
+            collab_types::Role::Owner,
+            "the person's own device keeps its role"
+        );
+    }
+
+    phase identities_without_an_agent_keep_their_bytes;
+    {
+        let (_, cert) = agent(&SigningKey::from_bytes(&ROOT_SEED), 8);
+        let identity = crate::state::GovernedIdentity {
+            device_cert: cert,
+            revocations: vec![],
+            admission: None,
+            admissions: vec![],
+            delegate: None,
+            workspace_delegations: vec![],
+        };
+        let bytes = identity.encode().unwrap();
+        let back = crate::state::GovernedIdentity::decode(&bytes).unwrap();
+        assert!(back.delegate.is_none());
+        assert_eq!(
+            back.encode().unwrap(),
+            bytes,
+            "an ordinary identity's governed bytes read and write back alike"
+        );
+    }
 }

@@ -51,16 +51,157 @@ fn basis(doc: &AutoCommit, extra: &[RevocationEntry]) -> Result<[u8; 32], MediaP
     assert_eq!(super::decoded(&state, extra), basis);
     basis
 }
-#[test]
-fn media_basis_matches_original_signed_workspace() {
-    let (doc, _, _) = fixture();
-    let expected = historical_basis(&doc, &[]).unwrap();
-    assert_eq!(basis(&doc, &[]), Ok(expected));
-    assert_eq!(
-        super::super::parse(&doc),
-        Ok(None),
-        "a basis projection never initializes policy"
-    );
+tilo_test_env::scenario! {
+    fn media_basis_reads_the_signed_workspace_as_the_original_did;
+
+    phase media_basis_matches_original_signed_workspace;
+    {
+        let (doc, _, _) = fixture();
+        let expected = historical_basis(&doc, &[]).unwrap();
+        assert_eq!(basis(&doc, &[]), Ok(expected));
+        assert_eq!(
+            super::super::parse(&doc),
+            Ok(None),
+            "a basis projection never initializes policy"
+        );
+    }
+
+    phase media_basis_matches_original_malformed_container_conflict_and_certificate_rejections;
+    {
+        for mode in 0..6 {
+            let (mut doc, _, device) = fixture();
+            match mode {
+                0 => {
+                    doc.put(ROOT, "owner", "wrong key").unwrap();
+                }
+                1 => {
+                    doc.put_object(ROOT, "peers", ObjType::List).unwrap();
+                }
+                2 => {
+                    doc.put(ROOT, "peers", "wrong shape").unwrap();
+                }
+                3 => {
+                    let ids = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+                    doc.put(&ids, &device, ScalarValue::Bytes(vec![0xff]))
+                        .unwrap();
+                }
+                4 => {
+                    let mut fork = doc.fork();
+                    doc.put(ROOT, "owner", "first").unwrap();
+                    doc.commit();
+                    fork.put(ROOT, "owner", "second").unwrap();
+                    fork.commit();
+                    doc.merge_incoming(&mut fork).unwrap();
+                }
+                _ => {
+                    let ids = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+                    let bytes = super::super::strict_bytes(&doc, &ids, &device).unwrap();
+                    let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
+                    row.device_cert.signature[0] ^= 1;
+                    doc.put(&ids, &device, ScalarValue::Bytes(row.encode().unwrap()))
+                        .unwrap();
+                }
+            }
+            doc.commit();
+            let expected = historical_basis(&doc, &[]).unwrap_err();
+            assert_eq!(basis(&doc, &[]), Err(expected));
+        }
+    }
+
+    phase media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growth;
+    {
+        let (mut doc, root, device) = fixture();
+        let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+        let bytes = super::super::strict_bytes(&doc, &identities, &device).unwrap();
+        let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
+        row.device_cert.device_label = "escaped \" \\ \n".repeat(1024);
+        tilo_user_identity::sign_device_cert(&mut row.device_cert, &root).unwrap();
+        let proof = crate::state::RedemptionReceipt {
+            invite_id: [1; 32],
+            user_public_key: row.device_cert.user_public_key,
+            device_public_key: row.device_cert.device_public_key,
+            request_id: [2; 32],
+            role: crate::join::Role::Editor,
+        };
+        row.admission = Some(proof.clone());
+        row.admissions = vec![proof.clone(), proof];
+        for id in 1..=32 {
+            let mut entry = revocation(&root, u64::from(id));
+            entry.revoked_device_public_key = [id; 32];
+            tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+            row.revocations.push(entry);
+        }
+        doc.put(
+            &identities,
+            &device,
+            ScalarValue::Bytes(row.encode().unwrap()),
+        )
+        .unwrap();
+        doc.commit();
+        let expected = historical_basis(&doc, &[]).unwrap();
+        assert_eq!(basis(&doc, &[]), Ok(expected));
+        // Existing admission binding validation remains independent of byte budget.
+        row.admissions[0].user_public_key = [7; 32];
+        doc.put(
+            &identities,
+            &device,
+            ScalarValue::Bytes(row.encode().unwrap()),
+        )
+        .unwrap();
+        doc.commit();
+        assert_eq!(historical_basis(&doc, &[]), Err(MediaPolicyError::Binding));
+        assert_eq!(basis(&doc, &[]), Err(MediaPolicyError::Binding));
+    }
+
+    phase media_basis_refuses_a_revocation_from_another_root;
+    {
+        let (doc, _, _) = fixture();
+        let foreign = SigningKey::from_bytes(&[44; 32]);
+        let extra = revocation(&foreign, 1);
+        assert_eq!(
+            historical_basis(&doc, std::slice::from_ref(&extra)),
+            Err(MediaPolicyError::Binding)
+        );
+        assert_eq!(basis(&doc, &[extra]), Err(MediaPolicyError::Binding));
+    }
+
+    phase media_basis_hashes_the_delegation_an_older_row_carries;
+    // A row a build before the owner-root layout wrote carries a workspace
+    // delegation. It is what the row's bytes held, and the media authorization
+    // basis computed over them is a digest a stored policy still names, so the
+    // projection hashes it in the place it always held: a workspace that held
+    // one opens.
+    {
+        use crate::state::WorkspaceDelegation;
+        let (mut doc, root, device) = fixture();
+        let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+        let bytes = super::super::strict_bytes(&doc, &identities, &device).unwrap();
+        let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
+        row.workspace_delegations = vec![WorkspaceDelegation {
+            version: 1,
+            workspace: "0f0e0d0c-0b0a-4908-8706-050403020100".into(),
+            workspace_id: 7,
+            authority_device_public_key: row.device_cert.device_public_key,
+            delegate: row.device_cert.clone(),
+            permissions: crate::state::WorkspaceDelegationPermissions {
+                issue_invitations: true,
+                admit_invited_members: true,
+            },
+            nonce: [3; 16],
+            expires_at_ns: None,
+            signature: [0; 64],
+        }];
+        doc.put(
+            &identities,
+            &device,
+            ScalarValue::Bytes(row.encode().unwrap()),
+        )
+        .unwrap();
+        doc.commit();
+        let expected = historical_basis(&doc, &[]).unwrap();
+        assert_eq!(basis(&doc, &[]), Ok(expected));
+        let _ = root;
+    }
 }
 #[test]
 fn media_basis_preserves_verified_earliest_revocation_and_canonical_tie_order() {
@@ -90,103 +231,6 @@ fn media_basis_preserves_verified_earliest_revocation_and_canonical_tie_order() 
     let mut invalid = revocation(&root, 1);
     invalid.signature[0] ^= 1;
     assert_eq!(basis(&doc, &[invalid]), Err(MediaPolicyError::Binding));
-}
-#[test]
-fn media_basis_matches_original_malformed_container_conflict_and_certificate_rejections() {
-    for mode in 0..6 {
-        let (mut doc, _, device) = fixture();
-        match mode {
-            0 => {
-                doc.put(ROOT, "owner", "wrong key").unwrap();
-            }
-            1 => {
-                doc.put_object(ROOT, "peers", ObjType::List).unwrap();
-            }
-            2 => {
-                doc.put(ROOT, "peers", "wrong shape").unwrap();
-            }
-            3 => {
-                let ids = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-                doc.put(&ids, &device, ScalarValue::Bytes(vec![0xff]))
-                    .unwrap();
-            }
-            4 => {
-                let mut fork = doc.fork();
-                doc.put(ROOT, "owner", "first").unwrap();
-                doc.commit();
-                fork.put(ROOT, "owner", "second").unwrap();
-                fork.commit();
-                doc.merge_incoming(&mut fork).unwrap();
-            }
-            _ => {
-                let ids = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-                let bytes = super::super::strict_bytes(&doc, &ids, &device).unwrap();
-                let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
-                row.device_cert.signature[0] ^= 1;
-                doc.put(&ids, &device, ScalarValue::Bytes(row.encode().unwrap()))
-                    .unwrap();
-            }
-        }
-        doc.commit();
-        let expected = historical_basis(&doc, &[]).unwrap_err();
-        assert_eq!(basis(&doc, &[]), Err(expected));
-    }
-}
-#[test]
-fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growth() {
-    let (mut doc, root, device) = fixture();
-    let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    let bytes = super::super::strict_bytes(&doc, &identities, &device).unwrap();
-    let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
-    row.device_cert.device_label = "escaped \" \\ \n".repeat(1024);
-    tilo_user_identity::sign_device_cert(&mut row.device_cert, &root).unwrap();
-    let proof = crate::state::RedemptionReceipt {
-        invite_id: [1; 32],
-        user_public_key: row.device_cert.user_public_key,
-        device_public_key: row.device_cert.device_public_key,
-        request_id: [2; 32],
-        role: crate::join::Role::Editor,
-    };
-    row.admission = Some(proof.clone());
-    row.admissions = vec![proof.clone(), proof];
-    for id in 1..=32 {
-        let mut entry = revocation(&root, u64::from(id));
-        entry.revoked_device_public_key = [id; 32];
-        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
-        row.revocations.push(entry);
-    }
-    doc.put(
-        &identities,
-        &device,
-        ScalarValue::Bytes(row.encode().unwrap()),
-    )
-    .unwrap();
-    doc.commit();
-    let expected = historical_basis(&doc, &[]).unwrap();
-    assert_eq!(basis(&doc, &[]), Ok(expected));
-    // Existing admission binding validation remains independent of byte budget.
-    row.admissions[0].user_public_key = [7; 32];
-    doc.put(
-        &identities,
-        &device,
-        ScalarValue::Bytes(row.encode().unwrap()),
-    )
-    .unwrap();
-    doc.commit();
-    assert_eq!(historical_basis(&doc, &[]), Err(MediaPolicyError::Binding));
-    assert_eq!(basis(&doc, &[]), Err(MediaPolicyError::Binding));
-}
-
-#[test]
-fn media_basis_refuses_a_revocation_from_another_root() {
-    let (doc, _, _) = fixture();
-    let foreign = SigningKey::from_bytes(&[44; 32]);
-    let extra = revocation(&foreign, 1);
-    assert_eq!(
-        historical_basis(&doc, std::slice::from_ref(&extra)),
-        Err(MediaPolicyError::Binding)
-    );
-    assert_eq!(basis(&doc, &[extra]), Err(MediaPolicyError::Binding));
 }
 
 // Frozen original algorithm is the independent byte/error oracle.
@@ -297,42 +341,4 @@ fn historical_basis(
     hasher.update(b"tilo-workspace-media-auth-basis-v1\0");
     hasher.update(&bytes);
     Ok(*hasher.finalize().as_bytes())
-}
-
-/// A row a build before the owner-root layout wrote carries a workspace
-/// delegation. It is what the row's bytes held, and the media authorization
-/// basis computed over them is a digest a stored policy still names, so the
-/// projection hashes it in the place it always held: a workspace that held
-/// one opens.
-#[test]
-fn media_basis_hashes_the_delegation_an_older_row_carries() {
-    use crate::state::WorkspaceDelegation;
-    let (mut doc, root, device) = fixture();
-    let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    let bytes = super::super::strict_bytes(&doc, &identities, &device).unwrap();
-    let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
-    row.workspace_delegations = vec![WorkspaceDelegation {
-        version: 1,
-        workspace: "0f0e0d0c-0b0a-4908-8706-050403020100".into(),
-        workspace_id: 7,
-        authority_device_public_key: row.device_cert.device_public_key,
-        delegate: row.device_cert.clone(),
-        permissions: crate::state::WorkspaceDelegationPermissions {
-            issue_invitations: true,
-            admit_invited_members: true,
-        },
-        nonce: [3; 16],
-        expires_at_ns: None,
-        signature: [0; 64],
-    }];
-    doc.put(
-        &identities,
-        &device,
-        ScalarValue::Bytes(row.encode().unwrap()),
-    )
-    .unwrap();
-    doc.commit();
-    let expected = historical_basis(&doc, &[]).unwrap();
-    assert_eq!(basis(&doc, &[]), Ok(expected));
-    let _ = root;
 }
