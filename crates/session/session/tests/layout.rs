@@ -54,49 +54,63 @@ impl Seat {
         Self { state, salt }
     }
 
+    /// The device of `home` with `tree` left as the layout its session ended with
+    /// ([`save_layout`]), and the ids that layout gave `tree`'s workspaces. The salt is read from
+    /// the session that leaves the layout: a device's salt is its key's, so every session of the
+    /// seat numbers in the same one, and none is started only to ask it.
+    fn with_layout(home: &mut tilo_test_env::TestHome, tree: &Layout) -> (Self, Vec<WorkspaceId>) {
+        let state = crate::common::seat_in(home);
+        let (salt, workspace_ids) = save_layout(&state, tree);
+        (Self { state, salt }, workspace_ids)
+    }
+
     /// What this device numbers `n` as.
     fn id(&self, n: u64) -> u64 {
         tilo_desktop_model::compose_id(self.salt, n)
     }
 }
 
-/// `tree` with every strip, group and window numbered as `seat` numbers what it makes.
-fn salted(seat: &Seat, tree: &Layout) -> Layout {
+/// `tree` with every strip, group and window numbered as the device whose salt is `salt` numbers
+/// what it makes.
+fn salted(salt: u16, tree: &Layout) -> Layout {
+    let id = |n: u64| tilo_desktop_model::compose_id(salt, n);
     let mut tree = tree.clone();
     for strip in tree
         .workspaces
         .iter_mut()
         .flat_map(|workspace| &mut workspace.strips)
     {
-        strip.id = StripId(seat.id(strip.id.0));
+        strip.id = StripId(id(strip.id.0));
         for group in &mut strip.window_groups {
-            group.id = seat.id(group.id);
-            group.active_tab = seat.id(group.active_tab);
+            group.id = id(group.id);
+            group.active_tab = id(group.active_tab);
             for tab in &mut group.tabs {
-                tab.id = seat.id(tab.id);
+                tab.id = id(tab.id);
             }
         }
     }
     tree.active_strip = tree
         .active_strip
         .iter()
-        .map(|(workspace_id, strip)| (*workspace_id, StripId(seat.id(strip.0))))
+        .map(|(workspace_id, strip)| (*workspace_id, StripId(id(strip.0))))
         .collect();
     tree.active_group = tree
         .active_group
         .iter()
-        .map(|(strip, group)| (StripId(seat.id(strip.0)), seat.id(*group)))
+        .map(|(strip, group)| (StripId(id(strip.0)), id(*group)))
         .collect();
     tree
 }
 
-/// Leave `tree` as the layout a session on `seat` ends with, its ids numbered as `seat` numbers them
-/// ([`salted`]): the first of `tree`'s workspaces is the one the session opened, the others are
-/// put beside it, each is laid out as `tree` does, and a workspace's layout is written while it is
-/// in front. The ids the layout gave `tree`'s workspaces, in order.
-fn save_layout(seat: &Seat, tree: &Layout) -> Vec<WorkspaceId> {
-    let tree = salted(seat, tree);
-    let mut session = session_keeping(&seat.state, None);
+/// Leave `tree` as the layout a session of the device keeping its state at `state` ends with, its
+/// ids numbered as that device numbers them ([`salted`]): the first of `tree`'s workspaces is the
+/// one the session opened, the others are put beside it, each is laid out as `tree` does, and a
+/// workspace's layout is written while it is in front. The device's salt, as that session reads
+/// it, and the ids the layout gave `tree`'s workspaces, in order.
+fn save_layout(state: &Path, tree: &Layout) -> (u16, Vec<WorkspaceId>) {
+    let mut session = session_keeping(state, None);
+    let salt = session.handle().read(|tree| tree.salt);
+    let tree = salted(salt, tree);
     session.step(Duration::from_millis(1)).expect("step");
     let mut layout = session.handle().read(Clone::clone);
     for laid in tree.workspaces.iter().skip(layout.workspaces.len()) {
@@ -144,7 +158,7 @@ fn save_layout(seat: &Seat, tree: &Layout) -> Vec<WorkspaceId> {
     layout.active = workspace_ids[front];
     session.handle().replace_tree(layout);
     session.step(Duration::from_millis(1)).expect("step");
-    workspace_ids
+    (salt, workspace_ids)
 }
 
 /// Run frames until the layout shows the windows its workspaces' layouts hold.
@@ -380,8 +394,7 @@ fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
 fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
-    let seat = Seat::in_home(&mut home);
-    let workspace_ids = save_layout(&seat, &wide_shell());
+    let (seat, workspace_ids) = Seat::with_layout(&mut home, &wide_shell());
 
     // Nothing is asked of any app: this is the shape of the layout coming back.
     let mut session = session_keeping(&seat.state, None);
@@ -433,9 +446,8 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
 fn a_restart_brings_back_the_shell_the_session_kept() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
-    let seat = Seat::in_home(&mut home);
+    let (seat, _) = Seat::with_layout(&mut home, &wide_shell());
     let state = seat.state.clone();
-    save_layout(&seat, &wide_shell());
 
     let kept = {
         let mut session = session_keeping(&state, None);
@@ -470,8 +482,7 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
-    let seat = Seat::in_home(&mut home);
-    save_layout(&seat, &one_window(PROBE, "Probe"));
+    let (seat, _) = Seat::with_layout(&mut home, &one_window(PROBE, "Probe"));
 
     let mut session = session_keeping(
         &seat.state,
@@ -532,8 +543,7 @@ fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
         ),
     )
     .unwrap();
-    let seat = Seat::in_home(&mut home);
-    save_layout(&seat, &one_window(PROBE, "Probe"));
+    let (seat, _) = Seat::with_layout(&mut home, &one_window(PROBE, "Probe"));
 
     let mut session = session_keeping(
         &seat.state,
@@ -706,9 +716,8 @@ fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
-    let seat = Seat::in_home(&mut home);
+    let (seat, _) = Seat::with_layout(&mut home, &one_window(PROBE, "Probe"));
     let state = seat.state.clone();
-    save_layout(&seat, &one_window(PROBE, "Probe"));
 
     // The session starts on the shell, and the person — or an action reaching the app from somewhere
     // else — opens it before the restore has asked for its saved window: that launch starts the
@@ -757,9 +766,8 @@ fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
-    let seat = Seat::in_home(&mut home);
+    let (seat, _) = Seat::with_layout(&mut home, &one_window(PROBE, "Probe"));
     let state = seat.state.clone();
-    save_layout(&seat, &one_window(PROBE, "Probe"));
 
     // The restore asks for the saved window first, and the same app is asked for again while its
     // window is coming: a record names the process that already has the app's records, so no second
@@ -804,7 +812,7 @@ fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let seat = Seat::in_home(&mut home);
-    save_layout(&seat, &one_window(GONE, "Gone"));
+    save_layout(&seat.state, &one_window(GONE, "Gone"));
 
     let mut session = session_keeping(&seat.state, Some(apps_at(&home, None)));
     until(&mut session, "the tab says why it is empty", |session| {
@@ -913,9 +921,8 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
     let arguments = home.home().join("arguments");
     installed_probe_package(&mut home);
     let launcher = recording_launcher(&home, &started, &arguments);
-    let seat = Seat::in_home(&mut home);
+    let (seat, workspace_ids) = Seat::with_layout(&mut home, &two_workspaces());
     let state = seat.state.clone();
-    let workspace_ids = save_layout(&seat, &two_workspaces());
 
     let apps = apps_at(&home, Some(launcher.path().to_owned()));
     let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
