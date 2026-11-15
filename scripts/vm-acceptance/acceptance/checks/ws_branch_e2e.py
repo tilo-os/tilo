@@ -513,6 +513,14 @@ def set_up(ctx, res):
     # Chat again, so the shell keeps Notes and Terminal.
     chat = f"Chat line {run}"
     problems = Problems()
+    # No drawing thread crashed since the machine started (Mesa's device-select layer, at the
+    # session's start on a machine without 3D): told first, with the processes they were.
+    crashed = ctx.vm.root_exec("journalctl -k -b --no-pager 2>/dev/null "
+                               "| grep -a 'native-render-p.*segfault' | sort -u | tail -n 6", timeout=60,
+                               check=False).strip()
+    problems.want(not crashed, f"drawing threads crashed since the machine started: {crashed[-1200:]}; "
+                               f"their processes: {crashed_processes(ctx)}")
+    watch_chat(ctx)
     try:
         post_chat(ctx, ws, chat)
         heard = wait_until(lambda: (h if (h := chat_says(ctx, ws, chat, "source"))["read"] or h["listed"]
@@ -594,12 +602,6 @@ fi
         problems.want(bool(members["owner"]), f"{ws['name']} has no owner: {members}")
     except CheckFailed as exc:
         problems.append(str(exc))
-    # No app's drawing thread crashed since the session started (Mesa's device-select layer, at
-    # a session's start on a machine without 3D).
-    crashed = ctx.vm.root_exec("journalctl -k -b --no-pager 2>/dev/null "
-                               "| grep -a 'native-render-p.*segfault' | tail -n 6", timeout=60, check=False).strip()
-    problems.want(not crashed, f"drawing threads crashed since the machine started: {crashed[-1500:]}; "
-                               f"their processes: {crashed_threads(ctx)}")
     problems.judge()
 
 
@@ -654,6 +656,26 @@ def branch_said(ctx, name: str, workspace: str) -> dict:
         except VmError:
             toasts = []
         shown += [json.dumps(t)[:1500] for t in toasts if name in json.dumps(t)][-3:]
+        # Anywhere in the desk's state: the notice's body, one missing part a line.
+        try:
+            state = ctx.state()
+        except VmError:
+            state = {}
+        said = re.compile(r"did not reach|did not come|keys did not| of so\.tilo\.|the Terminal environments|"
+                          r"the workspace's files|what the apps keep|could not found")
+        found: list[str] = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+            elif isinstance(node, str) and said.search(node) and node not in found:
+                found.append(node[:600])
+        walk(state)
+        shown += found[:10]
         # The notice's body lists what did not come along, one part a line ("<record> of <app>:
         # <why>", "… did not reach this device"), where the shell shows it.
         shown += sorted({str(t.get("name")) for t in ctx.vm.targets()
@@ -962,6 +984,62 @@ def crashed_threads(ctx) -> str:
         "| head -n 12", timeout=60, check=False)
 
 
+# The processes the kernel's crashed drawing threads were, from the boot's journal: the thread id
+# it names is a little above its process's id, so the journal's entries of the processes started
+# just before it say which app, unit and command each was.
+CRASHED_PROCESSES = r"""
+import json, re, subprocess
+kernel = subprocess.run(["journalctl", "-k", "-b", "--no-pager"], capture_output=True, text=True).stdout
+tids = sorted({int(t) for t in re.findall(r"native-render-p\[(\d+)\]: segfault", kernel)})
+if not tids:
+    print("none")
+    raise SystemExit
+entries = subprocess.run(["journalctl", "-b", "-o", "json", "--no-pager", "--output-fields",
+                          "_PID,_COMM,_CMDLINE,_SYSTEMD_UNIT,_SYSTEMD_USER_UNIT,SYSLOG_IDENTIFIER"],
+                         capture_output=True, text=True).stdout.splitlines()
+seen = {}
+for line in entries:
+    try:
+        e = json.loads(line)
+        pid = int(e.get("_PID", 0))
+    except (ValueError, TypeError):
+        continue
+    seen.setdefault(pid, e)
+for tid in tids:
+    near = [(pid, e) for pid, e in seen.items() if tid - 60 <= pid <= tid]
+    told = "; ".join(f"{pid} {e.get('_COMM') or e.get('SYSLOG_IDENTIFIER')} "
+                     f"{e.get('_SYSTEMD_USER_UNIT') or e.get('_SYSTEMD_UNIT')} "
+                     f"{str(e.get('_CMDLINE', ''))[:160]}" for pid, e in sorted(near)[-3:])
+    print(f"thread {tid}: {told or 'no process of the journal near it'}")
+"""
+
+
+def crashed_processes(ctx) -> str:
+    """Which processes the drawing threads that crashed since boot were."""
+    return ctx.vm.root_exec("python3 -I - <<'PY'\n" + CRASHED_PROCESSES + "\nPY", timeout=180,
+                            check=False).strip()[-1500:]
+
+
+CHAT_PS = "/var/tmp/e2e-chat-processes.log"
+
+
+def watch_chat(ctx) -> None:
+    """For the next three minutes, note every process whose command names Chat, with its parent,
+    age and state, every 0.3 s: what starts for Chat and when it goes."""
+    ctx.vm.root_exec(
+        "setsid nohup sh -c 'end=$(( $(date +%s) + 180 )); while [ $(date +%s) -lt $end ]; do "
+        "ps -eo pid=,ppid=,etimes=,stat=,args= 2>/dev/null | grep -a so.tilo.chat | grep -av grep "
+        f"| sed \"s/^/$(date +%T) /\" >> {CHAT_PS}; sleep 0.3; done' </dev/null >/dev/null 2>&1 &",
+        timeout=30, check=False)
+
+
+def chat_processes(ctx) -> str:
+    """What [`watch_chat`] saw, each process once with when it was first and last seen."""
+    return ctx.vm.root_exec(
+        f"awk '{{k=$2\" \"$3; if(!(k in a)) a[k]=$1; b[k]=$1; c[k]=$0}} END {{for (k in c) print a[k], \"-\", "
+        f"b[k], substr(c[k], 10, 300)}}' {CHAT_PS} 2>/dev/null | sort | head -n 30", timeout=60, check=False)
+
+
 def debug_dropin(ctx) -> str:
     """The slot session's own drop-in this check writes, beside tilo-vmd's (an instance drop-in,
     as e2e-branch writes its log level, which tilo-vmd leaves in place)."""
@@ -984,15 +1062,14 @@ def keep_debug_output(ctx) -> str:
 
 
 def session_said(ctx, pattern: str, lines: int = 40, since: int = 0) -> str:
-    """What the slot session logged that matches `pattern`: its lines are in the slot user's
-    journal (read across the machine-id change a fresh box makes, `-m`)."""
-    when = f"--since @{since} " if since else ""
+    """What the slot session logged lately that matches `pattern`: its lines are in the slot user's
+    journal. Read over the last 20 minutes (or since `since`), which keeps the read quick on a
+    journal a long session filled."""
+    when = f"--since @{since} " if since else "--since -20min "
     return ctx.vm.exec(
         f"journalctl --user -m {when}--no-pager -o short-iso 2>/dev/null "
         "| sed 's/\\x1b\\[[0-9;]*m//g' | grep -av 'FRAME-LIFECYCLE\\|paint-stats\\|HEAP-MILESTONE' "
-        f"| grep -aiE {shlex.quote(pattern)} | tail -n {lines} | cut -c1-400", timeout=120, check=False)
-
-
+        f"| grep -aiE {shlex.quote(pattern)} | tail -n {lines} | cut -c1-400", timeout=180, check=False)
 
 
 def chat_evidence(ctx, since: int) -> str:
@@ -1014,6 +1091,7 @@ def chat_evidence(ctx, since: int) -> str:
         part("the session of Chat's launches", session_said(
             ctx, "so.tilo.chat|launch was refused|launch did not start|an app stopped|an app closed", 25, since),
             2500),
+        part("Chat's processes as they came and went", chat_processes(ctx), 2500),
         part("core dumps", ctx.vm.root_exec("coredumpctl --no-pager list 2>&1 | tail -n 5", timeout=60,
                                             check=False), 600),
     ])
