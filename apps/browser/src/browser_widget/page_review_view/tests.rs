@@ -513,7 +513,9 @@ fn a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page() 
         "the review reads the page again by itself, once"
     );
     // And not again until what it read then is as old.
-    let inside = super::REREAD_EVERY - ui::time::Duration::from_millis(1);
+    let inside = super::REREAD_EVERY
+        .checked_sub(ui::time::Duration::from_millis(1))
+        .expect("the wait is longer than a millisecond");
     frames_at(&mut app, read_at + inside);
     assert_eq!(
         field_reads(&engine),
