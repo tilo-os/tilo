@@ -163,21 +163,90 @@ fn certificate_dated_ahead(machine: &Machine, ahead: Duration) -> u64 {
     issued_at_ns
 }
 
-/// A certificate the clock reads as not yet valid leaves the identity intact: startup answers at
-/// once and hands the session the wait for the clock, which opens in front of the shell instead of
-/// the shell.
-#[test]
-fn a_certificate_the_clock_reads_as_not_yet_valid_waits_for_the_clock() {
-    let machine = machine();
-    let issued_at_ns = certificate_dated_ahead(&machine, Duration::from_secs(3));
-    assert!(tilo_clock::unix_now_ns() < issued_at_ns);
+tilo_test_env::scenario! {
+    fn startup_answers_for_an_identity_that_does_not_verify;
 
-    let identity = startup::identity();
-    let Identity::WaitForClock { refusal, .. } = &identity else {
-        panic!("startup does not wait for the clock: {identity:?}");
-    };
-    assert_eq!(refusal.reason, DeviceCertError::NotYetValid);
-    assert_eq!(refusal.valid_at_ns(), Some(issued_at_ns));
+    phase a_certificate_the_clock_reads_as_not_yet_valid_waits_for_the_clock;
+    // A certificate the clock reads as not yet valid leaves the identity intact: startup answers at
+    // once and hands the session the wait for the clock, which opens in front of the shell instead of
+    // the shell.
+    {
+        let machine = machine();
+        let issued_at_ns = certificate_dated_ahead(&machine, Duration::from_secs(3));
+        assert!(tilo_clock::unix_now_ns() < issued_at_ns);
+
+        let identity = startup::identity();
+        let Identity::WaitForClock { refusal, .. } = &identity else {
+            panic!("startup does not wait for the clock: {identity:?}");
+        };
+        assert_eq!(refusal.reason, DeviceCertError::NotYetValid);
+        assert_eq!(refusal.valid_at_ns(), Some(issued_at_ns));
+    }
+
+    phase a_chain_that_does_not_verify_opens_trusted_recovery_and_is_never_replaced;
+    {
+        let machine = machine();
+        let record_path = record();
+        let record_before = std::fs::read(&record_path).expect("the identity record");
+        // The markers this leaves in the environment are this test's alone.
+        let mut markers = tilo_test_env::ScopedEnv::new();
+        markers
+            .remove(IDENTITY_RECOVERY_ENV)
+            .remove(IdentityProblem::RECOVERY_ENV);
+        // A certificate whose signature does not hold: the record and every key are this person's, and
+        // the copy of the identity is what is damaged.
+        let mut cert =
+            persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate");
+        cert.signature[0] ^= 0xff;
+        persist::write_device_cert(&machine.paths.device_cert, &cert).expect("the damaged certificate");
+        let damaged = machine.certificate();
+
+        assert_eq!(
+            startup::identity(),
+            Identity::Recovery(IdentityProblem::ChainInvalid)
+        );
+        assert!(
+            std::env::var_os(IDENTITY_RECOVERY_ENV).is_some(),
+            "trusted recovery is what opens"
+        );
+        assert_eq!(
+            IdentityProblem::from_recovery_env(),
+            Some(IdentityProblem::ChainInvalid),
+            "recovery offers the step that repairs a damaged chain"
+        );
+        assert_eq!(
+            std::fs::read(&record_path).expect("the identity record"),
+            record_before,
+            "recovery replaced the identity record"
+        );
+        assert_eq!(
+            machine.certificate(),
+            damaged,
+            "recovery reissued the certificate instead of leaving it to its person"
+        );
+
+        drop(markers);
+        assert_eq!(IdentityProblem::from_recovery_env(), None);
+    }
+
+    phase a_record_that_does_not_even_parse_starts_setup_without_replacing_it;
+    {
+        let _machine = machine();
+        let record_path = record();
+        let damaged = b"{ not an identity".to_vec();
+        std::fs::write(&record_path, &damaged).expect("the damaged record");
+
+        assert_eq!(
+            startup::identity(),
+            Identity::Shell,
+            "setup validates what is there and asks its person, and is not what starts a session"
+        );
+        assert_eq!(
+            std::fs::read(&record_path).expect("the identity record"),
+            damaged,
+            "setup replaced the record it could not read"
+        );
+    }
 }
 
 /// The waiting screen stands in front of the shell while the clock is behind the certificate, says
@@ -246,71 +315,6 @@ fn the_wait_for_the_clock_shows_until_the_shell_can_open() {
         persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate"),
         before,
         "waiting for the clock replaced the certificate instead"
-    );
-}
-
-#[test]
-fn a_chain_that_does_not_verify_opens_trusted_recovery_and_is_never_replaced() {
-    let machine = machine();
-    let record_path = record();
-    let record_before = std::fs::read(&record_path).expect("the identity record");
-    // The markers this leaves in the environment are this test's alone.
-    let mut markers = tilo_test_env::ScopedEnv::new();
-    markers
-        .remove(IDENTITY_RECOVERY_ENV)
-        .remove(IdentityProblem::RECOVERY_ENV);
-    // A certificate whose signature does not hold: the record and every key are this person's, and
-    // the copy of the identity is what is damaged.
-    let mut cert =
-        persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate");
-    cert.signature[0] ^= 0xff;
-    persist::write_device_cert(&machine.paths.device_cert, &cert).expect("the damaged certificate");
-    let damaged = machine.certificate();
-
-    assert_eq!(
-        startup::identity(),
-        Identity::Recovery(IdentityProblem::ChainInvalid)
-    );
-    assert!(
-        std::env::var_os(IDENTITY_RECOVERY_ENV).is_some(),
-        "trusted recovery is what opens"
-    );
-    assert_eq!(
-        IdentityProblem::from_recovery_env(),
-        Some(IdentityProblem::ChainInvalid),
-        "recovery offers the step that repairs a damaged chain"
-    );
-    assert_eq!(
-        std::fs::read(&record_path).expect("the identity record"),
-        record_before,
-        "recovery replaced the identity record"
-    );
-    assert_eq!(
-        machine.certificate(),
-        damaged,
-        "recovery reissued the certificate instead of leaving it to its person"
-    );
-
-    drop(markers);
-    assert_eq!(IdentityProblem::from_recovery_env(), None);
-}
-
-#[test]
-fn a_record_that_does_not_even_parse_starts_setup_without_replacing_it() {
-    let _machine = machine();
-    let record_path = record();
-    let damaged = b"{ not an identity".to_vec();
-    std::fs::write(&record_path, &damaged).expect("the damaged record");
-
-    assert_eq!(
-        startup::identity(),
-        Identity::Shell,
-        "setup validates what is there and asks its person, and is not what starts a session"
-    );
-    assert_eq!(
-        std::fs::read(&record_path).expect("the identity record"),
-        damaged,
-        "setup replaced the record it could not read"
     );
 }
 
@@ -411,80 +415,84 @@ fn run_session(machine: &Machine, flags: &[&str]) -> std::process::Output {
         .expect("the session binary runs")
 }
 
-#[test]
-fn the_session_binary_provisions_and_verifies_the_machines_identity() {
-    let machine = machine();
-    // The host package's installer and its tests start the session this way,
-    // so both commands have to answer on the new binary rather than the shell.
-    let provisioned = run_session(&machine, &["--host-desktop", "--provision-identity"]);
-    assert!(
-        provisioned.status.success(),
-        "provisioning failed: {}",
-        String::from_utf8_lossy(&provisioned.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&provisioned.stdout).contains("provisioned"),
-        "provisioning said: {}",
-        String::from_utf8_lossy(&provisioned.stdout)
-    );
-    let record_path = record();
-    assert!(record_path.is_file(), "provisioning wrote no record");
+tilo_test_env::scenario! {
+    fn the_session_binary_answers_its_identity_commands;
 
-    let verified = run_session(
-        &machine,
-        &["--host-desktop", "--verify-collaboration-identity"],
-    );
-    assert!(
-        verified.status.success(),
-        "verification failed: {}",
-        String::from_utf8_lossy(&verified.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&verified.stdout).trim(),
-        "Tilo collaboration identity verified"
-    );
+    phase the_session_binary_provisions_and_verifies_the_machines_identity;
+    {
+        let machine = machine();
+        // The host package's installer and its tests start the session this way,
+        // so both commands have to answer on the new binary rather than the shell.
+        let provisioned = run_session(&machine, &["--host-desktop", "--provision-identity"]);
+        assert!(
+            provisioned.status.success(),
+            "provisioning failed: {}",
+            String::from_utf8_lossy(&provisioned.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&provisioned.stdout).contains("provisioned"),
+            "provisioning said: {}",
+            String::from_utf8_lossy(&provisioned.stdout)
+        );
+        let record_path = record();
+        assert!(record_path.is_file(), "provisioning wrote no record");
 
-    // A second provisioning proves the identity that is there, and leaves it as it is: nobody is
-    // minted a second identity onto a used machine.
-    let record_before = std::fs::read(&record_path).expect("the identity record");
-    let certificate_before = machine.certificate();
-    let again = run_session(&machine, &["--host-desktop", "--provision-identity"]);
-    assert!(
-        again.status.success(),
-        "provisioning an established identity failed: {}",
-        String::from_utf8_lossy(&again.stderr)
-    );
-    assert_eq!(
-        std::fs::read(&record_path).expect("the identity record"),
-        record_before,
-        "a second provisioning replaced the identity record"
-    );
-    assert_eq!(
-        machine.certificate(),
-        certificate_before,
-        "a second provisioning replaced this device's certificate"
-    );
-}
+        let verified = run_session(
+            &machine,
+            &["--host-desktop", "--verify-collaboration-identity"],
+        );
+        assert!(
+            verified.status.success(),
+            "verification failed: {}",
+            String::from_utf8_lossy(&verified.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&verified.stdout).trim(),
+            "Tilo collaboration identity verified"
+        );
 
-#[test]
-fn the_session_binary_refuses_two_identity_commands_at_once() {
-    let machine = machine();
-    let both = run_session(
-        &machine,
-        &[
-            "--host-desktop",
-            "--provision-identity",
-            "--verify-collaboration-identity",
-        ],
-    );
-    assert_eq!(
-        both.status.code(),
-        Some(2),
-        "two identity commands at once are a usage error, not a run"
-    );
-    assert!(
-        String::from_utf8_lossy(&both.stderr).contains("mutually exclusive"),
-        "the refusal says what is wrong: {}",
-        String::from_utf8_lossy(&both.stderr)
-    );
+        // A second provisioning proves the identity that is there, and leaves it as it is: nobody is
+        // minted a second identity onto a used machine.
+        let record_before = std::fs::read(&record_path).expect("the identity record");
+        let certificate_before = machine.certificate();
+        let again = run_session(&machine, &["--host-desktop", "--provision-identity"]);
+        assert!(
+            again.status.success(),
+            "provisioning an established identity failed: {}",
+            String::from_utf8_lossy(&again.stderr)
+        );
+        assert_eq!(
+            std::fs::read(&record_path).expect("the identity record"),
+            record_before,
+            "a second provisioning replaced the identity record"
+        );
+        assert_eq!(
+            machine.certificate(),
+            certificate_before,
+            "a second provisioning replaced this device's certificate"
+        );
+    }
+
+    phase the_session_binary_refuses_two_identity_commands_at_once;
+    {
+        let machine = machine();
+        let both = run_session(
+            &machine,
+            &[
+                "--host-desktop",
+                "--provision-identity",
+                "--verify-collaboration-identity",
+            ],
+        );
+        assert_eq!(
+            both.status.code(),
+            Some(2),
+            "two identity commands at once are a usage error, not a run"
+        );
+        assert!(
+            String::from_utf8_lossy(&both.stderr).contains("mutually exclusive"),
+            "the refusal says what is wrong: {}",
+            String::from_utf8_lossy(&both.stderr)
+        );
+    }
 }

@@ -150,97 +150,101 @@ fn with_pack(window: &Window) -> Vec<(&str, &str)> {
     catalogues
 }
 
-#[test]
-fn every_surface_reads_the_same_on_a_german_and_an_english_device() {
-    for window in WINDOWS {
-        let german_device = resolved(window, &shipped_source(window), "de-DE");
-        let english_device = resolved(window, &shipped_source(window), "en-US");
-        for (key, english) in &english_device {
-            assert_eq!(
-                german_device.get(key),
-                Some(english),
-                "{} reads {key:?} differently on a German device: the window ships its source \
+tilo_test_env::scenario! {
+    fn a_window_speaks_the_language_of_its_own_catalogue;
+
+    phase every_surface_reads_the_same_on_a_german_and_an_english_device;
+    {
+        for window in WINDOWS {
+            let german_device = resolved(window, &shipped_source(window), "de-DE");
+            let english_device = resolved(window, &shipped_source(window), "en-US");
+            for (key, english) in &english_device {
+                assert_eq!(
+                    german_device.get(key),
+                    Some(english),
+                    "{} reads {key:?} differently on a German device: the window ships its source \
                  only, so this word comes from a catalogue it does not speak",
+                    window.name,
+                );
+            }
+        }
+    }
+
+    phase a_window_with_its_pack_installed_reads_its_language;
+    // A window that has the pack installed still reads German on a German device: the rule is the
+    // window's own language, not dropping translations.
+    {
+        for window in WINDOWS {
+            let Some(german) = window.german else {
+                continue;
+            };
+            let german_device = resolved(window, &with_pack(window), "de-DE");
+            let english_device = resolved(window, &shipped_source(window), "en-US");
+            let own = catalog::messages(window.source);
+            assert!(
+                own.keys()
+                    .any(|key| german_device[key] != english_device[key]),
+                "{} has {} and read English on a German device",
                 window.name,
+                german.0,
             );
         }
     }
-}
 
-/// A window that has the pack installed still reads German on a German device: the rule is the
-/// window's own language, not dropping translations.
-#[test]
-fn a_window_with_its_pack_installed_reads_its_language() {
-    for window in WINDOWS {
-        let Some(german) = window.german else {
-            continue;
-        };
-        let german_device = resolved(window, &with_pack(window), "de-DE");
-        let english_device = resolved(window, &shipped_source(window), "en-US");
-        let own = catalog::messages(window.source);
-        assert!(
-            own.keys()
-                .any(|key| german_device[key] != english_device[key]),
-            "{} has {} and read English on a German device",
-            window.name,
-            german.0,
+    phase a_seeded_packages_words_do_not_make_the_session_speak_its_language;
+    // A package the session reads for someone else says nothing about the language the session draws
+    // in: seeding a demo app that ships German (Notes does) leaves the session's own words — the
+    // toolkit's — English on a German device. The same words are the package's own when the process is
+    // that package's window, and then they are German.
+    {
+        let notes = WINDOWS
+            .iter()
+            .find(|window| window.name == "Notes")
+            .expect("Notes is one of the windows");
+        let (locale, german) = notes.german.expect("Notes ships German");
+        let seed = [(locale.to_owned(), german.to_owned())];
+        let session = WINDOWS
+            .iter()
+            .find(|window| window.name == "the session's menus and notices")
+            .expect("the session is one of the windows");
+        let show_all = || INDEX.t_args("search-show-all", &[("count", ArgValue::from(13))]);
+
+        I18nManager::install("en-US", "de-DE", &shipped_source(session)).expect("the session installs");
+        I18nManager::add_shared_resource(&seed[0].0, seed[0].1.clone());
+        assert_eq!(show_all(), "Show all 13");
+        assert_eq!(
+            ui::i18n::widget_text("block-editor-empty"),
+            "Write something…"
+        );
+
+        // The same package in a process that is its own window: its language is the window's.
+        I18nManager::install("en-US", "de-DE", &shipped_source(notes)).expect("Notes installs");
+        I18nManager::add_resource(&seed[0].0, seed[0].1.clone());
+        assert_eq!(show_all(), "Alle 13 zeigen");
+    }
+
+    phase toolkit_words_read_in_the_windows_language;
+    // The two strings a person read in German inside an English session, read where they were drawn.
+    {
+        let show_all = || INDEX.t_args("search-show-all", &[("count", ArgValue::from(13))]);
+        let window = WINDOWS
+            .iter()
+            .find(|window| window.name == "search")
+            .expect("search is one of the windows");
+
+        I18nManager::install("en-US", "de-DE", &shipped_source(window)).expect("search installs");
+        assert_eq!(show_all(), "Show all 13");
+        assert_eq!(
+            ui::i18n::widget_text("block-editor-empty"),
+            "Write something…"
+        );
+
+        // The same search window with its German pack installed reads German.
+        I18nManager::install("en-US", "de-DE", &with_pack(window)).expect("search installs in both");
+        assert_eq!(show_all(), "Alle 13 zeigen");
+        assert_eq!(
+            ui::i18n::widget_text("block-editor-empty"),
+            "Etwas schreiben…"
         );
     }
-}
-
-/// A package the session reads for someone else says nothing about the language the session draws
-/// in: seeding a demo app that ships German (Notes does) leaves the session's own words — the
-/// toolkit's — English on a German device. The same words are the package's own when the process is
-/// that package's window, and then they are German.
-#[test]
-fn a_seeded_packages_words_do_not_make_the_session_speak_its_language() {
-    let notes = WINDOWS
-        .iter()
-        .find(|window| window.name == "Notes")
-        .expect("Notes is one of the windows");
-    let (locale, german) = notes.german.expect("Notes ships German");
-    let seed = [(locale.to_owned(), german.to_owned())];
-    let session = WINDOWS
-        .iter()
-        .find(|window| window.name == "the session's menus and notices")
-        .expect("the session is one of the windows");
-    let show_all = || INDEX.t_args("search-show-all", &[("count", ArgValue::from(13))]);
-
-    I18nManager::install("en-US", "de-DE", &shipped_source(session)).expect("the session installs");
-    I18nManager::add_shared_resource(&seed[0].0, seed[0].1.clone());
-    assert_eq!(show_all(), "Show all 13");
-    assert_eq!(
-        ui::i18n::widget_text("block-editor-empty"),
-        "Write something…"
-    );
-
-    // The same package in a process that is its own window: its language is the window's.
-    I18nManager::install("en-US", "de-DE", &shipped_source(notes)).expect("Notes installs");
-    I18nManager::add_resource(&seed[0].0, seed[0].1.clone());
-    assert_eq!(show_all(), "Alle 13 zeigen");
-}
-
-/// The two strings a person read in German inside an English session, read where they were drawn.
-#[test]
-fn toolkit_words_read_in_the_windows_language() {
-    let show_all = || INDEX.t_args("search-show-all", &[("count", ArgValue::from(13))]);
-    let window = WINDOWS
-        .iter()
-        .find(|window| window.name == "search")
-        .expect("search is one of the windows");
-
-    I18nManager::install("en-US", "de-DE", &shipped_source(window)).expect("search installs");
-    assert_eq!(show_all(), "Show all 13");
-    assert_eq!(
-        ui::i18n::widget_text("block-editor-empty"),
-        "Write something…"
-    );
-
-    // The same search window with its German pack installed reads German.
-    I18nManager::install("en-US", "de-DE", &with_pack(window)).expect("search installs in both");
-    assert_eq!(show_all(), "Alle 13 zeigen");
-    assert_eq!(
-        ui::i18n::widget_text("block-editor-empty"),
-        "Etwas schreiben…"
-    );
 }
