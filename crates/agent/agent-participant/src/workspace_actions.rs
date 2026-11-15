@@ -63,6 +63,7 @@ mod ledger;
 mod link;
 mod listing;
 mod member;
+mod notes_folder;
 mod opened;
 mod opened_file;
 mod placed;
@@ -195,6 +196,9 @@ enum Job {
     Joined(WorkspaceId),
     /// A workspace was deleted: the service lets go of all it holds of it.
     Forget(WorkspaceId),
+    /// A workspace's notebook or folder took a write: its notes and their files in the
+    /// folder are brought into step ([`notes_folder`]).
+    NotesFolder(WorkspaceId),
 }
 
 impl Job {
@@ -212,6 +216,7 @@ impl Job {
             Self::Changes { .. } => "changes",
             Self::Joined(_) => "joined",
             Self::Forget(_) => "forget",
+            Self::NotesFolder(_) => "notes-folder",
         }
     }
 
@@ -225,7 +230,8 @@ impl Job {
             | Self::ContentLink { workspace_id, .. }
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
-            | Self::Arrived { workspace_id, .. } => Some(*workspace_id),
+            | Self::Arrived { workspace_id, .. }
+            | Self::NotesFolder(workspace_id) => Some(*workspace_id),
             Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
         }
     }
@@ -247,7 +253,8 @@ impl Job {
             | Self::ContentLink { .. }
             | Self::Arrived { .. }
             | Self::Joined(_)
-            | Self::Forget(_) => Keys::Joined,
+            | Self::Forget(_)
+            | Self::NotesFolder(_) => Keys::Joined,
         }
     }
 }
@@ -277,6 +284,8 @@ struct Shared {
     puts: tilo_actions::remote::HostedContentPuts,
     /// The answers people gave to invocations run for them.
     witnesses: bounded::Witnesses,
+    /// Workspaces whose notes and folder wait for a pass to bring them into step.
+    projecting: Mutex<HashSet<WorkspaceId>>,
 }
 
 /// The host's page actions over every record of its workspaces.
@@ -302,6 +311,7 @@ impl WorkspaceActions {
                 stores: Mutex::default(),
                 puts: tilo_actions::remote::HostedContentPuts::default(),
                 witnesses: bounded::Witnesses::default(),
+                projecting: Mutex::default(),
             }),
             catalogue,
         }
@@ -399,6 +409,29 @@ impl WorkspaceActions {
                 tracing::debug!(%error, workspace_id = %workspace_id, "workspace actions: a workspace was not joined ahead");
             }
         }
+    }
+
+    /// `workspace_id`'s notebook or folder took a write: bring its notes and their `.md`
+    /// files in the folder into step ([`notes_folder`]). Writes that arrive while a pass
+    /// waits to run are taken in by that pass.
+    pub fn notes_folder_written(&self, workspace_id: WorkspaceId) {
+        if !self.shared.projecting.lock_recover().insert(workspace_id) {
+            return;
+        }
+        self.join_ahead(workspace_id);
+        if let Some(jobs) = self.shared.jobs.lock_recover().as_ref()
+            && jobs
+                .send((Instant::now(), Job::NotesFolder(workspace_id)))
+                .is_err()
+        {
+            self.shared.projecting.lock_recover().remove(&workspace_id);
+        }
+    }
+
+    /// Whether a write to `app`'s record is one [`Self::notes_folder_written`] follows.
+    #[must_use]
+    pub fn follows_notes_folder(app: &str) -> bool {
+        app == notes_folder::NOTES_APP || app == tilo_fs::tree_record::FILES_APP
     }
 
     /// Whether `caller` started invocation `id` here.
@@ -1708,6 +1741,12 @@ impl Worker {
                     done,
                 } => done.complete(self.changes(workspace_id, &caller, after.as_deref())),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
+                Job::NotesFolder(workspace_id) => {
+                    self.shared.projecting.lock_recover().remove(&workspace_id);
+                    if let Err(error) = self.project_notes(workspace_id) {
+                        tracing::debug!(%workspace_id, %error, "workspace actions: the notes and their files were not brought into step");
+                    }
+                }
                 Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {
                     workspace_id,

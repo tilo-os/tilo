@@ -52,6 +52,7 @@ mod index_walk_tests;
 mod kernel_changes;
 mod leases;
 mod posix;
+mod projection;
 use changes::ChangeTrackedDoc;
 pub use changesets::ChangesetMark;
 pub use kernel_changes::KernelChanges;

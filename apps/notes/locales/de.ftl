@@ -238,6 +238,7 @@ notes-notebook-create-page = Notiz aus Markdown anlegen
 notes-notebook-import-markdown = Markdown importieren
 notes-notebook-import-markdown-files = Markdown-Dateien importieren
 notes-notebook-append-to-note = An Notiz anhängen
+notes-notebook-write-note = Notiz schreiben
 
 ## Wie die App in einem Fenster und im Starter heißt
 notes-app-title = Notizen
