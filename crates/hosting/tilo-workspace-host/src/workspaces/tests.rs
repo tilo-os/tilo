@@ -1994,7 +1994,7 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
 
 /// A device of the governor's person, certified as a member and admitted to
 /// `workspace`, and the id namespace it mints in.
-async fn admitted_member(
+pub(crate) async fn admitted_member(
     workspaces: &Workspaces,
     workspace: &str,
     key: &SigningKey,

@@ -390,6 +390,14 @@ pub enum WorkspacesRequest {
     /// Retired: a conversation is an ordinary record of the workspace. It
     /// keeps the requests after it at their encoded positions.
     RetiredPair {},
+    /// Rename `workspace` to `name` (1–80 characters) as the calling device's
+    /// person, for everyone in it and every list that names it: the
+    /// workspace's owner, or a moderator. Answered with the workspace, as it
+    /// is after the rename.
+    Rename {
+        workspace: String,
+        name: String,
+    },
 }
 
 /// The answer to a [`WorkspacesRequest`].

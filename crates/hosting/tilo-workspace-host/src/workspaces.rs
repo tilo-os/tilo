@@ -93,6 +93,8 @@ pub use device_keys::{
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub use sealed_records::fixtures as sealed_fixtures;
 mod desktop_record;
+#[cfg(test)]
+mod naming_tests;
 mod shares;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -741,6 +743,20 @@ impl GovernedWorkspace {
             self.record.outgoing.len() as u64,
         );
         Ok(generation)
+    }
+
+    /// Take the name the workspace's governance records as the record's, so a
+    /// listing names the workspace as every member's device does. Whether the
+    /// record changed.
+    fn adopt_governance_name(&mut self) -> bool {
+        let Some(name) = self.peer().governance().workspace_name() else {
+            return false;
+        };
+        if self.record.name == name {
+            return false;
+        }
+        self.record.name = name;
+        true
     }
 
     /// The people the workspace's governance admits, without the person whose
@@ -1487,13 +1503,33 @@ impl Workspaces {
     ///
     /// The workspace is not governed here, the name is not 1–80 characters, or
     /// the change could not be committed.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked from the rename until it is settled"
+    )]
     pub async fn rename(&self, workspace: &str, name: &str) -> Result<WorkspaceSummary, String> {
-        let name = valid_name(name)?;
         let state = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
+        let summary = self.rename_governed(&mut governed, name)?;
+        self.settle(&mut governed).await?;
+        Ok(summary)
+    }
+
+    /// [`Self::rename`] of `governed`, which the caller holds, without
+    /// settling it: the door answers with what the rename made.
+    ///
+    /// # Errors
+    ///
+    /// The name is not 1–80 characters, or the change could not be committed.
+    fn rename_governed(
+        &self,
+        governed: &mut GovernedWorkspace,
+        name: &str,
+    ) -> Result<WorkspaceSummary, String> {
+        let name = valid_name(name)?;
         if governed.record.name == name
             && governed.peer().governance().workspace_name().as_deref() == Some(name)
         {
@@ -1511,7 +1547,6 @@ impl Workspaces {
             governed.record.name = prior;
             return Err(error);
         }
-        self.settle(&mut governed).await?;
         Ok(governed.summary())
     }
 
@@ -2678,6 +2713,15 @@ impl Workspaces {
     /// published again by the next settle.
     async fn settle(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
         let host = &self.inner.host;
+        // The workspace's name is its governance's: a name another device of a
+        // member wrote is the workspace's name here too, so its list and every
+        // listing answer what every member's device reads. Kept in the record,
+        // which a listing answers from where the governance names nothing.
+        if workspace.adopt_governance_name()
+            && let Err(error) = workspace.persist()
+        {
+            tracing::warn!(workspace = %workspace.workspace(), %error, "the workspace's name from its governance was not kept");
+        }
         // A page's device certificate lasts an hour: the row it left goes with
         // it, so a workspace many people visit keeps no row per visit.
         if self.forget_expired_devices(workspace)? {

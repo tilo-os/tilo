@@ -1387,10 +1387,59 @@ impl BrowserShell {
                         resource,
                     });
                 }
+                // The person named the workspace in front: its host writes the
+                // name where every device and list of it reads it.
+                DesktopAsk::RenamedWorkspace { workspace, name } => {
+                    self.renamed_workspace(workspace, name);
+                }
                 DesktopAsk::Switcher(ask) => self.walk.ask(ask),
             }
         }
         changed
+    }
+
+    /// The person named `workspace` on this page: the name is the workspace's,
+    /// so the workspace's host writes it where every device and every list of
+    /// it reads it. A workspace this page does not show is this browser's own
+    /// record, and keeps the name the shell gave it.
+    fn renamed_workspace(&self, workspace: tilo_desktop_model::WorkspaceId, name: String) {
+        let shared = &self.chrome.shared;
+        let Some(peer) = shared.peer else {
+            return;
+        };
+        if workspace.to_string() != shared.workspace {
+            return;
+        }
+        let workspace = shared.workspace.clone();
+        let notifications = self.chrome.notifications.clone();
+        let woken = Arc::clone(&shared.woken);
+        let said = notifications.clone();
+        let asked = crate::replicated::host_then(
+            peer,
+            Box::new(
+                move |_| tilo_relay_protocol::workspaces::WorkspacesRequest::Rename {
+                    workspace,
+                    name,
+                },
+            ),
+            Box::new(move |answer| {
+                match answer {
+                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Refused(why))
+                    | Err(why) => {
+                        said.post(tilo_desktop_surface::notifications::Notification::new(
+                            why, "",
+                        ));
+                    }
+                    Ok(_) => {}
+                }
+                woken.store(true, std::sync::atomic::Ordering::Release);
+            }),
+        );
+        if let Err(error) = asked {
+            notifications.post(tilo_desktop_surface::notifications::Notification::new(
+                error, "",
+            ));
+        }
     }
 
     /// Tell the person why a fixed chord the shell left to the page did not

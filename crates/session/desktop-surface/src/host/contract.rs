@@ -134,6 +134,13 @@ pub enum DesktopAsk {
         workspace: WorkspaceId,
         name: String,
     },
+    /// The person renamed the workspace `workspace` to `name` on the shell: the name is the
+    /// workspace's, not this desk's, so the host writes it where the workspace keeps it and every
+    /// device and list of it reads it there.
+    RenamedWorkspace {
+        workspace: WorkspaceId,
+        name: String,
+    },
     /// The person asked to report a problem.
     ReportProblem,
     /// A desktop shortcut the layers have no part in (search, quick settings, locking, the

@@ -13,6 +13,7 @@ use tilo_desktop::desktop_host::{
 use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
 use tilo_desktop::overlays::{Anchor, Slot};
 use tilo_desktop::verbs::{CHROME_RESOURCE, SHELL_RESOURCE};
+use tilo_desktop_model::WorkspaceId;
 use tilo_sheets::power::PowerEffect;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
@@ -115,6 +116,12 @@ impl Shared {
                     workspace,
                     name,
                 } => self.branch_workspace(source, workspace, name),
+                // The person named the workspace in front: the name is the
+                // workspace's, written where its governance keeps it, so its
+                // other devices and every list of it read the same name.
+                DesktopAsk::RenamedWorkspace { workspace, name } => {
+                    self.renamed_workspace(workspace, name);
+                }
                 // A window that stopped answering offers to keep waiting for its app or to quit it:
                 // the same two choices the shell's own cards make, carried out where the compositor
                 // is.
@@ -971,5 +978,31 @@ impl Shared {
                 tracing::debug!(?action, "a fixed shortcut of the shell's found no window");
             }
         }
+    }
+}
+
+impl Shared {
+    /// The person named `workspace` on the shell: its name is the workspace's,
+    /// so it is written where its governance keeps it, as this device, and
+    /// every device and list of it reads it there. A workspace this session
+    /// holds no governance of keeps the name the shell gave it.
+    fn renamed_workspace(&self, workspace: WorkspaceId, name: String) {
+        let Some(engine) = self.engine.clone().filter(|engine| engine.holds(workspace)) else {
+            return;
+        };
+        let rename = async move {
+            crate::membership::Membership::of(&engine, workspace)
+                .rename(&name)
+                .await
+        };
+        let handle = self.handle.clone();
+        self.landings
+            .then(crate::landing::off_loop(rename), move |answer| {
+                if let Some(Err(refusal)) = answer {
+                    // The shell already shows the new name; the person hears
+                    // why the workspace did not take it.
+                    handle.acknowledge(refusal);
+                }
+            });
     }
 }

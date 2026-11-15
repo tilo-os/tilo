@@ -1085,6 +1085,20 @@ impl DesktopChrome {
         let made =
             apply_to_active_workspace(&mut tree, command, &mut || Ok(self.handle.mint_id()))?;
         self.handle.replace_tree(tree);
+        if let DesktopCommand::RenameWorkspace { name } = command {
+            // The workspace's name is the workspace's, which every device and list of it reads
+            // from its governance: the desk keeps it at once, and the host writes it there.
+            let workspace = self.handle.read(|tree| {
+                tree.active_workspace()
+                    .map(tilo_desktop_model::Workspace::id)
+            });
+            if let Some(workspace) = workspace {
+                self.ask(DesktopAsk::RenamedWorkspace {
+                    workspace,
+                    name: name.trim().to_owned(),
+                });
+            }
+        }
         Ok(made)
     }
 

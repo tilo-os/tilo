@@ -167,6 +167,35 @@ fn a_workspace_put_on_the_shell_in_the_background_leaves_the_person_where_they_a
     assert_eq!(front, arrived, "a person who joins a workspace lands in it");
 }
 
+/// Naming the workspace in front takes the name onto the desk and asks the
+/// host to write it where the workspace keeps it, so every other device and
+/// list of it names it the same.
+#[test]
+fn renaming_the_workspace_asks_the_host_to_keep_the_name() {
+    en();
+    let (mut chrome, handle) = chrome_over_a_shell();
+    let workspace = front_and_held(&handle).0;
+    let rename = ChromeEffect::Rename {
+        tab: None,
+        group: None,
+        strip: None,
+        workspace: Some(workspace.to_string()),
+        name: "Tilo".into(),
+    };
+    assert_eq!(chrome.perform(&rename), Ok(true));
+    assert_eq!(
+        handle.read(|tree| tree.active_workspace().map(|held| held.name.clone())),
+        Some("Tilo".to_owned())
+    );
+    assert_eq!(
+        chrome.take_asks(),
+        vec![DesktopAsk::RenamedWorkspace {
+            workspace,
+            name: "Tilo".into()
+        }]
+    );
+}
+
 /// A workspace that arrives on a shell showing none is the one the shell shows, in the background or
 /// not: there is nowhere else for the person to be.
 #[test]

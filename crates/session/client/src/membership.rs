@@ -12,7 +12,7 @@ use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 /// The workspaces a participant shows, as a workspace's governance writes into them: the ones it
 /// lists, and the policy each carries.
@@ -107,6 +107,21 @@ impl<'a> Membership<'a> {
         self.command(WorkspaceMembershipCommand::Member {
             change: change.clone(),
         })
+        .await
+    }
+
+    /// Name the workspace `name` as this device: the one name its governance
+    /// keeps, which every device and every list of it reads.
+    ///
+    /// # Errors
+    /// The workspace refused it — this device's person is neither its owner nor
+    /// a moderator — or this device could not publish it.
+    pub async fn rename(&self, name: &str) -> Result<(), String> {
+        self.command(WorkspaceMembershipCommand::Settings(
+            SettingsChange::Rename {
+                name: name.to_owned(),
+            },
+        ))
         .await
     }
 

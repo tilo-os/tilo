@@ -43,6 +43,10 @@ pub mod governance {
     pub const REVOKE: &str = "revoke";
     /// Change the workspace's settings.
     pub const SETTINGS: &str = "settings";
+    /// Rename the workspace. Its name is governance every list of it reads,
+    /// so the owner and the moderators decide it, as they decide whether it
+    /// exists: a name is what people find it by.
+    pub const RENAME: &str = "rename";
     /// Remove a member and keep them out until unbanned: a removal plus the
     /// `block:<person>` Deny.
     pub const BAN: &str = "ban";
@@ -83,7 +87,7 @@ pub mod governance {
     /// calls, and any member joins an active one.
     pub const CALL: &str = "call";
 
-    pub const ALL: [&str; 21] = [
+    pub const ALL: [&str; 22] = [
         INVITE,
         ADD_MEMBER,
         REMOVE_MEMBER,
@@ -95,6 +99,7 @@ pub mod governance {
         GRANT,
         REVOKE,
         SETTINGS,
+        RENAME,
         COMPACT,
         REDACT,
         INSTALL_BOT,
@@ -433,10 +438,10 @@ pub fn restriction_grant(
 }
 
 /// The governance a Moderator may exercise: the membership actions and
-/// restrictions, on members ranked below Moderator, and stopping or
-/// restarting a bot, so a misbehaving bot can be halted without the
-/// authority to widen it.
-pub const MODERATOR_GOVERNANCE: [&str; 7] = [
+/// restrictions, on members ranked below Moderator, stopping or restarting a
+/// bot, so a misbehaving bot can be halted without the authority to widen
+/// it, and naming the workspace, which is what people find it by.
+pub const MODERATOR_GOVERNANCE: [&str; 8] = [
     governance::REMOVE_MEMBER,
     governance::BAN,
     governance::UNBAN,
@@ -444,6 +449,7 @@ pub const MODERATOR_GOVERNANCE: [&str; 7] = [
     governance::UNRESTRICT,
     governance::PAUSE_BOT,
     governance::RESUME_BOT,
+    governance::RENAME,
 ];
 
 /// One rule of a preset: a grant without its grantee.
@@ -566,7 +572,7 @@ impl Preset {
 /// | Viewer | Read: Allow |
 /// | Commenter | Read: Allow; comments, reactions: Allow (Undoable) |
 /// | Editor | Read, Undoable: Allow; Outside: Ask; governance, moderation: Deny |
-/// | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`, `pause-bot`, `resume-bot`: Allow |
+/// | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`, `pause-bot`, `resume-bot`, `rename`: Allow |
 /// | Owner | everything: Allow |
 ///
 /// A Moderator's membership actions reach only members ranked below
