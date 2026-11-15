@@ -45,8 +45,6 @@ except AskPending as ask:
     print("waiting for the person at", ask.url)
     print("ask:", ask.invocation_id)
     # ask.wait() follows the approval until they decide, and answers the key.
-    key = ask.wait()
-    print("the key is", key.grant)
 ```
 
 ```typescript example=ask-for-key
