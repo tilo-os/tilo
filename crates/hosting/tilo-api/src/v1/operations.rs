@@ -137,6 +137,14 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Json("NewWorkspace"))
         .json(201, "Workspace"),
         op(
+            "branchWorkspace",
+            Method::POST,
+            "/v1/workspaces/{workspace}/branches",
+            "Branch a workspace of the person's own: a new one of theirs that starts as its copy and goes on apart",
+        )
+        .body(Body::Json("NewBranch"))
+        .json(201, "Workspace"),
+        op(
             "deleteWorkspace",
             Method::DELETE,
             "/v1/workspaces/{workspace}",

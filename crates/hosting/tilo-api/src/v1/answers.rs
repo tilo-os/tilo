@@ -101,6 +101,19 @@ pub struct NewWorkspace {
     pub labels: BTreeMap<String, String>,
 }
 
+/// A branch of a workspace: a new workspace of the person's own that starts
+/// with everything the source holds and goes on apart from it.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NewBranch {
+    pub name: String,
+    /// Labels for your programs to find it by, `customer_id` → `cus_8121`:
+    /// at most 16, each name 1 to 63 of a-z, 0-9, `_`, `-` and `.`, each value
+    /// 1 to 256 printable characters. Only keys of yours read them; nobody
+    /// invited in does.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
+}
+
 /// One resource an export could not read, and why.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Unread {
@@ -522,6 +535,7 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Workspace,
         WorkspaceList,
         NewWorkspace,
+        NewBranch,
         DeletedWorkspace,
         WorkspaceExport,
         KeyRow,

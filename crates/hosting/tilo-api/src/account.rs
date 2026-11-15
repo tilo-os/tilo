@@ -5,7 +5,7 @@
 //! It is addressed like any resource, by path, through the same tools:
 //!
 //! - `account/workspaces#list {labels?}`, `#create {name, labels?, host?}`,
-//!   `#delete {workspace}`;
+//!   `#branch {workspace, name, labels?, id?}`, `#delete {workspace}`;
 //! - `account/keys#list`, `#create {name, workspace?, expires_in?}`,
 //!   `#mint {workspace, name?, expires_in?}`, `#revoke {grant}`.
 //!
@@ -21,7 +21,11 @@
 //! once they approve. Deleting a workspace is the relay's own operation too:
 //! final, it takes everything the host keeps of it, tells whoever is in it,
 //! and revokes every key that reached only it. The call is the confirmation:
-//! nothing asks the person again, as revoking a key asks nothing.
+//! nothing asks the person again, as revoking a key asks nothing. Branching a
+//! workspace of the person's own is the relay's own operation as well: a new
+//! workspace of theirs that starts with everything the source holds but what
+//! is tied to other people, and goes on apart from it; the call answers once
+//! it holds all of it.
 //!
 //! Answers are the agent surface's text (`ok …`, `failed: …`,
 //! `pending <id>: …`), or, for a caller that asks for typed answers, the
@@ -199,7 +203,7 @@ const fn param(name: &'static str, required: bool, ty: &'static str) -> Param {
 }
 
 /// The account's actions: (resource, action, label, kind, parameters).
-const ACTIONS: [(&str, &str, &str, &str, &[Param]); 7] = [
+const ACTIONS: [(&str, &str, &str, &str, &[Param]); 8] = [
     (
         "workspaces",
         "list",
@@ -216,6 +220,18 @@ const ACTIONS: [(&str, &str, &str, &str, &[Param]); 7] = [
             param("name", true, "Text"),
             param("labels", false, "Object"),
             param("host", false, "Text"),
+        ],
+    ),
+    (
+        "workspaces",
+        "branch",
+        "Branch a workspace of yours: a new one of yours that starts as its copy and goes on apart",
+        "outside",
+        &[
+            param("workspace", true, "Text"),
+            param("name", true, "Text"),
+            param("labels", false, "Object"),
+            param("id", false, "Text"),
         ],
     ),
     (
@@ -553,6 +569,7 @@ impl Server {
                 Err(refused) => refused,
             },
             "account/workspaces#create" => self.create_workspace(key, args).await,
+            "account/workspaces#branch" => self.branch_workspace(grant, key, args).await,
             "account/workspaces#delete" => {
                 let Some(workspace) = field("workspace") else {
                     return failed(
@@ -655,6 +672,51 @@ impl Server {
         };
         match self.relay.create(key, name, &labels, id).await {
             Ok(created) => Outcome::Ok(json!({"workspace": created})),
+            Err(error) => refused(&error),
+        }
+    }
+
+    /// Branch the workspace `args` names (`workspace`, one of the person's own)
+    /// into a new one named `name`, under `id` when the caller chose one, as
+    /// `key`, a key reaching all their workspaces.
+    async fn branch_workspace(&self, grant: &Grant, key: &Connection, args: &Value) -> Outcome {
+        if grant.scope != Scope::Account {
+            return failed(
+                "not_permitted",
+                "this key reaches one workspace and no account",
+                "account paths need a key reaching all your workspaces",
+            );
+        }
+        let field = |name: &str| {
+            args.get(name)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        };
+        let Some(source) = field("workspace") else {
+            return failed(
+                "invalid_arguments",
+                "`workspace` is required",
+                "pass args {workspace: \"<id>\", name}; account/workspaces#list names them",
+            );
+        };
+        let Some(name) = field("name") else {
+            return failed(
+                "invalid_arguments",
+                "`name` is required",
+                "pass args {workspace, name: \"Applicant: Jane Doe, second try\"}",
+            );
+        };
+        let id = match chosen_id(args) {
+            Ok(id) => id,
+            Err(refused) => return refused,
+        };
+        let labels = match labels_of(args) {
+            Ok(labels) => labels,
+            Err(refused) => return refused,
+        };
+        match self.relay.branch(key, source, name, &labels, id).await {
+            Ok(branch) => Outcome::Ok(json!({"workspace": branch})),
             Err(error) => refused(&error),
         }
     }

@@ -245,6 +245,67 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/branches": {
+      "post": {
+        "operationId": "branchWorkspace",
+        "summary": "Branch a workspace of the person's own: a new one of theirs that starts as its copy and goes on apart",
+        "tags": [
+          "Account"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Branch a workspace of the person's own: a new one of theirs that starts as its copy and goes on apart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewBranch"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}": {
       "delete": {
         "operationId": "deleteWorkspace",
@@ -2260,6 +2321,25 @@
         "required": [
           "name"
         ]
+      },
+      "NewBranch": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Labels for your programs to find it by, `customer_id` → `cus_8121`:\nat most 16, each name 1 to 63 of a-z, 0-9, `_`, `-` and `.`, each value\n1 to 256 printable characters. Only keys of yours read them; nobody\ninvited in does."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "A branch of a workspace: a new workspace of the person's own that starts\nwith everything the source holds and goes on apart from it."
       },
       "DeletedWorkspace": {
         "type": "object",

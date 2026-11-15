@@ -681,7 +681,11 @@ each with the part the person takes in it (`owner` for one of their own, else th
 invited with), \
 `account/workspaces#create {name, labels?}` makes one, labelled for your programs to find it by \
 (`labels: {customer_id: \"cus_8121\"}`, which only the person's keys read), \
-`account/workspaces#list {labels?}` lists those labelled so, and `account/workspaces#delete {workspace}` deletes one \
+`account/workspaces#list {labels?}` lists those labelled so, \
+`account/workspaces#branch {workspace, name, labels?}` makes a new one of the person's own that starts as \
+a copy of one of theirs (every record with its history, and its files; not its conversations, \
+nor anyone but the person) and goes on apart from it, so a workspace set up once is branched per task \
+or customer, and `account/workspaces#delete {workspace}` deletes one \
 of the person's own for good, with everything in it and every key minted for it (no undo; the call \
 is the confirmation, so delete only what you were asked to). Every other call acts in one workspace, \
 named by id in its `workspace` argument. To give another agent one workspace and nothing else \

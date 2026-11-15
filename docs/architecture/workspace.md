@@ -647,6 +647,37 @@ the shell's actions; a branch of another workspace is refused at the MCP server.
 
 The source is read and never changed.
 
+**A workspace a host keeps.** A host that keeps workspaces of people's own
+(tilo.sh) branches one of them as the host operation `workspace.branch-own`
+{`workspace`, `name`, `branch`?, `labels`?}, beside `workspace.create-own`; the
+API offers it as `POST /v1/workspaces/{workspace}/branches` and the account
+action `account/workspaces#branch`. Only the person who owns the source
+branches it, from a device of theirs or a key reaching all their workspaces; a
+key for one workspace makes none, and someone else's workspace is not theirs
+to branch. The host is a member of every channel of the workspaces it governs,
+so it copies what it reads, as a device does:
+
+- every record of the source, read whole with its history, forked as above
+  and founded in the branch as the governor founds a record, sealed under the
+  branch's own keys where its records are sealed; a record the host does not
+  read whole stops the branch before anything is made, and a person's own
+  records sealed for their devices alone (drafts) are not the host's to read;
+- the content those records name, and the chunks of the files that is, copied
+  from the source's content store into the branch's under the same addresses,
+  so the references they hold open in the branch.
+
+What stays behind is the same rule as on a device
+(`tilo_desktop_model::branch::stays`), and the branch's governance is new, its
+only member the person, as its owner. The labels are the branch's own, given
+with it; the source's stay with the source. The call answers once the branch
+holds everything; if any part does not come, the branch is deleted again and
+the call fails naming that part, and it is listed among the person's
+workspaces only once it is whole. `branch` is the new workspace's id: asked
+again under the same one, the host answers the branch it made and copies
+nothing twice (the API passes the id its `Idempotency-Key` names). Whoever keeps
+more of a workspace than its records hears of each branch made
+(`Workspaces::branches`: source, branch, person), as of a deletion.
+
 ## The shell
 
 The shell's surfaces (launcher, top bar, overview, quick settings,

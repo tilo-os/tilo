@@ -285,6 +285,58 @@ impl Relay {
         Ok(connection.workspace(&listing))
     }
 
+    /// Branch the person's own `source` as `connection` (reaching all their
+    /// workspaces): a new workspace of theirs called `name`, labelled `labels`,
+    /// under `id` when the caller chose one, that starts with everything
+    /// `source` holds but what is tied to other people. The relay answers once
+    /// the branch holds all of it, or refuses and keeps nothing of it; asked
+    /// again under the same `id`, it answers the branch it made.
+    ///
+    /// # Errors
+    /// Not one of the person's own workspaces ([`RelayError::NotFound`]),
+    /// or the relay refused (naming what did not come) or was not reached.
+    pub async fn branch(
+        &self,
+        connection: &Connection,
+        source: &str,
+        name: &str,
+        labels: &WorkspaceLabels,
+        id: Option<uuid::Uuid>,
+    ) -> Result<Workspace, RelayError> {
+        if tilo_relay_protocol::WorkspaceId::parse(source).is_none() {
+            return Err(RelayError::NotFound);
+        }
+        let branch = id.unwrap_or_else(uuid::Uuid::new_v4).to_string();
+        let mut arguments = Map::new();
+        arguments.insert("workspace".into(), json!(source));
+        arguments.insert("name".into(), json!(name));
+        arguments.insert("branch".into(), json!(branch));
+        if !labels.is_empty() {
+            arguments.insert("labels".into(), json!(labels));
+        }
+        let output = connection
+            .device
+            .host_action(
+                tilo_relay_session::workspaces::BRANCH_OWN_WORKSPACE,
+                arguments,
+                "tilo api",
+            )
+            .await
+            .map_err(|refusal| match RelayError::from(refusal) {
+                RelayError::Refused(reason)
+                    if reason.contains(tilo_relay_session::workspaces::NOT_YOUR_OWN) =>
+                {
+                    RelayError::NotFound
+                }
+                other => other,
+            })?;
+        let made: tilo_relay_session::workspaces::CreatedWorkspace = serde_json::from_value(output)
+            .map_err(|error| {
+                RelayError::Unavailable(format!("the relay answered no branch: {error}"))
+            })?;
+        Ok(connection.workspace(&made.workspace))
+    }
+
     /// Delete the person's own `workspace` as `connection` (reaching all
     /// their workspaces): final, with everything the relay keeps of it.
     ///

@@ -408,6 +408,7 @@ impl<'a> Caller<'a> {
         match operation.id {
             "getAccount" | "listWorkspaces" | "createWorkspace" | "deleteWorkspace"
             | "listKeys" | "mintKey" | "revokeKey" => self.account_operation(operation.id).await,
+            "branchWorkspace" => self.branch_workspace().await,
             "listResources" | "readResource" | "search" | "getLink" => {
                 self.resource_operation(operation.id).await
             }
@@ -487,6 +488,21 @@ impl<'a> Caller<'a> {
                 shaped::<answers::RevokedKey>(revoked).map(Answer::ok)
             }
         }
+    }
+
+    /// Branch the route's workspace, one of the person's own: the branch, made
+    /// under the request's own id when it has an `Idempotency-Key`, so a retry
+    /// answers the same branch and copies nothing twice.
+    async fn branch_workspace(&self) -> Result<Answer, ApiError> {
+        let new: answers::NewBranch = self.json_body()?;
+        let args = with(
+            json!({"workspace": self.workspace(), "name": new.name, "labels": new.labels}),
+            "id",
+            self.invocation.as_ref(),
+        );
+        let made = self.account("account/workspaces#branch", args).await?;
+        shaped::<answers::Workspace>(made.get("workspace").cloned().unwrap_or_default())
+            .map(Answer::created)
     }
 
     /// Reading the workspace: listings, resources, search and links.

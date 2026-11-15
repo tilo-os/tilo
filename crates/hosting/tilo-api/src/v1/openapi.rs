@@ -187,6 +187,8 @@ fn tag_of(path: &str) -> &'static str {
         Some("uploads" | "content") => "Files",
         Some("members") => "Members",
         Some("programs") => "Programs",
+        // A branch is another workspace of the account's.
+        Some("branches") => "Account",
         _ => "Resources",
     }
 }
@@ -343,5 +345,24 @@ mod tests {
             schemas["notes.notebook.rename.Arguments"]["required"],
             json!(["title"])
         );
+        // A branch is made from the workspace the path names, of the body's
+        // name and labels, and answered as any workspace made is.
+        let branch = &described["paths"]["/v1/workspaces/{workspace}/branches"]["post"];
+        assert_eq!(branch["operationId"], "branchWorkspace");
+        assert_eq!(branch["tags"], json!(["Account"]));
+        assert_eq!(
+            branch["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/NewBranch"
+        );
+        assert_eq!(
+            branch["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/Workspace"
+        );
+        assert_eq!(
+            schemas["NewBranch"]["properties"]["labels"],
+            schemas["NewWorkspace"]["properties"]["labels"],
+            "a branch is labelled as a workspace made is"
+        );
+        assert_eq!(schemas["NewBranch"]["required"], json!(["name"]));
     }
 }
