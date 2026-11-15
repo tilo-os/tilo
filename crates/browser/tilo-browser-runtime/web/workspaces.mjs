@@ -624,12 +624,17 @@ export async function joinViaHost({
 }) {
   const door = admissionDoor(workspace);
   const known = keptMembership(workspace, memberships);
+  // The workspace this listing's door admits into, when it names one. A
+  // membership kept for another of the host's workspaces is not this one's:
+  // only a bare entry, which names none, is the membership's workspace.
+  const asking = typeof workspace.workspace === 'string' && workspace.workspace ? workspace.workspace : null;
+  const forThisWorkspace = !asking || known?.workspace === asking;
   if (known?.paired) {
     // A device paired to a person kept elsewhere: only that person's
     // devices can let it in again, so a failure is the page's to show.
     const profile = identityProfile(known, known.origin);
     const custody = await openCustody(profile);
-    const common = {...connectOptions, origin: known.origin, workspace: known.workspace, userPublicKey: known.userPublicKey, profile, custody, displayName};
+    const common = {...connectOptions, origin: known.origin, workspace: asking ?? known.workspace, userPublicKey: known.userPublicKey, profile, custody, displayName};
     return withCustody(custody, () => (custody.created
       // A tab with a key of its own: a new device of that person, which
       // only their root can certify. It pairs as a new browser would.
@@ -668,7 +673,12 @@ export async function joinViaHost({
       if (said?.code === 'removed') throw Object.assign(new AdmissionError('removed', removedFrom(workspace.name)), {reason: said.message});
       throw said;
     }
-    keepMembership(memberships, workspace, {origin, workspace: admittedAt ?? peer.workspace, userPublicKey: identity.userPublicKey});
+    // The membership names the workspace the host's door first let this
+    // browser into: entering another of the host's workspaces leaves it.
+    const held = keptMembership(workspace, memberships);
+    const same = held?.userPublicKey === identity.userPublicKey;
+    keepMembership(memberships, workspace, {origin, workspace: (same && held.workspace) || admittedAt || peer.workspace,
+      userPublicKey: identity.userPublicKey});
     return peer;
   };
   /** Join through the door until the host lets the person in. The door
@@ -709,7 +719,7 @@ export async function joinViaHost({
       }
     }
   };
-  if (known?.userPublicKey !== identity.userPublicKey) return admitAnew();
+  if (!forThisWorkspace || known?.userPublicKey !== identity.userPublicKey) return admitAnew();
   // Other tabs of this browser may hold every device key it has for this
   // host (`custody-busy`): nothing the host refused, so the membership stays
   // and the door is not asked, which would spend a seat to fail the same way.

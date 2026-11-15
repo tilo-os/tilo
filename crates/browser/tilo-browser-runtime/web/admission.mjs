@@ -99,6 +99,20 @@ async function ready(peer, onProgress = () => {}) {
   return {peer};
 }
 
+/** The listing `listed` with its door naming `workspace`: a host serves every
+ * one of its workspaces' doors under its directory (`…/directory/<workspace>/`),
+ * and the door the site lists is its own workspace's. */
+function doorTo(listed, workspace) {
+  if (!listed?.admission || !workspace || listed.workspace === workspace) return listed;
+  const door = new URL(listed.admission);
+  const segments = door.pathname.split('/');
+  const at = segments.lastIndexOf('directory');
+  if (at >= 0 && segments[at + 1]) segments[at + 1] = encodeURIComponent(workspace);
+  else segments.splice(segments.length - 1, 0, 'directory', encodeURIComponent(workspace));
+  door.pathname = segments.join('/');
+  return {...listed, workspace, admission: door.href};
+}
+
 /** Admission through `workspace`'s host door, held to the workspace the
  * link names (`admittedAsAsked` in `runtime`). */
 async function viaHost({workspace, id = null, runtime, deps, onProgress}) {
@@ -194,8 +208,11 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
         onProgress({phase: 'pairing'});
         return ready(await deps.pairDevice({origin, workspace: id, ...pairing, listed}), onProgress);
       case 'door':
-        if (id) console.warn('admission: asking at the host\'s door');
-        return viaHost({workspace: listed, id, runtime, deps, onProgress});
+        // A door admits into its own workspace. A link naming another
+        // workspace of that host asks at that workspace's door: the listed
+        // one would let this browser into the listed workspace, and holding
+        // it to the one the link names would then read as no access to it.
+        return viaHost({workspace: doorTo(listed, id), id, runtime, deps, onProgress});
       case 'accounts':
         accounts = await deps.readAccounts(origin);
         way = runtime.wayIn(link, JSON.stringify({...here, accounts: accounts.length}));

@@ -21,11 +21,13 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde_json::{Map, json};
 use tilo_relay::workspaces::OwnWorkspaceOffer;
 use tilo_relay_client::invite::guest_certificate;
-use tilo_session_client::PeerConfig;
 use tilo_session_client::device::{Device, HostRefusal};
+use tilo_session_client::{Outbox as _, PeerConfig};
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
 
-use crate::support::{door, enrol, enter as enter_as, start_workspace_host};
+use crate::support::{
+    door, enrol, enter as enter_as, enter_page, in_workspace, start_workspace_host,
+};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -146,6 +148,45 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
             .any(|listed| listed.workspace == lounge.workspace),
         "the Lounge is one of the person's too: {listed:?}"
     );
+
+    // A page opening that workspace through its own door, as the workspace switcher does for one
+    // this browser never entered: a device of Bob's the host has not seen enters as his, with no
+    // invitation.
+    let switcher_key = new_key();
+    let (switcher_cert, switcher_entry) = tilo_session_client::device::door_entry(
+        &host_device.cert,
+        &own.workspace,
+        &switcher_key,
+        tilo_session_client::device::Entering {
+            held: None,
+            root: Some(&bob),
+            label: "Switcher",
+            name: "Bob",
+            token: None,
+        },
+    )
+    .await
+    .unwrap();
+    let switcher = enter_page(
+        host.iroh(),
+        switcher_cert,
+        host_device.cert.clone(),
+        switcher_key,
+        Arc::new(tilo_session_client::MemoryPeerStore::default()),
+        switcher_entry,
+    );
+    switcher
+        .send(tilo_session_client::Cmd::Join(own.workspace_id))
+        .unwrap();
+    assert_eq!(
+        tilo_session_client::device::entered(&switcher)
+            .await
+            .unwrap()
+            .workspace,
+        own.workspace
+    );
+    in_workspace(&switcher, own.workspace_id).await;
+    switcher.close();
 
     // Asked again, it answers the same workspace; one this device is in already is not redeemed
     // again.

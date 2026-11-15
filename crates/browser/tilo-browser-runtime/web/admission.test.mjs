@@ -58,9 +58,10 @@ test('the runtime is told what the link carries and what the page knows of its h
     ['wayIn', {scope: {kind: 'workspace', workspace: target.workspace}, malformed: false, invite: false, ticket: false}, here],
     ['wayIn', {scope: {kind: 'workspace', workspace: target.workspace}, malformed: false, invite: false, ticket: false}, {...here, accounts: 0}],
   ]);
-  // The door is asked for the listed workspace; the peer it answers with is held
-  // to the one the link names (`admittedAsAsked` below).
-  assert.deepEqual(calls, [['readAccounts', target.host], ['enterViaHost', {workspace: commons}]]);
+  // The door is asked at the workspace the link names, not the listed one; the
+  // peer it answers with is held to that workspace (`admittedAsAsked` below).
+  assert.deepEqual(calls, [['readAccounts', target.host], ['enterViaHost',
+    {workspace: {...commons, workspace: target.workspace, admission: `${target.host}/directory/${target.workspace}/`}}]]);
   // A pairing secret is read by the page: the runtime hears whether it names someone.
   const pairing = rules(['pair']);
   await admit({scope: target, secrets: {pair: 'ab'.repeat(32)}, runtime: pairing.runtime, deps: doors().deps});
@@ -68,6 +69,25 @@ test('the runtime is told what the link carries and what the page knows of its h
   const damaged = rules(['malformed-pairing']);
   await assert.rejects(admit({scope: target, secrets: {pair: 'ab'}, runtime: damaged.runtime, deps: doors().deps}), {code: 'malformed'});
   assert.equal(damaged.asked[0][1].pair, 'damaged');
+});
+
+test('a link into another workspace of the host asks at that workspace’s own door, not the listed home’s', async () => {
+  // A host lists its home workspace and its door. A link names another of its
+  // workspaces — one this browser never entered, such as the person's own —
+  // and the home's door would let it into the home, then hold it to the named
+  // workspace and refuse it. The door asked is the named workspace's.
+  const home = {name: 'Lounge', host: {origin: target.host}, workspace: 'b943a4e2-c020-4494-b087-a71a28bae296',
+    admission: `${target.host}/peer/v1/directory/b943a4e2-c020-4494-b087-a71a28bae296/`};
+  const {calls, deps} = doors({workspaceAt: () => home,
+    enterViaHost: async ({workspace}) => { calls.push(['enterViaHost', workspace]); return {workspace: target.workspace}; }});
+  assert.deepEqual(await admit({scope: target, runtime: rules(['door']).runtime, deps}),
+    {peer: {workspace: target.workspace}});
+  assert.deepEqual(calls, [['enterViaHost', {...home, workspace: target.workspace,
+    admission: `${target.host}/peer/v1/directory/${target.workspace}/`}]]);
+  // A link naming the listed workspace keeps the door the site names for it.
+  const atHome = {...target, workspace: home.workspace};
+  await admit({scope: atHome, runtime: rules(['door']).runtime, deps});
+  assert.deepEqual(calls.at(-1), ['enterViaHost', home]);
 });
 
 test('the person’s own desktop needs no peer', async () => {

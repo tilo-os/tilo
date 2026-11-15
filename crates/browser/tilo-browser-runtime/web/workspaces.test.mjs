@@ -221,6 +221,22 @@ test('a person who joined the host before reconnects without asking it', async (
   assert.equal(calls.connected[0].workspace, 'WORKSPACE');
 });
 
+test('another workspace of the host is entered at its own door, not the membership’s workspace', async () => {
+  // The person's browser was let into the host's home before; the host also
+  // keeps a workspace of their own there, which they never entered in this
+  // browser. It is not the membership's workspace: it is asked at its own
+  // door, and the membership stays the one its door first let them into.
+  const membership = {origin: 'https://workspaces.example', workspace: 'LOUNGE', userPublicKey: '11'.repeat(32)};
+  const mine = {...commons, name: 'My workspace', workspace: 'MINE', admission: 'https://workspaces.example/directory/MINE/'};
+  const {calls, options, store} = harness({person: identity(0x11), membership});
+  const peer = await joinViaHost({...options, workspace: mine});
+  assert.equal(peer.workspace, 'WORKSPACE');
+  assert.deepEqual(calls.connected, [], 'the membership is for another workspace: it is not reconnected to');
+  assert.equal(calls.joined[0].door, mine.admission, 'this workspace’s own door');
+  assert.equal(calls.joined[0].origin, 'https://workspaces.example');
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
+});
+
 test('a person who was pruned is pre-admitted again as the same person', async () => {
   const {calls, options} = harness({person: identity(0x11), membership: {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)}, connectFails: true});
   await joinViaHost(options);
