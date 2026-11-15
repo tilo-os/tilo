@@ -241,7 +241,9 @@ closing a tab always leaves it; no page waits on a question nobody sees.
 
 A file chooser a person opens (a click of their own on a file input) is the
 embedder's to show as well. `ready` / `tab_ready` advertise
-`file_choosers: true`; a tab that then receives `file_choosers` with a boolean
+`file_choosers: true` where the host has no panel of its own, which is every
+system but macOS: there the host shows the system's open panel itself and
+advertises false. A tab that then receives `file_choosers` with a boolean
 `enabled` gets each as a `file_chooser` event: a positive `id`, `mode` (`open`
 for one file, `open_multiple` for several, `open_folder` for a folder), the
 chooser's `title` (at most 256 bytes, empty for the default) and `accept`, what

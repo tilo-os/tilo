@@ -38,16 +38,10 @@ fn a_persons_file_chooser_reaches_only_a_tab_that_answers_them() {
     )
     .unwrap();
     engine.drain_events();
-    if file_chooser::EMBEDDER_ANSWERS {
-        let asked = tx.pop().expect("told once the host holds choosers");
-        assert_eq!(asked, json!({"op":"file_choosers","tab":1,"enabled":true}));
-    }
+    let asked = tx.pop().expect("told once the host holds choosers");
+    assert_eq!(asked, json!({"op":"file_choosers","tab":1,"enabled":true}));
     engine.drain_events();
-    assert_eq!(
-        queued(),
-        0,
-        "told once, and never where the host keeps its platform's panel"
-    );
+    assert_eq!(queued(), 0, "told once");
 
     route(
         json!({"event":"file_chooser","tab":1,"id":7,"mode":"open_multiple","title":"",

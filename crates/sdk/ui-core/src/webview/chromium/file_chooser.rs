@@ -10,17 +10,6 @@ use crate::webview::file_chooser::{
     FileChooser, FileChooserMode, MAX_FILE_CHOOSER_TITLE, MAX_FILE_CHOOSER_TYPES, accepted_type,
 };
 
-/// Whether the embedder answers a person's file chooser, or the host keeps
-/// its platform's panel.
-///
-/// On macOS the host shows the system's own open panel, which hands what the
-/// person picked to the host's process, the one that reads the files. A
-/// picker the app showed there would hand it to the app's process instead,
-/// and nothing shows the engine could then read the pick, so the proven
-/// panel stays. Everywhere else the host has no panel at all (its pages are
-/// offscreen) and the desktop's picker, asked by the app, is the only one.
-pub(super) const EMBEDDER_ANSWERS: bool = !cfg!(target_os = "macos");
-
 impl ChromiumEngine {
     /// Tell the host this tab answers a person's file choosers, once it
     /// asked and the host said it holds them.

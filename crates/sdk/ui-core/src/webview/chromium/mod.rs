@@ -1568,9 +1568,6 @@ impl WebViewEngine for ChromiumEngine {
     }
 
     fn accept_file_choosers(&self) {
-        if !file_chooser::EMBEDDER_ANSWERS {
-            return;
-        }
         self.shared.choosers_asked.store(true, Ordering::Release);
         self.tell_file_choosers();
     }

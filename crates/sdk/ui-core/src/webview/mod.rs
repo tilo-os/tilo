@@ -1128,9 +1128,8 @@ pub trait WebViewEngine: Send + Sync {
     /// [`WebViewEvent::FileChooser`], for the embedder to ask the desktop's
     /// picker and answer. Until then, and in an engine that cannot, the
     /// engine does what its platform does: its own panel where it has one,
-    /// and otherwise a chooser cancelled at once. An engine whose platform
-    /// panel is the proven way keeps it and sends none (see
-    /// [`file_chooser`]).
+    /// and otherwise a chooser cancelled at once. A host that keeps a panel
+    /// of its own answers the chooser itself and hands none over.
     fn accept_file_choosers(&self) {
         if let Some(engine) = self.wrapped() {
             engine.accept_file_choosers();

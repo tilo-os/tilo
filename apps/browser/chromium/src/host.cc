@@ -76,6 +76,17 @@ constexpr int CAPTURE_MAX_WIDTH = 1600;
 // The most files one answer to a page's file chooser names: what a person
 // picks at once, with room to spare, and far inside one command.
 constexpr size_t MAX_CHOOSER_PATHS = 4096;
+// Whether the host has a panel of its own for a person's file chooser: macOS's
+// system open panel, which hands the pick to the host's process, the one that
+// reads the files. There a chooser is never the embedder's; everywhere else
+// every page is offscreen and the desktop's picker, asked by the app, is the
+// only one.
+constexpr bool kHostShowsFilePanel =
+#if defined(OS_MAC)
+    true;
+#else
+    false;
+#endif
 // The longest accessible name and role words a find matches, matching the
 // app's own bounds: a longer one is a malformed command, never a wider match.
 constexpr size_t MAX_FIND_NAME = 512;
@@ -988,7 +999,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     paint_snapshot_->Attach();
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("ime_composition",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("file_choosers",true);d->SetBool("http_auth",true);d->SetBool("selection_text",true);d->SetBool("page_events",true);d->SetBool("page_clipboard",page_clipboard && !sealed_documents);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("ime_composition",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("file_choosers",!kHostShowsFilePanel);d->SetBool("http_auth",true);d->SetBool("selection_text",true);d->SetBool("page_events",true);d->SetBool("page_clipboard",page_clipboard && !sealed_documents);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     if(extension_tabs)extension_tabs->Introduce(id_);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
