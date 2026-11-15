@@ -1230,6 +1230,138 @@ mod tests {
         );
     }
 
+    /// The day before a kept certificate ends is the boundary itself, to the nanosecond, and the
+    /// clock's far end does not wrap a certificate back into lasting. Each failure names its row.
+    #[test]
+    fn a_root_certifies_anew_from_exactly_a_day_before_the_kept_certificate_ends() {
+        use Reconnecting::{Certify, Kept};
+        let host = cert(9, None);
+        let day = RENEWING_NS;
+        let now = 10 * day;
+        let rows = [
+            (
+                "exactly a day left, root",
+                Some(now + day),
+                true,
+                now,
+                Certify,
+            ),
+            (
+                "a day and a nanosecond left, root",
+                Some(now + day + 1),
+                true,
+                now,
+                Kept,
+            ),
+            (
+                "a nanosecond short of a day, root",
+                Some(now + day - 1),
+                true,
+                now,
+                Certify,
+            ),
+            ("ended already, root", Some(now - 1), true, now, Certify),
+            (
+                "exactly a day left, paired",
+                Some(now + day),
+                false,
+                now,
+                Kept,
+            ),
+            ("ended already, paired", Some(now - 1), false, now, Kept),
+            ("never ending, root", None, true, now, Kept),
+            (
+                "the clock at its end, root",
+                Some(u64::MAX),
+                true,
+                u64::MAX,
+                Certify,
+            ),
+            (
+                "the clock at its end, never ending",
+                None,
+                true,
+                u64::MAX,
+                Kept,
+            ),
+        ];
+        for (row, expires_at_ns, with_root, at, expected) in rows {
+            let kept = held(2, 9, expires_at_ns);
+            assert_eq!(
+                reconnecting(Some(&kept), None, &host, with_root, at),
+                expected,
+                "{row}"
+            );
+        }
+    }
+
+    /// The host that answers decides before the certificate's day does: nothing kept for another
+    /// host is handed over or renewed there, and an admission wins over a renewal. Each failure
+    /// names its row.
+    #[test]
+    fn the_host_that_answers_decides_before_a_kept_certificates_last_day_does() {
+        use Reconnecting::{Admitted, AdoptHost, Certify, HostChanged};
+        let host = cert(9, None);
+        let day = RENEWING_NS;
+        let now = 10 * day;
+        let ending = Some(now + day / 2);
+        let here = held(2, 9, None);
+        let there = held(2, 8, None);
+        let rows = [
+            (
+                "ending, kept elsewhere, root",
+                Some(held(2, 8, ending)),
+                None,
+                true,
+                HostChanged,
+            ),
+            (
+                "ending, kept elsewhere, paired",
+                Some(held(2, 8, ending)),
+                None,
+                false,
+                HostChanged,
+            ),
+            (
+                "kept elsewhere, paired",
+                Some(held(2, 8, None)),
+                None,
+                false,
+                HostChanged,
+            ),
+            ("nothing kept, admitted", None, Some(&here), true, Admitted),
+            (
+                "ending, admitted here",
+                Some(held(2, 9, ending)),
+                Some(&here),
+                true,
+                Admitted,
+            ),
+            (
+                "kept here, admitted by another host",
+                Some(held(2, 9, None)),
+                Some(&there),
+                true,
+                AdoptHost,
+            ),
+            (
+                "ending, kept elsewhere, admitted here",
+                Some(held(2, 8, ending)),
+                Some(&here),
+                true,
+                AdoptHost,
+            ),
+            ("nothing kept, paired", None, None, false, Certify),
+        ];
+        for (row, kept, under, with_root, expected) in rows {
+            assert_eq!(
+                reconnecting(kept.as_ref(), under, &host, with_root, now),
+                expected,
+                "{row}"
+            );
+        }
+    }
+
     #[test]
     fn a_computers_entry_reports_no_answer_as_a_request_and_a_refusal_as_a_denial() {
         assert!(matches!(
