@@ -54,6 +54,7 @@ export const routes = {
       Object.fromEntries(Object.entries(labels).map(([name, value]) => [`label[${name}]`, value])),
     )}`,
   workspace: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}`,
+  branches: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/branches`,
 
   keys: () => `${PREFIX}/keys`,
   key: (grant: string) => `${PREFIX}/keys/${segment(grant)}`,

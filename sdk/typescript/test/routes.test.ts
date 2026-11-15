@@ -23,6 +23,7 @@ describe("a path into a route", () => {
 
   it("encodes a workspace and a run", () => {
     expect(routes.workspace("a b")).toBe("/v1/workspaces/a%20b");
+    expect(routes.branches("a b")).toBe("/v1/workspaces/a%20b/branches");
     expect(routes.run("ws-1", "run/1")).toBe("/v1/workspaces/ws-1/runs/run%2F1");
     expect(routes.content("ws-1", "tilo.content:abc")).toBe(
       "/v1/workspaces/ws-1/content/tilo.content%3Aabc",

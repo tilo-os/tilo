@@ -11,7 +11,7 @@ import {
   keyFrom,
   urlFrom,
 } from "../src/index.ts";
-import { FakeApi, WORKSPACE_ID } from "./fakeApi.ts";
+import { FakeApi, INVITED_ID, OTHER_ID, WORKSPACE_ID } from "./fakeApi.ts";
 
 function open(api: FakeApi): Tilo {
   return new Tilo({ url: "https://api.test", key: api.key, fetch: api.fetch });
@@ -76,6 +76,73 @@ describe("the account", () => {
     expect(created.role).toBe("owner");
     expect(api.last()?.body).toBe('{"name":"Applicant: Jane Doe"}');
     expect((await tilo.workspaces.list()).named(created.id)).toBeDefined();
+  });
+
+  it("branches a workspace into a new one of the person's own", async () => {
+    const api = new FakeApi();
+    const tilo = open(api);
+
+    const branch = await tilo.workspaces.branch("jane-doe", "jane-doe, second try", {
+      labels: { customer_id: "cus_8121" },
+      idempotencyKey: "cus_8121-retry",
+    });
+
+    expect(branch.name).toBe("jane-doe, second try");
+    expect(branch.role).toBe("owner");
+    expect(branch.labels).toEqual({ customer_id: "cus_8121" });
+    const call = api.last();
+    expect(call?.method).toBe("POST");
+    expect(call?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/branches`);
+    expect(call?.body).toBe('{"name":"jane-doe, second try","labels":{"customer_id":"cus_8121"}}');
+    expect(call?.headers["idempotency-key"]).toBe("cus_8121-retry");
+    expect((await tilo.workspaces.list()).named(branch.id)).toBeDefined();
+  });
+
+  it("answers the same branch to a retry with its idempotency key", async () => {
+    const api = new FakeApi();
+    const tilo = open(api);
+    const template = await tilo.workspaces.create("Template");
+
+    const first = await tilo.workspaces.branch(template, "Acme", { idempotencyKey: "cus_acme" });
+    const again = await tilo.workspaces.branch(template, "Acme", { idempotencyKey: "cus_acme" });
+
+    expect(again.id).toBe(first.id);
+    expect(api.branches.size).toBe(1);
+    expect(api.last()?.path).toBe(`/v1/workspaces/${template.id}/branches`);
+  });
+
+  it("branches a workspace from its own handle", async () => {
+    const api = new FakeApi();
+
+    const branch = await open(api).workspace("john-doe").branch("john-doe, audit");
+
+    expect(branch.name).toBe("john-doe, audit");
+    expect(api.last()?.path).toBe(`/v1/workspaces/${OTHER_ID}/branches`);
+    expect(api.last()?.body).toBe('{"name":"john-doe, audit"}');
+    expect(api.last()?.headers["idempotency-key"]).toBeTruthy();
+  });
+
+  it("refuses a branch of a workspace the person was invited into", async () => {
+    const api = new FakeApi();
+
+    const refused = await open(api)
+      .workspaces.branch(INVITED_ID, "mine now")
+      .catch((error: unknown) => error);
+
+    expect(refused).toBeInstanceOf(Refused);
+    expect((refused as Refused).code).toBe("not_found");
+  });
+
+  it("refuses a branch to a key reaching one workspace", async () => {
+    const api = new FakeApi();
+    api.scope = "workspace";
+
+    const refused = await open(api)
+      .workspaces.branch(WORKSPACE_ID, "Mallory")
+      .catch((error: unknown) => error);
+
+    expect(refused).toBeInstanceOf(Refused);
+    expect((refused as Refused).code).toBe("not_permitted");
   });
 
   it("deletes a workspace, and says which keys went with it", async () => {

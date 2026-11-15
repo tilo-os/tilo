@@ -136,6 +136,33 @@ export class Workspaces {
   }
 
   /**
+   * Branch `source`, a workspace of the person's own, into a new one named
+   * `name`. The branch starts with everything `source` holds, its records
+   * with their history and its files, and goes on apart from it: nothing
+   * merges back. Its chat, its members and each person's own places stay
+   * behind; the person is the branch's only member. `source` is an id, a
+   * name, a `Workspace` or what `create` answered. `labels` and
+   * `idempotencyKey` are as `create` takes them; the source's labels do not
+   * come along.
+   *
+   * ```ts
+   * const acme = await tilo.workspaces.branch(template, "Acme", { labels: { customer_id: "cus_8121" } });
+   * ```
+   */
+  branch(
+    source: string | Workspace | WorkspaceInfo,
+    name: string,
+    options: { labels?: Record<string, string>; idempotencyKey?: string } = {},
+  ): Promise<WorkspaceInfo> {
+    return this.client.branchWorkspace(
+      source,
+      name,
+      options.labels ?? {},
+      options.idempotencyKey ?? null,
+    );
+  }
+
+  /**
    * The one workspace labelled with every one of `labels`, or `undefined`
    * when none is; `Refused("conflict")` when more than one is.
    */
@@ -388,6 +415,30 @@ export class Tilo {
     }
     return workspaceOf(
       await this.account().answer("POST", routes.workspaces(), {
+        json,
+        ...(idempotencyKey === null ? {} : { idempotencyKey }),
+      }),
+    );
+  }
+
+  /** @internal */
+  async branchWorkspace(
+    source: string | Workspace | WorkspaceInfo,
+    name: string,
+    labels: Record<string, string> = {},
+    idempotencyKey: string | null = null,
+  ): Promise<WorkspaceInfo> {
+    const id =
+      typeof source === "string" || source instanceof Workspace
+        ? await this.workspaceId(source)
+        : source.id;
+    this.catalog = null;
+    const json: Record<string, unknown> = { name };
+    if (Object.keys(labels).length > 0) {
+      json.labels = labels;
+    }
+    return workspaceOf(
+      await this.account().answer("POST", routes.branches(id), {
         json,
         ...(idempotencyKey === null ? {} : { idempotencyKey }),
       }),

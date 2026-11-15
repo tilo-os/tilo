@@ -56,6 +56,8 @@ export const DENIED: Record<string, Answer> = {
 
 export class FakeApi {
   key = "tilo_sk_test";
+  /** What the key reaches: all the person's workspaces, or one alone. */
+  scope: "all" | "workspace" = "all";
   /** The header every answer names the API's version in. */
   version = "1";
   workspaces: Answer[] = [
@@ -107,6 +109,8 @@ export class FakeApi {
     { person: "cd".repeat(32), name: "Rosa Ortiz", role: "editor", administrator: false },
   ];
   invitations: Answer[] = [];
+  /** The branches made, by the idempotency key each was asked with. */
+  branches = new Map<string, Answer>();
   /** How many calls the host refuses as busy before it answers them, and the wait it says. */
   busy = 0;
   busyWaitMs = 5;
@@ -235,6 +239,9 @@ export class FakeApi {
       }
       if (rest.length === 2) {
         return this.deleteWorkspace(rest[1] as string);
+      }
+      if (rest.length === 3 && rest[2] === "branches") {
+        return this.branchWorkspace(rest[1] as string, call);
       }
       return this.workspaceRoute(method, rest[1] as string, rest.slice(2), call);
     }
@@ -536,6 +543,32 @@ export class FakeApi {
     };
     this.workspaces.push(created);
     return created;
+  }
+
+  /** A branch of `source`, one of the person's own; the same branch again for a retried key. */
+  private branchWorkspace(source: string, call: Recorded): Response {
+    if (this.scope === "workspace") {
+      return this.refuse("not_permitted", 403, "this key reaches one workspace and no account");
+    }
+    if (!this.workspaces.some((row) => row.id === source && row.role === "owner")) {
+      return this.refuse("not_found", 404, "no such workspace of yours");
+    }
+    const key = call.headers["idempotency-key"] ?? "";
+    const retried = this.branches.get(key);
+    if (retried !== undefined) {
+      return this.json(retried, 201);
+    }
+    const asked = JSON.parse(call.body || "{}") as Answer;
+    const made: Answer = {
+      id: `bbbbbbbb-0000-0000-0000-${String(this.branches.size + 1).padStart(12, "0")}`,
+      name: String(asked.name ?? ""),
+      host: "eu1",
+      role: "owner",
+      ...(asked.labels === undefined ? {} : { labels: asked.labels }),
+    };
+    this.workspaces.push(made);
+    this.branches.set(key, made);
+    return this.json(made, 201);
   }
 
   private deleteWorkspace(workspace: string): Response {

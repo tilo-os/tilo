@@ -331,6 +331,23 @@ export class Workspace {
   }
 
   /**
+   * Branch this workspace, one of your own, into a new one named `name`, as
+   * `tilo.workspaces.branch` does: it starts with everything this one holds
+   * and goes on apart from it; you are its only member.
+   */
+  branch(
+    name: string,
+    options: { labels?: Record<string, string>; idempotencyKey?: string } = {},
+  ): Promise<WorkspaceInfo> {
+    return this.client.branchWorkspace(
+      this,
+      name,
+      options.labels ?? {},
+      options.idempotencyKey ?? null,
+    );
+  }
+
+  /**
    * Run `body` as one run: every call inside carries its id and title, so the
    * apps record one undo step and history shows the title.
    */
