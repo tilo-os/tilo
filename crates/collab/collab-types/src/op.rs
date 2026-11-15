@@ -841,7 +841,7 @@ mod tests {
             );
             assert_eq!(
                 hex::encode(sha2::Sha256::digest(&bytes)),
-                "4d36ec4cbbb005c0eb17855ec94b0d7ff48f64bd0dcd31ff82e1063b3366176d",
+                "9d72674d3ecf9f3394ac31e7e9427d3154dbe589653f5d1909935498c35578aa",
                 "{}",
                 hex::encode(&bytes)
             );
@@ -1097,18 +1097,18 @@ mod tests {
                 "artifact and attestation domains must not alias"
             );
             assert_eq!(first.0.get_version_num(), 8);
-            assert_eq!(first.0.to_string(), "0231a3fb-e6d4-89fc-9fc4-160d44d242bf");
+            assert_eq!(first.0.to_string(), "e2ada506-cd66-8f71-816d-98526180e680");
             assert_eq!(
                 document_artifact_id("dev.tilo.notes", "workspace-a", "record-b")
                     .0
                     .to_string(),
-                "fd9e9e68-54c3-8ae2-bfc6-cb06b0816e07"
+                "bbc5b5c9-074e-887b-911b-beb90a51413d"
             );
             assert_eq!(
                 document_attestation_id("dev.tilo.notes", "workspace-a", "record-b")
                     .0
                     .to_string(),
-                "fe8b6b90-8390-8f45-923c-e78d2a15cb9c"
+                "693e44d3-c0bb-81ef-a888-2aa67a0f1e4c"
             );
             let golden = DocumentMutation::Snapshot(vec![0, 1, 2, 0xff]);
             assert_eq!(

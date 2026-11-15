@@ -8,9 +8,7 @@
 scenario "the default shell" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
@@ -39,9 +37,7 @@ scenario "the default shell" {
 scenario "a full dock" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
@@ -88,9 +84,7 @@ scenario "a full dock" {
 scenario "the dock on the left" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
@@ -112,9 +106,7 @@ scenario "the dock on the left" {
 scenario "the dock on the right" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
@@ -135,9 +127,7 @@ scenario "the dock on the right" {
 scenario "moving an item on the dock" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
@@ -157,9 +147,7 @@ scenario "moving an item on the dock" {
 scenario "a rearranged bar" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
@@ -179,9 +167,7 @@ scenario "a rearranged bar" {
 scenario "the Tilo preset" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
@@ -200,9 +186,7 @@ scenario "the Tilo preset" {
 scenario "the macos preset" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
@@ -221,9 +205,7 @@ scenario "the macos preset" {
 scenario "the windows preset" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
@@ -242,9 +224,7 @@ scenario "the windows preset" {
 scenario "the gnome preset" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
@@ -258,9 +238,7 @@ scenario "the gnome preset" {
 scenario "the minimal preset" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))

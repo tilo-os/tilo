@@ -73,6 +73,7 @@
 //! and the certificate's expiry bounds whatever is missed.
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1237,16 +1238,7 @@ impl HostedBrowsers {
             let authority = authority.as_ref()?;
             (authority.runtime.clone(), authority.workspaces.clone()?)
         };
-        // An open answered at once is placed on the thread that answered it,
-        // which may be one of the runtime's own: the runtime is waited on
-        // from a thread of its own.
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| runtime.block_on(workspaces.workspace_identity(workspace_id)))
-                .join()
-                .ok()
-                .flatten()
-        })
+        waited_on_its_own_thread(&runtime, workspaces.workspace_identity(workspace_id)).flatten()
     }
 
     /// Place `workspace_id`'s Browser — the workspace whose UUID is
@@ -1593,11 +1585,12 @@ impl HostedBrowsers {
         let Some(workspaces) = &authority.workspaces else {
             return;
         };
-        let listed = authority.runtime.block_on(workspaces.list_device(
-            workspace_id,
-            device.device_public_key,
-            listed,
-        ));
+        let Some(listed) = waited_on_its_own_thread(
+            &authority.runtime,
+            workspaces.list_device(workspace_id, device.device_public_key, listed),
+        ) else {
+            return;
+        };
         if let Err(error) = listed {
             tracing::warn!(
                 %error,
@@ -1606,6 +1599,16 @@ impl HostedBrowsers {
             );
         }
     }
+}
+
+/// `work`, run to its end on `runtime` from a thread of the runtime's own: placing happens on the
+/// thread that answered an open, or on a blocking one, and both carry the runtime's context,
+/// where waiting on it is refused. `None` when that thread panicked.
+fn waited_on_its_own_thread<T: Send>(
+    runtime: &tokio::runtime::Handle,
+    work: impl Future<Output = T> + Send,
+) -> Option<T> {
+    std::thread::scope(|scope| scope.spawn(|| runtime.block_on(work)).join().ok())
 }
 
 /// [`DEVICE_LIFETIME`] in nanoseconds: how long a session's certificate lasts.

@@ -15,9 +15,7 @@ use so.tilo.lang.tasks as tasks
 scenario "an afternoon of work" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
@@ -258,9 +256,7 @@ scenario "an afternoon of work" {
 scenario "the overview" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:31 PM"))
     stage(device.overlays, device.Overlays(here: "overview"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -404,9 +400,7 @@ scenario "the overview" {
 scenario "the overview, searching" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:31 PM"))
     stage(device.overlays, device.Overlays(here: "overview", spotlight: "quotes"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -1297,9 +1291,7 @@ scenario "the workspaces" {
 scenario "a banner" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "2:04 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -1351,9 +1343,7 @@ scenario "the bar's status" {
     let d = root Layout
     d.person = "Ada Lovelace"
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
     stage(device.notifications, waiting())
@@ -1389,12 +1379,7 @@ scenario "a person's menu" {
 action a_workspace(a: Layout, name: Text) -> Text {
     let w = a.workspaces.insert(LayoutWorkspace(key: "w-{name}", name: name))
     let r = a.rows.insert(
-        LayoutRow(
-            key: "r-{name}",
-            workspace: w.key,
-            name: name,
-            shell: "so.tilo.shell.strips",
-        ),
+        LayoutRow(key: "r-{name}", workspace: w.key, name: name, shell: "so.tilo.shell.strips"),
     )
     r.key
 }
@@ -1979,9 +1964,7 @@ scenario "the traditional desktop, a terminal in front" {
 scenario "the agents on the bar" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(
-        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
-    )
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))

@@ -498,10 +498,12 @@ impl Workspaces {
     /// The host's operations `device` may run, asked as `asking`.
     pub(super) fn host_rows(&self, device: &DeviceCert, asking: Asking) -> Vec<CatalogueRow> {
         let now = tilo_clock::unix_now_ns();
+        let person = device.user_public_key == self.inner.host.cert.user_public_key;
         HOST_VERBS
             .iter()
             .filter(|(_, operation)| {
                 asking.reaches(*operation)
+                    && (person || !operation.decided_by_its_workspace())
                     && self.permits(device, None, WorkspaceOp::Host(*operation), now)
             })
             .map(|(verb, _)| verb.row(HOST, HOST_WORKSPACES_RESOURCE, LABEL))

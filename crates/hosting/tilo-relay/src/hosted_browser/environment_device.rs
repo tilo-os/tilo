@@ -186,7 +186,7 @@ async fn lend(
     let content = keys
         .group_keys(workspace, false)
         .await
-        .ok_or_else(|| unavailable("this host takes no part in the workspace's media".to_owned()))?
+        .ok_or_else(|| unavailable("this host holds no keys of the workspace's media".to_owned()))?
         .map_err(|error| {
             unavailable(format!(
                 "the workspace's media keys are not here yet: {error}"

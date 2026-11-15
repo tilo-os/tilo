@@ -632,7 +632,7 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration, answer_wait: Du
         cert: host_cert,
         key: host_key,
         relay: relay.relay.node_addr(),
-        workspaces: None,
+        workspaces: relay.relay.workspaces().cloned(),
         environments: relay.relay.environments(),
         runtime: tokio::runtime::Handle::current(),
         certification: relay.relay.confirmations(),
@@ -2414,6 +2414,16 @@ async fn live_plane_session(
 #[tokio::test]
 async fn an_open_that_answers_with_its_run_places_the_window_when_the_record_exists() {
     let fixture = fixture(Arc::new(Counting::default())).await;
+    // A workspace this host governs: an open placed from its run names the workspace by its id.
+    let second = fixture
+        .relay
+        .relay
+        .workspaces()
+        .unwrap()
+        .create("Second")
+        .await
+        .unwrap();
+    let workspace = second.workspace_id;
     let invocation = InvocationId::new();
     let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observe: Arc<tilo_relay::hosted_browser::ObserveInvocation> = {
@@ -2440,7 +2450,7 @@ async fn an_open_that_answers_with_its_run_places_the_window_when_the_record_exi
     };
     let answer = tilo_relay::hosted_browser::placed(
         &fixture.browsers,
-        OTHER_WS,
+        workspace,
         invocation,
         RemoteActionMessage::Receipt(InvocationReceipt {
             invocation,
@@ -2454,12 +2464,12 @@ async fn an_open_that_answers_with_its_run_places_the_window_when_the_record_exi
         "the caller is answered its run, as it was"
     );
     let deadline = Instant::now() + Duration::from_secs(10);
-    while fixture.browsers.window(OTHER_WS).is_none() && Instant::now() < deadline {
+    while fixture.browsers.window(workspace).is_none() && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let window = fixture
         .browsers
-        .window(OTHER_WS)
+        .window(workspace)
         .expect("the run's record placed the workspace's window");
     assert_eq!(window.provider, WINDOW);
 }

@@ -130,6 +130,19 @@ impl HostOperation {
         }
     }
 
+    /// Whether the operation is about where a workspace is held, which its own
+    /// governance decides: its owner's or keeper's to name, or the host's work
+    /// setting to accept ([`crate::hosted`]). The door lets anyone ask, since
+    /// a device of neither person may keep one of the workspaces it governs; a
+    /// catalogue, which has no workspace to ask, offers it to the host's own
+    /// person alone.
+    pub(crate) const fn decided_by_its_workspace(self) -> bool {
+        matches!(
+            self,
+            Self::HostWorkspace | Self::UnhostWorkspace | Self::AttachHost | Self::DetachHost
+        )
+    }
+
     /// Whether the device `caller` may do this on the host of the person
     /// `host`. Every host operation but making a person's own workspace is
     /// the host's person's own; an agent's grant does what its scope allows

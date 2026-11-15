@@ -62,13 +62,7 @@ view front_window(a: Layout, lists: Bool) {
 }
 
 /// One frame on the desktop, at its strip's canvas point and size.
-view desktop_frame(
-    a: Layout,
-    s: LayoutStrip,
-    p: LayoutPlace,
-    focused: Bool,
-    lists: Bool,
-) {
+view desktop_frame(a: Layout, s: LayoutStrip, p: LayoutPlace, focused: Bool, lists: Bool) {
     ui.MapPin(
         name: p.key,
         x: s.canvas_x,

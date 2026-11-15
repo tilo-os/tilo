@@ -759,14 +759,16 @@ mod tests {
         let daemon: EndpointAddr =
             postcard::from_bytes(&std::fs::read(&file).expect("the link file"))
                 .expect("an address");
-        let refused = hello(&stranger, daemon)
-            .await
-            .expect("the connection itself opens");
-        tilo_test_env::within(
-            "the daemon to close another device's link",
-            refused.closed(),
-        )
-        .await;
+        // The daemon refuses the link of a device that is not its own, and iroh reports that where
+        // it lands: the handshake, or the connection the stranger already opened. Either way the
+        // stranger holds no link and the daemon takes no hello.
+        if let Ok(connection) = hello(&stranger, daemon).await {
+            let _ = tilo_test_env::within(
+                "the daemon to close another device's link",
+                connection.closed(),
+            )
+            .await;
+        }
         assert!(link.hello().is_none(), "another device's hello is refused");
     }
 }

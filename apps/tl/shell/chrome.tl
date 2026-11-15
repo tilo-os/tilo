@@ -243,7 +243,10 @@ migration action drop_the_tasks_part(s: Shell) {
 
 /// Uses the preset `layout`: every setting it names at once. The result is exactly that preset,
 /// so the picker shows it chosen and "custom" is off.
-primary action apply(s: Shell, layout: ChromePreset) (icon: .layout_grid, label: "Use this layout") {
+primary action apply(s: Shell, layout: ChromePreset) (
+    icon: .layout_grid,
+    label: "Use this layout",
+) {
     s.preset = layout
     s.based_on = layout
     s.tuned = false
