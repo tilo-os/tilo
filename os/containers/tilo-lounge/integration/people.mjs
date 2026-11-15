@@ -359,6 +359,23 @@ const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 
 const search = async (tab, command, query, row, opens = null) => {
   const began = Date.now();
   const framesFrom = await presented(tab);
+  // What the shell said of itself on every frame from here to the answer: a
+  // search that opened and closed between two frames and one that never
+  // opened read the same from a single reading afterwards.
+  await tab.evaluate(`(() => {
+    globalThis.__pressTrail = [];
+    const began = performance.now();
+    const tick = () => {
+      const s = globalThis.tiloMount?.state?.() ?? {};
+      globalThis.__pressTrail.push([Math.round(performance.now() - began), s.phase ?? null,
+        !!s.searchOpen, s.frames ?? null, s.searchCard?.scope ?? null,
+        (document.activeElement?.nodeName ?? '') + (document.hasFocus() ? '+' : '-')]);
+      if (globalThis.__pressTrail.length > 120) globalThis.__pressTrail.shift();
+      if (performance.now() - began < 75000) requestAnimationFrame(tick);
+    };
+    tick();
+    return true;
+  })()`).catch(() => false);
   // The shell's search, never one window's: a press that landed in an app's
   // own search field leaves that window's search up, and the shell's query
   // typed into it asks that app instead. Whatever is up is closed first (the
@@ -388,7 +405,13 @@ const search = async (tab, command, query, row, opens = null) => {
     const card = await tab.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.searchCard ?? null)').catch(() => 'null');
     console.error(`the search chord opened nothing after ${Date.now() - chorded} ms (scope=${await openScope()}, card=${card})`);
   }
-  await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, stepLimit(3));
+  try {
+    await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, stepLimit(3));
+  } catch (error) {
+    const trail = await tab.evaluate('JSON.stringify(globalThis.__pressTrail ?? [])').catch(() => '[]');
+    console.error(`--- ${query}: the press and every frame after it: ${trail}`);
+    throw error;
+  }
   const scope = await openScope();
   if (scope !== 'workspace') failed(`the search for "${query}" is not the shell's (${scope})`);
   await type(tab, query);
@@ -733,10 +756,21 @@ const mounted = async (tab, name) => {
     window.addEventListener('keydown', event => {
       if (event.key !== 'k' && event.code !== 'KeyK') return;
       const state = globalThis.tiloMount?.state?.() ?? {};
+      const at = Math.round(performance.now());
       globalThis.__chordStates.push({key: event.key, ctrl: !!event.ctrlKey, meta: !!event.metaKey,
         phase: state.phase ?? null, searchOpen: !!state.searchOpen, scope: state.searchCard?.scope ?? null,
         focus: document.activeElement?.nodeName ?? null, hasFocus: document.hasFocus(),
-        at: Math.round(performance.now())});
+        at});
+      // What the press left behind once the page's own handler ran: a chord
+      // the page did not take loses the document to the browser's search bar,
+      // and one it took to a shell that never answers leaves the shell closed.
+      setTimeout(() => {
+        const after = globalThis.tiloMount?.state?.() ?? {};
+        globalThis.__chordStates.push({after: true, key: event.key, prevented: event.defaultPrevented,
+          phase: after.phase ?? null, searchOpen: !!after.searchOpen, frames: after.frames ?? null,
+          scope: after.searchCard?.scope ?? null, focus: document.activeElement?.nodeName ?? null,
+          hasFocus: document.hasFocus(), at: Math.round(performance.now()) - at});
+      }, 300);
     }, {capture: true});
     globalThis.tiloMount?.canvas?.addEventListener('keydown',
       event => globalThis.__keys.push({key: event.key, code: event.code, prevented: event.defaultPrevented}));`);
