@@ -85,6 +85,17 @@ test('the offer appears with the first news in view, and Not now is kept', async
   assert.deepEqual(page.asked, []);
 });
 
+test('the offer stands clear of the shell\'s floating column', () => {
+  const page = fakePage();
+  createTabAttention({window: page.window}).update({unread: 1, waiting: [], finished: []});
+  const [card] = page.document.body.children;
+  // The shell stands a person's call and its controls in the work area's
+  // bottom right: page chrome there would take the presses they are for.
+  assert.equal(card.style.right, undefined, 'not the shell\'s floating column');
+  assert.equal(card.style.left, '16px', 'the bottom left is the shell\'s own to leave free');
+  assert.equal(card.style.bottom, '16px');
+});
+
 test('Turn on asks the browser inside the click', () => {
   const page = fakePage();
   createTabAttention({window: page.window}).update({unread: 1, waiting: [], finished: []});

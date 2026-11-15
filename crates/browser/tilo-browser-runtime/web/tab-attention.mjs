@@ -159,14 +159,17 @@ function safeStorage(win) {
   try { return win.localStorage ?? null; } catch { return null; }
 }
 
-/** The offer card: what turning notifications on does, Turn on and Not now. */
+/** The offer card: what turning notifications on does, Turn on and Not now.
+ * It stands at the work area's bottom left: the shell's floating column is
+ * the bottom right, where a person's call and other activities stand, and
+ * page chrome over it would take the presses their controls are for. */
 function showOffer(doc, {allow, decline}) {
   if (!doc?.body) return null;
   const card = doc.createElement('div');
   card.setAttribute('role', 'dialog');
   card.setAttribute('aria-label', 'Browser notifications');
   card.dataset.tiloNotificationOffer = '';
-  Object.assign(card.style, {position: 'fixed', right: '16px', bottom: '16px', zIndex: '2147483646', maxWidth: '320px',
+  Object.assign(card.style, {position: 'fixed', left: '16px', bottom: '16px', zIndex: '2147483646', maxWidth: '320px',
     padding: '14px 16px', borderRadius: '12px', background: '#1d1f24', color: '#eef0f4', font: '14px system-ui,sans-serif',
     boxShadow: '0 12px 40px rgba(0,0,0,.45)', display: 'flex', flexDirection: 'column', gap: '10px'});
   const text = doc.createElement('p');
