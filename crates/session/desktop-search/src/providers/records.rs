@@ -158,6 +158,10 @@ pub struct Records {
     /// record, and which rows say "in this workspace".
     workspace: String,
     held: Vec<HeldRecord>,
+    /// What this workspace's records hold, as one row per entry: made at the first query
+    /// and ranked from one index for every key typed after it, not indexed again each time.
+    contents: std::sync::OnceLock<Vec<Vec<(String, FieldWeight)>>>,
+    ranker: ui::search::ListIndex,
 }
 
 impl Records {
@@ -166,7 +170,18 @@ impl Records {
         Self {
             workspace: workspace.into(),
             held,
+            contents: std::sync::OnceLock::new(),
+            ranker: ui::search::ListIndex::default(),
         }
+    }
+
+    /// The entries this workspace's records hold, each with its record, in the order of
+    /// [`Self::contents`]'s rows.
+    fn held_here(&self) -> impl Iterator<Item = (&HeldRecord, &IndexEntry)> {
+        self.held
+            .iter()
+            .filter(|record| record.here)
+            .flat_map(|record| record.contents.iter().map(move |entry| (record, entry)))
     }
 
     /// The row of `record`, ranked `score`: one this workspace holds opens in its app, one of
@@ -290,23 +305,18 @@ impl Source for Records {
             .collect();
         // What the records of this workspace hold, by every text their apps say it by: a note
         // by its title and by its words, opening that note.
-        let held: Vec<(&HeldRecord, &IndexEntry)> = self
-            .held
-            .iter()
-            .filter(|record| record.here)
-            .flat_map(|record| record.contents.iter().map(move |entry| (record, entry)))
-            .collect();
-        let rows: Vec<Vec<(String, FieldWeight)>> = held
-            .iter()
-            .map(|(_, entry)| {
-                entry
-                    .searchable()
-                    .map(|(text, weight)| (text.to_owned(), field_weight(weight)))
-                    .collect()
-            })
-            .collect();
-        let ranks = crate::rank::rank_rows(&ui::search::ListIndex::default(), needle, &rows);
-        for ((record, entry), score) in held.into_iter().zip(ranks) {
+        let rows = self.contents.get_or_init(|| {
+            self.held_here()
+                .map(|(_, entry)| {
+                    entry
+                        .searchable()
+                        .map(|(text, weight)| (text.to_owned(), field_weight(weight)))
+                        .collect()
+                })
+                .collect()
+        });
+        let ranks = crate::rank::rank_rows(&self.ranker, needle, rows);
+        for ((record, entry), score) in self.held_here().zip(ranks) {
             if let Some(score) = score {
                 hits.push(self.content_hit(record, entry, score));
             }

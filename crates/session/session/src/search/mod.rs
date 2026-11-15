@@ -2313,6 +2313,144 @@ mod tests {
         }
     }
 
+    /// A company's notebook on the page, kept as Notes keeps it: in Notes' own record of the
+    /// workspace, the document that also keeps its index, which names other records and never
+    /// itself. Typing a note's title offers that note first, quickly, and choosing it opens it.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one notebook written, searched and opened as a person does"
+    )]
+    fn a_page_s_search_offers_a_note_of_notes_own_record_first_and_opens_it() {
+        let _settled = ui::motion::testing::settled();
+        let mut minter = tilo_desktop_model::IdMinter::new(7);
+        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Company", Vec::new());
+        let workspace = tree
+            .active_workspace()
+            .map(|held| held.id().to_string())
+            .expect("the shell shows a workspace");
+        let home = tilo_test_env::TestHome::new().expect("a home");
+
+        // The page links Notes, as its bundle does.
+        let _ = notes::definition();
+        // A hundred long notes, as a company's wiki moved in.
+        let mut notebook = tilo_resource::Replica::<notes::notebook::Notebook>::new();
+        let mut release = String::new();
+        for at in 0..100 {
+            let page = uuid::Uuid::new_v4();
+            let title = if at == 37 {
+                "Alpha release notes".to_owned()
+            } else {
+                format!("Release checklist part {at}")
+            };
+            notebook
+                .apply_action(&notes::actions::create_page_action(page, None, &title))
+                .expect("a note");
+            let body: Vec<_> = (0..20)
+                .map(|paragraph| {
+                    ui::widget::BlockContent::paragraph(
+                        "",
+                        format!(
+                            "Part {paragraph} of the alpha release notes for the {at}th team: \
+                             what ships, what waits, and who signs off on the release."
+                        ),
+                    )
+                })
+                .collect();
+            let written = notes::actions::write_body_action(page, &body);
+            notebook
+                .apply(tilo_resource::Invoke::apply(&written).expect("a body"))
+                .expect("the body is written");
+            if at == 37 {
+                release = notes::actions::page_resource_id(page);
+            }
+        }
+        let store: crate::platform::Store =
+            std::sync::Arc::new(app_state::FsStore::new(home.data()));
+        let key = durable_store::StorageKey::workspace_index(NOTES_APP, &workspace);
+        let lease = store.lease(&key).expect("the key is this test's");
+        store
+            .write(&key, durable_store::WriteOp::Replace(notebook.save()), None)
+            .expect("the notebook is written");
+        store.flush(Some(&key)).expect("the notebook is kept");
+        drop(lease);
+        let invoked = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let search = Rc::new(SessionSearch::new(
+            SearchOptions {
+                records: Some(crate::records::Records::over(
+                    store,
+                    crate::platform::records::Changes::default(),
+                )),
+                ..SearchOptions::default()
+            },
+            None,
+            "ada",
+            Some(Rc::new(Revealing(Rc::clone(&invoked))) as Rc<dyn AppActions>),
+            None,
+            None,
+        ));
+        let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(
+            tree,
+            7,
+            Box::new(RecordWindows(Rc::new(std::cell::RefCell::new(Vec::new())))),
+        );
+        handle.set_viewport_width(1200.0);
+        handle.set_search_host(Rc::clone(&search) as Rc<dyn SearchHost>);
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            surface,
+            (1200, 800),
+            ui::Theme::dark(),
+        );
+
+        handle.open_search(Scope::Workspace, Some("Alpha release notes".into()));
+        let started = Instant::now();
+        loop {
+            frame.relayout();
+            let (_, rows) = handle.search_rows();
+            if rows.iter().any(|row| row.title == "Alpha release notes") {
+                assert_eq!(
+                    rows.first().map(|row| row.title.as_str()),
+                    Some("Alpha release notes"),
+                    "the note comes first: {rows:?}"
+                );
+                break;
+            }
+            assert!(
+                started.elapsed() < tilo_test_env::hang_bound(),
+                "the note is offered by its title: {rows:?}"
+            );
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_secs(1),
+            "the note was offered only after {took:?}"
+        );
+        handle.choose_search_row(0, None);
+        for _ in 0..3 {
+            frame.relayout();
+        }
+        assert!(
+            search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
+            "the row runs"
+        );
+        let (provider, resource, action, _) = invoked
+            .borrow_mut()
+            .pop()
+            .expect("choosing the note opens something");
+        assert_eq!(
+            tilo_actions::remote::application_provider(&provider).map(|(_, app)| app),
+            Some(NOTES_APP),
+            "the note opens in Notes"
+        );
+        assert_eq!(
+            (resource.as_str(), action.as_str()),
+            (release.as_str(), "open"),
+            "choosing it opens that note"
+        );
+    }
+
     /// The windows a page's shell opens on records: each record launch opens its app on that
     /// record, as the page does.
     struct RecordWindows(Rc<std::cell::RefCell<Vec<(String, String)>>>);

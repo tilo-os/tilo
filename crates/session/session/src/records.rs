@@ -251,11 +251,12 @@ fn reading(
     changes: &crate::platform::records::Changes,
     contents: bool,
 ) -> Reading<Vec<Held>> {
+    let read = Contents::default();
     Reading::start(
         "tilo-search-records",
         changes.clone(),
         Watch::Any,
-        move || read_indexes(store.as_ref(), contents),
+        move || read_indexes(store.as_ref(), contents.then_some(&read)),
         || {},
     )
 }
@@ -268,15 +269,27 @@ fn reading(
     changes: &crate::platform::records::Changes,
     contents: bool,
 ) -> Reading<Vec<Held>> {
+    let read = Contents::default();
     Reading::read(changes, &Watch::Any, move || {
-        read_indexes(store.as_ref(), contents)
+        read_indexes(store.as_ref(), contents.then_some(&read))
     })
 }
 
+/// What each record held as its app told search, by its id, with the heads it was read at: a record
+/// that did not move since is not read for it again.
+#[derive(Default)]
+struct Contents(std::sync::Mutex<std::collections::HashMap<String, ReadContents>>);
+
+/// The heads a record was read at, and what it held as its app told search then.
+type ReadContents = (
+    Vec<automerge::ChangeHash>,
+    Arc<[ui::search::index_publication::IndexEntry]>,
+);
+
 /// Every record the indexes in `store` name, by id, with the workspaces that name it, and with
-/// what each holds as its app tells search where `contents` asks for it. A record two workspaces
+/// what each holds as its app tells search where `contents` keeps it. A record two workspaces
 /// hold is one entry here: it is one record.
-fn read_indexes(store: &dyn DurableStore, contents: bool) -> Vec<Held> {
+fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<Held> {
     let indexes = match store.workspace_indexes() {
         Ok(indexes) => indexes,
         Err(error) => {
@@ -285,7 +298,24 @@ fn read_indexes(store: &dyn DurableStore, contents: bool) -> Vec<Held> {
         }
     };
     let mut held: BTreeMap<String, Held> = BTreeMap::new();
+    let primary = ui::record::RecordId::package_primary();
     for (package, workspace) in indexes {
+        // The app's own record in the workspace (Notes' notebook, Tasks' tracker) is the document
+        // that keeps the index, which names the other records and not itself: what it holds is
+        // found as theirs is, where this host reads what records hold.
+        if contents.is_some() {
+            held.insert(
+                format!("{package}\u{1f}{workspace}"),
+                Held {
+                    id: primary.as_str().to_owned(),
+                    kind: String::new(),
+                    name: None,
+                    package: package.clone(),
+                    workspaces: vec![workspace.clone()],
+                    contents: Arc::from([]),
+                },
+            );
+        }
         for (record, name) in crate::platform::records::named_checkouts(store, &package, &workspace)
             .unwrap_or_default()
         {
@@ -308,30 +338,48 @@ fn read_indexes(store: &dyn DurableStore, contents: bool) -> Vec<Held> {
         }
     }
     let mut held: Vec<Held> = held.into_values().collect();
-    if contents {
+    if let Some(contents) = contents {
+        let mut kept = contents
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut read = std::collections::HashMap::with_capacity(held.len());
         for record in &mut held {
-            record.contents = record_contents(store, record).into();
+            let Some(mut doc) = record_document(store, record) else {
+                continue;
+            };
+            let heads = doc.get_heads();
+            let key = format!(
+                "{}\u{1f}{}\u{1f}{}",
+                record.package,
+                record.workspaces.first().map_or("", String::as_str),
+                record.id
+            );
+            let entries = match kept.remove(&key) {
+                Some((at, entries)) if at == heads => entries,
+                _ => {
+                    tilo_app::framework::record_index::hosted_entries(&record.package, &doc).into()
+                }
+            };
+            record.contents = Arc::clone(&entries);
+            read.insert(key, (heads, entries));
         }
+        *kept = read;
     }
     held
 }
 
-/// What `record` holds as its app tells search, read from its document as the first workspace
-/// naming it keeps it: nothing for a record whose document is not here yet, or whose app this
-/// host does not have.
-fn record_contents(
-    store: &dyn DurableStore,
-    record: &Held,
-) -> Vec<ui::search::index_publication::IndexEntry> {
-    let Some(id) = ui::record::RecordId::parse(&record.id) else {
-        return Vec::new();
+/// The document of `record`, as the first workspace naming it keeps it: what its app tells search
+/// it holds is read from it. `None` for a record whose document is not here yet.
+fn record_document(store: &dyn DurableStore, record: &Held) -> Option<automerge::AutoCommit> {
+    let workspace = record.workspaces.first()?;
+    let primary = ui::record::RecordId::package_primary();
+    let route = if record.id == primary.as_str() {
+        primary.route().to_owned()
+    } else {
+        ui::record::RecordId::parse(&record.id)?.route().to_owned()
     };
-    let Some(workspace) = record.workspaces.first() else {
-        return Vec::new();
-    };
-    crate::platform::records::document(store, &record.package, workspace, id.route())
-        .map(|doc| tilo_app::framework::record_index::hosted_entries(&record.package, &doc))
-        .unwrap_or_default()
+    crate::platform::records::document(store, &record.package, workspace, &route)
 }
 
 #[cfg(test)]
