@@ -170,18 +170,20 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     };
     let mut versions = Vec::new();
     for (id, parents, hash, time, provenance) in [
+        // Ten seconds apart: two changes of their own, not one quiet-window
+        // save grouped with the other.
         (
             old,
             vec![],
             old_hash,
-            1,
+            1_000,
             fs_protocol::FileProvenance::Create,
         ),
         (
             current,
             vec![old],
             live_hash,
-            2,
+            11_000,
             fs_protocol::FileProvenance::Edit,
         ),
     ] {

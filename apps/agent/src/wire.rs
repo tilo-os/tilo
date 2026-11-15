@@ -28,6 +28,9 @@ pub struct Link {
     /// Wakes from the transport when an event arrives, so a receive blocks
     /// instead of polling. `None` for a transport that cannot wake.
     wake: Option<Wake>,
+    /// Waits the link has blocked in, for a test that proves it sleeps.
+    #[cfg(test)]
+    waits: std::cell::Cell<u64>,
 }
 
 enum LastPublication {
@@ -81,6 +84,8 @@ impl Link {
             last_publication: LastPublication::None,
             cancelled: HashSet::new(),
             wake,
+            #[cfg(test)]
+            waits: std::cell::Cell::new(0),
         }
     }
 
@@ -269,6 +274,8 @@ impl Link {
     /// cannot wake is polled: a correlated reply is on the critical path of
     /// every step, so it is noticed within ~1 ms, not 5.
     fn wait_for_wake(&self, most: Duration) {
+        #[cfg(test)]
+        self.waits.set(self.waits.get().saturating_add(1));
         match &self.wake {
             Some(wake) => {
                 let _ = wake.rx.recv_timeout(most);
@@ -341,6 +348,12 @@ impl Link {
             }
             self.wait_for_wake(deadline - now);
         }
+    }
+
+    /// Waits this link has blocked in, as a test counts them.
+    #[cfg(test)]
+    pub(crate) fn waits(&self) -> u64 {
+        self.waits.get()
     }
 
     /// The next catalogue republication already queued, without waiting, with every
