@@ -29,6 +29,11 @@ pub(crate) struct Run {
     pub(crate) seq: u64,
 }
 
+/// The invocations a session keeps for its watches and `tilo_status`, at most: one that runs
+/// thousands of actions (a migration does, over one connection) keeps its latest ones rather
+/// than every one it ever ran.
+const RUNS_KEPT: usize = 1024;
+
 /// How long a watch with no `wait_ms` holds before it answers with what it
 /// has.
 const DEFAULT_WATCH_MS: u64 = 25_000;
@@ -120,6 +125,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             phase: "started".to_owned(),
             seq,
         });
+        keep_latest(&mut runs);
+        drop(runs);
     }
 
     /// Note that `invocation` reached `phase`, which is terminal.
@@ -480,6 +487,20 @@ fn ended(runs: &mut [Run], invocation: &str, phase: &str) {
     }
 }
 
+/// Let go of the oldest of `runs` past [`RUNS_KEPT`], those that ended first. The one told
+/// last stays: the next sequence number counts on from it, so a cursor never sees a number twice.
+fn keep_latest(runs: &mut Vec<Run>) {
+    while runs.len() > RUNS_KEPT {
+        let last = runs.iter().map(|run| run.seq).max();
+        let oldest = runs
+            .iter()
+            .position(|run| is_terminal(&run.phase) && Some(run.seq) != last)
+            .or_else(|| runs.iter().position(|run| Some(run.seq) != last));
+        let Some(oldest) = oldest else { return };
+        runs.remove(oldest);
+    }
+}
+
 /// The change id a history page ends at.
 fn last_change(page: Option<&[Value]>) -> Option<String> {
     page?
@@ -517,6 +538,38 @@ mod tests {
             phase: "started".to_owned(),
             seq,
         }
+    }
+
+    /// A session that runs thousands of actions keeps its latest ones: what it holds stays
+    /// bounded however long the connection lives, and the sequence a watch reads by still
+    /// counts on.
+    #[test]
+    fn a_long_session_keeps_its_latest_invocations() {
+        let mut runs = Vec::new();
+        let mut told = 0;
+        let mut newest = String::new();
+        for n in 0..RUNS_KEPT * 4 {
+            newest = n.to_string();
+            let seq = next_seq(&runs);
+            assert!(seq > told, "sequence {seq} after {told}");
+            runs.push(started(&n.to_string(), seq));
+            keep_latest(&mut runs);
+            told = seq;
+            ended(&mut runs, &n.to_string(), "succeeded");
+            told = told.max(runs.iter().map(|run| run.seq).max().unwrap_or_default());
+        }
+        assert_eq!(runs.len(), RUNS_KEPT);
+        assert_eq!(runs.last().map(|run| &run.invocation), Some(&newest));
+        // One still running outlasts those that ended.
+        let mut runs = vec![started("going", 1)];
+        for n in 0..RUNS_KEPT * 2 {
+            let seq = next_seq(&runs);
+            runs.push(started(&n.to_string(), seq));
+            ended(&mut runs, &n.to_string(), "succeeded");
+            keep_latest(&mut runs);
+        }
+        assert_eq!(runs.len(), RUNS_KEPT);
+        assert_eq!(runs[0].invocation, "going");
     }
 
     tilo_test_env::scenario! {
