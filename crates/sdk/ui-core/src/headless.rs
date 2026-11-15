@@ -420,6 +420,16 @@ pub struct FrameHarness {
     /// Pointer position, buttons held and where the last press landed until a key is pressed: a
     /// confirmation sits over the window pressed in.
     pointer: crate::host_core::PointerPlace,
+    /// The cards the root presents over it, as the frame stands them: the
+    /// place the floating column gives each, and the place the app was told.
+    /// A card is drawn by its app and routed to by the frame, as a native
+    /// desktop's cards are (`tilo_desktop::desktop_host::cards`).
+    cards: Vec<StandingCard>,
+    /// Requests for cards the frame has not stood yet.
+    cards_asked: Vec<crate::floating_surface::FloatingSurfaceRequest>,
+    /// The card that the person last pressed: it takes the keys a window's
+    /// controls would, until the person presses something else.
+    card_focus: Option<String>,
     /// The open search palette has provider pages left to read.
     search_pending: bool,
     root_lifetime: uuid::Uuid,
@@ -1490,6 +1500,9 @@ impl FrameHarness {
             ordinary_palette_return_focus: None,
             palette_window: None,
             pointer: crate::host_core::PointerPlace::default(),
+            cards: Vec::new(),
+            cards_asked: Vec::new(),
+            card_focus: None,
             search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -3132,6 +3145,9 @@ impl FrameHarness {
             self.activate_requested_app();
             self.apply_focus_request();
             crate::host_core::KeyHost::hand_owed_keyboard(self);
+            // The cards the root presents stand where the floating column puts
+            // them, and are told so, before the frame draws and takes input.
+            self.follow_cards();
         }
         result
     }
@@ -3968,14 +3984,17 @@ impl FrameHarness {
                 &self.theme,
                 &self.presence,
             );
-            crate::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
-                self.root.as_mut(),
-                &mut self.scene,
-                transform,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-            );
+            for id in self.standing_ids() {
+                crate::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
+                    self.root.as_mut(),
+                    id.as_str(),
+                    &mut self.scene,
+                    transform,
+                    &mut self.text,
+                    &self.theme,
+                    &self.presence,
+                );
+            }
             self.root.mark_drawn();
         }
         self.drawn_input = crate::input_generation::generation();
@@ -5703,6 +5722,7 @@ impl FrameHarness {
         }
         root.children.extend(self.tooltip_inspection());
         root.children.extend(self.presence_inspection());
+        root.children.extend(self.floating_surface_inspection());
         fn owner_path(
             node: &InspectionNode,
             targets: &HashMap<String, NodeId>,
@@ -6214,7 +6234,10 @@ impl FrameHarness {
         let mut focus_target: Option<NodeId> = None;
         let t_event = self.profiler.as_ref().map(|_| crate::time::now());
         crate::input_generation::note();
-        if let Some(history) = &mut self.history {
+        if !history_input && self.dispatch_to_card(event, &mut handled, &mut focus_target) {
+            // The card under the pointer took the event: the windows under it
+            // did not see it, as on a native desktop.
+        } else if let Some(history) = &mut self.history {
             history.route_event(
                 self.root.as_mut(),
                 event,
@@ -8918,6 +8941,13 @@ impl FrameHarness {
             .collect()
     }
 }
+
+mod cards;
+
+use cards::StandingCard;
+
+#[cfg(test)]
+mod floating_input_tests;
 
 #[cfg(test)]
 mod tests {

@@ -89,4 +89,13 @@ impl ui::widget::FloatingSurfaceProvider for DesktopSurface {
             ui::widget::FloatingSurfaceProvider::on_floating_surface_host_message(row, message);
         }
     }
+
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<ui::floating_surface::FloatingSurfacePresentation> {
+        self.rows
+            .values()
+            .flat_map(ui::widget::FloatingSurfaceProvider::floating_surface_presentations)
+            .collect()
+    }
 }
