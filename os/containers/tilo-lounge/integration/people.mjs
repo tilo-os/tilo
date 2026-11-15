@@ -375,6 +375,16 @@ const search = async (tab, command, query, row, opens = null) => {
     await key(tab, 'k', command);
   }
   const chorded = Date.now();
+  // What the chord did, said before the long wait: a key the page took and the
+  // shell did not answer is the shell's, not the key's, and a failure that
+  // waited a minute to say "closed" never said which it was.
+  const opened = await tab.evaluate(
+    'globalThis.__tiloWait?.(() => !!globalThis.tiloMount?.state()?.searchOpen, 3000) ?? false',
+  ).catch(() => false);
+  if (!opened) {
+    const card = await tab.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.searchCard ?? null)').catch(() => 'null');
+    console.error(`the search chord opened nothing after ${Date.now() - chorded} ms (scope=${await openScope()}, card=${card})`);
+  }
   await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, stepLimit(3));
   const scope = await openScope();
   if (scope !== 'workspace') failed(`the search for "${query}" is not the shell's (${scope})`);
@@ -524,13 +534,18 @@ const click = async (tab, x, y) => {
   await sleep(600);
 };
 // The centre of the first semantic node named `name`, in page pixels.
-const find = (tab, name) => tab.evaluate(`(() => {
+// The `nth` control drawn under `name` (a negative index counts from the
+// last): a shell's floating card and the app's own panel can offer the same
+// control, and a person's press is the one they can reach.
+const find = (tab, name, nth = 0) => tab.evaluate(`(() => {
   const found = [];
   const node = n => { found.push({name: n.name ?? '', bounds: n.bounds ?? n.rect ?? null}); (n.children || []).forEach(node); };
   const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
   const root = globalThis.tiloMount?.state()?.semantics?.root;
   if (root) walk(root);
-  return JSON.stringify(found.find(n => n.name === ${JSON.stringify(name)} && n.bounds) ?? null);
+  const matches = found.filter(n => n.name === ${JSON.stringify(name)} && n.bounds);
+  const nth = ${nth};
+  return JSON.stringify(matches[nth < 0 ? matches.length + nth : nth] ?? null);
 })()`);
 // The page point at the centre of a node's `bounds`, in canvas coordinates.
 const centreOfNode = async (tab, node) => {
@@ -581,8 +596,8 @@ const namesAt = async (tab, x, y) => {
     return JSON.stringify(hits.sort((a, b) => a[0] - b[0]).map(h => h[1]).filter(Boolean).slice(0, 6));
   })()`).catch(() => '[]'));
 };
-const press = async (tab, name) => {
-  const node = JSON.parse(await find(tab, name));
+const press = async (tab, name, nth = 0) => {
+  const node = JSON.parse(await find(tab, name, nth));
   if (!node) return false;
   const [x0, y0, x1, y1] = Array.isArray(node.bounds)
     ? node.bounds
@@ -594,11 +609,11 @@ const press = async (tab, name) => {
 };
 // Press the control `name` once the desktop publishes it: the tree is read
 // again until the control is there, then pressed where it is drawn.
-const pressWhen = async (tab, name, what, timeout = stepLimit(3)) => {
+const pressWhen = async (tab, name, what, timeout = stepLimit(3), nth = 0) => {
   const deadline = Date.now() + timeout;
   for (;;) {
     await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-    if (await press(tab, name)) return;
+    if (await press(tab, name, nth)) return;
     if (Date.now() > deadline) {
       await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
       failed(`${what} never appeared: ${name}`);
@@ -1134,6 +1149,9 @@ try {
     mark('both pages in the call');
     // Unmuted, both: each page's microphone is the browser's synthetic device,
     // so unmuting is what puts audio on the plane.
+    // The call card's microphone, pressed where the card is drawn: the shell
+    // stands it over the windows and its app draws it, so the press is routed
+    // to the card as on a native desktop.
     await pressWhen(a.tab, 'Unmute', "A's microphone control");
     await pressWhen(b.tab, 'Unmute', "B's microphone control");
     await untilCapture(a, "A's microphone running");
