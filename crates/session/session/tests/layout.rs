@@ -58,6 +58,15 @@ impl Seat {
     /// ([`save_layout`]), and the ids that layout gave `tree`'s workspaces. The salt is read from
     /// the session that leaves the layout: a device's salt is its key's, so every session of the
     /// seat numbers in the same one, and none is started only to ask it.
+    ///
+    /// That session is the device's first: it founds the device's own workspace while the layout
+    /// is laid into it. [`save_layout`] waits for the layout's record, which holds the strips,
+    /// groups and windows a restart brings back, so a test that reads those may start here. The
+    /// person's view of the workspace (a group's width, the maximized group, what is in front) is
+    /// a record of its own that the session writes once it holds the workspace's keys, and no
+    /// wait here covers it: a test that reads the view seats the device first
+    /// ([`Self::in_home`]) and saves the layout in the session after, where the keys are held
+    /// from the start.
     fn with_layout(home: &mut tilo_test_env::TestHome, tree: &Layout) -> (Self, Vec<WorkspaceId>) {
         let state = crate::common::seat_in(home);
         let (salt, workspace_ids) = save_layout(&state, tree);
@@ -394,7 +403,11 @@ fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
 fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
-    let (seat, workspace_ids) = Seat::with_layout(&mut home, &wide_shell());
+    // The widths, the maximized group and what is in front are the person's own view of the
+    // workspace, a record beside the layout's: the session that leaves them is the one after the
+    // device's first, which founded the workspace ([`Seat::with_layout`] says why).
+    let seat = Seat::in_home(&mut home);
+    let (_, workspace_ids) = save_layout(&seat.state, &wide_shell());
 
     // Nothing is asked of any app: this is the shape of the layout coming back.
     let mut session = session_keeping(&seat.state, None);
