@@ -100,8 +100,9 @@ pub(crate) struct HostMail {
     adding: Option<InvocationCall>,
     /// Why the host would not keep the account, once it would not.
     add_error: Option<String>,
-    /// The message the window sent, while the host takes it.
-    staging: Option<Staging>,
+    /// The messages the window sent, while the host takes them: one step of
+    /// one at a time, in the order they were sent.
+    staging: Vec<Staging>,
 }
 
 /// A window with the host's mail session as its engine: what the window
@@ -119,7 +120,7 @@ pub(super) fn engine() -> (EngineHandle, HostMail) {
         listed_at: None,
         adding: None,
         add_error: None,
-        staging: None,
+        staging: Vec::new(),
     };
     (EngineHandle { tx, rx }, host)
 }
@@ -272,9 +273,7 @@ impl HostMail {
             }
         }
         self.asking = still;
-        if self.staging.is_some() {
-            changed |= self.advance_staging();
-        }
+        changed |= self.advance_staging();
         changed |= self.poll_accounts();
         changed
     }
@@ -367,7 +366,7 @@ impl HostMail {
             argument,
             None,
         );
-        self.staging = Some(Staging::Beginning {
+        self.staging.push(Staging::Beginning {
             request_id,
             files,
             call,
@@ -378,14 +377,15 @@ impl HostMail {
     /// begun message, each file's pieces in order, then the send. Whether
     /// anything moved.
     fn advance_staging(&mut self) -> bool {
-        let Some(outcome) = self
+        let Some(index) = self
             .staging
-            .as_ref()
-            .and_then(|stage| answered(stage.call()))
+            .iter()
+            .position(|stage| answered(stage.call()).is_some())
         else {
             return false;
         };
-        let Some(stage) = self.staging.take() else {
+        let stage = self.staging.remove(index);
+        let Some(outcome) = answered(stage.call()) else {
             return false;
         };
         let request_id = stage.request_id();
@@ -461,7 +461,7 @@ impl HostMail {
                 map(&SendId { send }).unwrap_or(InvokeArgument::None),
                 None,
             );
-            self.staging = Some(Staging::Sending { request_id, call });
+            self.staging.push(Staging::Sending { request_id, call });
         } else if files.get(file).is_some_and(|file| file.bytes.is_empty()) {
             self.send_from_file(request_id, send, files, file + 1);
         } else {
@@ -507,7 +507,7 @@ impl HostMail {
             argument,
             None,
         );
-        self.staging = Some(Staging::Piece {
+        self.staging.push(Staging::Piece {
             request_id,
             send,
             files,

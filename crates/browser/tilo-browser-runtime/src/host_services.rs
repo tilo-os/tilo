@@ -421,6 +421,10 @@ thread_local! {
     /// names in a window of its own ([`crate::shell::HostRequest::ShowInApp`]).
     static DESKTOP_REQUESTS: RefCell<std::collections::BTreeMap<u64, crate::shell::HostRequests>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
+    /// The page's next frame: a request an app made outside an input event
+    /// (a `settings:` link the browser hands over later) has no frame of its
+    /// own, so it asks for one; the desktop reads the request there.
+    static WAKE: RefCell<Option<Arc<dyn Fn() + Send + Sync>>> = const { RefCell::new(None) };
 }
 
 /// Where a `settings:` link opened on this page lands: the requests of the
@@ -455,13 +459,34 @@ fn show_settings(uri: &str) -> bool {
         app: app.to_owned(),
         resource,
     };
-    DESKTOP_REQUESTS.with_borrow(|by_mount| {
+    let shown = DESKTOP_REQUESTS.with_borrow(|by_mount| {
         let Some(requests) = by_mount.values().next() else {
+            web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "settings link {uri}: no desktop"
+            )));
             return false;
         };
+        web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "settings link {uri}: queued in {} desktops",
+            by_mount.len()
+        )));
         requests.borrow_mut().push(request);
         true
-    })
+    });
+    if shown {
+        match WAKE.with_borrow(Clone::clone) {
+            Some(wake) => {
+                web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(
+                    "settings link: waking the page",
+                ));
+                wake();
+            }
+            None => web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(
+                "settings link: no wake installed",
+            )),
+        }
+    }
+    shown
 }
 
 /// The page's URI opener: a `settings:` link an app opens shows Settings in a
@@ -484,6 +509,7 @@ impl ui::host::UriOpener for PageOpener {
 /// every desktop's next frame.
 pub fn install(wake: Arc<dyn Fn() + Send + Sync>) {
     crate::page_theme::install(Arc::clone(&wake));
+    WAKE.with_borrow_mut(|slot| *slot = Some(Arc::clone(&wake)));
     let system = ui::host::HostServices::system(None);
     BROWSER.with_borrow_mut(|slot| *slot = Some(Arc::clone(&system.notifications)));
     let notifier = Arc::new(AppNotifier::new(
