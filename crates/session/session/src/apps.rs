@@ -36,6 +36,19 @@ use crate::search::AppActions;
 /// runs for the person who keeps it.
 const AGENT_PACKAGE: &str = "so.tilo.agent";
 
+/// How soon after its launch an app that ends with no window on the shell never opened: a start
+/// that gets as far as a window takes longer than its refusal does.
+const OPENED_AT_ONCE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The answer for `asked` that did not open, and `why`, with trying again as its button.
+fn not_opened(policy: &tilo_desktop_policy::DesktopPolicy, asked: &str, why: &str) -> Outcome {
+    use tilo_desktop_surface::i18n::{t, t_args};
+    let name = policy.name_of(asked);
+    Outcome::new(t_args("answer-app-not-opened", &[("app", name.into())]))
+        .saying(why)
+        .retryable(t("answer-try-again"))
+}
+
 /// The apps this session starts, and everything that asks it for one.
 pub struct Apps {
     /// The desktop the launches come from, once the session has mounted it: what a launch reads its
@@ -89,6 +102,9 @@ struct State {
     /// The compositor drew its first frame with no GPU to import from: its apps were pinned to the
     /// software renderer it draws with ([`Apps::follow_render_node`]).
     software: bool,
+    /// When each process started for a window someone asked for was started: an app that ends
+    /// within [`OPENED_AT_ONCE`] of it showing no window never opened, whatever its exit said.
+    launched: BTreeMap<u64, std::time::Instant>,
     /// The session's launch records, once it has lent them: what its broker admits a connection by,
     /// and so what each launch it makes is written into.
     launches: Option<std::sync::Arc<crate::Launches>>,
@@ -199,6 +215,7 @@ impl Apps {
                 authority_at: None,
                 render_node: None,
                 software: false,
+                launched: BTreeMap::new(),
                 launches: None,
                 doors: None,
                 me: Weak::new(),
@@ -977,15 +994,13 @@ impl Apps {
     /// and shows the answer, with the button that asks for the app again. A launch no tab holds is
     /// answered by whoever asked for it.
     fn could_not_open(&self, tab: Option<u64>, asked: &str, why: &str) {
-        use tilo_desktop_surface::i18n::{t, t_args};
         let (Some(tab), Some(desktop)) = (tab, self.desktop.borrow().clone()) else {
             return;
         };
-        let name = desktop.with_policy(|policy| policy.name_of(asked));
-        let outcome = Outcome::new(t_args("answer-app-not-opened", &[("app", name.into())]))
-            .saying(why)
-            .retryable(t("answer-try-again"));
-        desktop.with_policy(|policy| policy.failed_at(tab, asked, outcome));
+        desktop.with_policy(|policy| {
+            let outcome = not_opened(policy, asked, why);
+            policy.failed_at(tab, asked, outcome);
+        });
         // The answer is a shelltop command like any other: the shell carries it out, and lays its tab
         // out, on its next pass.
         desktop.with_widgets(WidgetHost::relayout);
@@ -1067,15 +1082,36 @@ impl Apps {
             // The launch is over: its door retires with it, so the app's next window there starts a
             // process again.
             self.state.borrow_mut().held.remove(&event.id);
+            let lived = self
+                .state
+                .borrow_mut()
+                .launched
+                .remove(&event.id)
+                .map(|at| at.elapsed());
+            // An app that ended within moments of its launch with no window of it on the shell
+            // never opened, however it ended and whether or not a tab waits for it: the person
+            // asked for something that did not come, and is told so with the app's own reason.
+            let at_once =
+                lived.is_some_and(|lived| lived < OPENED_AT_ONCE) && !self.shows_a_window(&event);
             // An app that ended cleanly before its window came never opened either, and is told
             // as one that crashed: the tab the person asked for it in would otherwise wait on a
             // window that is not coming, with nothing logged of why.
-            if !event.end.crashed() && !self.waits_for_window(&event) {
+            if !event.end.crashed() && !at_once && !self.waits_for_window(&event) {
                 self.state.borrow_mut().running.remove(&event.id);
                 tracing::info!(app = %event.app, "an app closed");
                 continue;
             }
-            tracing::warn!(app = %event.app, end = %event.end, "an app stopped");
+            if at_once {
+                tracing::warn!(
+                    app = %event.app,
+                    lived_ms = lived.map_or(0, |lived| lived.as_millis()),
+                    end = %event.end,
+                    stderr = %event.said.stderr.join(" | "),
+                    "an app could not open: it ended at once with no window"
+                );
+            } else {
+                tracing::warn!(app = %event.app, end = %event.end, "an app stopped");
+            }
             // What the app itself said before it ended, at warn beside the end: a launch that never
             // opened is otherwise a warning with no reason in it, and the app's own account is the
             // only one there is.
@@ -1113,16 +1149,27 @@ impl Apps {
                         .filter(|(tab, ..)| policy.holds_a_place(*tab))
                         .map(|(tab, ..)| tab)
                 });
+                // The reason is the app's own last word when it said one: "it closed before its
+                // window came" names no cause the person or an agent can act on.
+                let why = event
+                    .said
+                    .stderr
+                    .last()
+                    .filter(|_| at_once)
+                    .cloned()
+                    .unwrap_or_else(|| tilo_desktop_surface::i18n::t("answer-why-not-opened"));
                 if let Some(tab) = waited {
-                    self.could_not_open(
-                        Some(tab),
-                        &asked,
-                        &tilo_desktop_surface::i18n::t("answer-why-not-opened"),
-                    );
+                    self.could_not_open(Some(tab), &asked, &why);
                     continue;
                 }
-                let notice =
-                    desktop.with_policy(|policy| policy.stopped(&asked, &event.title, closed));
+                let notice = desktop.with_policy(|policy| {
+                    if at_once {
+                        let answer = not_opened(policy, &asked, &why);
+                        policy.not_opened(&asked, &event.title, answer)
+                    } else {
+                        policy.stopped(&asked, &event.title, closed)
+                    }
+                });
                 if let Err(error) = notice {
                     tracing::warn!(%error, app = %event.app, "no notice for the app");
                 }
@@ -1135,6 +1182,18 @@ impl Apps {
 
     /// Whether the person still waits for the window of the launch that ended with `event`: the
     /// shell holds a place for it that no window filled.
+    /// Whether a window of the app `event` ended in is on the shell: one another process of it
+    /// shows, as when a second launch hands its ask to the running one and leaves.
+    fn shows_a_window(&self, event: &tilo_app_launch::Event) -> bool {
+        let asked = self.state.borrow().running.get(&event.id).cloned();
+        self.desktop.borrow().clone().is_some_and(|desktop| {
+            desktop.with_policy(|policy| {
+                policy.shows(&event.app)
+                    || asked.as_deref().is_some_and(|asked| policy.shows(asked))
+            })
+        })
+    }
+
     fn waits_for_window(&self, event: &tilo_app_launch::Event) -> bool {
         let asked = self
             .state
@@ -1812,6 +1871,10 @@ impl Apps {
         }
         if let Some(asked) = asked {
             state.running.insert(started.id, asked.to_owned());
+            // A launch with no window to show (an action's run) is not one that could fail to open.
+            if !windowless {
+                state.launched.insert(started.id, std::time::Instant::now());
+            }
         }
         if let Some(door) = door {
             state.held.insert(started.id, door);
@@ -2598,6 +2661,53 @@ mod tests {
             shown.iter().any(|text| text.contains("could not open")),
             "the tab says Canvas could not open: {shown:?}"
         );
+    }
+
+    /// An app opened with no tab waiting for it (through the applications action, as an agent or
+    /// a test opens one) that ends at once without ever showing a window never opened: the person
+    /// is told it could not open, with what the app itself said, whether it exited 0 or not.
+    /// Chat did that on the e2e-ws-branch box, nineteen times, and left nothing anywhere.
+    #[test]
+    fn an_app_that_ends_at_once_without_a_window_could_not_open() {
+        for (n, end) in [End::exited(0), End::exited(1)].into_iter().enumerate() {
+            let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+            let desktop = shell();
+            apps.attach(desktop.clone());
+            let id = u64::try_from(n).unwrap() + 1;
+            apps.state
+                .borrow_mut()
+                .running
+                .insert(id, "example.Canvas".to_owned());
+            apps.state
+                .borrow_mut()
+                .launched
+                .insert(id, std::time::Instant::now());
+            apps.state.borrow().spawner.report(Event {
+                id,
+                app: "example.Canvas".to_owned(),
+                title: "Canvas".to_owned(),
+                end,
+                said: OutputTail {
+                    stderr: vec!["the display refused this app".to_owned()],
+                    dropped: 0,
+                },
+            });
+            apps.follow_ended();
+            let shown = desktop.with_widgets(|widgets| {
+                widgets.relayout();
+                ui::a11y::texts(widgets.host_mut().root_widget())
+            });
+            assert!(
+                shown.iter().any(|text| text.contains("could not open")),
+                "{n}: the person is told Canvas could not open: {shown:?}"
+            );
+            assert!(
+                shown
+                    .iter()
+                    .any(|text| text.contains("the display refused this app")),
+                "{n}: with what Canvas said: {shown:?}"
+            );
+        }
     }
 
     #[test]

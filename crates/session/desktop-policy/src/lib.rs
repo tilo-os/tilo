@@ -552,6 +552,20 @@ impl DesktopPolicy {
     /// The desktop has no workspace or strip to open it in.
     pub fn stopped(&mut self, asked: &str, title: &str, closed: Closed) -> Result<(), String> {
         let answer = closed.outcome(title, tilo_desktop_surface::i18n::t("answer-reopen"));
+        self.notice(asked, title, answer)
+    }
+
+    /// Show that the app `asked` names could not open, in a tab of its own that says `answer`,
+    /// with its button asking for `asked` again: the person asked for it with no tab held for its
+    /// window, and this is where they find why nothing came.
+    /// # Errors
+    /// The desktop has no workspace or strip to open it in.
+    pub fn not_opened(&mut self, asked: &str, title: &str, answer: Outcome) -> Result<(), String> {
+        self.notice(asked, title, answer)
+    }
+
+    /// A tab of its own for `asked` that shows `answer`, its button asking for `asked` again.
+    fn notice(&self, asked: &str, title: &str, answer: Outcome) -> Result<(), String> {
         self.titles
             .borrow_mut()
             .insert(asked.to_owned(), title.to_owned());
