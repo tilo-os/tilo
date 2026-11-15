@@ -107,7 +107,7 @@ const FIRST_FRAME = `(() => {
     globalThis.__firstFrame = {step: document.documentElement.dataset.firstRun ?? null, offer: text('first-run-offer'),
       prompt: text('first-run-prompt'), steps: text('first-run-steps'), heading: text('first-run-connected'),
       net: text('first-run-net'), expired: !!expired && getComputedStyle(expired).display !== 'none',
-      modules: !!globalThis.__tiloFirstRunReady};
+      modules: !!globalThis.__tiloFirstRunReady, held: document.documentElement.hasAttribute('data-first-run-hold')};
   };
   requestAnimationFrame(look);
 })();`;
@@ -285,7 +285,10 @@ const person = await browser.context();
 let tab = await tabIn(person, 'setup');
 await tab.navigate(site);
 let frame = await firstFrame(tab);
-check(frame.step === '', '1. a browser new here opens on the first screen at its first frame', JSON.stringify(frame));
+// A browser the site knows nothing of is not shown the setup ahead of its
+// door's answer (first-run.inline.js): the screen is held at the first frame,
+// and shown once the door let the person in.
+check(frame.step === null && frame.held, '1. a browser new here holds the first screen at its first frame, until the door answers', JSON.stringify(frame));
 const ready = await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready' && document.getElementById('first-run-offer').textContent`);
 check(ready, '1. the setup prompt shows before the click', await pageText(tab));
 // The cause of the bug: the page joins the Lounge behind the first screen,
