@@ -104,6 +104,8 @@ OUTPUT = "1280x800"
 # How long a step that waits on the boxes finding each other may take.
 FIND_S = 180
 # The MCP server sheet's choice and button, as the person reads them (en-US).
+# The name a desk shows the scripted client by: its clientInfo is `claude-code`.
+CLIENT_SHOWN = "Claude Code"
 ALLOW_ONCE = "Allow once"
 ALLOW = "Allow"
 DENY = "Deny"
@@ -927,8 +929,8 @@ class Run:
             raise Failed(f"the agent's terminal#run did not go through on B: {ran}")
         if not sessions:
             raise Failed("B seats no agent")
-        # B's desk seats the agent under the name it shows (not read here: it is the person's
-        # words) and says beside the name the device it came from, as B's door verified it:
+        # B's desk seats the agent under the name it shows the client by ("Claude Code", then
+        # its number) and says beside the name the device it came from, as B's door verified it:
         # A's whole key and A's label as the door caps it. The session's key names the agent
         # session, which says nothing of a device. It came in by B's door, by no environment.
         session, this = sessions[0], a.identity.get("this_device") or {}
@@ -936,8 +938,9 @@ class Run:
         for field_name in ("device", "device_name", "environment", "environment_id"):
             if field_name not in session:
                 raise Failed(f"B's desk lists the agent without its {field_name!r}: {session}")
-        if not str(session.get("name") or "").strip():
-            raise Failed(f"B seats the agent under no name: {session}")
+        if not str(session.get("name") or "").startswith(CLIENT_SHOWN):
+            raise Failed(f"B seats the agent under the name {session.get('name')!r}, not as "
+                         f"{CLIENT_SHOWN!r}: {session}")
         if len(this.get("device", "")) != 64 or session.get("device") != this.get("device"):
             raise Failed(f"B seats the agent as one from the device {session.get('device')!r}, not "
                          f"from A's ({this.get('device')!r}): {session}")
