@@ -72,6 +72,14 @@ pub(crate) struct Run {
     /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY),
     /// and the History scope the root witnesses it under.
     pub(crate) file_history: Option<(FileHistorySource, &'static HistoryDefinition)>,
+    /// The folder History lists, for an app that declares
+    /// [`ResourceApp::FOLDER_HISTORY`](super::ResourceApp::FOLDER_HISTORY): filled with the
+    /// workspace's tree once the root's storage is open, and witnessed by the root under
+    /// the app's History scope.
+    pub(crate) folder_history: Option<(
+        ui_core::history_mode::folder::FolderHistorySource,
+        &'static HistoryDefinition,
+    )>,
     /// The names of the participants, as the host's roster has them.
     pub(crate) people: super::People,
     /// Opens another record in this window, in a window someone uses.
@@ -142,6 +150,7 @@ impl Run {
             launched: Rc::default(),
             private: false,
             file_history: None,
+            folder_history: None,
             people: super::People::new(None),
             opener: None,
             driven: false,
@@ -164,6 +173,18 @@ impl Run {
         self
     }
 
+    /// This run, listing the changes of the folder `folder_history` reads.
+    pub(crate) fn showing_folder_history(
+        mut self,
+        folder_history: Option<(
+            ui_core::history_mode::folder::FolderHistorySource,
+            &'static HistoryDefinition,
+        )>,
+    ) -> Self {
+        self.folder_history = folder_history;
+        self
+    }
+
     pub(crate) fn past() -> Self {
         Self {
             mode: RunMode::Past,
@@ -171,6 +192,7 @@ impl Run {
             launched: Rc::default(),
             private: false,
             file_history: None,
+            folder_history: None,
             people: super::People::new(None),
             opener: None,
             driven: false,
@@ -479,6 +501,7 @@ fn capture_run(fixtures: Fixtures) -> Run {
         launched: Rc::default(),
         private: false,
         file_history: None,
+        folder_history: None,
         people: super::People::new(None),
         opener: None,
         driven: false,

@@ -1,10 +1,13 @@
 //! A folder's versions as History reads them.
 //!
-//! A window whose History lists a folder's changes holds the tree record already: it is
-//! what its rows are. It provides this, so History reads the same record rather than a
-//! second copy, and names the people and agents its versions record with the same
-//! directory its rows use.
+//! A window whose History lists a folder's changes shows the workspace's tree record. The
+//! runner that opens the window holds that record and fills the window's source with it
+//! once its storage is open, so History reads the same record the window's rows read rather
+//! than a second copy, and names the people and agents its versions record with the same
+//! directory the rows use. The source is the window's from its launch on: a view built
+//! again, or built late because its record was still arriving, reads through the same one.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::HistoryEntry;
@@ -21,38 +24,40 @@ pub trait FolderVersions {
     fn folder_revision(&self) -> u64;
 }
 
-/// A window that holds the folder its History lists: it answers the tree record it lists
-/// as [`FolderVersions`]. Provided as a capability, so the runner that installs the
-/// window's History reads the same record the window's rows are.
-pub trait FolderHistoryWindow {
-    fn folder_history(&self) -> Rc<dyn FolderVersions>;
-}
-
-/// A folder's History source, as a registration holds it: the window's own record, read
-/// through the window ([`FolderVersions`]).
-#[derive(Clone)]
-pub struct FolderHistorySource(Rc<dyn FolderVersions>);
+/// A folder's History source, as a registration holds it: the window's own slot, which
+/// its runner fills with the tree record once the window's storage is open
+/// ([`Self::show`]). Until then it lists nothing.
+#[derive(Clone, Default)]
+pub struct FolderHistorySource(Rc<RefCell<Option<Rc<dyn FolderVersions>>>>);
 
 impl FolderHistorySource {
-    #[must_use]
-    pub fn new(versions: Rc<dyn FolderVersions>) -> Self {
-        Self(versions)
+    /// The folder `versions` reads, from now on.
+    pub fn show(&self, versions: Rc<dyn FolderVersions>) {
+        *self.0.borrow_mut() = Some(versions);
+    }
+
+    fn versions(&self) -> Option<Rc<dyn FolderVersions>> {
+        self.0.borrow().clone()
     }
 
     /// The folder's changes now.
     #[must_use]
     pub fn entries(&self) -> Vec<HistoryEntry> {
-        self.0.folder_entries()
+        self.versions()
+            .map(|versions| versions.folder_entries())
+            .unwrap_or_default()
     }
 
-    /// A number that changes when the folder's versions do.
+    /// A number that changes when the folder's versions do. The slot being filled counts as
+    /// a change: History reads the folder once its record is there.
     #[must_use]
     pub fn revision(&self) -> u64 {
-        self.0.folder_revision()
+        self.versions()
+            .map_or(0, |versions| versions.folder_revision().saturating_add(1))
     }
 
-    /// Whether two sources read the same window's folder: what a runner checks when it
-    /// hands a History to a window it did not build.
+    /// Whether two sources are the same window's: what a runner checks when it hands a
+    /// History to a window it did not build.
     #[must_use]
     pub fn same_owner(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)

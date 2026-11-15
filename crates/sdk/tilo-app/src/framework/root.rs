@@ -2390,7 +2390,22 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
                 ui_core::history_mode::HistoryRegistration::new(definition, scopes.collect())
                     .map(Some)
             }
-            None => ui_core::history_mode::capability::history_registration(self.app_view()),
+            None => match &self.run.folder_history {
+                // The folder History lists is the window's own: the root witnesses the
+                // source its runner registered.
+                Some((source, definition)) => {
+                    let scopes = definition.scopes.iter().map(|scope| {
+                        ui_core::history_mode::HistorySourceRegistration::FolderFiles {
+                            scope: scope.key,
+                            source: source.clone(),
+                            window: None,
+                        }
+                    });
+                    ui_core::history_mode::HistoryRegistration::new(definition, scopes.collect())
+                        .map(Some)
+                }
+                None => ui_core::history_mode::capability::history_registration(self.app_view()),
+            },
         }
     }
 

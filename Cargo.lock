@@ -17527,6 +17527,7 @@ version = "0.1.0"
 dependencies = [
  "collab-types",
  "durable-store",
+ "fs-protocol",
  "neighbour-wire",
  "registry-types",
  "serde",

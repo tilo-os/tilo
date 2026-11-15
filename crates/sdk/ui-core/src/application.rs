@@ -1291,8 +1291,9 @@ impl AppComponent {
     }
 
     /// Register presentation for the folder this component's window shows, as
-    /// [`Self::register_document_history`]: the tree record the window's rows are, read
-    /// through the window.
+    /// [`Self::register_document_history`]: the tree record the window's rows are, which
+    /// its runner fills `folder` with. The folder's scope stands for the window's own
+    /// record too, which keeps only which folder is open.
     pub fn register_document_folder_history(
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
@@ -1352,6 +1353,7 @@ impl AppComponent {
                     Some(source) => Ok(HistorySourceRegistration::FolderFiles {
                         scope: scope.key,
                         source: source.clone(),
+                        window: Some(owner.clone()),
                     }),
                     None => Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner),
                 },

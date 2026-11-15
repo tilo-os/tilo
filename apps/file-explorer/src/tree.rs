@@ -120,35 +120,11 @@ fn opening_app(head: &[u8], name: &str) -> Option<String> {
     Some(format!("so.tilo.{}", landing.app))
 }
 
-/// The folder's own changes, as History reads them: the tree record the window already
-/// holds for its rows, and the directory its rows name people with. One record, read the
-/// same way twice — never a second copy of the files.
-struct TreeFolder {
-    tree: WorkspaceRecord<fs_protocol::tree::FilesTree>,
-    people: People,
-}
-
-impl ui::history_mode::folder::FolderVersions for TreeFolder {
-    fn folder_entries(&self) -> Vec<ui::HistoryEntry> {
-        let authors = self.people.registry();
-        self.tree
-            .read(|doc| ui::history_source::folder::entries(doc, &authors))
-            .unwrap_or_default()
-    }
-
-    fn folder_revision(&self) -> u64 {
-        self.tree.revision()
-    }
-}
-
 /// The window: the folder it shows and the entries in it.
 pub struct TreeBrowser {
     live: Live<FilesWindow>,
     /// The workspace's tree, as the page holds it.
     tree: Option<WorkspaceRecord<fs_protocol::tree::FilesTree>>,
-    /// The folder History lists, made once so the registration a window installs and the
-    /// one its root witnesses are the same source.
-    folder: Option<Rc<TreeFolder>>,
     /// What the workspace calls the people its nodes name.
     people: People,
     /// The window's own record, which the open folder is set in.
@@ -191,16 +167,9 @@ impl TreeBrowser {
             FILES_APP,
             &fs_protocol::tree::record_id(),
         );
-        let folder = tree.as_ref().map(|tree| {
-            Rc::new(TreeFolder {
-                tree: tree.clone(),
-                people: people.clone(),
-            })
-        });
         let mut browser = Self {
             live: cx.live().clone(),
             tree,
-            folder,
             people,
             dispatch: cx.dispatcher(),
             read,
@@ -625,92 +594,6 @@ impl Decorator for TreeBrowser {
     fn name(&self) -> &'static str {
         "FilesTree"
     }
-
-    /// The folder this window holds for its History, and everything the row body offers as
-    /// before.
-    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn ui::history_mode::capability::DocumentHistory>() {
-            request.provide::<dyn ui::history_mode::capability::DocumentHistory>(self);
-            return;
-        }
-        if request.wants::<dyn ui::history_mode::folder::FolderHistoryWindow>() {
-            request.provide::<dyn ui::history_mode::folder::FolderHistoryWindow>(self);
-            return;
-        }
-        self.body.provide(request);
-    }
-
-    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn ui::history_mode::capability::DocumentHistory>() {
-            request.provide::<dyn ui::history_mode::capability::DocumentHistory>(self);
-            return;
-        }
-        if request.wants::<dyn ui::history_mode::folder::FolderHistoryWindow>() {
-            request.provide::<dyn ui::history_mode::folder::FolderHistoryWindow>(self);
-            return;
-        }
-        self.body.provide_mut(request);
-    }
-}
-
-/// The History this window shows, asked of its root by the runner that mounts it: the
-/// folder's own changes, read from the tree record its rows are.
-impl ui::history_mode::capability::DocumentHistory for TreeBrowser {
-    fn history_registration(
-        &self,
-    ) -> Result<
-        Option<ui::history_mode::HistoryRegistration>,
-        ui::history_mode::HistoryRegistrationError,
-    > {
-        let Some(folder) = &self.folder else {
-            return Ok(None);
-        };
-        let source = ui::history_mode::folder::FolderHistorySource::new(
-            Rc::clone(folder) as Rc<dyn ui::history_mode::folder::FolderVersions>
-        );
-        Ok(Some(ui::history_mode::HistoryRegistration::new(
-            &FOLDER_SCOPE_DEFINITION,
-            vec![ui::history_mode::HistorySourceRegistration::FolderFiles {
-                scope: "folder",
-                source,
-            }],
-        )?))
-    }
-}
-
-/// The one scope this window's History shows, as the runner asks for it by root.
-static FOLDER_SCOPE_DEFINITION: ui::history_mode::HistoryDefinition =
-    ui::history_mode::HistoryDefinition {
-        app_id: "so.tilo.file-explorer",
-        scopes: &[ui::history_mode::HistoryScopeDefinition {
-            key: "folder",
-            title: "Folder",
-            presentation: ui::history_mode::HistoryPresentation::Folder,
-            content_schema: None,
-        }],
-    };
-
-impl ui::history_mode::folder::FolderHistoryWindow for TreeBrowser {
-    fn folder_history(&self) -> Rc<dyn ui::history_mode::folder::FolderVersions> {
-        match &self.folder {
-            Some(folder) => Rc::clone(folder) as Rc<dyn ui::history_mode::folder::FolderVersions>,
-            None => Rc::new(NoFolder),
-        }
-    }
-}
-
-/// A window that holds no tree record yet: History lists nothing, and says so with its
-/// empty state.
-struct NoFolder;
-
-impl ui::history_mode::folder::FolderVersions for NoFolder {
-    fn folder_entries(&self) -> Vec<ui::HistoryEntry> {
-        Vec::new()
-    }
-
-    fn folder_revision(&self) -> u64 {
-        0
-    }
 }
 
 impl ActionControls for TreeBrowser {
@@ -835,5 +718,130 @@ mod tests {
         assert_eq!(invocation.address.action.as_str(), "open");
         let arguments = serde_json::Value::Object(invocation.arguments);
         assert_eq!(arguments["content_hash"].as_str(), Some(hash.as_str()));
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+
+    use super::*;
+    use fs_protocol::tree::Placing;
+    use fs_protocol::{
+        ContentHash, Ed25519PublicKey, FileActor, FileAttributionV1, FileProvenance,
+        FileVersionAttributionV1, FileVersionId, FileVersionV1,
+    };
+    use ui::automerge::transaction::Transactable as _;
+    use ui::automerge::{AutoCommit, ObjType, ReadDoc as _, Value};
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000f1";
+
+    /// A version of `record_id` written by an agent session for the person at `[7; 32]`.
+    fn write_version(doc: &mut AutoCommit, record_id: fs_protocol::FileRecordId, id: u128) {
+        let version = FileVersionV1 {
+            id: FileVersionId(uuid::Uuid::from_u128(id)),
+            record_id,
+            parents: Vec::new(),
+            actor: FileActor {
+                person: Ed25519PublicKey([7; 32]),
+                device: Ed25519PublicKey([9; 32]),
+            },
+            timestamp_ms: 1_767_225_600_000 + u64::try_from(id).unwrap() * 1_000,
+            content_hash: Some(ContentHash([1; 32])),
+            metadata_hash: ContentHash([2; 32]),
+            provenance: FileProvenance::Edit,
+        };
+        let root = match doc.get(ui::automerge::ROOT, "history") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => doc
+                .put_object(ui::automerge::ROOT, "history", ObjType::Map)
+                .unwrap(),
+        };
+        let record = doc
+            .put_object(&root, record_id.0.to_string(), ObjType::Map)
+            .unwrap();
+        let versions = doc.put_object(&record, "versions", ObjType::Map).unwrap();
+        doc.put(
+            &versions,
+            version.id.0.to_string(),
+            fs_protocol::canonical::canonical_bytes(&version).unwrap(),
+        )
+        .unwrap();
+        let attributed = FileVersionAttributionV1 {
+            version_id: version.id,
+            attribution: FileAttributionV1 {
+                writer: fs_protocol::AttributedWriter::agent_session("claude", "abc"),
+                label: "Claude Code".into(),
+                color: [10, 20, 30],
+            },
+        };
+        let map = doc
+            .put_object(&record, "attributions", ObjType::Map)
+            .unwrap();
+        doc.put(
+            &map,
+            version.id.0.to_string(),
+            fs_protocol::canonical::canonical_bytes(&attributed).unwrap(),
+        )
+        .unwrap();
+        doc.commit();
+    }
+
+    #[test]
+    fn the_page_window_lists_the_trees_files_and_history_their_changes() {
+        let mut app = ui::prelude::TestApp::<FilesTreeShell>::in_workspace(WORKSPACE)
+            .expect("the window opens");
+        let tree = app
+            .shared_record::<fs_protocol::tree::FilesTree>(
+                FILES_APP,
+                &fs_protocol::tree::record_id(),
+            )
+            .expect("the window holds the workspace's tree");
+        // The tree as a device that mounts the folder writes it: the record's own document,
+        // changed elsewhere and arriving here.
+        let mut doc: AutoCommit = tree.read(Clone::clone).expect("the record reads");
+        let mut held = Tree::default();
+        let placed = fs_protocol::tree::place(
+            &mut doc,
+            &mut held,
+            ROOT_ID,
+            "terms.txt",
+            Placing::File {
+                hash: &"a".repeat(64),
+                size: 12,
+            },
+            (1_000, &hex::encode([9_u8; 32])),
+        )
+        .unwrap();
+        let record_id = held.node(&placed.id).unwrap().record_id.unwrap();
+        write_version(&mut doc, record_id, 1);
+        tree.record()
+            .merge_peer_document(doc.save())
+            .expect("the tree arrives");
+        app.flush().unwrap();
+        let texts = app.texts();
+        assert!(
+            texts.iter().any(|text| text == "terms.txt"),
+            "the window draws the tree's file: {texts:?}"
+        );
+        // History, opened from the window, lists the folder's change: the file, by its
+        // path, written by the agent.
+        app.harness()
+            .click_named("history-open")
+            .expect("the window offers History");
+        app.flush().unwrap();
+        app.harness().relayout();
+        let labels: Vec<String> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.ends_with("Edited · terms.txt")),
+            "History lists the file's change by its path: {labels:?}"
+        );
     }
 }

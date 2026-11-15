@@ -335,6 +335,7 @@ mod each;
 mod effect;
 mod endpoint;
 mod env;
+mod folder;
 mod form;
 mod hosted_actions;
 // The headless host discovers native presentation, which the browser has not got.

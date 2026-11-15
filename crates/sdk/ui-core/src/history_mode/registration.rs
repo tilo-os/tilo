@@ -71,6 +71,10 @@ pub enum HistorySourceRegistration {
     FolderFiles {
         scope: &'static str,
         source: super::folder::FolderHistorySource,
+        /// The window's own record, when the registration is the window's: it keeps only
+        /// which folder is open, which is no change to list, so the folder's scope stands
+        /// for it. `None` in a root's witness of the folder it shows.
+        window: Option<super::HistoryOwner>,
     },
     HostDocument {
         scope: &'static str,
@@ -375,12 +379,12 @@ impl HistoryRegistration {
                     root_registration.definition.app_id == self.definition.app_id
                         && root_registration.sources.iter().any(|candidate| matches!(candidate,HistorySourceRegistration::CheckedFiles { scope: other_scope,source: other } if scope==other_scope && source.same_owner(other)))
                 }
-                HistorySourceRegistration::FolderFiles { scope, source } => {
+                HistorySourceRegistration::FolderFiles { scope, source, .. } => {
                     let root_registration =
                         crate::history_mode::capability::history_registration(root)?
                             .ok_or(HistoryRegistrationError::UnsupportedOwner)?;
                     root_registration.definition.app_id == self.definition.app_id
-                        && root_registration.sources.iter().any(|candidate| matches!(candidate,HistorySourceRegistration::FolderFiles { scope: other_scope,source: other } if scope==other_scope && source.same_owner(other)))
+                        && root_registration.sources.iter().any(|candidate| matches!(candidate,HistorySourceRegistration::FolderFiles { scope: other_scope,source: other, .. } if scope==other_scope && source.same_owner(other)))
                 }
                 _ => true,
             };
@@ -396,7 +400,7 @@ impl HistoryRegistration {
             matches!(
                 source,
                 HistorySourceRegistration::CheckedFiles { .. }
-                    | HistorySourceRegistration::FolderFiles { .. }
+                    | HistorySourceRegistration::FolderFiles { window: None, .. }
             )
         });
         if let Some(owner) = enclosing {
@@ -410,7 +414,11 @@ impl HistoryRegistration {
             .sources
             .iter()
             .filter_map(|source| match source {
-                HistorySourceRegistration::OwnedDocument { owner, .. } => Some(owner),
+                HistorySourceRegistration::OwnedDocument { owner, .. }
+                | HistorySourceRegistration::FolderFiles {
+                    window: Some(owner),
+                    ..
+                } => Some(owner),
                 _ => None,
             })
             .collect();

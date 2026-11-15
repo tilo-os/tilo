@@ -134,8 +134,9 @@ pub trait ResourceApp: 'static {
     /// view names the file with [`RecordEnv::file_history`](super::RecordEnv::file_history).
     const FILE_HISTORY: Option<FileHistory> = None;
     /// The History of the folder a window shows: every file's changes in it, one row per
-    /// file and writer, read from the tree record the window's rows are. The window
-    /// provides the record, so History reads what the rows read.
+    /// file and writer, read from the workspace's tree record, the one the window's rows
+    /// show. The runner opens it with the window's storage, so History reads what the rows
+    /// read.
     const FOLDER_HISTORY: Option<FolderHistory> = None;
     /// What of the machine it runs on the app shows (its journal, its
     /// processes, its drives, the person's real files). A headless drive
@@ -832,6 +833,11 @@ pub(crate) fn build_root<A: ResourceApp>(
         run,
         storage,
     } = shell;
+    // The folder the window's History lists is the workspace's tree, opened with the
+    // window's storage: the record the window's rows read.
+    if let Some((folder, _)) = &run.folder_history {
+        super::folder::show(folder, &storage, &run.people);
+    }
     let label = A::label(reader.state());
     let published = tilo_resource::publish::<A::Resource>(app.kind, &label, reader.state());
     let live = Live::new(reader);
@@ -1252,6 +1258,9 @@ struct Starting {
     replay: Option<tilo_resource::recording::Recording>,
     /// The record's file-time History, when the app keeps one.
     files: Option<FileHistorySource>,
+    /// The folder the window's History lists, when the app declares one: filled once the
+    /// root's storage is open.
+    folder: Option<ui_core::history_mode::folder::FolderHistorySource>,
     /// Who edits, over the run the launch started.
     editing: Editing,
     /// Whether the launch created the record.
@@ -1290,6 +1299,9 @@ fn start_record(
     }
     let capture = context.capture().is_some();
     let files = app.file_history.map(|_| FileHistorySource::default());
+    let folder = app
+        .folder_history
+        .map(|_| ui_core::history_mode::folder::FolderHistorySource::default());
     // A window someone uses can open another record in its place; a
     // capture shows the one it staged.
     let opener = (!capture).then(|| {
@@ -1329,7 +1341,8 @@ fn start_record(
             files
                 .clone()
                 .map(|source| (source, (app.file_history_witness)())),
-        );
+        )
+        .showing_folder_history(folder.clone().map(|source| (source, (app.history)())));
     let editing = Editing::Live {
         permissions: context.live_permissions(),
         me: context.author().key(),
@@ -1338,6 +1351,7 @@ fn start_record(
     Ok(Starting {
         replay,
         files,
+        folder,
         editing,
         created,
         capture,
@@ -1354,6 +1368,7 @@ fn window(
     let Starting {
         replay,
         files,
+        folder,
         editing,
         created,
         capture,
@@ -1362,16 +1377,6 @@ fn window(
         Ok(root) => root,
         Err(reason) => return Ok(unopened(app, context, &reason)),
     };
-    // The folder History lists, when the window declares one: the root holds the record
-    // its rows are, and hands it over rather than History reading a second copy.
-    let folder = app.folder_history.and_then(|_| {
-        ui_core::widget::capability::capability::<
-            dyn ui_core::history_mode::folder::FolderHistoryWindow,
-        >(root.as_ref())
-        .map(|window| {
-            ui_core::history_mode::folder::FolderHistorySource::new(window.folder_history())
-        })
-    });
     let mut component = AppComponent::new(context, root, (app.action_registry)());
     component.set_behaviour(app.behaviour);
     if app.document_history {
