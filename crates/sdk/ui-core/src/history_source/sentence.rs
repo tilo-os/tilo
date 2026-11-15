@@ -10,26 +10,14 @@ use crate::i18n::I18nManager;
 use crate::widget::history::{AuthorRelation, HistoryAuthor};
 
 /// The catalogues installed on this thread, which include the app's own.
+///
+/// A message is the app's only where this step's words complete it: a
+/// message only a value completes ("Named the workbook { $new }") is one a
+/// step that carried no value leaves to the framework's own sentence for the
+/// action, rather than showing the app's with a placeable left empty.
 struct ThreadCatalogue;
 
 impl Messages for ThreadCatalogue {
-    fn format(&self, key: &str, args: &FluentArgs<'_>) -> Option<String> {
-        I18nManager::has_message(key).then(|| I18nManager::lookup(key, Some(args)))
-    }
-
-    fn has(&self, key: &str) -> bool {
-        I18nManager::has_message(key)
-    }
-}
-
-/// The app's catalogues, saying only what they can say without what a step
-/// carried: a step title names what somebody did, never the words they wrote
-/// or the name they gave something, so a message only a value completes
-/// ("Named the workbook { $new }") is one this leaves to the framework's own
-/// words for the action.
-struct BareCatalogue;
-
-impl Messages for BareCatalogue {
     fn format(&self, key: &str, args: &FluentArgs<'_>) -> Option<String> {
         I18nManager::lookup_complete(key, Some(args))
     }
@@ -314,7 +302,7 @@ pub fn step_title(entry: &ActionContext) -> Option<String> {
     // The app's words only where they stand without the value the step
     // carried: a title that needs one is left to the action's own label.
     let reader = Reader::new(&I18nManager::window_locale())
-        .with_app(&BareCatalogue)
+        .with_app(&ThreadCatalogue)
         .with_labels(&ThreadLabels);
     Some(reader.sentence(&bare))
 }
@@ -398,7 +386,48 @@ impl tilo_history::Labels for ThreadLabels {
 
 #[cfg(test)]
 mod tests {
-    use tilo_actions::{ActionContext, ActionKey, ActionResource, Did, Scalar};
+    use crate::I18nManager;
+    use tilo_actions::{
+        ActionContext, ActionKey, ActionResource, Did, EditOp, FieldEdit, PathStep, Scalar,
+    };
+
+    /// A step that edits `title` of a workbook, with the value it set (`new`)
+    /// when the step carried one.
+    fn title_step(new: Option<Scalar>) -> ActionContext {
+        ActionContext::for_app("so.tilo.sheets", "Sheets").with_described(
+            tilo_actions::Described::new(Did::Edit(FieldEdit {
+                ty: "workbook".into(),
+                field: "title".into(),
+                path: vec![PathStep::Field("title".into())],
+                op: EditOp::Set,
+                old: None,
+                new,
+                args: Default::default(),
+            })),
+        )
+    }
+
+    #[test]
+    fn an_app_message_a_step_cannot_complete_is_left_to_the_frameworks_own_words() {
+        I18nManager::install(
+            "en-US",
+            "en-US",
+            &[(
+                "en-US",
+                "sheets-workbook-title = Named the workbook { $new }",
+            )],
+        )
+        .unwrap();
+        // The step named the workbook: the app's sentence says which name it gave it.
+        let named = super::sentence(&title_step(Some(Scalar::text("Q3"))));
+        assert_eq!(named, "Named the workbook Q3");
+        // The step carried no name, so the app's message is not one it can say:
+        // the framework's own words for the edit stand in, never the app's
+        // with a placeable left empty.
+        let bare = super::sentence(&title_step(None));
+        assert!(!bare.contains("workbook"), "{bare}");
+        assert!(!bare.is_empty());
+    }
 
     #[test]
     fn a_step_title_names_the_action_and_never_what_it_carried() {
