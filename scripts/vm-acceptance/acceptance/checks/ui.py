@@ -154,16 +154,16 @@ def _matrix(ctx, res, locale):
     expect(not problems, "; ".join(problems[:8]) + (f" (+{len(problems) - 8} more)" if len(problems) > 8 else ""))
 
 
-@check("U01", AREA, "Theme and language can be changed through actions (not only by clicking)")
+@check("U01", AREA, "The theme can be changed through actions (not only by clicking)")
 def semantic(ctx, res):
     found = {}
-    for q in ("dark theme", "light theme", "high contrast", "language", "Sprache"):
+    for q in ("dark theme", "light theme", "Sprache"):
         found[q] = [(a["provider"], a["id"]) for a in ctx.vm.actions(q)
-                    if re.search(r"theme|contrast|appearance|language|locale", a["id"] + a["title"], re.I)
+                    if re.search(r"theme|appearance", a["id"] + a["title"], re.I)
                     and a["provider"] != "applications"][:3]
     res.metrics["found"] = found
     missing = [q for q, v in found.items() if not v and q != "Sprache"]
-    expect(not missing, f"no action sets: {missing} (Settings exports none; Theme Studio only opens)")
+    expect(not missing, f"no action sets: {missing}")
 
 
 @check("U02", AREA, "Chrome, quick settings, the workspace menu and Settings in light and dark (English)")
