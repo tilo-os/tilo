@@ -13,6 +13,16 @@ fields = [
   { path = "pages.*.body", type = "rich_text", ops = "sha256:fb8a205aa13d03f2" },
   { path = "pages.*.tags", type = { set = "text" } },
   { path = "pages.*.creator", type = { option = "text" }, readonly = true },
+  { path = "pages.*.creator_name", type = "text", readonly = true },
+  { path = "pages.*.origin", type = { option = { named = "Origin" } }, readonly = true, stored = "record" },
+  { path = "pages.*.origin.author", type = "text" },
+  { path = "pages.*.origin.handle", type = { option = "text" } },
+  { path = "pages.*.origin.source", type = "text" },
+  { path = "pages.*.origin.url", type = { option = "text" } },
+  { path = "pages.*.origin.reference", type = { option = "text" } },
+  { path = "pages.*.origin.created_ms", type = { option = "int" } },
+  { path = "pages.*.origin.updated_ms", type = { option = "int" } },
+  { path = "pages.*.path", type = { option = "text" }, readonly = true },
   { path = "pages.*.reactions", type = "reactions" },
   { path = "tags", type = { collection = { named = "Tag" } }, stored = "collection" },
   { path = "tags.*.name", type = "text", label = true },
@@ -143,6 +153,7 @@ returns = { schema = { type = "object" } }
 params = [
   { name = "title", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "markdown", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "origin", type = { option = { named = "Origin" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { author = { type = "string" }, created_ms = { type = ["integer", "null"] }, handle = { type = ["string", "null"] }, reference = { type = ["string", "null"] }, source = { type = "string" }, updated_ms = { type = ["integer", "null"] }, url = { type = ["string", "null"] } }, required = ["author", "source"] } },
 ]
 
 [[resources.verbs]]
@@ -153,6 +164,15 @@ params = [
   { name = "markdown", type = "text", required = true, schema = { type = "string" } },
   { name = "images", type = { list = "any" }, required = true, schema = { type = "array", items = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] } } },
   { name = "note", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "path", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "origin", type = { option = { named = "Origin" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { author = { type = "string" }, created_ms = { type = ["integer", "null"] }, handle = { type = ["string", "null"] }, reference = { type = ["string", "null"] }, source = { type = "string" }, updated_ms = { type = ["integer", "null"] }, url = { type = ["string", "null"] } }, required = ["author", "source"] } },
+]
+
+[[resources.verbs]]
+id = "import-markdown-files"
+kind = "undoable"
+params = [
+  { name = "files", type = { list = { named = "MarkdownFile" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { path = { type = "string" }, markdown = { type = "string" }, origin = { type = ["object", "null"], additionalProperties = false, properties = { author = { type = "string" }, created_ms = { type = ["integer", "null"] }, handle = { type = ["string", "null"] }, reference = { type = ["string", "null"] }, source = { type = "string" }, updated_ms = { type = ["integer", "null"] }, url = { type = ["string", "null"] } }, required = ["author", "source"] }, title = { type = ["string", "null"] } }, required = ["path", "markdown"] } } },
 ]
 
 [[resources.verbs]]
@@ -165,11 +185,40 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "write-note"
+kind = "undoable"
+params = [
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
+  { name = "markdown", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "export-markdown-content"
 kind = "read"
 params = [
   { name = "page", type = { option = "text" }, required = false },
   { name = "title", type = { option = "text" }, required = false },
+]
+
+[[resources.types]]
+name = "MarkdownFile"
+fields = [
+  { name = "path", type = "text" },
+  { name = "title", type = { option = "text" } },
+  { name = "markdown", type = "text" },
+  { name = "origin", type = { option = { named = "Origin" } } },
+]
+
+[[resources.types]]
+name = "Origin"
+fields = [
+  { name = "author", type = "text" },
+  { name = "handle", type = { option = "text" } },
+  { name = "source", type = "text" },
+  { name = "url", type = { option = "text" } },
+  { name = "reference", type = { option = "text" } },
+  { name = "created_ms", type = { option = "int" } },
+  { name = "updated_ms", type = { option = "int" } },
 ]
 
 [[resources.types]]
@@ -180,6 +229,9 @@ fields = [
   { name = "body", type = "rich_text" },
   { name = "tags", type = { set = "text" } },
   { name = "creator", type = { option = "text" } },
+  { name = "creator_name", type = "text" },
+  { name = "origin", type = { option = { named = "Origin" } } },
+  { name = "path", type = { option = "text" } },
   { name = "reactions", type = "reactions" },
 ]
 

@@ -17309,6 +17309,55 @@
               "string",
               "null"
             ]
+          },
+          "origin": {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "type": "string"
+              },
+              "created_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "updated_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "author",
+              "source"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -17368,12 +17417,150 @@
               "string",
               "null"
             ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "origin": {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "type": "string"
+              },
+              "created_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "updated_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "author",
+              "source"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
           "title",
           "markdown",
           "images"
+        ],
+        "description": ""
+      },
+      "notes.notebook.import-markdown-files.Arguments": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "markdown": {
+                  "type": "string"
+                },
+                "origin": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "author": {
+                      "type": "string"
+                    },
+                    "created_ms": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "handle": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "reference": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "updated_ms": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "author",
+                    "source"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "markdown"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
         ],
         "description": ""
       },
@@ -17397,6 +17584,22 @@
       },
       "notes.notebook.append-to-note.Result": {
         "type": "object"
+      },
+      "notes.notebook.write-note.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "markdown"
+        ],
+        "description": ""
       },
       "notes.notebook.export-markdown-content.Arguments": {
         "type": "object",
@@ -29039,8 +29242,20 @@
     {
       "app": "so.tilo.notes",
       "resource": "notes.notebook",
+      "action": "import-markdown-files",
+      "arguments": "#/components/schemas/notes.notebook.import-markdown-files.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.notebook",
       "action": "append-to-note",
       "arguments": "#/components/schemas/notes.notebook.append-to-note.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.notebook",
+      "action": "write-note",
+      "arguments": "#/components/schemas/notes.notebook.write-note.Arguments"
     },
     {
       "app": "so.tilo.notes",

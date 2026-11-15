@@ -308,3 +308,114 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
     );
     reader.peer.close();
 }
+
+/// Note `title`'s body as the notebook `reader` holds it, as Markdown.
+fn note_body(reader: &Browser, workspace: &str, title: &str) -> Option<String> {
+    let bytes = reader
+        .peer
+        .engine()
+        .record(workspace, "so.tilo.notes", "")
+        .ok()??;
+    let doc = automerge::AutoCommit::load(&bytes).ok()?;
+    let notebook = <notes::notebook::Notebook as ui::tilo_resource::Resource>::read(&doc).ok()?;
+    let (id, _) = notebook
+        .pages
+        .iter()
+        .find(|(_, note)| note.title == title)?;
+    let body = notes::notebook::body_object(&doc, notes::notebook::page_of(id)?)?;
+    let containers = tilo_doc::model::open(&doc, &body).ok()?;
+    let markdown = tilo_doc_codecs::provider_for_ext("md")?
+        .export(
+            tilo_doc::DocRef {
+                doc: &doc,
+                c: &containers,
+            },
+            &tilo_content::NoContent,
+        )
+        .ok()?;
+    Some(String::from_utf8_lossy(&markdown).into_owned())
+}
+
+/// An agent rewrites a note's whole body with `write-note`, as the host does
+/// when the agent wrote the note's `.md` file in the workspace's folder: the
+/// note reads as the agent wrote it, on a page that joins afterwards. The
+/// workspace takes a change only of a verb the app's committed surface
+/// publishes, so a verb missing there is a change no page ever reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agents_write_note_changes_the_notes_body() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let api = Arc::clone(&on_relay.api);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let token = approved_key(&on_relay, &ada, &page, "Writer").await;
+    let made = post(&api, &token, "/v1/workspaces", &json!({"name": "Company"})).await;
+    let workspace = made["id"].as_str().unwrap().to_owned();
+    let base = format!("/v1/workspaces/{workspace}");
+    post(
+        &api,
+        &token,
+        &format!("{base}/resources/notes/actions/open"),
+        &json!({}),
+    )
+    .await;
+    let notebook = format!("{base}/resources/notes/Notebook/actions");
+    let made = post(
+        &api,
+        &token,
+        &format!("{notebook}/new-note"),
+        &json!({"title": "Terms"}),
+    )
+    .await;
+    let note = made["result"]["page"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{made}"))
+        .to_owned();
+    post(
+        &api,
+        &token,
+        &format!("{notebook}/append-to-note"),
+        &json!({"title": "Terms", "markdown": "Payment due net 30.\n\nLate fees apply."}),
+    )
+    .await;
+    post(
+        &api,
+        &token,
+        &format!("{notebook}/write-note"),
+        &json!({
+            "page": note,
+            "markdown": "Payment due net 30.\n\nLate fees apply after 10 days.\n",
+        }),
+    )
+    .await;
+
+    let invited = post(
+        &api,
+        &token,
+        &format!("{base}/members/invitations"),
+        &json!({"role": "editor"}),
+    )
+    .await;
+    let link = invited["link"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{invited}"))
+        .to_owned();
+    let (rosa, _) = tilo_user_identity::UserIdentity::generate("Rosa", 1);
+    let (rosa_page, _) = accept_invitation(&on_relay, &link, &rosa, "Rosa").await;
+    let reader = open_admitted_peer(&on_relay.hosted, &rosa_page, &on_relay.host, &workspace).await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let body = note_body(&reader, &workspace, "Terms");
+        if body
+            .as_deref()
+            .is_some_and(|body| body.contains("Late fees apply after 10 days."))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the note never read as the agent wrote it: {body:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    reader.peer.close();
+}

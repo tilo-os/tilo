@@ -18,10 +18,27 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "MarkdownFile",
+    "Origin",
     "Page",
     "Tag",
     "Notebook",
 ]
+
+class MarkdownFile(TypedDict):
+    path: str
+    title: str | None
+    markdown: str
+    origin: Origin | None
+
+class Origin(TypedDict):
+    author: str
+    handle: str | None
+    source: str
+    url: str | None
+    reference: str | None
+    created_ms: int | None
+    updated_ms: int | None
 
 class Page(TypedDict):
     title: str
@@ -29,6 +46,9 @@ class Page(TypedDict):
     body: str
     tags: list[str]
     creator: str | None
+    creator_name: str
+    origin: Origin | None
+    path: str | None
     reactions: Any
 
 class Tag(TypedDict):
@@ -36,7 +56,7 @@ class Tag(TypedDict):
 
 class Notebook(Resource):
     """Notebook — `notes.notebook`."""
-    __surface__ = "so.tilo.notes@c5922d65849dc8da"
+    __surface__ = "so.tilo.notes@55275652853310a0"
     pages: list[Page]
     tags: list[Tag]
     @property
@@ -149,12 +169,15 @@ class Notebook(Resource):
         *,
         title: str,
         markdown: str | None = None,
+        origin: Origin | None = None,
     ) -> Any | Run:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["title"] = title
         if markdown is not None:
             args["markdown"] = markdown
+        if origin is not None:
+            args["origin"] = origin
         return self.action("create-page", **args)
 
     def import_markdown(self,
@@ -163,6 +186,8 @@ class Notebook(Resource):
         markdown: str,
         images: list[Any],
         note: str | None = None,
+        path: str | None = None,
+        origin: Origin | None = None,
     ) -> Run | None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -171,7 +196,15 @@ class Notebook(Resource):
         args["images"] = images
         if note is not None:
             args["note"] = note
+        if path is not None:
+            args["path"] = path
+        if origin is not None:
+            args["origin"] = origin
         return self.action("import-markdown", **args)
+
+    def import_markdown_files(self, *, files: list[MarkdownFile]) -> Run | None:
+        """Runs the app's action."""
+        return self.action("import-markdown-files", files=files)
 
     def append_to_note(self,
         *,
@@ -184,6 +217,14 @@ class Notebook(Resource):
             args["title"] = title
         args["markdown"] = markdown
         return self.action("append-to-note", **args)
+
+    def write_note(self,
+        *,
+        page: str,
+        markdown: str,
+    ) -> Run | None:
+        """Runs the app's action."""
+        return self.action("write-note", page=page, markdown=markdown)
 
     def export_markdown_content(self,
         *,

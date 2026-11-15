@@ -20,7 +20,24 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@c5922d65849dc8da";
+export const SURFACE = "so.tilo.notes@55275652853310a0";
+
+export interface MarkdownFile {
+  path: string;
+  title: string | null;
+  markdown: string;
+  origin: Origin | null;
+}
+
+export interface Origin {
+  author: string;
+  handle: string | null;
+  source: string;
+  url: string | null;
+  reference: string | null;
+  created_ms: number | null;
+  updated_ms: number | null;
+}
 
 export interface Page {
   title: string;
@@ -28,6 +45,9 @@ export interface Page {
   body: string;
   tags: string[];
   creator: string | null;
+  creator_name: string;
+  origin: Origin | null;
+  path: string | null;
   reactions: unknown;
 }
 
@@ -96,17 +116,27 @@ export interface Notebook extends tilo.Resource {
   createPage(args: {
     title: string;
     markdown?: string;
+    origin?: Origin;
   }): Promise<unknown | tilo.Run>;
   importMarkdown(args: {
     title: string;
     markdown: string;
     images: unknown[];
     note?: string;
+    path?: string;
+    origin?: Origin;
+  }): Promise<tilo.Run | void>;
+  importMarkdownFiles(args: {
+    files: MarkdownFile[];
   }): Promise<tilo.Run | void>;
   appendToNote(args: {
     markdown: string;
     title?: string;
   }): Promise<unknown | tilo.Run>;
+  writeNote(args: {
+    page: string;
+    markdown: string;
+  }): Promise<tilo.Run | void>;
   exportMarkdownContent(args?: {
     page?: string;
     title?: string;
