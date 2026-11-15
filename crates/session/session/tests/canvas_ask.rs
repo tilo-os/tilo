@@ -109,6 +109,16 @@ fn the_first_ask_on_the_canvas_makes_the_workspaces_agent_and_the_second_goes_to
         places,
         "the second ask stands no place of its own on the canvas either"
     );
+
+    // Two asks are two sends, each carried out once, and the second leaves the first as it was
+    // sent: the agent the first made is named in the second, not written back over the first.
+    let reading = session
+        .read("session:send-to")
+        .expect("the sends' own reading");
+    let sends = reading["sent"].as_array().expect("the sends carried out");
+    assert_eq!(sends.len(), 2, "two asks are two sends: {reading}");
+    assert_eq!(sends[0], first, "the first send reads as it was sent");
+    assert_eq!(sends[1], second, "the second is the last carried out");
 }
 
 /// The agent the steps below are attributed to, as an agent's turn names it.
