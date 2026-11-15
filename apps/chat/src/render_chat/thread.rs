@@ -75,8 +75,7 @@ impl ChatApp {
         self.composer_thread.layout(inner, theme, tr);
         self.composer_thread.set_focus(focused);
         self.composer_thread.draw(scene, tf, tr, theme, presence);
-        if let Some(draft) = self.thread_draft_key() {
-            let key = ChatApp::draft_presence_key(&draft);
+        if let Some(key) = self.composing_key(crate::app::Focus::Thread) {
             Self::draw_draft_presence(&self.composer_thread, &key, scene, tf, tr, theme, presence);
         }
     }

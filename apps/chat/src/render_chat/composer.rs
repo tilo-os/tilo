@@ -71,7 +71,6 @@ impl ChatApp {
         self.composer_main.layout(inner, theme, tr);
         self.composer_main.set_focus(focused);
         self.composer_main.draw(scene, tf, tr, theme, presence);
-        let key = ChatApp::draft_presence_key(&self.active_channel);
         // How a file being shared is doing, while the picker is closed: an
         // upload under way, or why it was not shared.
         let upload = self.attachment_status.as_deref().filter(|status| {
@@ -104,7 +103,10 @@ impl ChatApp {
                 None,
                 &style,
             );
-        } else if self.direct_person().is_none() {
+        } else if let Some(key) = self
+            .composing_key(crate::app::Focus::Main)
+            .filter(|_| self.direct_person().is_none())
+        {
             Self::draw_draft_presence(&self.composer_main, &key, scene, tf, tr, theme, presence);
         }
     }

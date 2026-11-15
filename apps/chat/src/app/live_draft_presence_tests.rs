@@ -31,56 +31,55 @@ fn focused_app(text: &str) -> ChatApp {
     app
 }
 
-/// The composer tells the workspace that its person is writing there, while
-/// they are, and never what or where in their draft.
+/// The composer says its person is writing in the conversation while they are: what changes with
+/// their typing, never what or where in their draft.
 #[test]
-fn focused_composer_publishes_only_that_its_person_is_writing() {
+fn focused_composer_says_only_that_its_person_is_writing() {
+    use ui::presence::capability::{composing_draft, presence_payload};
     let mut app = focused_app("hello team");
-    let key = ChatApp::draft_presence_key(&app.active_channel);
-    app.composer_main.select(5, 5);
-    assert_eq!(
-        ui::presence::capability::presence_payload(&app),
-        Some((key.clone(), PresencePayload::Caret { pos: 0 }))
-    );
+    let key = app.composing_key(Focus::Main).expect("the channel is open");
+    let (at, typed) = composing_draft(&app).expect("a draft under way");
+    assert_eq!(at, key);
     app.composer_main.select(0, 5);
+    assert_eq!(composing_draft(&app), Some((key, typed)));
     assert_eq!(
-        ui::presence::capability::presence_payload(&app),
-        Some((key, PresencePayload::Caret { pos: 0 })),
-        "a selection in the draft is not the workspace's either"
+        presence_payload(&app),
+        None,
+        "no caret in the draft goes out"
     );
     Widget::set_focus(&mut app, false);
-    assert_eq!(ui::presence::capability::presence_payload(&app), None);
+    assert_eq!(composing_draft(&app), None, "a composer left is no draft");
     let mut idle = focused_app("");
     assert_eq!(
-        ui::presence::capability::presence_payload(&idle),
+        composing_draft(&idle),
         None,
-        "an empty composer is not someone writing"
+        "an empty one is not someone writing"
     );
     Widget::set_focus(&mut idle, false);
+    let typed_on = focused_app("hello team!");
+    assert_ne!(composing_draft(&typed_on).map(|draft| draft.1), Some(typed));
 }
 
-/// Someone writing in the same channel shows under the composer; someone
-/// writing in another channel does not.
+/// Someone writing in the same channel shows under the composer until they stop or go quiet;
+/// someone writing in another channel does not.
 #[test]
 fn someone_writing_here_shows_as_typing() {
-    let app = focused_app("hello team");
-    let key = ChatApp::draft_presence_key(&app.active_channel);
-    assert_eq!(
-        crate::render_chat::typing_line(&PresenceCtx::empty(), &key),
-        None
-    );
+    let key = focused_app("").composing_key(Focus::Main).expect("open");
+    let (ada, line) = (MemberId::person("ada"), crate::render_chat::typing_line);
     let mut presence = PresenceCtx::empty();
-    presence.set_display_name(MemberId::person("ada"), "Ada");
-    presence.set_caret(&key, MemberId::person("ada"), 0);
-    assert_eq!(
-        crate::render_chat::typing_line(&presence, &key).as_deref(),
-        Some("Ada is typing…")
-    );
-    let mut elsewhere = PresenceCtx::empty();
-    elsewhere.set_caret(
-        &ChatApp::draft_presence_key("other"),
-        MemberId::person("ada"),
-        0,
-    );
-    assert_eq!(crate::render_chat::typing_line(&elsewhere, &key), None);
+    presence.set_display_name(ada.clone(), "Ada");
+    let mut say = |at: &ui::presence::PresenceKey, composing| {
+        let payload = PresencePayload::Composing { composing };
+        presence.apply_remote_presence(ada.clone(), at.clone(), payload);
+        line(&presence, &key)
+    };
+    assert_eq!(say(&key, true).as_deref(), Some("Ada is typing…"));
+    assert_eq!(say(&key, false), None);
+    let elsewhere = ui::presence::PresenceKey::resource("so.tilo.chat", "other", "TextChannel");
+    assert_eq!(say(&elsewhere, true), None);
+    say(&key, true);
+    let quiet = ui::time::now() + ui::presence::COMPOSING_LINGER;
+    ui::time::testing::with_monotonic_time(quiet, || {
+        assert_eq!(line(&presence, &key), None, "someone gone quiet drops out");
+    });
 }

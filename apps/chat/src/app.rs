@@ -2663,17 +2663,31 @@ impl ChatApp {
 }
 
 impl ui::presence::capability::PublishesPresence for ChatApp {
-    /// That its person is writing in a composer, else which voice channel
-    /// they are in: what the others' sidebars show under it.
+    /// Which voice channel its person is in: what the others' sidebars show under it.
     fn presence_payload(&self) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
-        self.composer_presence().or_else(|| {
-            (self.in_call() && !self.call.channel.is_empty()).then(|| {
-                (
-                    Self::voice_presence_key(&self.call.channel),
-                    ui::PresencePayload::Caret { pos: 0 },
-                )
-            })
+        (self.in_call() && !self.call.channel.is_empty()).then(|| {
+            (
+                Self::voice_presence_key(&self.call.channel),
+                ui::PresencePayload::Caret { pos: 0 },
+            )
         })
+    }
+
+    /// The draft in the focused composer while its person writes it (not an inline edit or
+    /// rename): where, and a number that changes as they type, never what it says.
+    fn composing_draft(&self) -> Option<(ui::presence::PresenceKey, u64)> {
+        if !self.host_focused
+            || self.editing.is_some()
+            || !self.can_participate()
+            || self.direct_person().is_some()
+        {
+            return None;
+        }
+        let text = self.focused_composer().value();
+        if text.trim().is_empty() {
+            return None;
+        }
+        Some((self.composing_key(self.focus)?, ui::a11y::hash_key(&text)))
     }
 }
 

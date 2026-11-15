@@ -343,6 +343,10 @@ impl ui::presence::capability::PublishesPresence for ChatWindow {
     fn presence_payload(&self) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
         self.chat.borrow().presence_payload()
     }
+
+    fn composing_draft(&self) -> Option<(ui::presence::PresenceKey, u64)> {
+        self.chat.borrow().composing_draft()
+    }
 }
 
 impl ui::view::capability::ViewState for ChatWindow {

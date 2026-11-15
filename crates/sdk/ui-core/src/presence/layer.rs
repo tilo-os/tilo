@@ -9,10 +9,11 @@
 //!   compares it with the layer on screen, so a peer's pointer moving
 //!   damages where it was and where it is, and a pointer that sits still
 //!   damages nothing.
-//! - **Inside the widgets**, carets, selections, typing marks, focus rings
-//!   and presence dots are painted by whichever widget owns the content. No
-//!   widget reports damage for them, so a change to anything a widget can
-//!   paint from ([`WidgetPresence`]) repaints the window, exactly as before.
+//! - **Inside the widgets**, carets, selections, typing marks, "… is
+//!   typing" lines, focus rings and presence dots are painted by whichever
+//!   widget owns the content. No widget reports damage for them, so a
+//!   change to anything a widget can paint from ([`WidgetPresence`])
+//!   repaints the window, exactly as before.
 //!   While widgets show marks placed from their content (a caret and its
 //!   name chip), a frame in which any widget changed repaints the window
 //!   too ([`WidgetPresence::marks_follow_content`]).
@@ -45,6 +46,9 @@ pub struct WidgetPresence {
     names: HashMap<MemberId, String>,
     statuses: HashMap<MemberId, crate::live_collaboration::LiveStatus>,
     typing: HashMap<(MemberId, PresenceKey), Vec<TypingMark>>,
+    /// Who is composing a message where, as the host last pruned it
+    /// ([`PresenceCtx::prune_composing`]): a conversation's "… is typing".
+    composing: HashSet<(PresenceKey, MemberId)>,
     views: HashMap<MemberId, crate::view::ViewSubset>,
     own: HashSet<MemberId>,
     self_participant: Option<(MemberId, String)>,
@@ -91,6 +95,7 @@ impl PresenceCtx {
             names: self.names.clone(),
             statuses: self.statuses.clone(),
             typing: self.typing.clone(),
+            composing: self.composing.keys().cloned().collect(),
             views: self.views.clone(),
             own: self.own.clone(),
             self_participant: self.self_participant.clone(),
@@ -98,6 +103,19 @@ impl PresenceCtx {
             animating: self.has_visible_interactions(now),
             typing_steps: self.typing_steps(now),
         }
+    }
+
+    /// When what widgets paint from presence next changes with nothing arriving: a "just typed"
+    /// mark steps down its fade, or a composer gone quiet drops out of "… is typing". The host
+    /// sleeps until then, paints once and prunes ([`Self::prune_composing`]).
+    #[must_use]
+    pub fn widgets_change_at(&self, now: Instant) -> Option<Instant> {
+        self.typing
+            .values()
+            .flatten()
+            .filter_map(|m| crate::motion::Trace::next_step(m.born, now))
+            .chain(self.composing_ends())
+            .min()
     }
 }
 

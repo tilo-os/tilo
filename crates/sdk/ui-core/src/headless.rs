@@ -2576,6 +2576,7 @@ impl FrameHarness {
                 .iter()
                 .filter_map(|root| root.next_wake_deadline())
                 .chain(self.presence.interaction_next_wake_deadline(now))
+                .chain(self.presence.widgets_change_at(now))
                 .chain(self.tooltips.schedule().1)
                 .min();
             FrameSchedule {
@@ -2856,6 +2857,7 @@ impl FrameHarness {
         if due {
             self.invalidate_local();
         }
+        self.presence.prune_composing(crate::time::now());
         self.polls_frames = true;
         if !self.tick_is_idle() {
             self.host_tick();

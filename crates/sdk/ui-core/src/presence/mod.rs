@@ -633,10 +633,6 @@ pub struct PresenceCtx {
     /// voice channel they are in there, keyed by the workspace and the
     /// person: one person says it to each workspace on their own terms.
     availability: HashMap<(String, MemberId), (crate::Availability, Option<String>)>,
-    /// The workspace in front, which [`Self::availability_of`]
-    /// and [`Self::call_of`] read. A context that hears one workspace needs
-    /// none: what it heard is that workspace's.
-    workspace_in_front: Option<String>,
     /// Who is composing a message in which resource, and since when: the resource's key, the
     /// person, and the instant they last said so. A composer that stops, or a window that
     /// closes, says `composing: false`; one gone quiet without a word drops out after
@@ -1173,7 +1169,7 @@ impl PresenceCtx {
     /// delayed. Only the pointer goes — the peer stays in [`Self::here`],
     /// since going quiet about pointing is not leaving — and with it the
     /// peer's [`Self::remote_cursors`] record of that pointer, as
-    /// [`Self::clear_pointer`] does, so a peer that vanished leaves nothing
+    /// a pointer's removal does, so a peer that vanished leaves nothing
     /// for a window to keep repainting.
     pub fn prune_pointers(&mut self, now: Instant, horizon: Duration) -> bool {
         let seen = &mut self.pointer_seen;
@@ -1253,21 +1249,14 @@ impl PresenceCtx {
         crate::motion::Follow::fading(left, fade)
     }
 
-    /// Name the workspace in front: the one
-    /// [`Self::availability_of`] and [`Self::call_of`] answer for.
-    pub fn set_workspace_in_front(&mut self, workspace: Option<String>) {
-        self.workspace_in_front = workspace;
-    }
-
-    /// What `user` said in `workspace`, or, with no workspace named, in the workspace in
-    /// front ([`Self::set_workspace_in_front`]), else in the one workspace this
+    /// What `user` said in `workspace`, or, with no workspace named, in the one workspace this
     /// context hears.
     fn said(
         &self,
         workspace: Option<&str>,
         user: &MemberId,
     ) -> Option<&(crate::Availability, Option<String>)> {
-        match workspace.or(self.workspace_in_front.as_deref()) {
+        match workspace {
             Some(workspace) => self.availability.get(&(workspace.to_owned(), user.clone())),
             None => self
                 .availability
@@ -1682,17 +1671,6 @@ impl PresenceCtx {
     #[must_use]
     pub fn has_typing_marks(&self) -> bool {
         !self.typing.is_empty()
-    }
-
-    /// When the next typing mark steps down its fade (or ends): the host
-    /// sleeps until then and paints once, instead of pumping frames through
-    /// the fade.
-    pub fn typing_next_step(&self, now: Instant) -> Option<Instant> {
-        self.typing
-            .values()
-            .flatten()
-            .filter_map(|m| crate::motion::Trace::next_step(m.born, now))
-            .min()
     }
 
     /// Every visible typing mark's fade step at `now`, in order: what the
@@ -2115,25 +2093,6 @@ impl PresenceCtx {
 
     /// Drop every trace of `member`, on an actual disconnect (not `Left`,
     /// which is just the pointer leaving the viewport — see the arm above).
-    /// Stop drawing `member`'s pointer, wherever it was, without touching
-    /// anything else about them: they are still here, just not pointing at
-    /// anything this device can show. Returns whether a pointer went.
-    pub fn clear_pointer(&mut self, member: &MemberId) -> bool {
-        let uid = member.clone();
-        let before = self.pointers.values().map(Vec::len).sum::<usize>();
-        for list in self.pointers.values_mut() {
-            list.retain(|(u, _)| u != &uid);
-        }
-        self.pointers.retain(|_, list| !list.is_empty());
-        self.pointer_seen.retain(|(_, u), _| u != &uid);
-        self.pointer_glides.retain(|(_, u), _| u != &uid);
-        self.pointer_moved.retain(|(_, u), _| u != &uid);
-        let cursors = self.remote_cursors.len();
-        self.remove_remote_cursor(member);
-        before != self.pointers.values().map(Vec::len).sum::<usize>()
-            || cursors != self.remote_cursors.len()
-    }
-
     pub fn unregister_peer(&mut self, member: &MemberId) {
         let uid = member.clone();
         self.availability.retain(|(_, who), _| *who != uid);
@@ -2911,7 +2870,7 @@ mod string_id_wrapper_tests {
                 );
                 assert!(ctx.has_active_typing(mid));
                 assert_eq!(
-                    ctx.typing_next_step(mid),
+                    ctx.widgets_change_at(mid),
                     Some(t0 + TYPING_FADE / 2 + TYPING_FADE / TYPING_FADE_STEPS),
                     "the fade wakes the host at its next step, not every frame"
                 );
