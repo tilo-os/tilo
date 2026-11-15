@@ -26,8 +26,8 @@ const DESKTOP_PROVIDER: &str = "test-desktop";
 #[derive(Default)]
 struct Desktop {
     started: Mutex<Vec<String>>,
-    /// Whether its steps are a task agent's steps of its run.
-    for_tasks: bool,
+    /// Whether its steps are an agent session's own.
+    for_agent_sessions: bool,
     /// Whether its steps are a turn's (the session's own, as a session's shell publishes them).
     for_turns: bool,
 }
@@ -39,8 +39,8 @@ impl crate::services::HostStepServices for Desktop {
     fn app_id(&self) -> &'static str {
         "so.tilo.desktop"
     }
-    fn for_tasks(&self) -> bool {
-        self.for_tasks
+    fn for_agent_sessions(&self) -> bool {
+        self.for_agent_sessions
     }
     fn for_turns(&self) -> bool {
         self.for_turns
@@ -409,7 +409,7 @@ async fn an_agent_session_takes_host_and_session_steps_while_it_goes() {
 
 /// The shell's sheet, as a test answers it: what it was asked, and what it took back.
 #[derive(Default)]
-struct Shell {
+pub(super) struct Shell {
     asked: Mutex<Vec<crate::app_actions::AppActionConsentRequest>>,
     answers: Mutex<Vec<tokio::sync::oneshot::Sender<crate::app_actions::AppActionAnswer>>>,
     withdrawn: Mutex<Vec<String>>,
@@ -433,7 +433,7 @@ impl crate::app_actions::AppActionConsentPrompter for Shell {
 
 impl Shell {
     /// The question the sheet shows next, once it is up.
-    async fn shown(&self, count: usize) -> crate::app_actions::AppActionConsentRequest {
+    pub(super) async fn shown(&self, count: usize) -> crate::app_actions::AppActionConsentRequest {
         for _ in 0..500 {
             if let Some(asked) = self.asked.lock().unwrap().get(count.saturating_sub(1)) {
                 return asked.clone();
@@ -444,7 +444,7 @@ impl Shell {
     }
 
     /// The person answers the question up last with `consent`.
-    fn answer(&self, consent: crate::app_actions::AppActionConsent) {
+    pub(super) fn answer(&self, consent: crate::app_actions::AppActionConsent) {
         let answer = self
             .answers
             .lock()
@@ -457,6 +457,12 @@ impl Shell {
 
 /// A session whose person asks first about Notes: the question goes to the shell's sheet.
 fn asking_on_the_shell(f: &Fixture, agent: &SessionAgent) -> Arc<Shell> {
+    asking_about_notes(f, &agent.delegation.agent_id)
+}
+
+/// A workspace whose person asks first about Notes for `agent`: the question goes to the shell's
+/// sheet.
+pub(super) fn asking_about_notes(f: &Fixture, agent: &str) -> Arc<Shell> {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     let shell = Arc::new(Shell::default());
     f.state.set_app_action_consent(shell.clone());
@@ -464,7 +470,7 @@ fn asking_on_the_shell(f: &Fixture, agent: &SessionAgent) -> Arc<Shell> {
         f,
         agent_answers::grant(
             &workspace_id().to_string(),
-            &agent.delegation.agent_id,
+            agent,
             (
                 &AnswerScope::app("so.tilo.notes"),
                 tilo_action_policy::ActionKind::Undoable,

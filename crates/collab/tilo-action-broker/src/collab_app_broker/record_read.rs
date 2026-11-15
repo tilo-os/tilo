@@ -9,11 +9,6 @@
 //! person's read of the record. The capture's revalidation decides the agent's read again
 //! before every chunk it hands out. What leaves the broker is the record's committed content,
 //! read-only: the record channel's keys stay here, and nothing in a read writes to the record.
-//!
-//! A task agent is no member: it works in its task's run. Its reads and changes ([`RunRecords`],
-//! the door's connection's and a launched task agent's programs alike) are steps of the run,
-//! admitted as its other steps are (the run's delegation, its issue's and its starter's live
-//! grants, only while it goes), then read and applied as the run's agent for its starter.
 
 use std::sync::{Arc, Weak};
 
@@ -150,78 +145,6 @@ fn apply_record_change(
         .apply(workspace, change, &invoker)
         .map_err(unavailable)
 }
-
-/// A task run's reads and changes of records outside their apps: admitted by
-/// the run, as every other step of it is (its delegation, its issue's and its
-/// starter's live grants decide, only while it goes), then read and applied
-/// as the run's agent acting for its starter. The MCP server's connection
-/// and a launched task agent's programs reach records through it alike.
-pub(super) struct RunRecords(pub(super) super::TaskRunHost);
-
-impl RecordChanges for RunRecords {
-    fn apply(
-        &self,
-        caller: &Caller,
-        change: &RecordChange,
-    ) -> Result<serde_json::Value, ActionHostError> {
-        let host = &self.0;
-        host.admit_record_step(
-            caller,
-            (&change.app, &change.resource, &change.action),
-            ActionKind::Undoable,
-        )?;
-        apply_record_change(
-            host.state(),
-            host.workspace(),
-            change,
-            (host.agent(), host.person(), caller.agent_name()),
-        )
-    }
-}
-
-impl RecordReads for RunRecords {
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: tilo_actions::remote::RecordReadRequest,
-    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    fn read(
-        &self,
-        caller: &Caller,
-        address: &RecordAddress,
-    ) -> Result<RecordCopy, ActionHostError> {
-        let host = &self.0;
-        let read = (address.app.clone(), address.record.clone());
-        host.admit_record_step(
-            caller,
-            (&read.0, &read.1, RECORD_READ_ACTION),
-            ActionKind::Read,
-        )?;
-        let checked = (host.clone(), caller.clone());
-        let revalidate = Arc::new(move || {
-            let (host, caller) = &checked;
-            host.admit_record_step(
-                caller,
-                (&read.0, &read.1, RECORD_READ_ACTION),
-                ActionKind::Read,
-            )
-            .map_err(|_| "record read no longer allowed".to_owned())
-        });
-        read_record(
-            host.state(),
-            (host.person(), host.workspace()),
-            address,
-            revalidate,
-        )
-    }
-}
-
-/// The action a record read is decided as, on the record's node.
-const RECORD_READ_ACTION: &str = "read";
 
 /// The person an agent task acts for, when `caller` is one: an agent the host admitted as a
 /// member acting for its person, confined to a workspace.

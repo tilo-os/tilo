@@ -9,16 +9,15 @@ use std::sync::Arc;
 
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 
+mod agent_sessions;
 mod own_device;
-mod task_execution;
 mod workspace_nodes;
 
-pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
-pub use task_execution::{
-    AGENT_SESSION_PREFIX, AgentRoster, AgentSessions, GoingSession, ListedAgent,
-    NativeTaskActionRequirement, NativeTaskBinding, TrackerRun, TrackerRuns, is_agent_session,
-    is_conversation_turn, issue_answer_id, issue_answer_scope, issue_answers,
+pub use agent_sessions::{
+    AGENT_SESSION_PREFIX, AgentRoster, AgentSessions, AgentTurn, GoingSession, ListedAgent,
+    is_agent_session, session_answer_id, session_answer_scope,
 };
+pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use workspace_nodes::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
 
 /// Current native seat identity, installed only by the authenticated host.

@@ -721,20 +721,6 @@ impl AppActionBroker {
         self.state.stop_shortcut_runs(workspace, request, reason)
     }
 
-    /// Agent runs of workspace tasks that ended since the last call, oldest
-    /// first, for the history recorder to record against the documents they
-    /// changed.
-    #[must_use]
-    pub fn take_ended_task_runs(&self) -> Vec<crate::task_runs::EndedTaskRun> {
-        self.state.take_ended_task_runs()
-    }
-
-    /// Whether an ended task run is waiting to be taken, without taking it.
-    #[must_use]
-    pub fn has_ended_task_runs(&self) -> bool {
-        self.state.has_ended_task_runs()
-    }
-
     /// Run saved shortcut `shortcut` in `workspace` for `caller`, who is at the
     /// screen; its confirmations and questions wait for the compositor's
     /// sheet ([`Self::take_step_prompt`]). Answers with the broker job the
@@ -849,13 +835,6 @@ impl AppActionBroker {
     pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
         self.state
             .while_live(|state| Ok(state.can_cancel(id, actor)))
-            .unwrap_or(false)
-    }
-
-    /// True only while the named admitted agent has a live task subscription.
-    pub fn agent_is_live_task_capable(&self, workspace: &str, agent: &str) -> bool {
-        self.state
-            .while_live(|state| Ok(state.agent_is_live_task_capable(workspace, agent)))
             .unwrap_or(false)
     }
 

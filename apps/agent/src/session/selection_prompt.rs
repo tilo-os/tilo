@@ -20,8 +20,8 @@ const MOST_NAMED: usize = 6;
 /// `run`'s request as the model reads it: the instruction, then the
 /// selection it is about, when it is about one, with the operations of
 /// `catalogue` that act at a place in it.
-pub(super) fn task_request(run: &runtime_collab::TaskRunEnvelope, catalogue: &Catalogue) -> String {
-    let instruction = run.instruction().trim();
+pub(super) fn task_request(run: &runtime_collab::TurnRequest, catalogue: &Catalogue) -> String {
+    let instruction = run.instruction.trim();
     let Some(subject) = run
         .subject
         .as_ref()
@@ -228,22 +228,13 @@ mod tests {
         }
     }
 
-    fn run(subject: Option<SelectionSubject>) -> runtime_collab::TaskRunEnvelope {
-        let context = tilo_actions::ActionContext::default()
-            .with_purpose("Tighten this")
-            .with_group("task:1", "Tighten this", "task");
-        runtime_collab::TaskRunEnvelope {
-            version: 1,
-            task_id: "task:1".into(),
-            presentation_version: None,
+    fn run(subject: Option<SelectionSubject>) -> runtime_collab::TurnRequest {
+        runtime_collab::TurnRequest {
+            message: "chat.workspace/channels/c/messages/m".into(),
             title: "Tighten this".into(),
-            instruction: Some("Tighten this sentence".into()),
+            instruction: "Tighten this sentence".into(),
             subject,
-            run_id: 1,
-            lease: "lease".into(),
-            planning: runtime_collab::TaskRunPlanning::Model,
             spend: None,
-            action_context: serde_json::to_value(context).unwrap(),
         }
     }
 

@@ -61,7 +61,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 terminal(&f.sent.borrow()),
-                runtime_collab::TaskRunUpdate::Succeeded { message }
+                TurnUpdate::Succeeded { message }
                     if message.contains("Three things")
             ),
             "the corrected turn completes the task: {:?}",
@@ -96,7 +96,7 @@ tilo_test_env::scenario! {
             !f.sent
                 .borrow()
                 .iter()
-                .any(|request| matches!(request, CollabRequest::InvokeTaskAction { .. })),
+                .any(|request| invoked(request).is_some()),
             "no action was asked of the application"
         );
         assert_eq!(
@@ -135,7 +135,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 terminal(&f.sent.borrow()),
-                runtime_collab::TaskRunUpdate::Failed { message }
+                TurnUpdate::Failed { message }
                     if message == "The model's answer could not be used."
             ),
             "the run ends and the conversation shows why, in a person's sentence: {:?}",
@@ -175,7 +175,7 @@ tilo_test_env::scenario! {
         );
         assert!(matches!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded { .. }
+            TurnUpdate::Succeeded { .. }
         ));
     }
 }
@@ -225,10 +225,7 @@ fn an_operation_written_inside_parameters_is_named_back_and_the_task_finishes() 
         "and how the call is written: {answer}"
     );
     assert!(
-        matches!(
-            terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded { .. }
-        ),
+        matches!(terminal(&f.sent.borrow()), TurnUpdate::Succeeded { .. }),
         "the task finishes, never on a failed turn: {:?}",
         terminal(&f.sent.borrow())
     );

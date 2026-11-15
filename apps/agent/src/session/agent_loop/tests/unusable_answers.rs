@@ -52,7 +52,7 @@ fn an_answer_the_provider_failed_while_writing_is_asked_again_with_the_reason() 
     assert!(
         matches!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded { message }
+            TurnUpdate::Succeeded { message }
                 if message.contains("Two tasks")
         ),
         "the answer asked again completes the task: {:?}",
@@ -90,7 +90,7 @@ fn an_answer_that_could_not_be_read_is_asked_again_with_the_reason() {
     );
     assert!(matches!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded { .. }
+        TurnUpdate::Succeeded { .. }
     ));
 }
 
@@ -112,7 +112,7 @@ fn a_provider_that_keeps_failing_ends_the_task_after_a_bounded_number_of_asks() 
     assert!(
         matches!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Failed { message }
+            TurnUpdate::Failed { message }
                 if message == "The model's provider failed. Try again."
         ),
         "{:?}",
@@ -141,7 +141,7 @@ fn a_refused_credential_is_not_asked_again() {
     assert_eq!(f.script.bodies.lock().unwrap().len(), 1);
     assert!(matches!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { .. }
+        TurnUpdate::Failed { .. }
     ));
 }
 
@@ -203,7 +203,7 @@ fn a_call_id_the_provider_reuses_from_an_earlier_turn_is_read_not_refused() {
     assert!(
         matches!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded { message }
+            TurnUpdate::Succeeded { message }
                 if message.contains("Two tasks")
         ),
         "the answer under a reused id is the run's: {:?}",

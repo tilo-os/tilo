@@ -48,10 +48,10 @@ impl<'a> Authority<'a> {
         // person it runs for, and its steps are that person's grants. One that
         // runs for nobody allows nothing.
         let owned = !acting.acted_for.is_empty();
-        // The answers a person gave for the work that caused the acting (its
-        // issue) decide for the whole tree, as the agent's own do.
+        // The answers a person gave the agent session that caused the acting decide for the
+        // whole tree, as the agent's own do.
         let answers: Vec<&Grant> = match &acting.cause {
-            Some(cause) => crate::issue_answers(&policy.grants, cause.as_str()).collect(),
+            Some(cause) => crate::session_answers(&policy.grants, cause.as_str()).collect(),
             None => Vec::new(),
         };
         for node in acting.nodes() {
@@ -195,7 +195,7 @@ pub fn admit_invocation(
 mod tests {
     use super::*;
     use crate::{
-        Acting, ActionKind, Answer, Context, Grant, ISSUE_ANSWER_PREFIX, KindSet, Role, Verdict,
+        Acting, ActionKind, Answer, Context, Grant, KindSet, Role, SESSION_ANSWER_PREFIX, Verdict,
         roles,
     };
 
@@ -305,9 +305,9 @@ mod tests {
             );
         }
 
-        phase an_issues_answers_decide_the_work_it_caused_and_no_other;
+        phase a_sessions_answers_decide_its_steps_and_no_other;
         {
-            let issue = "tasks.tracker/issues/release";
+            let session = "so.tilo.session/agent-session/release";
             let mut policy = policy();
             policy.grants.push(Grant::new(
                 "scribe-asks",
@@ -318,7 +318,7 @@ mod tests {
                 Grantee::person("owner"),
             ));
             policy.grants.push(Grant::new(
-                format!("{ISSUE_ANSWER_PREFIX}{issue}:app:so.tilo.notes:undoable"),
+                format!("{SESSION_ANSWER_PREFIX}{session}:app:so.tilo.notes:undoable"),
                 Grantee::agent("scribe"),
                 app(),
                 KindSet::UNDOABLE,
@@ -327,19 +327,19 @@ mod tests {
             ));
             let run = Acting::agent("scribe")
                 .acting_for(Acting::person("editor"))
-                .caused_by(issue);
+                .caused_by(session);
             assert_eq!(
                 answer(&run, &policy, &[], ActionKind::Undoable),
                 Answer::Allow,
-                "the person's answer for the issue decides its work"
+                "the person's answer for the session decides its steps"
             );
             let another = Acting::agent("scribe")
                 .acting_for(Acting::person("editor"))
-                .caused_by("tasks.tracker/issues/other");
+                .caused_by("so.tilo.session/agent-session/other");
             assert_eq!(
                 answer(&another, &policy, &[], ActionKind::Undoable),
                 Answer::Ask,
-                "another issue's answers decide nothing here"
+                "another session's answers decide nothing here"
             );
         }
 

@@ -1,11 +1,12 @@
-//! One agent session's connection to the broker, as the session's MCP server serves an admitted
-//! client.
+//! One agent session's door to the broker: an MCP client the session's MCP server admitted, or an
+//! agent answering a turn ([`super::turns`]).
 //!
-//! The connection joins as the agent its certificate names, certified by a device of the person
-//! who admitted it, and is then served as any admitted connection is ([`ConnectionActionHost`]):
-//! the workspace's grants decide each step, the agent capped at what its person may do and at what
-//! a device lets its agents do, and only while the session goes
-//! ([`AppBrokerState::agent_session_goes`]).
+//! An MCP connection joins as the agent its certificate names, certified by a device of the person
+//! who admitted it; a turn's agent acts as its connection was handed the turn. Either is then
+//! served as any admitted connection is ([`ConnectionActionHost`]): the workspace's grants decide
+//! each step, the agent capped at what its person may do and at what a device lets its agents do,
+//! and only while the session goes ([`AppBrokerState::agent_session_goes`],
+//! [`AppBrokerState::turn_session_goes`]).
 //!
 //! A step the grants ask first about is put to the person on the host's sheet
 //! ([`crate::app_actions::AppActionConsentPrompter`]), the same sheet apps' questions use:
@@ -38,12 +39,18 @@ struct Inner {
     host: ConnectionActionHost,
     caller: Caller,
     workspace: String,
-    cert: AgentCert,
+    agent: String,
+    session: String,
+    /// The certificate an MCP connection joined with; `None` for a turn's agent.
+    cert: Option<AgentCert>,
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        self.caller.retire_execution();
+        // An MCP connection's execution ends with it; a turn's ends with the turn.
+        if self.cert.is_some() {
+            self.caller.retire_execution();
+        }
     }
 }
 
@@ -54,8 +61,8 @@ pub struct AgentConnection(Arc<Inner>);
 impl std::fmt::Debug for AgentConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentConnection")
-            .field("agent", &self.0.cert.agent_id)
-            .field("session", &self.0.cert.session)
+            .field("agent", &self.0.agent)
+            .field("session", &self.0.session)
             .finish_non_exhaustive()
     }
 }
@@ -114,7 +121,33 @@ impl AppBrokerState {
             host,
             caller,
             workspace,
-            cert,
+            agent: cert.agent_id.clone(),
+            session: cert.session.clone(),
+            cert: Some(cert),
+        })))
+    }
+
+    /// The door `caller`, an agent in an agent session, takes its steps through, on a connection
+    /// admitted as `origin`. `None` for a caller in no agent session.
+    pub(super) fn agent_session_door(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: InvocationCaller,
+    ) -> Option<AgentConnection> {
+        let acting = caller.acting();
+        let (session, agent) = acting.agent_session.as_ref().zip(acting.agent_id())?;
+        let workspace = caller.workspace()?.to_owned();
+        Some(AgentConnection(Arc::new(Inner {
+            host: ConnectionActionHost {
+                state: Arc::clone(self),
+                own_peer: self.next_peer_id(),
+                origin,
+            },
+            caller: caller.clone(),
+            workspace,
+            agent: agent.to_owned(),
+            session: session.as_str().to_owned(),
+            cert: None,
         })))
     }
 }
@@ -135,9 +168,14 @@ impl AgentConnection {
 
     /// Whether the session still goes: the connection's authority ends with it.
     fn goes(&self) -> Result<(), String> {
-        self.state()
-            .agent_session_goes(&self.0.workspace, &self.0.cert)
-            .map(drop)
+        match &self.0.cert {
+            Some(cert) => self.state().agent_session_goes(&self.0.workspace, cert),
+            None => {
+                self.state()
+                    .turn_session_goes(&self.0.workspace, &self.0.agent, &self.0.session)
+            }
+        }
+        .map(drop)
     }
 
     /// The caller is one of this connection's, still live.
@@ -170,7 +208,7 @@ impl AgentConnection {
         let prompter = state.consent_prompter().ok_or_else(nobody)?;
         let mut asked = question.request.clone();
         asked.handle = format!("{AGENT_SESSION_ASK}{}", request.invocation.0);
-        asked.agent_session = Some(self.0.cert.session.clone());
+        asked.agent_session = Some(self.0.session.clone());
         let label = asked.action_label.clone();
         let handle = asked.handle.clone();
         let answer = prompter.ask(asked).ok_or_else(nobody)?;
@@ -188,7 +226,7 @@ impl AgentConnection {
             question.answer.clone(),
             state.services.agent_sessions.as_ref(),
         ) {
-            sessions.keep_answer(&self.0.cert.session, grant);
+            sessions.keep_answer(&self.0.session, grant);
         }
         state.witness_answer(&question, request, &answer.edits)
     }

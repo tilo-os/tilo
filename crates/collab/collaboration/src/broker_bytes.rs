@@ -193,23 +193,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(&address.action);
             serialized_bytes(update, &mut meter);
         }
-        CollabRequest::ReportTaskRun { lease, update, .. } => {
-            meter.string_capacity(lease);
-            serialized_bytes(update, &mut meter);
-        }
-        CollabRequest::InvokeTaskAction {
-            lease,
-            resource,
-            action,
-            arguments,
-            ..
-        } => {
-            meter.string_capacity(lease);
-            meter.string_capacity(resource);
-            meter.string_capacity(action);
-            json_map_bytes(arguments, &mut meter);
-        }
-        CollabRequest::TaskRunCancellation { lease, .. } => meter.string_capacity(lease),
     }
     meter.finish()
 }
@@ -431,13 +414,6 @@ fn scrollback_batch_bytes(
     }
 }
 
-fn task_run_bytes(run: &runtime_collab::TaskRunEnvelope, meter: &mut ByteMeter) {
-    meter.string_capacity(&run.task_id);
-    meter.string_capacity(&run.title);
-    meter.string_capacity(&run.lease);
-    json_bytes(&run.action_context, meter);
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "one exhaustive event meter must account for every bounded queue variant without a permissive fallback"
@@ -613,29 +589,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
                 Err(error) => meter.string_capacity(error),
             }
             "InstalledApplicationLaunchResult"
-        }
-        CollabEvent::TaskActionInvocationResult { result, .. } => {
-            match result {
-                Ok((_, update)) => serialized_bytes(update, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "TaskActionInvocationResult"
-        }
-        CollabEvent::TaskRun(run) => {
-            task_run_bytes(run, &mut meter);
-            "TaskRun"
-        }
-        CollabEvent::TaskRunCancellation { result, .. } => {
-            if let Err(error) = result {
-                meter.string_capacity(error);
-            }
-            "TaskRunCancellation"
-        }
-        CollabEvent::TaskRunReportResult { result, .. } => {
-            if let Err(error) = result {
-                meter.string_capacity(error);
-            }
-            "TaskRunReportResult"
         }
         CollabEvent::WorkspaceControl { event, .. } => {
             workspace_control_event_bytes(event, &mut meter);

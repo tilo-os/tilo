@@ -21,14 +21,110 @@ pub(crate) use agent_loop::Failure;
 
 mod confirmation;
 mod conversation;
-mod native_task;
-mod outstanding;
 mod planning;
 mod selection_prompt;
+mod steps;
 
 /// How long a task waits for the broker's pushed action catalogue.
 const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
-const TASK_ACTION_WAIT: Duration = Duration::from_secs(30);
+/// A turn the broker handed this agent: its answer, invoked with what the person asked.
+#[derive(Clone, Debug)]
+pub struct Asked {
+    /// The handle the broker delivered the answer under: what its updates name.
+    pub id: u64,
+    /// The answer's own invocation.
+    pub invocation: tilo_actions::InvocationId,
+    /// What the person asked, and what the agent may spend on it.
+    pub asked: runtime_collab::TurnRequest,
+    /// The context the host invoked the answer with: whom the agent acts for.
+    pub context: Option<tilo_actions::ActionContext>,
+}
+
+impl std::ops::Deref for Asked {
+    type Target = runtime_collab::TurnRequest;
+
+    fn deref(&self) -> &Self::Target {
+        &self.asked
+    }
+}
+
+impl Asked {
+    /// The person's words.
+    #[must_use]
+    pub fn instruction(&self) -> &str {
+        &self.asked.instruction
+    }
+}
+
+/// How a turn stands, as the agent tells its conversation and the broker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TurnUpdate {
+    Accepted,
+    Progress {
+        message: String,
+    },
+    Succeeded {
+        message: String,
+    },
+    Failed {
+        message: String,
+    },
+    Cancelled {
+        message: String,
+    },
+    /// What the turn spent by now, in millionths of the currency, as the model gateway charged
+    /// it: the turn's total, not the last call's.
+    Spent {
+        cost_micros: u64,
+    },
+}
+
+/// What a turn's answer reports beside its progress: what it spent by now.
+fn spent_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["spent"],
+        "properties": { "spent": { "type": "integer", "minimum": 0 } }
+    })
+}
+
+/// How the agent answers a turn, as it publishes it: the host alone invokes it, with what the
+/// person asked, and follows it to the reply; what the turn spent comes back as its items.
+#[must_use]
+pub fn answer_descriptor() -> tilo_actions::ActionDescriptor {
+    let mut contract = tilo_actions::ActionContract {
+        kind: tilo_actions::ActionKind::Read,
+        execution: tilo_actions::ExecutionMode::Streaming {
+            cancellable: true,
+            item_schema: spent_schema(),
+        },
+        result: tilo_actions::ResultSpec::Job,
+        ..tilo_actions::ActionContract::default()
+    };
+    contract.set_audience(tilo_actions::Audience::Agents);
+    tilo_actions::ActionDescriptor {
+        did: None,
+        state: tilo_actions::ActionState::default(),
+        semantic_identity: None,
+        address: tilo_actions::ActionAddress::new(
+            runtime_collab::TURN_RESOURCE,
+            runtime_collab::ANSWER,
+        ),
+        resource_kind: "agent.turn".into(),
+        resource_label: "Turn".into(),
+        action_label: "Answer".into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        locus: tilo_actions::ExecutionLocus::ClientLocal,
+        kind: tilo_actions::OperationKind::Effect,
+        contract,
+        input: tilo_actions::InputSpec::None,
+        params: Vec::new(),
+        view: None,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TaskAction {
     app: String,
@@ -93,18 +189,15 @@ enum TaskActionStop {
     Failed(String),
 }
 
-/// A child of the run the host accepted, followed to its outcome alone
+/// A step of the turn the host accepted, followed to its outcome alone
 /// ([`Session::invoke_task_action`]) or beside others started in the same
 /// turn. Each keeps its own invocation id and broker job: following several
 /// at once shares only the waiting.
 struct Following {
     action: TaskAction,
-    /// The arguments it was started with: a native child is re-asked with
-    /// the identical request.
-    arguments: serde_json::Map<String, serde_json::Value>,
     invocation: tilo_actions::InvocationId,
-    /// How the child is observed: by re-asking the host for it.
-    reask: native_task::Reask,
+    /// How the step is observed: by asking the host for it.
+    reask: steps::Reask,
     /// The latest state the host reported.
     update: tilo_actions::InvocationUpdate,
     /// When the step gives up, where it has a time: a step that asks the
@@ -206,7 +299,10 @@ pub struct Session {
     link: Link,
     /// Decides which exported action answers an instruction.
     chooser: Chooser,
-    native_task: Option<native_task::NativeTaskState>,
+    /// How many steps each request (by its digest) started in the turn so far.
+    children: std::collections::HashMap<[u8; 32], u32>,
+    /// The last sequence number the turn's answer reported under.
+    reported: u64,
     /// The broker's pushed, permission-filtered live action directory the
     /// task loop surveys.
     broker_catalogue: ui::collaboration::ActionCatalogue,
@@ -218,8 +314,6 @@ pub struct Session {
     catalogue_cache: Option<(u64, std::sync::Arc<surface::Catalogue>)>,
     /// The model turn in flight while a task loop runs.
     turn: Option<agent_loop::ActiveTurn>,
-    /// What the run in progress asked its host without waiting in line.
-    outstanding: outstanding::Outstanding,
     /// The turn the run in progress answers, as its reply is being told.
     record: Option<conversation::Record>,
     /// The run's working record of the failure that ended its turn, kept for
@@ -308,13 +402,13 @@ impl Session {
             cfg,
             link,
             chooser,
-            native_task: None,
+            children: std::collections::HashMap::new(),
+            reported: 0,
             broker_catalogue: ui::collaboration::ActionCatalogue::default(),
             next_broker_request: 1,
             broker_revision: 0,
             catalogue_cache: None,
             turn: None,
-            outstanding: outstanding::Outstanding::default(),
             record: None,
             failure_detail: None,
             spending: None,
@@ -340,13 +434,14 @@ impl Session {
             }),
             self.cfg.content.clone(),
         );
-        // The transforms are published under the agent's own route; a
-        // connection announcing another app may not publish for it.
+        // The transforms, and how the agent answers a turn, are published under the agent's own
+        // route; a connection announcing another app may not publish for it.
         if self.cfg.app_id == tilo_automation::AGENT_APP_ID {
-            self.link.send(&crate::transform::publication())?;
+            self.link
+                .send(&crate::transform::publication(&[answer_descriptor()]))?;
             tracing::info!(
                 resource = crate::transform::RESOURCE_ID,
-                "published the AI transforms"
+                "published the AI transforms and the turns' answer"
             );
         }
         tracing::info!(agent = %self.cfg.name, "waiting for the conversations' turns");
@@ -355,13 +450,23 @@ impl Session {
                 Some(CollabEvent::ActionCatalogue { change }) => {
                     self.apply_broker_catalogue(&change);
                 }
-                Some(CollabEvent::TaskRun(run)) => {
-                    if let Err(error) = self.run_task(&run) {
-                        tracing::warn!(run_id = run.run_id, %error, "native task stopped before completion");
-                        if let Err(report_error) = self.fail_task_said(&run, &error.to_string()) {
-                            tracing::warn!(%report_error, "native task review report was refused");
-                        }
-                    }
+                Some(CollabEvent::Invocation {
+                    id,
+                    invocation,
+                    resource,
+                    action,
+                    argument,
+                    context,
+                    ..
+                }) if resource == runtime_collab::TURN_RESOURCE
+                    && action == runtime_collab::ANSWER =>
+                {
+                    self.answer(
+                        id,
+                        invocation,
+                        argument.as_deref(),
+                        context.map(|context| *context),
+                    )?;
                 }
                 Some(CollabEvent::Invocation {
                     id,
@@ -407,16 +512,45 @@ impl Session {
         }
     }
 
-    /// Answer one turn, `run`, as [`Self::run`] answers the ones the broker
-    /// delivers: the same planning, per-step reporting and terminal update,
-    /// without waiting for a broker to hand it over. What a harness that
-    /// drives an agent one turn at a time uses, so a test proves the agent's
-    /// own path — never a second one beside it.
-    ///
-    /// # Errors
-    /// Why the turn stopped before its reply was told.
-    pub fn run_one(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
-        self.run_task(run)
+    /// Answer the turn the broker handed as `id`: its answer's invocation, with what the person
+    /// asked as `argument`. A turn that stopped before its reply was told is reported failed.
+    fn answer(
+        &mut self,
+        id: u64,
+        invocation: tilo_actions::InvocationId,
+        argument: Option<&str>,
+        context: Option<tilo_actions::ActionContext>,
+    ) -> Result<()> {
+        let Some(Ok(asked)) = argument.map(serde_json::from_str::<runtime_collab::TurnRequest>)
+        else {
+            tracing::warn!(id, "refused a turn whose request does not read");
+            return self.link.send(&CollabRequest::UpdateInvocation {
+                id,
+                update: tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "turn_unreadable".into(),
+                        message: "The turn's request does not read".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+        };
+        let asked = Asked {
+            id,
+            invocation,
+            asked,
+            context,
+        };
+        if let Err(error) = self.run_task(&asked) {
+            tracing::warn!(id, %error, "the turn stopped before its reply was told");
+            if let Err(report_error) = self.fail_task_said(&asked, &error.to_string()) {
+                tracing::warn!(%report_error, "the turn's failure was not reported");
+            }
+        }
+        self.link.forget_cancelled(id);
+        Ok(())
     }
 
     /// Plan with `chooser` from now on, in place of the one this session
@@ -436,51 +570,42 @@ impl Session {
         clippy::too_many_lines,
         reason = "one task run keeps planning, per-step reporting and the terminal update in a single auditable sequence"
     )]
-    fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+    fn run_task(&mut self, run: &Asked) -> Result<()> {
         // What this run says is the person's language as it stands now: they
         // may have changed it since the app started.
         crate::i18n::follow();
-        self.native_task = Some(native_task::NativeTaskState {
-            run_id: run.run_id,
-            ..Default::default()
-        });
+        self.children.clear();
+        self.reported = 0;
         let cause = match conversation::validate(run) {
             Ok(cause) => cause,
             Err(message) => {
-                tracing::warn!(run_id = run.run_id, %message, "refused a run that answers no turn");
-                self.report_task(run, runtime_collab::TaskRunUpdate::Failed { message })?;
+                tracing::warn!(id = run.id, %message, "refused a turn that answers no message");
+                self.report_task(run, TurnUpdate::Failed { message })?;
                 return Ok(());
             }
         };
-        self.begin_task_watch();
         self.record = None;
-        let plan = self.planner(run);
+        let plan = self.planner();
         self.start_turn(cause);
         // The reply that answers the turn is recorded through the
         // conversation's own action, so the actions this workspace publishes
         // are read before the first record: the person sees the reply the
         // moment the run is taken.
         self.wait_for_task_catalogue();
-        self.report_task(run, runtime_collab::TaskRunUpdate::Accepted)?;
-        // The cancellation poll is not waited for here: its answer, with the
-        // run's messages, is read before the first turn (or the first
-        // planned action), which it reaches the host ahead of.
+        self.report_task(run, TurnUpdate::Accepted)?;
         self.report_task(
             run,
-            runtime_collab::TaskRunUpdate::Progress {
+            TurnUpdate::Progress {
                 message: crate::i18n::t("agent-run-reading-actions"),
-                presentation: None,
             },
         )?;
-        self.poll_cancellation(run)?;
         // Which planner decides this run's steps, said before it decides:
         // the model that plans it, or that its steps are matched to the
         // published actions and why no model plans instead.
         self.report_task(
             run,
-            runtime_collab::TaskRunUpdate::Progress {
+            TurnUpdate::Progress {
                 message: plan.announcing(),
-                presentation: None,
             },
         )?;
         // A model task is a discover → invoke → observe loop over the live
@@ -512,9 +637,7 @@ impl Session {
                 agent_loop::LoopEnd::Cancelled(message) => self.cancel_task(run, &message),
             };
         }
-        // The rules-only planner has no model call to overlap: settle the
-        // poll already out before planning, as before.
-        if self.task_cancelled(run)? {
+        if self.task_cancelled(run) {
             return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-before-planning"));
         }
         let (actions, reply) = match self.plan_task(run, &plan) {
@@ -530,7 +653,7 @@ impl Session {
         // What the next content-consuming action is built from.
         let mut previous: Option<StepOutcome> = None;
         for (index, action) in actions.iter().enumerate() {
-            if self.task_cancelled(run)? {
+            if self.task_cancelled(run) {
                 return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-before-action"));
             }
             let arguments = match arguments_for_step(
@@ -543,7 +666,7 @@ impl Session {
             };
             self.report_task(
                 run,
-                runtime_collab::TaskRunUpdate::Progress {
+                TurnUpdate::Progress {
                     message: crate::i18n::t_args(
                         "agent-run-step",
                         &[
@@ -552,7 +675,6 @@ impl Session {
                             ("action", action.label.as_str().into()),
                         ],
                     ),
-                    presentation: None,
                 },
             )?;
             let settled = self.run_task_step(run, index, action, &arguments)?;
@@ -575,54 +697,87 @@ impl Session {
     /// Invoke one planned action through the broker's invocation path.
     fn run_task_step(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         index: usize,
         action: &TaskAction,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
-        // A cancellation poll already out answers ahead of this step in the
-        // client's one ordered queue: honouring it costs no round trip.
-        if self.cancelled_before_step()? {
+        if self.task_cancelled(run) {
             return Ok(Err(TaskActionStop::Cancelled(Some(
                 "Cancelled before the next step".into(),
             ))));
         }
         self.chooser
             .mark(tilo_model_client::TraceEvent::ActionSubmitted, index);
-        let settled = self.invoke_task_action(run, action, arguments)?;
-        self.step_settled();
-        Ok(settled)
+        self.invoke_task_action(run, action, arguments)
     }
 
-    fn report_task(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        update: runtime_collab::TaskRunUpdate,
-    ) -> Result<()> {
+    /// Tell the conversation and the broker how `run` stands: the reply to its message shows it,
+    /// and the turn's answer reports it.
+    fn report_task(&mut self, run: &Asked, update: TurnUpdate) -> Result<()> {
         self.show_turn(run, &update)?;
-        let request_id = self.next_request_id();
-        self.link.send(&CollabRequest::ReportTaskRun {
-            request_id: Some(request_id),
-            run_id: run.run_id,
-            lease: run.lease.clone(),
-            update,
-        })?;
-        self.wait_for_native_report(request_id)
+        let invocation = run.invocation;
+        let update = match update {
+            // The broker took the turn when it handed it over.
+            TurnUpdate::Accepted => return Ok(()),
+            TurnUpdate::Progress { message } => {
+                self.reported = self.reported.saturating_add(1);
+                tilo_actions::InvocationUpdate::Progress {
+                    invocation,
+                    sequence: self.reported,
+                    phase: "working".into(),
+                    completed: None,
+                    total: None,
+                    message: Some(message),
+                }
+            }
+            TurnUpdate::Spent { cost_micros } => {
+                self.reported = self.reported.saturating_add(1);
+                tilo_actions::InvocationUpdate::Item {
+                    invocation,
+                    sequence: self.reported,
+                    value: serde_json::json!({ "spent": cost_micros }),
+                }
+            }
+            TurnUpdate::Succeeded { message } => tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({ "reply": message })),
+                    resources: Vec::new(),
+                },
+            },
+            TurnUpdate::Failed { message } => tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "turn_failed".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            },
+            TurnUpdate::Cancelled { message } => tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(message),
+            },
+        };
+        self.link
+            .send(&CollabRequest::UpdateInvocation { id: run.id, update })
+    }
+
+    /// Whether the person ended `run`: the broker asked to stop its answer.
+    fn task_cancelled(&mut self, run: &Asked) -> bool {
+        self.link.cancelled(run.id)
     }
 
     /// Record a failed turn on the reply to the run's message, and tell the
     /// host it failed. The reply's words are the failure's sentence — what a
     /// person reads — and the run's working record goes beside it in the work,
     /// for whoever debugs it later.
-    fn fail_task(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        failure: &agent_loop::Failure,
-    ) -> Result<()> {
+    fn fail_task(&mut self, run: &Asked, failure: &agent_loop::Failure) -> Result<()> {
         self.failure_detail = Some(failure.detail().to_owned());
         self.report_task(
             run,
-            runtime_collab::TaskRunUpdate::Failed {
+            TurnUpdate::Failed {
                 message: failure.message().to_owned(),
             },
         )
@@ -631,18 +786,14 @@ impl Session {
     /// [`Self::fail_task`] with the run's own words as both the sentence and
     /// the record: a stop the loop decided, which names nothing a provider
     /// said.
-    fn fail_task_said(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        message: &str,
-    ) -> Result<()> {
+    fn fail_task_said(&mut self, run: &Asked, message: &str) -> Result<()> {
         self.fail_task(run, &agent_loop::Failure::said(message))
     }
 
-    fn cancel_task(&mut self, run: &runtime_collab::TaskRunEnvelope, message: &str) -> Result<()> {
+    fn cancel_task(&mut self, run: &Asked, message: &str) -> Result<()> {
         self.report_task(
             run,
-            runtime_collab::TaskRunUpdate::Cancelled {
+            TurnUpdate::Cancelled {
                 message: message.to_string(),
             },
         )
@@ -666,7 +817,7 @@ impl Session {
     /// the title. Model tasks run [`Self::run_task_loop`] instead.
     fn plan_task(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         plan: &planning::Planner,
     ) -> Result<(Vec<TaskAction>, Option<String>), String> {
         let catalogue = self.task_catalogue();
@@ -675,13 +826,8 @@ impl Session {
         task_action_from_offer(offer, arguments).map(|action| (vec![action], None))
     }
 
-    /// How this run will decide its steps, as the run's note states it.
-    fn planner(&self, run: &runtime_collab::TaskRunEnvelope) -> planning::Planner {
-        if !matches!(run.planning, runtime_collab::TaskRunPlanning::Model) {
-            return planning::Planner::Words {
-                reason: planning::Words::Asked,
-            };
-        }
+    /// How this turn will decide its steps, as its note states it.
+    fn planner(&self) -> planning::Planner {
         match self.chooser.planned_by() {
             Some((provider, model)) => planning::Planner::Model {
                 provider: provider.to_owned(),
@@ -690,15 +836,13 @@ impl Session {
             // A model task whose model cannot be reached: the run still
             // happens, matched to the published actions, and its note says
             // which model is missing and where to choose one.
-            None => planning::Planner::Words {
-                reason: planning::Words::NoModel,
-            },
+            None => planning::Planner::Words,
         }
     }
 
     fn invoke_task_action(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         action: &TaskAction,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
@@ -710,113 +854,6 @@ impl Session {
         self.follow_native(run, &mut followed)?;
         let [following] = followed;
         Ok(following.into_outcome())
-    }
-
-    /// Ask the host to start one child of the run: authorized, journaled
-    /// and accepted by the broker on its own, exactly as when it is followed
-    /// alone. The host answers with the accepted state at once; the action
-    /// then runs in its application while this agent starts the next one or
-    /// follows it ([`Self::follow_native`]).
-    fn start_task_invocation(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        action: &TaskAction,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Result<Following, TaskActionStop>> {
-        let request_id = self.next_request_id();
-        let invocation = self.task_child_id(run, action, arguments)?;
-        self.link.send(&CollabRequest::InvokeTaskAction {
-            request_id,
-            invocation,
-            run_id: run.run_id,
-            lease: run.lease.clone(),
-            peer_id: action.peer_id,
-            provider: action.provider.clone(),
-            resource: action.resource.clone(),
-            action: action.action.clone(),
-            arguments: arguments.clone(),
-            wait: None,
-        })?;
-        let mut asks_person = false;
-        let update = match self.wait_for_task_action_result(request_id)? {
-            Ok((_, update)) => update,
-            Err(error) if confirmation::is_awaiting(&error) => {
-                // The step asks the person before it runs: the host put the
-                // question on the system's sheet and holds the child until
-                // they answer there. Nothing ran yet, so the child is taken
-                // as accepted and followed; its follow waits on the person
-                // (`confirmation.rs`), not on a clock.
-                asks_person = true;
-                tilo_actions::InvocationUpdate::Accepted { invocation }
-            }
-            Err(error) => {
-                return Ok(Err(TaskActionStop::Failed(confirmation::step_failure(
-                    error,
-                ))));
-            }
-        };
-        // A child that asks the person waits on their answer, in their own
-        // time; every other step has its ordinary wait.
-        let deadline = (!asks_person).then(|| Self::task_wait_deadline(TASK_ACTION_WAIT));
-        Ok(Ok(Following {
-            action: action.clone(),
-            arguments: arguments.clone(),
-            invocation,
-            reask: native_task::Reask::default(),
-            update,
-            deadline,
-            outcome: None,
-        }))
-    }
-
-    fn wait_for_task_action_result(
-        &mut self,
-        request_id: u64,
-    ) -> Result<Result<(u64, tilo_actions::InvocationUpdate), String>> {
-        let deadline = Self::task_wait_deadline(Duration::from_secs(10));
-        self.task_action_result_until(request_id, Some(deadline))
-    }
-
-    /// The broker's answer to task action request `request_id`, given by
-    /// `deadline` if there is one.
-    fn task_action_result_until(
-        &mut self,
-        request_id: u64,
-        deadline: Option<Instant>,
-    ) -> Result<Result<(u64, tilo_actions::InvocationUpdate), String>> {
-        const TURN_PUMP: Duration = Duration::from_millis(100);
-        let mut deferred = Vec::new();
-        loop {
-            // Keep a streaming model turn moving while the step settles.
-            self.pump_turn();
-            let now = ui::time::now();
-            if deadline.is_some_and(|deadline| now >= deadline) {
-                self.link.defer(deferred);
-                return Ok(Err(
-                    "the broker did not answer the task action request".into()
-                ));
-            }
-            let wait = deadline.map_or(TURN_PUMP, |deadline| (deadline - now).min(TURN_PUMP));
-            match self.link.recv(wait)? {
-                Some(CollabEvent::TaskActionInvocationResult {
-                    request_id: received,
-                    result,
-                }) if received == request_id => {
-                    self.link.defer(deferred);
-                    return Ok(result);
-                }
-                // Only one task action is outstanding at a time; a late
-                // reply to an earlier request has no reader left.
-                Some(
-                    CollabEvent::TaskActionInvocationResult { .. } | CollabEvent::Document { .. },
-                )
-                | None => {}
-                Some(CollabEvent::ActionCatalogue { change }) => {
-                    self.apply_broker_catalogue(&change);
-                }
-                Some(event) => deferred.push(event),
-            }
-        }
     }
 
     fn next_request_id(&mut self) -> u64 {

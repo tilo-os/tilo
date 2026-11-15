@@ -859,11 +859,7 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
     crate::common::until(
         &mut session,
         "the workspace this computer holds",
-        |session| {
-            session
-                .conversation_runs()
-                .requires_workspace(&computer.workspace)
-        },
+        |session| session.confines_agents(&computer.workspace),
     );
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1091,11 +1087,7 @@ impl ShellWithNotes {
         crate::common::until(
             &mut session,
             "the workspace this computer holds",
-            |session| {
-                session
-                    .conversation_runs()
-                    .requires_workspace(&computer.workspace)
-            },
+            |session| session.confines_agents(&computer.workspace),
         );
 
         let (published, ready) = mpsc::channel();

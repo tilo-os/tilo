@@ -38,20 +38,6 @@ pub enum VerifiedActor {
         #[serde(default = "omitted_agent")]
         agent: Option<String>,
     },
-    Enrolled {
-        root: [u8; 32],
-        device: [u8; 32],
-        task: String,
-        run: String,
-        channel: String,
-    },
-    NativeTask {
-        root: [u8; 32],
-        device: [u8; 32],
-        agent: String,
-        task: String,
-        epoch: u64,
-    },
 }
 
 /// The value an omitted `agent` deserializes to. Serde's default for an
@@ -690,12 +676,10 @@ mod tests {
                 let mut changed = original.clone();
                 changed[field] = match field.as_str() {
                     "host" | "invocation" => serde_json::to_value(Uuid::from_u128(99)).unwrap(),
-                    "actor" => serde_json::to_value(VerifiedActor::NativeTask {
+                    "actor" => serde_json::to_value(VerifiedActor::AuthenticatedLocal {
                         root: [7; 32],
                         device: [8; 32],
-                        agent: "other".into(),
-                        task: "task:other".into(),
-                        epoch: 1,
+                        agent: Some("other".into()),
                     })
                     .unwrap(),
                     _ => Value::String(format!("changed-{value}")),

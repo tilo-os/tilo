@@ -60,7 +60,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 terminal(&sent),
-                runtime_collab::TaskRunUpdate::Succeeded { .. }
+                TurnUpdate::Succeeded { .. }
             ),
             "the run still answers its turn"
         );
@@ -164,7 +164,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 terminal(&sent),
-                runtime_collab::TaskRunUpdate::Failed { .. }
+                TurnUpdate::Failed { .. }
             ),
             "the run tells the host it failed"
         );
@@ -179,7 +179,6 @@ tilo_test_env::scenario! {
             World {
                 chat: Some("asked".into()),
                 cancel_after_steps: Some(1),
-                cancel_delay: Duration::from_millis(100),
                 ..World::default()
             },
             vec![
@@ -204,7 +203,7 @@ tilo_test_env::scenario! {
         );
         assert!(matches!(
             terminal(&sent),
-            runtime_collab::TaskRunUpdate::Cancelled { .. }
+            TurnUpdate::Cancelled { .. }
         ));
     }
 }

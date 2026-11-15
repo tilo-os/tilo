@@ -1723,11 +1723,11 @@ mod tests {
             state.surfaces.lock().expect("surfaces").insert(9, up);
             let shows = tilo_actions::ActionAddress::new("files.app", "show-page");
             assert!(state.action_shows(APP, &workspace, &shows));
-            assert_eq!(state.ready_publisher(APP, &workspace, None, &shows), None);
+            assert_eq!(state.ready_peer(APP, &workspace, None, &shows), None);
             let changes = tilo_actions::ActionAddress::new("files.app", "new-window");
             assert!(!state.action_shows(APP, &workspace, &changes));
             assert_eq!(
-                state.ready_publisher(APP, &workspace, None, &changes),
+                state.ready_peer(APP, &workspace, None, &changes),
                 Some(9),
                 "it takes what shows nothing"
             );
@@ -1850,7 +1850,7 @@ mod tests {
                 tilo_test_env::hang_bound(),
             );
             assert_eq!(
-                state.ready_publisher(
+                state.ready_peer(
                     APP,
                     &workspace,
                     None,

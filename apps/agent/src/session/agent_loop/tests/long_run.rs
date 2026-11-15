@@ -215,7 +215,7 @@ fn a_150_turn_run_of_8_items_stays_within_its_models_context() {
     f.session.run_task(&f.run).unwrap();
     assert_eq!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
+        TurnUpdate::Succeeded {
             message: "Reviewed all 8 applications.".into()
         }
     );
@@ -271,7 +271,7 @@ fn a_model_without_tool_calling_is_refused_by_name() {
     assert!(f.world.borrow().steps.is_empty());
     assert!(matches!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { message }
+        TurnUpdate::Failed { message }
             if message.contains("tiny-chat from Scripted cannot call tools")
     ));
 }

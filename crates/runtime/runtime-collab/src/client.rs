@@ -11,18 +11,14 @@ use runtime_portal::NotAvailable;
 
 use crate::wire::{
     Changes, ContextUpdate, Event, Handle, InvocationCall, Join, LiveActivityCall, Operation,
-    Publication, Read, Receipt, Reply, Report, Service, SettingsCall, TaskCall, TaskStep, Topic,
+    Publication, Read, Receipt, Reply, Report, Service, SettingsCall, Topic,
     client::{Answerer, Client, Failure, Subscription},
 };
-use crate::{
-    ChannelContext, HistoryAgent, Invocation, OpEvent, PresenceEvent, ScrollbackBatch, TaskAction,
-    TaskChildWait,
-};
+use crate::{ChannelContext, HistoryAgent, Invocation, OpEvent, PresenceEvent, ScrollbackBatch};
 use crate::{
     ExportedAction, NearbyTransferCommand, NearbyTransferReply, PresencePayload, SpeakerCommand,
-    SpeakerReply, SurfaceDelta, TaskRunEnvelope, TaskRunUpdate, WifiContinuityCommand,
-    WifiContinuityReply, WorkspaceControlEvent, WorkspaceControlInput, audio_output,
-    committed_document, file_clipboard, native_media,
+    SpeakerReply, SurfaceDelta, WifiContinuityCommand, WifiContinuityReply, WorkspaceControlEvent,
+    WorkspaceControlInput, audio_output, committed_document, file_clipboard, native_media,
 };
 use crate::{
     MAX_NEARBY_TRANSFER_WIRE_BYTES, MAX_SPEAKER_WIRE_BYTES, MAX_WIFI_CONTINUITY_WIRE_BYTES,
@@ -1046,137 +1042,6 @@ impl ChannelHandle {
         ))
     }
 
-    /// The task runs the workspace hands this delegated agent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the host refuses or is unavailable.
-    pub async fn subscribe_task_runs(&self) -> Result<TaskRunStream, NotAvailable> {
-        Ok(TaskRunStream(self.feed(Topic::TaskRuns).await?))
-    }
-
-    async fn task(&self, run_id: u64, lease: &str, call: TaskCall) -> Result<Reply, NotAvailable> {
-        self.call(Operation::Task {
-            channel: self.channel.handle,
-            run_id,
-            lease: lease.to_owned(),
-            call,
-        })
-        .await
-    }
-
-    /// Report an update for one exact host-minted task lease.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the host refuses it or the encoded
-    /// update exceeds 64 KiB.
-    pub async fn report_task_run(
-        &self,
-        run_id: u64,
-        lease: &str,
-        update: &TaskRunUpdate,
-    ) -> Result<(), NotAvailable> {
-        let update_json = serde_json::to_string(update)
-            .map_err(|error| refused(format!("task update serialization failed: {error}")))?;
-        if update_json.len() > 64 * 1024 {
-            return Err(refused("task update too large"));
-        }
-        match self
-            .task(run_id, lease, TaskCall::Report(update_json))
-            .await?
-        {
-            Reply::Done => Ok(()),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    async fn task_step(
-        &self,
-        run_id: u64,
-        lease: &str,
-        step: TaskStep,
-    ) -> Result<(u64, String), NotAvailable> {
-        match self.task(run_id, lease, TaskCall::Invoke(step)).await? {
-            Reply::Invoked { id, update } => Ok((id, update)),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Invoke a published application action as a step of a leased task.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the host refuses the step.
-    pub async fn invoke_task_action(
-        &self,
-        run_id: u64,
-        lease: &str,
-        target: TaskAction<'_>,
-        invocation: &str,
-    ) -> Result<(u64, String), NotAvailable> {
-        self.task_step(
-            run_id,
-            lease,
-            TaskStep {
-                peer_id: target.peer_id,
-                provider: target.provider.to_owned(),
-                resource: target.resource.to_owned(),
-                action: target.action.to_owned(),
-                argument: target.argument.map(str::to_owned),
-                invocation: invocation.to_owned(),
-                wait_ms: 0,
-                seen: None,
-            },
-        )
-        .await
-    }
-
-    /// Re-ask for a native task's child `invocation`, started earlier with
-    /// the same request, and let the host hold the answer as `wait` says.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::invoke_task_action`].
-    pub async fn observe_task_child(
-        &self,
-        run_id: u64,
-        lease: &str,
-        target: TaskAction<'_>,
-        invocation: &str,
-        wait: TaskChildWait,
-    ) -> Result<(u64, String), NotAvailable> {
-        let seen = serde_json::to_string(&wait.seen)
-            .map_err(|error| refused(format!("invalid update mark: {error}")))?;
-        self.task_step(
-            run_id,
-            lease,
-            TaskStep {
-                peer_id: target.peer_id,
-                provider: target.provider.to_owned(),
-                resource: target.resource.to_owned(),
-                action: target.action.to_owned(),
-                argument: target.argument.map(str::to_owned),
-                invocation: invocation.to_owned(),
-                wait_ms: wait.wait_ms,
-                seen: Some(seen),
-            },
-        )
-        .await
-    }
-
-    /// Whether Task Center asked this exact leased run to stop.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the host refuses or is unavailable.
-    pub async fn task_run_cancelled(&self, run_id: u64, lease: &str) -> Result<bool, NotAvailable> {
-        match self.task(run_id, lease, TaskCall::Cancelled).await? {
-            Reply::Cancelled(cancelled) => Ok(cancelled),
-            _ => Err(refused("unexpected task status answer")),
-        }
-    }
-
     async fn invocation(&self, id: u64, call: InvocationCall) -> Result<Reply, NotAvailable> {
         self.call(Operation::Invocation {
             channel: self.channel.handle,
@@ -1534,21 +1399,6 @@ impl RealtimeStream {
     pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
         match self.0.event().await? {
             Event::Realtime(event) => Ok(event),
-            other => Err(unexpected_event(&other)),
-        }
-    }
-}
-
-/// The task runs the workspace hands this agent.
-#[derive(Clone)]
-pub struct TaskRunStream(Feed);
-
-impl TaskRunStream {
-    /// The next run.
-    pub async fn read(&self) -> Result<TaskRunEnvelope, NotAvailable> {
-        match self.0.event().await? {
-            Event::TaskRun(json) => serde_json::from_str(&json)
-                .map_err(|error| refused(format!("invalid task envelope JSON: {error}"))),
             other => Err(unexpected_event(&other)),
         }
     }

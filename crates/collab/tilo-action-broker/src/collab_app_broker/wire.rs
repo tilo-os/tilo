@@ -19,12 +19,13 @@ use std::rc::Weak;
 use runtime_collab::wire::{
     Answer as Answered, Ask, Call, Changes, CheckProgress, ContextUpdate, Event, FRAMING, Handle,
     HostFrame, InvocationCall, Join, LiveActivityCall, Operation, Publication, Read, Reply, Report,
-    Service, SettingsCall, TaskCall, TaskStep, Topic,
+    Service, SettingsCall, Topic,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use collab_types::MemberId;
 
+use super::turns::answers_turns;
 use super::*;
 
 mod join;
@@ -249,8 +250,6 @@ pub(super) type Recording = std::pin::Pin<Box<dyn Future<Output = Result<(), Bro
 /// What the host answers once its work is done.
 pub(super) type Answer<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, BrokerError>>>>;
 
-/// A task call's answer, which a task step may wait on.
-pub(super) type TaskAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Reply, BrokerError>>>>;
 type Answering = std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>, String>>>>;
 
 impl ChannelSession {
@@ -892,175 +891,6 @@ impl JoinedChannel {
         Ok((ops, exhausted))
     }
 
-    /// The task runs the workspace hands this delegated agent from now on.
-    /// A replacement subscription is handed the approved run again.
-    pub(super) fn task_run_feed(&self) -> Result<Feed<TaskRunEnvelope>, BrokerError> {
-        if self.state.services.legacy_workspace.is_none()
-            && !self.state.task_admitted_workspace(&self.route().cluster_id)
-        {
-            return Err(BrokerError::failed(
-                "task execution service unsupported".into(),
-            ));
-        }
-        let current = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)?;
-        let agent_id = current.agent_id.ok_or_else(|| {
-            BrokerError::failed(
-                "only an admitted delegated agent may subscribe to task runs".into(),
-            )
-        })?;
-        let (tx, rx) = mpsc::unbounded_channel();
-        self.state
-            .task_subscribers
-            .lock()
-            .map_err(|_| BrokerError::failed("task subscription registry unavailable".into()))?
-            .insert(
-                self.peer_id,
-                TaskSubscription {
-                    agent_id,
-                    cluster_id: self.route().cluster_id,
-                    tx,
-                },
-            );
-        // A replacement stream needs the canonical approved run again, even
-        // when the authenticated connection itself did not change.
-        if let Ok(mut runs) = self.state.pending_task_runs.lock() {
-            runs.retain(|_, run| run.peer_id != self.peer_id);
-        }
-        self.state.local_turn.notify_one();
-        let feed = Feed::new(rx);
-        self.state.refresh_native_task_delivery();
-        Ok(feed)
-    }
-
-    /// One of this delegated agent's calls about the task run `run_id` it
-    /// holds under `lease`.
-    pub(super) fn task_call(&self, run_id: u64, lease: String, call: TaskCall) -> TaskAnswer {
-        let agent_id = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-            .and_then(|current| {
-                current.agent_id.ok_or_else(|| {
-                    BrokerError::failed("only an agent may act on a task run".into())
-                })
-            }) {
-            Ok(agent_id) => agent_id,
-            Err(error) => return Box::pin(std::future::ready(Err(error))),
-        };
-        let answer = match call {
-            TaskCall::Invoke(step) => return self.invoke_task_step(agent_id, run_id, lease, step),
-            TaskCall::Report(update) => {
-                serde_json::from_str::<runtime_collab::TaskRunUpdate>(&update)
-                    .map_err(|error| BrokerError::failed(format!("invalid task update: {error}")))
-                    .and_then(|update| {
-                        self.state
-                            .record_task_run_update(
-                                self.peer_id,
-                                &agent_id,
-                                run_id,
-                                &lease,
-                                &update,
-                            )
-                            .map_err(BrokerError::failed)
-                    })
-                    .map(|()| Reply::Done)
-            }
-            TaskCall::Cancelled => self.task_cancellation(&agent_id, run_id, &lease),
-        };
-        Box::pin(std::future::ready(answer))
-    }
-
-    fn task_cancellation(
-        &self,
-        agent_id: &str,
-        run_id: u64,
-        lease: &str,
-    ) -> Result<Reply, BrokerError> {
-        let cancelled = self
-            .state
-            .task_run_cancelled(self.peer_id, agent_id, run_id, lease)
-            .map_err(BrokerError::failed)?;
-        Ok(Reply::Cancelled(cancelled))
-    }
-
-    /// Start `step` for the task run, as a native task's re-ask when it
-    /// names the invocation it runs under.
-    fn invoke_task_step(
-        &self,
-        agent_id: String,
-        run_id: u64,
-        lease: String,
-        step: TaskStep,
-    ) -> TaskAnswer {
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        let caller = super::durable_local_invocation::LocalCaller::capture(self);
-        let route = self.route();
-        let identity = self.verified_identity.clone();
-        Box::pin(async move {
-            if !step.provider.is_empty() && step.peer_id != 0 {
-                return Err(BrokerError::failed(
-                    "task target mixes live and stable provider identities".into(),
-                ));
-            }
-            let target = runtime_collab::TaskAction {
-                peer_id: step.peer_id,
-                provider: &step.provider,
-                resource: &step.resource,
-                action: &step.action,
-                argument: step.argument.as_deref(),
-            };
-            let provenance =
-                super::native_task_execution::child_provenance(&lease, &step.invocation, caller)?;
-            let (id, update) = if let Some((caller, invocation)) = &provenance {
-                let reask = super::native_task_execution::ChildReask {
-                    peer_id,
-                    agent_id: &agent_id,
-                    run_id,
-                    lease: &lease,
-                    invocation: *invocation,
-                    target,
-                    caller,
-                };
-                let wait = super::native_task_execution::ChildWait::new(
-                    step.wait_ms,
-                    step.seen.as_deref(),
-                )?;
-                state
-                    .invoke_native_task_child(&reask, wait, (&route, &identity))
-                    .await?
-            } else {
-                if !step.provider.is_empty() {
-                    return Err(BrokerError::failed(
-                        "closed-app activation requires a native task's authenticated custody"
-                            .into(),
-                    ));
-                }
-                let job = state
-                    .start_task_action(
-                        peer_id,
-                        &agent_id,
-                        run_id,
-                        &lease,
-                        target,
-                        (None, (false, None)),
-                    )
-                    .map_err(BrokerError::failed)?
-                    .start(&state)
-                    .await
-                    .map_err(BrokerError::failed)?;
-                let update = state.invocation_status(job.id).ok_or_else(|| {
-                    BrokerError::failed("accepted task action has no broker state".into())
-                })?;
-                (job.id, update)
-            };
-            let update = serde_json::to_string(&update)
-                .map_err(|error| BrokerError::failed(error.to_string()))?;
-            Ok(Reply::Invoked { id, update })
-        })
-    }
-
     /// Answer the app's remote-action `frame` with the frame its caller,
     /// door, grants and the person decide.
     pub(super) fn remote_action_dispatch(&self, frame: &[u8]) -> Answer<Vec<u8>> {
@@ -1077,6 +907,10 @@ impl JoinedChannel {
         Box::pin(async move { encode(answer.await?) })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one remote message's routing: a turn's requests, an agent session's and the device's own"
+    )]
     fn remote_action_answer(
         &self,
         frame: &[u8],
@@ -1110,6 +944,28 @@ impl JoinedChannel {
                 Some(Err(refused)) => (Some(Err(refused)), None),
                 None => (None, None),
             }
+        } else if let Some(caller) = self.state.turn_caller(self.peer_id) {
+            // An agent answering a turn makes every request as the turn, through its session.
+            let door = self.state.agent_session_door(
+                &caller,
+                InvocationCaller::Local {
+                    route,
+                    time: original_time,
+                    admitted: Box::new(current),
+                },
+            );
+            let Some(door) = door else {
+                return refusal(&request.message);
+            };
+            let answer =
+                tilo_actions::remote::serve(&door, &caller, request.message).ok_or_else(|| {
+                    BrokerError::failed("only remote-action requests are answered".into())
+                })?;
+            return Ok(Box::pin(async move {
+                answer.await.ok_or_else(|| {
+                    BrokerError::failed("the action host dropped the request".into())
+                })
+            }));
         } else {
             (
                 self.state.continued_caller(self.peer_id, &request.message),
@@ -1412,7 +1268,8 @@ impl JoinedChannel {
         // No app changes another app's route: a channel held to read refuses.
         self.writable()?;
         let route = self.route();
-        self.state
+        let current = self
+            .state
             .revalidate_admission(&route, &self.verified_identity)?;
         if route.app_id.is_empty() || claimed_app != route.app_id {
             return Err(BrokerError::failed(
@@ -1462,6 +1319,15 @@ impl JoinedChannel {
         // a directory alone is offered before the app is ready.
         self.state
             .launch_published(&surface, self.record_kind.as_deref());
+        // An agent that publishes how it answers a turn is handed its turns.
+        if let Some(agent) = &current.agent_id
+            && answers_turns(&surface)
+        {
+            self.state
+                .turns
+                .answer(peer_id, &surface.route.cluster_id, agent);
+            self.state.local_turn.notify_one();
+        }
         Ok(())
     }
 
@@ -2006,17 +1872,6 @@ impl WireConnection {
                     .map(|session| session.invocation_call(invocation, call));
                 Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
             }
-            Operation::Task {
-                channel,
-                run_id,
-                lease,
-                call,
-            } => {
-                let answer = self
-                    .channel(channel)
-                    .map(|session| session.task_call(run_id, lease, call));
-                Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
-            }
             Operation::ControlInput {
                 subscription,
                 input,
@@ -2121,7 +1976,6 @@ impl WireConnection {
             | Operation::Workspace { .. }
             | Operation::Command { .. }
             | Operation::Changed { .. }
-            | Operation::Task { .. }
             | Operation::Invocation { .. }
             | Operation::Settings { .. }
             | Operation::LiveActivity { .. }
@@ -2235,12 +2089,6 @@ impl WireConnection {
                     Topic::Catalogue => {
                         let stream = session.catalogue_feed().map_err(failed)?;
                         tokio::task::spawn_local(pump_pulled(stream, id, frames, Event::Catalogue))
-                    }
-                    Topic::TaskRuns => {
-                        let feed = session.task_run_feed().map_err(failed)?;
-                        tokio::task::spawn_local(pump(feed, id, frames, |run| {
-                            task_run_json(run).ok().map(Event::TaskRun)
-                        }))
                     }
                     Topic::WorkspaceControl { target_device } => {
                         let control = session.workspace_control(target_device).map_err(failed)?;

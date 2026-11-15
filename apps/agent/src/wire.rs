@@ -4,7 +4,7 @@
 //! capability. Headless diagnostics use the same protocol through an
 //! explicit endpoint.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -22,8 +22,9 @@ pub struct Link {
     manager: CollaborationManager,
     pending: VecDeque<CollabEvent>,
     last_publication: LastPublication,
-    /// Correlated requests sent without waiting in line, by request id.
-    detached: HashMap<u64, Slot>,
+    /// The invocations the broker asked this agent to stop, by their handle: a turn the person
+    /// ended reads as stopped wherever its answer is, without a wait of its own.
+    cancelled: HashSet<u64>,
     /// Wakes from the transport when an event arrives, so a receive blocks
     /// instead of polling. `None` for a transport that cannot wake.
     wake: Option<Wake>,
@@ -33,22 +34,6 @@ enum LastPublication {
     None,
     Pending,
     Failed(DocumentPublicationError),
-}
-
-/// The reply to a request sent with [`Link::send_detached`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Detached {
-    /// A task cancellation poll; `Ok(true)` is cancelled.
-    Cancellation(Result<bool, String>),
-}
-
-enum Slot {
-    /// Not answered yet. `keep` holds the answer for [`Link::take_detached`];
-    /// otherwise it is dropped when it arrives.
-    Awaiting {
-        keep: bool,
-    },
-    Arrived(Detached),
 }
 
 /// The transport's owner wake, routed to a channel this link blocks on.
@@ -94,7 +79,7 @@ impl Link {
             manager,
             pending: VecDeque::new(),
             last_publication: LastPublication::None,
-            detached: HashMap::new(),
+            cancelled: HashSet::new(),
             wake,
         }
     }
@@ -292,112 +277,42 @@ impl Link {
         }
     }
 
-    /// Everything the transport delivered since the last poll, with the
-    /// replies to detached requests taken out.
+    /// Everything the transport delivered since the last poll, with what the broker asked to
+    /// stop noted.
     fn poll_intercepted(&mut self) -> Vec<CollabEvent> {
         let polled = self.manager.poll();
         polled
             .into_iter()
-            .filter_map(|event| self.intercept(event))
+            .inspect(|event| self.note(event))
             .collect()
     }
 
     /// Move whatever the transport delivered into the pending queue without
-    /// waiting, settling detached replies on the way.
+    /// waiting, noting what the broker asked to stop on the way.
     fn pump(&mut self) {
         self.clear_wakes();
         let polled = self.poll_intercepted();
         self.pending.extend(polled);
     }
 
-    /// Take `event` if it answers a detached request; otherwise hand it back.
-    fn intercept(&mut self, event: CollabEvent) -> Option<CollabEvent> {
-        let (request_id, reply) = match event {
-            CollabEvent::TaskRunCancellation { request_id, result }
-                if self.detached.contains_key(&request_id) =>
-            {
-                (request_id, Detached::Cancellation(result))
-            }
-            other => return Some(other),
-        };
-        match self.detached.remove(&request_id) {
-            Some(Slot::Awaiting { keep: true }) => {
-                self.detached.insert(request_id, Slot::Arrived(reply));
-            }
-            Some(Slot::Awaiting { keep: false }) | None => {}
-            // A second answer to one request id: the first one stands.
-            Some(arrived @ Slot::Arrived(_)) => {
-                self.detached.insert(request_id, arrived);
-            }
+    /// Note `event` when it asks this agent to stop an invocation: the session loop still reads
+    /// it.
+    fn note(&mut self, event: &CollabEvent) {
+        if let CollabEvent::InvocationCancellation { id } = event {
+            self.cancelled.insert(*id);
         }
-        None
     }
 
-    /// Send a correlated request without waiting for its answer: the answer is
-    /// taken off the event stream wherever it arrives, so no wait loop has to
-    /// know about it. The transport dispatches requests in the order they are
-    /// sent, so a later request still reaches the broker after this one.
-    ///
-    /// A cancellation poll's answer is kept for [`Self::take_detached`].
-    pub fn send_detached(&mut self, request: &CollabRequest) -> Result<()> {
-        let CollabRequest::TaskRunCancellation { request_id, .. } = request else {
-            anyhow::bail!("only cancellation polls are detached");
-        };
-        let request_id = *request_id;
-        self.detached
-            .insert(request_id, Slot::Awaiting { keep: true });
-        if let Err(error) = self.send(request) {
-            self.detached.remove(&request_id);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    /// The answer to the detached request `request_id`, once it has arrived.
-    pub fn take_detached(&mut self, request_id: u64) -> Option<Detached> {
+    /// Whether the broker asked this agent to stop the invocation it handed it as `id`, by
+    /// everything the transport delivered by now.
+    pub fn cancelled(&mut self, id: u64) -> bool {
         self.pump();
-        match self.detached.remove(&request_id)? {
-            Slot::Arrived(reply) => Some(reply),
-            awaiting @ Slot::Awaiting { .. } => {
-                self.detached.insert(request_id, awaiting);
-                None
-            }
-        }
+        self.cancelled.contains(&id)
     }
 
-    /// Wait until `deadline` for the answer to the detached request
-    /// `request_id`. Every other event stays queued, in order, for the
-    /// session loop. `None` when the deadline passes first or nothing with
-    /// that id is outstanding.
-    pub fn wait_detached(
-        &mut self,
-        request_id: u64,
-        deadline: ui::time::Instant,
-    ) -> Option<Detached> {
-        loop {
-            if let Some(reply) = self.take_detached(request_id) {
-                return Some(reply);
-            }
-            if !matches!(self.detached.get(&request_id), Some(Slot::Awaiting { .. })) {
-                return None;
-            }
-            let now = ui::time::now();
-            if now >= deadline {
-                return None;
-            }
-            self.wait_for_wake(deadline - now);
-        }
-    }
-
-    /// Stop holding the answer to `request_id`: it is dropped when it arrives.
-    pub fn forget(&mut self, request_id: u64) {
-        match self.detached.get_mut(&request_id) {
-            Some(Slot::Awaiting { keep }) => *keep = false,
-            Some(Slot::Arrived(_)) => {
-                self.detached.remove(&request_id);
-            }
-            None => {}
-        }
+    /// Stop remembering that the broker asked to stop `id`: the invocation is over.
+    pub fn forget_cancelled(&mut self, id: u64) {
+        self.cancelled.remove(&id);
     }
 
     /// Take every queued event `wanted` picks out, without waiting; the rest
@@ -525,46 +440,6 @@ mod tests {
         );
     }
 
-    /// Answers every cancellation poll at once, each followed by
-    /// an ordinary workspace event, so detached answers arrive interleaved with
-    /// the traffic the session loop reads.
-    struct AnsweringHost {
-        events: Vec<CollabEvent>,
-    }
-
-    impl ui::collaboration::PeerTransport for AnsweringHost {
-        fn is_connected(&self) -> bool {
-            true
-        }
-        fn send(&mut self, request: CollabRequest) -> std::result::Result<(), String> {
-            let CollabRequest::TaskRunCancellation { request_id, .. } = request else {
-                return Ok(());
-            };
-            let reply = CollabEvent::TaskRunCancellation {
-                request_id,
-                result: Ok(request_id != 2),
-            };
-            self.events.push(reply);
-            self.events.push(CollabEvent::RemoteCursorMoved {
-                member: collab_types::MemberId::person(format!("after-{request_id}")),
-                x: 0.0,
-                y: 0.0,
-            });
-            Ok(())
-        }
-        fn poll(&mut self) -> Vec<CollabEvent> {
-            std::mem::take(&mut self.events)
-        }
-    }
-
-    fn poll(request_id: u64) -> CollabRequest {
-        CollabRequest::TaskRunCancellation {
-            request_id,
-            run_id: 7,
-            lease: "lease".into(),
-        }
-    }
-
     /// Hands over `events` on its first poll, then nothing.
     struct Courier {
         events: Vec<CollabEvent>,
@@ -624,47 +499,25 @@ mod tests {
             assert!(take_next_polled(&mut pending, Vec::new()).is_none());
         }
 
-        phase detached_answers_leave_the_event_stream_without_reordering_it;
-        // Detached answers never reach the session loop: each waits for its
-        // owner — and every other event keeps its order, including an answer
-        // nobody detached (an in-line wait still sees it).
+        phase a_stop_is_noted_and_still_reaches_the_session_loop;
+        // A stop the broker asks for is known at once wherever the agent looks, and the session
+        // loop still reads it, so whatever serves the invocation stops it too.
         {
             let (_wake, rx) = test_wake();
-            let mut link = test_link(AnsweringHost { events: Vec::new() }, rx);
-            link.send_detached(&poll(1)).unwrap();
-            link.send_detached(&poll(2)).unwrap();
-            // Sent in line: its answer is the caller's to read.
-            link.send(&poll(3)).unwrap();
-            assert!(
-                link.send_detached(&CollabRequest::RequestDocumentSnapshot)
-                    .is_err(),
-                "only requests with a correlated answer can be detached"
+            let mut link = test_link(
+                Courier {
+                    events: vec![CollabEvent::InvocationCancellation { id: 7 }],
+                },
+                rx,
             );
-
-            let mut seen = Vec::new();
-            while let Some(event) = link.recv(Duration::ZERO).unwrap() {
-                seen.push(match event {
-                    CollabEvent::RemoteCursorMoved { member, .. } => member.key(),
-                    CollabEvent::TaskRunCancellation { request_id, .. } => {
-                        format!("reply-{request_id}")
-                    }
-                    other => panic!("unexpected event {other:?}"),
-                });
-            }
-            assert_eq!(
-                seen,
-                ["after-1", "after-2", "reply-3", "after-3"],
-                "detached answers are taken out; the rest keep their order"
-            );
-            assert_eq!(
-                link.take_detached(1),
-                Some(Detached::Cancellation(Ok(true)))
-            );
-            assert_eq!(
-                link.take_detached(2),
-                Some(Detached::Cancellation(Ok(false)))
-            );
-            assert_eq!(link.take_detached(1), None, "an answer is taken once");
+            assert!(!link.cancelled(8));
+            assert!(link.cancelled(7));
+            assert!(matches!(
+                link.recv(Duration::ZERO).unwrap(),
+                Some(CollabEvent::InvocationCancellation { id: 7 })
+            ));
+            link.forget_cancelled(7);
+            assert!(!link.cancelled(7));
         }
 
         phase a_catalogue_wait_takes_the_republication_and_keeps_every_other_event;
@@ -702,26 +555,6 @@ mod tests {
                 "the other event keeps its place for the session loop"
             );
             assert!(link.recv(Duration::ZERO).unwrap().is_none());
-        }
-
-        phase a_forgotten_poll_is_dropped_and_an_arrived_one_needs_no_wait;
-        {
-            let (_wake, rx) = test_wake();
-            let mut link = test_link(AnsweringHost { events: Vec::new() }, rx);
-            link.send_detached(&poll(1)).unwrap();
-            link.forget(1);
-            link.send_detached(&poll(3)).unwrap();
-            // A deadline already past: only an answer that needs no wait is seen.
-            assert_eq!(
-                link.wait_detached(3, ui::time::now()),
-                Some(Detached::Cancellation(Ok(true)))
-            );
-            assert_eq!(link.take_detached(1), None);
-            assert_eq!(
-                link.wait_detached(1, ui::time::now()),
-                None,
-                "nothing is outstanding under a forgotten id"
-            );
         }
     }
 }

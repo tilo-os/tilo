@@ -419,7 +419,7 @@ fn a_question_is_answered_in_words_and_its_view_placed_beside_the_conversation()
     assert_eq!(f.script.bodies.lock().unwrap().len(), 2, "two model calls");
     assert_eq!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
+        TurnUpdate::Succeeded {
             message: reply.into()
         }
     );
@@ -487,10 +487,7 @@ fn showing_arranging_and_restyling_are_one_step_each() {
             "{asked}: one model call"
         );
         assert!(
-            matches!(
-                terminal(&f.sent.borrow()),
-                runtime_collab::TaskRunUpdate::Succeeded { .. }
-            ),
+            matches!(terminal(&f.sent.borrow()), TurnUpdate::Succeeded { .. }),
             "{asked}: {:?}",
             terminal(&f.sent.borrow())
         );

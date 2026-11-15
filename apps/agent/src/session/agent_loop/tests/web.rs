@@ -40,12 +40,10 @@ fn look_at(f: &mut Fixture, server: &FixtureServer) {
 
 /// Every progress note the run told the person, in order.
 fn notes(sent: &[CollabRequest]) -> Vec<String> {
-    sent.iter()
-        .filter_map(|request| match request {
-            CollabRequest::ReportTaskRun {
-                update: runtime_collab::TaskRunUpdate::Progress { message, .. },
-                ..
-            } => Some(message.clone()),
+    reported(sent)
+        .into_iter()
+        .filter_map(|update| match update {
+            TurnUpdate::Progress { message } => Some(message),
             _ => None,
         })
         .collect()
@@ -95,7 +93,7 @@ tilo_test_env::scenario! {
         f.session.run_task(&f.run).unwrap();
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Ada Lovelace wrote the first published algorithm.".into()
             }
         );

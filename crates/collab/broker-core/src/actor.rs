@@ -19,14 +19,6 @@ pub fn person_id_for_root(user_public_key: [u8; 32]) -> String {
     hex::encode(user_public_key)
 }
 
-/// The task run an invocation is one of, as admission names it: the run's
-/// agent, and the issue it works on.
-#[derive(Clone, Copy, Debug)]
-pub struct RunFacts<'a> {
-    pub agent: &'a str,
-    pub issue: &'a str,
-}
-
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BrokerActor {
     pub id: String,
@@ -49,9 +41,9 @@ pub struct BrokerActor {
     pub app: Option<AppId>,
     /// The resource kinds `app` declares, when the host holds its manifest.
     app_kinds: Option<Vec<String>>,
-    /// The issue whose run the agent works in, by its address: grants
-    /// naming the issue decide for the run as the agent's own do.
-    issue: Option<String>,
+    /// The agent session the agent works in: the answers its person gave it decide for it as
+    /// the agent's own grants do.
+    session: Option<String>,
     /// How far the invocation this actor's request continues was admitted
     /// to reach: what goes further asks first
     /// ([`tilo_action_policy::Reach`]).
@@ -70,7 +62,7 @@ impl BrokerActor {
             turn: None,
             app: None,
             app_kinds: None,
-            issue: None,
+            session: None,
             ceiling: None,
         }
     }
@@ -86,7 +78,7 @@ impl BrokerActor {
             turn: None,
             app: None,
             app_kinds: None,
-            issue: None,
+            session: None,
             ceiling: None,
         }
     }
@@ -104,7 +96,7 @@ impl BrokerActor {
             turn: None,
             app: None,
             app_kinds: None,
-            issue: None,
+            session: None,
             ceiling: None,
         }
     }
@@ -137,7 +129,7 @@ impl BrokerActor {
             };
             // An agent session's changes are caused by the session.
             return match &acting.agent_session {
-                Some(session) => agent.working_on(session.as_str()),
+                Some(session) => agent.in_session(session.as_str()),
                 None => agent,
             };
         }
@@ -219,17 +211,17 @@ impl BrokerActor {
         self
     }
 
-    /// The same agent, working in a run of the issue at `issue`.
+    /// The same agent, working in the agent session `session`.
     #[must_use]
-    pub fn working_on(mut self, issue: impl Into<String>) -> Self {
-        self.issue = Some(issue.into());
+    pub fn in_session(mut self, session: impl Into<String>) -> Self {
+        self.session = Some(session.into());
         self
     }
 
-    /// The issue whose run this actor works in, by its address.
+    /// The agent session this actor works in.
     #[must_use]
-    pub fn issue(&self) -> Option<&str> {
-        self.issue.as_deref()
+    pub fn session(&self) -> Option<&str> {
+        self.session.as_deref()
     }
 
     /// The policy principal id (`agent:`-prefixed for an agent).
@@ -316,15 +308,10 @@ impl BrokerActor {
             None => acting,
         };
         let acting = acting.on_foreign_device(self.capped);
-        // An MCP agent's run is its agent session.
-        let acting = match &self.issue {
-            Some(issue) if crate::services::is_agent_session(issue) => {
-                acting.in_session(issue.clone())
-            }
-            _ => acting,
-        };
-        match &self.issue {
-            Some(issue) => acting.caused_by(issue.clone()),
+        match &self.session {
+            Some(session) => acting
+                .in_session(session.clone())
+                .caused_by(session.clone()),
             None => acting,
         }
     }
@@ -435,15 +422,13 @@ impl BrokerActor {
     /// whether the workspace's grants ask first (`true`), when the invocation
     /// then needs the confirmation of the person it is made for, and the
     /// `Once` grants admitting it spends. Decided on one sample: the action
-    /// where it is published, by the run's agent working on its issue when
-    /// the call is a run's (`run`); and, for a person, a change of the
-    /// route record it acts on, so a person restricted on one record cannot
-    /// act on it through an action they may otherwise use.
+    /// where it is published; and, for a person, a change of the route record
+    /// it acts on, so a person restricted on one record cannot act on it
+    /// through an action they may otherwise use.
     pub fn admit_published_in(
         &self,
         workspace: &Workspace,
         now: u64,
-        run: Option<RunFacts<'_>>,
         (surface, action): (&PublishedSurface, &PublishedAction),
     ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
         let refused = || "caller no longer authorized for invocation".to_owned();
@@ -454,19 +439,7 @@ impl BrokerActor {
         };
         let need = action.contract.need();
         let node = published_node(workspace, &surface.app_id, action);
-        // The run's agent alone acts in it, as the agent working on the issue.
-        let working;
-        let actor = match run {
-            Some(run)
-                if self.is_agent
-                    && self.id.strip_prefix("agent:").unwrap_or(&self.id) == run.agent =>
-            {
-                working = self.clone().working_on(run.issue);
-                &working
-            }
-            Some(_) => return Err("only the run's agent acts in it".into()),
-            None => self,
-        };
+        let actor = self;
         let record = record.map(|record| {
             collab_types::validator::document_node(
                 &workspace.policy.workspace,
@@ -543,7 +516,7 @@ mod tests {
         let session = format!("{}s1", crate::services::AGENT_SESSION_PREFIX);
         let acting = BrokerActor::agent("agent:a1")
             .for_person("p1")
-            .working_on(session.clone())
+            .in_session(session.clone())
             .acting();
         assert_eq!(acting.agent_id(), Some("a1"));
         assert_eq!(
@@ -552,13 +525,6 @@ mod tests {
                 .as_ref()
                 .map(tilo_action_policy::AgentSessionId::as_str),
             Some(session.as_str())
-        );
-        let tracked = BrokerActor::agent("agent:a1")
-            .working_on("tasks.tracker/issues/i_1")
-            .acting();
-        assert_eq!(
-            tracked.agent_session, None,
-            "a tracker issue is no agent session"
         );
     }
 }

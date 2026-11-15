@@ -38,59 +38,30 @@ tilo_test_env::scenario! {
             .enumerate()
         {
             let mut task = f.run.clone();
-            task.task_id = format!("chat.workspace/channels/c{index}/messages/asked");
-            task.title = title.into();
-            task.run_id = 100 + u64::try_from(index).unwrap();
-            bind_context(&mut task);
+            task.asked.message = format!("chat.workspace/channels/c{index}/messages/asked");
+            task.asked.title = title.into();
+            task.asked.instruction = title.into();
             f.session.run_task(&task).unwrap();
         }
-        let terminals: Vec<runtime_collab::TaskRunUpdate> = f
-            .sent
-            .borrow()
-            .iter()
-            .filter_map(|request| match request {
-                CollabRequest::ReportTaskRun { update, .. }
-                    if !matches!(
-                        update,
-                        runtime_collab::TaskRunUpdate::Progress { .. }
-                            | runtime_collab::TaskRunUpdate::Accepted
-                    ) =>
-                {
-                    Some(update.clone())
-                }
-                _ => None,
-            })
+        let terminals: Vec<TurnUpdate> = reported(&f.sent.borrow())
+            .into_iter()
+            .filter(|update| !matches!(update, TurnUpdate::Progress { .. }))
             .collect();
         assert_eq!(
             terminals,
             [
-                runtime_collab::TaskRunUpdate::Succeeded {
+                TurnUpdate::Succeeded {
                     message: "Wrote the first line.".into()
                 },
-                runtime_collab::TaskRunUpdate::Failed {
+                TurnUpdate::Failed {
                     message: "I can't create a note here: no Notes operation is available.".into()
                 },
-                runtime_collab::TaskRunUpdate::Succeeded {
+                TurnUpdate::Succeeded {
                     message: "Hello again!".into()
                 },
             ]
         );
         assert_eq!(f.world.borrow().blocks[0].1, "First.");
-        let accepted = f
-            .sent
-            .borrow()
-            .iter()
-            .filter(|request| {
-                matches!(
-                    request,
-                    CollabRequest::ReportTaskRun {
-                        update: runtime_collab::TaskRunUpdate::Accepted,
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert_eq!(accepted, 3);
     }
 
     phase the_prompt_prefix_is_stable_across_turns_and_runs;
@@ -119,8 +90,8 @@ tilo_test_env::scenario! {
         );
         for title in ["post hello", "what did you just do?"] {
             let mut run = f.run.clone();
-            run.title = title.into();
-            bind_context(&mut run);
+            run.asked.title = title.into();
+            run.asked.instruction = title.into();
             f.session.run_task(&run).unwrap();
         }
         let bodies = f.script.bodies.lock().unwrap().clone();
@@ -275,7 +246,7 @@ tilo_test_env::scenario! {
         assert_eq!(f.world.borrow().posts, ["Done writing hello in Writer."]);
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "All done.".into()
             }
         );
@@ -320,7 +291,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "I wrote hello; I can't add a note here.".into()
             }
         );
@@ -338,7 +309,7 @@ tilo_test_env::scenario! {
         assert_eq!(f.script.bodies.lock().unwrap().len(), MOST_REFUSALS + 1);
         assert!(matches!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded { .. }
+            TurnUpdate::Succeeded { .. }
         ));
     }
 
@@ -438,7 +409,7 @@ tilo_test_env::scenario! {
         assert_eq!(f.world.borrow().blocks[0].1, "Hi.");
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Wrote hi.".into()
             }
         );
@@ -470,7 +441,7 @@ tilo_test_env::scenario! {
         assert_eq!(f.script.bodies.lock().unwrap().len(), 2);
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Failed {
+            TurnUpdate::Failed {
                 message: "Typing was refused.".into()
             }
         );
@@ -500,7 +471,7 @@ tilo_test_env::scenario! {
         assert_eq!(f.world.borrow().posts, ["Hello is in Writer."]);
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "I wrote hello in Writer and pinged you in Chat.".into()
             }
         );
@@ -524,7 +495,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 terminal(&f.sent.borrow()),
-                runtime_collab::TaskRunUpdate::Failed { message }
+                TurnUpdate::Failed { message }
                     if message == crate::i18n::t("agent-failure-no-answer")
             ),
             "the run ends failed, never as a success with a line nobody wrote"
@@ -542,7 +513,7 @@ tilo_test_env::scenario! {
         f.session.run_task(&f.run).unwrap();
         assert!(matches!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Failed { .. }
+            TurnUpdate::Failed { .. }
         ));
     }
 
@@ -576,7 +547,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 terminal(&f.sent.borrow()),
-                runtime_collab::TaskRunUpdate::Failed { message }
+                TurnUpdate::Failed { message }
                     if message == crate::i18n::t("agent-failure-no-answer")
             ),
             "the run ends failed, never as a canned success"
@@ -614,7 +585,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Wrote hi.".into()
             }
         );
@@ -656,7 +627,7 @@ tilo_test_env::scenario! {
         f.session.run_task(&f.run).unwrap();
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "I wrote hello and added a paragraph.".into()
             },
             "the model's own words are the reply, never a canned line"
@@ -685,7 +656,7 @@ fn a_reply_that_says_nothing_is_asked_for_once_then_fails() {
     );
     assert_eq!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
+        TurnUpdate::Succeeded {
             message: "Nothing is due this week.".into()
         }
     );
@@ -700,7 +671,7 @@ fn a_reply_that_says_nothing_is_asked_for_once_then_fails() {
     assert_eq!(f.script.bodies.lock().unwrap().len(), 2, "asked only once");
     assert_eq!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed {
+        TurnUpdate::Failed {
             message: crate::i18n::t("agent-failure-empty-answer")
         }
     );
@@ -724,7 +695,7 @@ fn a_reply_that_says_nothing_is_asked_for_once_then_fails() {
     assert_eq!(f.world.borrow().blocks[0].1, "Hi.", "the work stays done");
     assert_eq!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed {
+        TurnUpdate::Failed {
             message: crate::i18n::t("agent-failure-empty-answer")
         }
     );

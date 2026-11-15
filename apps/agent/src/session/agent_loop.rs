@@ -25,8 +25,8 @@
 //!   it acts on another record than every step still running
 //!   ([`Session::start_independent`]); everything else waits for them first,
 //!   so a step that reads what an earlier one wrote stays after it;
-//! * a native task's running steps are followed by re-asks their host holds
-//!   until a step moves on ([`Session::follow_native`]), not on a timer;
+//! * the turn's running steps are followed by asks their host holds until a
+//!   step moves on ([`Session::follow_native`]), not on a timer;
 //! * the catalogue survey is rebuilt only when the broker republishes it.
 //!
 //! Every bound is enforced here, not asked for: one model turn's time, as
@@ -42,8 +42,8 @@ use serde_json::Value;
 use ui::collaboration::CollabEvent;
 
 use super::{
-    Following, Session, StepOutcome, TaskAction, TaskActionStop, arguments_for_step,
-    task_action_from_offer,
+    Asked, Following, Session, StepOutcome, TaskAction, TaskActionStop, TurnUpdate,
+    arguments_for_step, task_action_from_offer,
 };
 use crate::model::{Conversation, FirstTurn, TurnEvent};
 use crate::plan::{self, ConfirmationEvidence, Instruction};
@@ -83,9 +83,6 @@ const MOST_NEWLY_OPENED: usize = 40;
 /// (Gemini on Vertex AI did on several turns of one session); cutting a turn
 /// shorter fails it after the provider already did, and billed, the work.
 const MAX_LOOP_TURN_TIME: Duration = Duration::from_secs(60);
-/// Bound Stop latency while the provider is silent without polling the host
-/// on every token. The broker remains the authority for the exact run/lease.
-const THINKING_CANCELLATION_POLL: Duration = Duration::from_millis(200);
 /// After a view operation, the most the loop keeps listening for the
 /// catalogue the new view unlocks — only when no further call is ready to
 /// run. A complete tool-only turn can need this republication for its next
@@ -167,9 +164,6 @@ pub(super) struct ActiveTurn {
     /// record kept for debugging.
     finished: Option<Result<String, Failure>>,
     presentation: agent_provider_config::protocol::StreamState,
-    presentation_run: String,
-    published_presentation: Option<runtime_collab::TaskPresentation>,
-    published_at: ui::time::Instant,
     /// Completed calls seen (`tool_call` frames): calls below this index
     /// are complete.
     completed: usize,
@@ -194,9 +188,6 @@ impl ActiveTurn {
             ready: VecDeque::new(),
             finished: None,
             presentation: agent_provider_config::protocol::StreamState::default(),
-            presentation_run: String::new(),
-            published_presentation: None,
-            published_at: ui::time::now(),
             completed: 0,
             begun: HashSet::new(),
             refused: None,
@@ -753,7 +744,7 @@ fn refused_report(error: String) -> InvokeReport {
 pub(super) struct Spending {
     /// The day, the limit and the spend the keeper counted when the run was
     /// admitted.
-    allowed: runtime_collab::TaskRunSpend,
+    allowed: runtime_collab::AgentSpend,
     /// What this run's calls cost by now, in millionths of the currency.
     run: u64,
 }
@@ -783,7 +774,7 @@ impl Session {
 
     /// Add what the gateway charged for this turn to what its run spent, and
     /// tell the host the run's total, as its keeper counts the day by.
-    fn charge_turn(&mut self, run: &runtime_collab::TaskRunEnvelope, body: &str) -> Result<()> {
+    fn charge_turn(&mut self, run: &Asked, body: &str) -> Result<()> {
         let Some(spending) = self.spending.as_mut() else {
             return Ok(());
         };
@@ -795,10 +786,7 @@ impl Session {
         }
         spending.run = spending.run.saturating_add(cost);
         let total = spending.run;
-        self.report_task(
-            run,
-            runtime_collab::TaskRunUpdate::Spent { cost_micros: total },
-        )
+        self.report_task(run, TurnUpdate::Spent { cost_micros: total })
     }
 
     /// Apply a change to the broker catalogue and invalidate the cached
@@ -947,10 +935,7 @@ impl Session {
     /// # Errors
     ///
     /// Only this session's own I/O failing; everything else is a [`LoopEnd`].
-    pub(super) fn run_task_loop(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-    ) -> Result<LoopEnd> {
+    pub(super) fn run_task_loop(&mut self, run: &Asked) -> Result<LoopEnd> {
         let mut state = LoopState::new();
         self.spending = run
             .spend
@@ -969,11 +954,7 @@ impl Session {
         MAX_LOOP_TURN_TIME.min(self.chooser.timeout().max(Duration::from_secs(1)))
     }
 
-    fn run_task_loop_with(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        state: &mut LoopState,
-    ) -> Result<LoopEnd> {
+    fn run_task_loop_with(&mut self, run: &Asked, state: &mut LoopState) -> Result<LoopEnd> {
         let (protocol, model) = match self.chooser.loop_model() {
             Ok(model) => model,
             Err(route) => {
@@ -1006,7 +987,7 @@ impl Session {
         // The request as the model reads it, the selection it is about and
         // the operations named for it included, so a run that acted at the
         // wrong place can be told apart from one that was never told where.
-        tracing::info!(task_id = %run.task_id, %request, "task request");
+        tracing::info!(message = %run.message, %request, "task request");
         // The operations the first turn shows, as the model reads them: a run that wandered can
         // be told apart from one that was never shown the step it needed.
         tracing::info!(operations = %head(&summary, 12_000), "task operations");
@@ -1048,11 +1029,7 @@ impl Session {
     /// it publishes. A question implies nothing of itself — it is answered in the reply — and only
     /// the person's own words imply anything: the selection quoted as context and earlier answers
     /// in the conversation do not.
-    fn note_implied_parts(
-        run: &runtime_collab::TaskRunEnvelope,
-        catalogue: &surface::Catalogue,
-        state: &mut LoopState,
-    ) {
+    fn note_implied_parts(run: &Asked, catalogue: &surface::Catalogue, state: &mut LoopState) {
         let request = run.request().to_lowercase();
         let question = asks_question(&request);
         if !question
@@ -1087,14 +1064,14 @@ impl Session {
     /// conversation is the answer's normal shape, and the applications' operations are summarised
     /// after them.
     fn operations_summary(
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         catalogue: &surface::Catalogue,
         state: &mut LoopState,
     ) -> String {
         let canvas = tools::canvas::canvas_section(
             catalogue,
             &mut state.revealed,
-            tools::canvas::conversation_of(&run.task_id),
+            tools::canvas::conversation_of(&run.message),
         );
         if canvas.is_empty() {
             return tools::catalogue_summary(
@@ -1108,106 +1085,10 @@ impl Session {
         format!("{canvas}Applications:\n\n{summary}")
     }
 
-    /// Publish only provider-exposed presentation, never argument previews or
-    /// hidden reasoning. Bound host round trips while keeping final deltas.
-    fn publish_turn_presentation(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
-        use agent_provider_config::protocol::StreamStatus;
-        use runtime_collab::TaskPresentationFinish as Finish;
-
-        let Some(turn) = &mut self.turn else {
-            return Ok(());
-        };
-        if turn.finished.is_none()
-            && (run.presentation_version != Some(1)
-                || turn.published_at.elapsed() < Duration::from_millis(100))
-        {
-            return Ok(());
-        }
-        // Retention truncation is terminal for this presentation, not for the
-        // inference or its independently validated action batch.
-        if turn
-            .published_presentation
-            .as_ref()
-            .is_some_and(|p| p.finish.is_some())
-        {
-            return Ok(());
-        }
-        let finish = match turn.presentation.status {
-            StreamStatus::Streaming | StreamStatus::Completed => match &turn.finished {
-                Some(Ok(_)) => Some(Finish::Complete),
-                Some(Err(_)) => Some(Finish::Failed),
-                None => None,
-            },
-            StreamStatus::Truncated => Some(Finish::Truncated),
-            StreamStatus::Refused => Some(Finish::Refused),
-            StreamStatus::Cancelled => Some(Finish::Cancelled),
-            StreamStatus::Failed => Some(Finish::Failed),
-        };
-        let mut presentation = runtime_collab::TaskPresentation {
-            run: turn.presentation_run.clone(),
-            received_at: None,
-            sequence: turn
-                .published_presentation
-                .as_ref()
-                .map_or(1, |p| p.sequence + 1),
-            text: turn.presentation.text.clone(),
-            reasoning: turn.presentation.reasoning.clone(),
-            finish,
-            detail: turn
-                .presentation
-                .error
-                .as_ref()
-                .map_or_else(String::new, |e| e.message.clone()),
-        }
-        .bounded()
-        .map_err(anyhow::Error::msg)?;
-        if let Some(previous) = &turn.published_presentation {
-            presentation.sequence = previous.sequence;
-            if &presentation == previous {
-                return Ok(());
-            }
-            presentation.sequence += 1;
-        } else if presentation.text.is_empty()
-            && presentation.reasoning.is_empty()
-            && presentation.detail.is_empty()
-            && matches!(presentation.finish, None | Some(Finish::Complete))
-        {
-            return Ok(());
-        }
-        // Old hosts receive the same readable, bounded progress lane, without
-        // an unknown JSON field their strict decoder would reject. Only the
-        // model's own prose is readable here: exposed reasoning is a provider
-        // summary, never the reply a person reads, so it is never what the
-        // lane says.
-        let said = if !presentation.text.is_empty() {
-            presentation.text.as_str()
-        } else if !presentation.detail.is_empty() {
-            presentation.detail.as_str()
-        } else {
-            &crate::i18n::t("agent-model-turn-completed")
-        };
-        let message: String = said.chars().take(280).collect();
-        turn.published_presentation = Some(presentation.clone());
-        turn.published_at = ui::time::now();
-        self.report_task(
-            run,
-            runtime_collab::TaskRunUpdate::Progress {
-                message,
-                presentation: (run.presentation_version == Some(1)).then_some(presentation),
-            },
-        )
-    }
-
     /// Stop the turn in flight, keeping what it streamed in the record: `said`
     /// is what a person reads, in their own terms, and `reason` — a timeout,
     /// the task's time running out, a person's Stop — is kept in the record.
-    fn interrupt_turn_presentation(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        reason: &str,
-        said: &str,
-        cancelled: bool,
-    ) -> Result<Failure> {
+    fn interrupt_turn(&mut self, reason: &str, said: &str, cancelled: bool) -> Failure {
         if let Some(turn) = &mut self.turn {
             use agent_provider_config::protocol::{ErrorKind, ModelError};
             turn.presentation.fail(ModelError {
@@ -1220,14 +1101,13 @@ impl Session {
             });
             turn.finished = Some(Err(Failure::spoken(said, reason)));
         }
-        self.publish_turn_presentation(run)?;
         // The person reads what happened, in their terms; the reason the loop
         // stopped the turn is the record kept beside it.
         let failure = Failure::spoken(said, reason);
-        Ok(match self.turn.take() {
+        match self.turn.take() {
             Some(turn) => turn.retained_failure(&failure),
             None => failure,
-        })
+        }
     }
 
     /// One model turn: stream it, validate its complete batch, execute and record
@@ -1236,14 +1116,18 @@ impl Session {
     /// independent invoke it left running.
     fn run_turn(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         conversation: &mut Conversation,
         state: &mut LoopState,
         turn: usize,
         timeout: Duration,
     ) -> Result<Option<LoopEnd>> {
         let end = self.run_turn_calls(run, conversation, state, turn, timeout);
-        state.in_flight.clear();
+        let mut left: Vec<Following> = std::mem::take(&mut state.in_flight)
+            .into_iter()
+            .map(|running| running.following)
+            .collect();
+        self.cancel_running(&mut left)?;
         state.settled.clear();
         end
     }
@@ -1254,13 +1138,13 @@ impl Session {
     )]
     fn run_turn_calls(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         conversation: &mut Conversation,
         state: &mut LoopState,
         turn: usize,
         timeout: Duration,
     ) -> Result<Option<LoopEnd>> {
-        if self.task_cancelled(run)? {
+        if self.task_cancelled(run) {
             return Ok(Some(LoopEnd::Cancelled(crate::i18n::t(
                 "agent-run-cancelled-before-planning",
             ))));
@@ -1270,17 +1154,12 @@ impl Session {
         }
         let body = conversation.body(&tools::typed_loop_definitions());
         let sent = compaction::Context::tokens_of(&body);
-        // The model starts first. The cancellation poll is a round trip to
-        // the host and is not waited for: its answer is read while the model
-        // thinks, and before any step of this turn reaches the host.
         let turn_began = ui::time::now();
         let (rx, stop) = self.chooser.start_turn(body, timeout, turn);
         let mut active = ActiveTurn::new(rx);
         active.stop = Some(stop);
-        active.presentation_run = format!("{}:{turn}", run.run_id);
         self.turn = Some(active);
-        self.poll_cancellation(run)?;
-        if self.cancellation_known()? {
+        if self.task_cancelled(run) {
             self.turn = None;
             return Ok(Some(LoopEnd::Cancelled(crate::i18n::t(
                 "agent-run-cancelled-before-step",
@@ -1296,20 +1175,17 @@ impl Session {
         let mut validated = false;
         let (body, refused_turn) = loop {
             self.pump_turn_waiting(Duration::from_millis(50));
-            self.publish_turn_presentation(run)?;
             self.absorb_catalogue_updates();
-            if self.cancellation_known()? {
+            if self.task_cancelled(run) {
                 // The person stopped it: the record needs no sentence beside
                 // the one their own Stop gave it.
-                let reason = self.interrupt_turn_presentation(
-                    run,
+                let reason = self.interrupt_turn(
                     &crate::i18n::t("agent-cancel-thinking"),
                     &crate::i18n::t("agent-failure-cancelled"),
                     true,
-                )?;
+                );
                 return Ok(Some(LoopEnd::Cancelled(reason.detail().to_owned())));
             }
-            self.poll_cancellation_every(run, THINKING_CANCELLATION_POLL)?;
             // Streamed calls are presentation only. Dispatch the complete batch,
             // in order, only after validating every call and the terminal status.
             if !validated && let Some(active) = &mut self.turn {
@@ -1371,12 +1247,7 @@ impl Session {
                 if let Some(message) =
                     cancelled.or_else(|| settle(handled, &call.id, &mut results, &mut finish))
                 {
-                    self.interrupt_turn_presentation(
-                        run,
-                        &message,
-                        "The model call was stopped.",
-                        true,
-                    )?;
+                    self.interrupt_turn(&message, "The model call was stopped.", true);
                     return Ok(Some(LoopEnd::Cancelled(message)));
                 }
             }
@@ -1390,12 +1261,11 @@ impl Session {
                 break finished;
             }
             if turn_began.elapsed().saturating_sub(stepping) > timeout + Duration::from_secs(5) {
-                let message = self.interrupt_turn_presentation(
-                    run,
+                let message = self.interrupt_turn(
                     &crate::i18n::t("agent-fail-turn-not-finished"),
                     &crate::i18n::t("agent-failure-timed-out"),
                     false,
-                )?;
+                );
                 return Ok(Some(LoopEnd::Failed(message)));
             }
         };
@@ -1800,12 +1670,7 @@ impl Session {
     /// searching the web, reading or changing an application's documents,
     /// or finding out what an application can do. `None` for a call that
     /// is no step of its own (finishing, reading on in a long result).
-    fn step_of(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        state: &LoopState,
-        call: &StreamedCall,
-    ) -> Option<TaskStep> {
+    fn step_of(&mut self, run: &Asked, state: &LoopState, call: &StreamedCall) -> Option<TaskStep> {
         let catalogue = self.task_catalogue();
         // The application's name as the person sees it: the selection's
         // application names itself, an openable one is offered under its
@@ -1879,12 +1744,7 @@ impl Session {
 
     /// Tell the person the run is at `call`'s step, once each time the step
     /// changes: what the composer and Task Center show while it runs.
-    fn tell_step(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        state: &mut LoopState,
-        call: &StreamedCall,
-    ) -> Result<()> {
+    fn tell_step(&mut self, run: &Asked, state: &mut LoopState, call: &StreamedCall) -> Result<()> {
         let Some(step) = self.step_of(run, state, call) else {
             return Ok(());
         };
@@ -1895,25 +1755,13 @@ impl Session {
         }
         state.steps_told += 1;
         state.told_step = Some(note.clone());
-        self.report_task(
-            run,
-            runtime_collab::TaskRunUpdate::Progress {
-                message: note,
-                // A step is a public note, appended to the task's history.
-                presentation: None,
-            },
-        )
+        self.report_task(run, TurnUpdate::Progress { message: note })
     }
 
     /// Tell the person where a request of several items is, once per item:
     /// "3 of 8: reviewed Jane Doe", in the issue's thread. Each item gets
     /// its own bounded number of step notes.
-    fn tell_progress(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        state: &mut LoopState,
-        input: &Value,
-    ) -> Result<()> {
+    fn tell_progress(&mut self, run: &Asked, state: &mut LoopState, input: &Value) -> Result<()> {
         let Some(progress) = progress::Progress::of_input(input) else {
             return Ok(());
         };
@@ -1923,19 +1771,12 @@ impl Session {
         let line = progress.line();
         state.progress = Some(progress);
         state.steps_told = 0;
-        self.report_task(
-            run,
-            runtime_collab::TaskRunUpdate::Progress {
-                message: line,
-                // Progress is a public note, appended to the task's history.
-                presentation: None,
-            },
-        )
+        self.report_task(run, TurnUpdate::Progress { message: line })
     }
 
     fn handle_call(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &mut LoopState,
         call: &StreamedCall,
         failed: &mut bool,
@@ -2156,7 +1997,7 @@ impl Session {
     /// record keeps what it asked and what came of it beside every other step.
     fn run_web(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &mut LoopState,
         call: &StreamedCall,
         failed: &mut bool,
@@ -2188,7 +2029,7 @@ impl Session {
     /// report of a call refused before anything ran.
     fn prepare_invoke(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &LoopState,
         input: &Value,
     ) -> Result<Prepared, Box<InvokeReport>> {
@@ -2255,7 +2096,7 @@ impl Session {
     /// was cancelled and the loop must stop.
     fn invoke_from_loop(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &mut LoopState,
         input: &Value,
     ) -> Result<(InvokeReport, Option<String>)> {
@@ -2378,7 +2219,7 @@ impl Session {
     /// previous step's result all run in order.
     fn start_independent(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &mut LoopState,
         call: &StreamedCall,
     ) -> Result<Started> {
@@ -2400,7 +2241,7 @@ impl Session {
         {
             return Ok(Started::InOrder);
         }
-        if self.cancelled_before_step()? {
+        if self.task_cancelled(run) {
             return Ok(Started::Cancelled(crate::i18n::t(
                 "agent-run-cancelled-before-step",
             )));
@@ -2422,7 +2263,6 @@ impl Session {
                 Ok(Started::Running)
             }
             Err(stop) => {
-                self.step_settled();
                 self.record_action(run, &prepared.action, Err(&stop))?;
                 Ok(match stop {
                     TaskActionStop::Failed(message) => {
@@ -2442,7 +2282,7 @@ impl Session {
     /// running was cancelled.
     fn drain_in_flight(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &mut LoopState,
         failed: &mut bool,
     ) -> Result<Option<String>> {
@@ -2461,7 +2301,6 @@ impl Session {
         self.follow_native(run, &mut followed)?;
         let mut cancelled = None;
         for ((call, offer, before, index), following) in started.into_iter().zip(followed) {
-            self.step_settled();
             let action = following.action.clone();
             let settled = following.into_outcome();
             self.record_action(run, &action, settled.as_ref())?;
@@ -2494,7 +2333,7 @@ impl Session {
     /// `Some` is a cancellation.
     fn settle_turn(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &mut LoopState,
         results: &mut HashMap<String, String>,
         finish: &mut Option<Finishing>,

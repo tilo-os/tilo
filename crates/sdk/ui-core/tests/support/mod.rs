@@ -188,10 +188,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::UpdateInvocation { .. }
             | CollabRequest::RecordLocalEffect { .. }
             | CollabRequest::RemoteAction { .. }
-            | CollabRequest::LaunchInstalledApplication { .. }
-            | CollabRequest::ReportTaskRun { .. }
-            | CollabRequest::InvokeTaskAction { .. }
-            | CollabRequest::TaskRunCancellation { .. } => {
+            | CollabRequest::LaunchInstalledApplication { .. } => {
                 // Session-local and shell-owned control-plane commands never
                 // fan out through another application's document channel.
             }

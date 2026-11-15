@@ -3,28 +3,27 @@
 
 use super::*;
 
-/// The children the agent started, in order: one `InvokeTaskAction` each
-/// with no wait (a re-ask always asks to be held).
+/// The steps the agent started, in order: one invoke each.
 fn children_started(sent: &[CollabRequest]) -> Vec<tilo_actions::InvocationId> {
     sent.iter()
-        .filter_map(|request| match request {
-            CollabRequest::InvokeTaskAction {
-                invocation,
-                wait: None,
-                ..
-            } => Some(*invocation),
-            _ => None,
-        })
+        .filter_map(invoked)
+        .map(|(invocation, _, _, _)| invocation)
         .collect()
 }
 
-/// Re-asks the agent sent for its children.
-fn reasks(sent: &[CollabRequest]) -> Vec<runtime_collab::TaskChildWait> {
+/// The asks the agent sent about its running steps: how long each asked to be held, and what it
+/// had seen.
+fn reasks(sent: &[CollabRequest]) -> Vec<(u32, tilo_actions::remote::UpdateMark)> {
     sent.iter()
         .filter_map(|request| match request {
-            CollabRequest::InvokeTaskAction {
-                wait: Some(wait), ..
-            } => Some(*wait),
+            CollabRequest::RemoteAction {
+                message:
+                    tilo_actions::remote::RemoteActionMessage::Observe {
+                        wait_ms: Some(wait_ms),
+                        seen: Some(seen),
+                        ..
+                    },
+            } => Some((*wait_ms, *seen)),
             _ => None,
         })
         .collect()
@@ -33,8 +32,8 @@ fn reasks(sent: &[CollabRequest]) -> Vec<runtime_collab::TaskChildWait> {
 /// One measured run of the benchmark plan.
 struct Measured {
     wall_ms: f64,
-    /// Host round trips while the steps ran that brought no news: re-asks
-    /// that found the child still running, and cancellation polls.
+    /// Host round trips while the steps ran that brought no news: asks that found the step still
+    /// running.
     idle_per_step: f64,
 }
 
@@ -47,7 +46,7 @@ struct Measured {
 /// `idle.txt` in idle round trips per step of the sequential plan), and
 /// `TILO_AGENT_NATIVE_REPS` how many runs of each to take.
 #[test]
-fn native_task_benchmark() {
+fn turn_steps_benchmark() {
     use std::fmt::Write as _;
     let settle = Duration::from_millis(100);
     // Measured only when asked for (the scheduled perf run): an ordinary
@@ -80,9 +79,9 @@ fn native_task_benchmark() {
         assert_eq!(world.started.len(), 3);
         assert!(matches!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded { .. }
+            TurnUpdate::Succeeded { .. }
         ));
-        let idle = world.idle_observations + world.cancellation_checks;
+        let idle = world.idle_observations;
         Measured {
             wall_ms,
             idle_per_step: idle as f64 / 3.0,
@@ -185,7 +184,7 @@ tilo_test_env::scenario! {
         }
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Posted and started both documents.".into()
             }
         );
@@ -302,7 +301,7 @@ tilo_test_env::scenario! {
         assert_eq!(cancelled, started, "every running child is cancelled");
         assert!(matches!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Cancelled { .. }
+            TurnUpdate::Cancelled { .. }
         ));
     }
 
@@ -409,8 +408,8 @@ tilo_test_env::scenario! {
             1,
             "one held re-ask, answered when the child settled: {reasks:?}"
         );
-        assert_eq!(reasks[0].seen, tilo_actions::remote::UpdateMark::Accepted);
-        assert!(reasks[0].wait_ms > 0);
+        assert_eq!(reasks[0].1, tilo_actions::remote::UpdateMark::Accepted);
+        assert!(reasks[0].0 > 0);
         assert_eq!(world.observations, 1);
         assert_eq!(world.idle_observations, 0, "no answer came back empty");
     }
@@ -456,7 +455,7 @@ tilo_test_env::scenario! {
             .collect();
         assert!(
             gaps.iter()
-                .all(|gap| *gap >= crate::session::native_task::REASK_PACE / 2),
+                .all(|gap| *gap >= crate::session::steps::REASK_PACE / 2),
             "re-asked {gaps:?} apart"
         );
     }
@@ -492,7 +491,9 @@ tilo_test_env::scenario! {
         assert!(
             f.sent.borrow().iter().any(|request| matches!(
                 request,
-                CollabRequest::InvokeTaskAction { wait: Some(_), .. }
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Confirm { .. }
+                }
             )),
             "the step waits on the person: {:?}",
             f.sent.borrow()
@@ -504,7 +505,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "The line is appended.".into()
             }
         );
@@ -518,10 +519,6 @@ tilo_test_env::scenario! {
     {
         let ids = |requests: &[&str]| {
             let mut f = fixture("ids", World::default(), Vec::new());
-            f.session.native_task = Some(crate::session::native_task::NativeTaskState {
-                run_id: f.run.run_id,
-                ..Default::default()
-            });
             let offers = f.session.task_catalogue();
             requests
                 .iter()

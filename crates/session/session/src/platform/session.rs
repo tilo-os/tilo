@@ -453,9 +453,15 @@ impl Session {
                 Some((app, kind, held, outcome))
             })
         };
+        // The agent sessions served here: one per connection the person admits at the MCP server
+        // and one per conversation an agent is asked a turn in. What the shell and the bar show,
+        // and what the broker admits each session on.
+        let agent_sessions = crate::agent_sessions::AgentSessions::new();
+        agent_sessions.wake_on_spend(options.wake.handle());
         let conversations = Rc::new(crate::conversations::Conversations::new(
             records.clone(),
-            options.wake.handle(),
+            std::sync::Arc::clone(&agent_sessions),
+            &options.wake.handle(),
         ));
         let agents = Rc::new(crate::agents::Agents::new(
             records.clone(),
@@ -923,9 +929,6 @@ impl Session {
         // control it shows: the session keeps them in its settings service, and this is what the
         // broker hands a change of them, on the loop's pass, as it hands the session's own steps.
         let settings_steps = std::sync::Arc::new(crate::settings_steps::SettingsSteps::new(steps));
-        // The agent sessions the person admits at the MCP server: what the shell and the bar show,
-        // and what the broker admits each session's certificate on.
-        let agent_sessions = crate::agent_sessions::AgentSessions::new();
         let shell = crate::device_lists::device_lists_from(crate::device_lists::Shared {
             agent_sessions: std::sync::Arc::clone(&agent_sessions),
             handle: handle.clone(),
@@ -1181,7 +1184,6 @@ impl Session {
             std::sync::Arc::new(shortcut_library),
             &activity,
             crate::doors::plane::Knitted {
-                turns: Some(conversations.runs()),
                 agents: Some(agents.roster()),
                 agent_sessions: Some(std::sync::Arc::clone(&agent_sessions) as _),
                 tools: Some(tools.clone()),
@@ -2312,11 +2314,12 @@ impl Session {
         self.shared.records.stored(app, workspace, record)
     }
 
-    /// What the windows ask of the workspace's activity and follow, as this
-    /// session serves it: the same door the shell's own pane reads through.
+    /// Whether an agent in `workspace` acts here only in one of its sessions: true once the session
+    /// read the workspace's conversations, which is when it holds the workspace.
     #[must_use]
-    pub fn conversation_runs(&self) -> std::sync::Arc<dyn tilo_broker_core::services::TrackerRuns> {
-        self.shared.conversations.runs()
+    pub fn confines_agents(&self, workspace: &str) -> bool {
+        use tilo_broker_core::services::AgentSessions as _;
+        self.shared.agent_sessions.confines(workspace)
     }
 
     /// What the windows ask of the workspace's activity and follow, as this session serves it: the

@@ -151,7 +151,7 @@ pub fn grant_id(agent: &str, scope: &AnswerScope, kind: ActionKind) -> GrantId {
 pub fn is_answer(grant: &Grant) -> bool {
     let id = grant.id.as_str();
     (id.starts_with(PREFIX) && matches!(grant.grantee, Grantee::Member(crate::MemberId::Agent(_))))
-        || crate::is_issue_answer(grant)
+        || crate::is_session_answer(grant)
 }
 
 /// The grant giving `agent` `answer` for actions of `kind` at `scope` in

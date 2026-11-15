@@ -1105,6 +1105,15 @@ pub struct FinishedShortcutRun {
     pub report: RunReport,
 }
 
+/// The shortcut runs the broker holds while they go and once they end: a run going (and the
+/// steps waiting on its person) is stopped through here, and an ended one waits here until history
+/// takes it.
+#[derive(Default)]
+pub struct EndedRuns {
+    pub shortcuts: ShortcutRuns,
+    pub running: RunLedger,
+}
+
 /// Runs the broker finished, until the history recorder takes them.
 #[derive(Default)]
 pub struct ShortcutRuns {

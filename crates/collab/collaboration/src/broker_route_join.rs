@@ -7,7 +7,7 @@ use super::{
     SdkJoinContext, SdkRoute, audio_output, broker_participant_kind, change_waits,
     committed_document, follow_channel_keys, native_media, spawn_action_catalogue_stream,
     spawn_content_stream, spawn_context_stream, spawn_invocation_stream, spawn_op_stream,
-    spawn_presence_stream, spawn_realtime_stream, spawn_task_run_stream, tokio_mpsc,
+    spawn_presence_stream, spawn_realtime_stream, tokio_mpsc,
 };
 use crate::time::Duration;
 use tilo_lock::MutexRecover as _;
@@ -290,7 +290,7 @@ pub(super) async fn join_route(
     change_waits::follow(&spec.app_id, &channel, inbound_tx);
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
-    let ((), (), (), (), (), (), presence) = tokio::join!(
+    let ((), (), (), (), (), presence) = tokio::join!(
         async {
             if !committed {
                 spawn_op_stream(
@@ -306,14 +306,6 @@ pub(super) async fn join_route(
         spawn_context_stream(&channel, spec.clone(), inbound_tx),
         spawn_invocation_stream(&channel, spec, inbound_tx),
         spawn_realtime_stream(&channel, inbound_tx),
-        async {
-            // This intentionally fails quietly for person sessions. An
-            // admitted agent gets a separate broker-addressed queue; a
-            // document agent never has to infer task work from workspace traffic.
-            if !crate::host::environment().identity.managed_agent_context {
-                spawn_task_run_stream(&channel, inbound_tx).await;
-            }
-        },
         spawn_content_stream(&channel, spec.clone(), inbound_tx),
         spawn_presence_stream(&channel, inbound_tx),
     );

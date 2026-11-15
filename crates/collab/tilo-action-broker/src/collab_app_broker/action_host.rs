@@ -1858,14 +1858,7 @@ impl AppBrokerState {
         // there, and neither runs on the broker's local set.
         runtime.spawn(async move {
             let started = state
-                .relaunch_and_deliver(
-                    &completer,
-                    &caller,
-                    &destination,
-                    origin.as_ref(),
-                    &request,
-                    None,
-                )
+                .relaunch_and_deliver(&completer, &caller, &destination, origin.as_ref(), &request)
                 .await;
             let result = match state.remote_invocations.lock() {
                 Ok(mut ledger) => match started {
@@ -2044,19 +2037,15 @@ impl AppBrokerState {
             .map(|offer| offered_action(app, offer))
     }
 
-    /// Hand `request` to the publisher `peer_id` that offers it at `address` now: the native
-    /// task's own delivery, or a job on that connection.
+    /// Hand `request` to the publisher `peer_id` that offers it at `address` now: a job on that
+    /// connection.
     async fn deliver_to(
         self: &Arc<Self>,
         peer_id: u64,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
         (request, address): (&InvokeRequest, &tilo_actions::ActionAddress),
-        native: Option<&super::native_task_execution::NativeLaunch>,
     ) -> Result<u64, ActionHostError> {
-        if let Some(native) = native {
-            return native.deliver(self, peer_id).await.map_err(refusal);
-        }
         let mut delivered = request.clone();
         delivered.target.provider = peer_id.to_string();
         delivered.target.address = address.clone();
@@ -2064,28 +2053,25 @@ impl AppBrokerState {
     }
 
     /// The connection ready to take `address` in `destination`, and the address it takes it
-    /// at: the native task's own, an instance of the app for a `start` (`starts`), else the
-    /// app's ready publisher of it.
+    /// at: an instance of the app for a `start` (`starts`), else the app's ready publisher of it.
     fn ready_for(
         &self,
         destination: &LaunchDestination,
-        native: Option<&super::native_task_execution::NativeLaunch>,
         starts: bool,
         address: &tilo_actions::ActionAddress,
     ) -> Option<(u64, tilo_actions::ActionAddress)> {
         let workspace = destination.workspace.id().to_string();
-        match native {
-            Some(native) => native.ready(self).map(|peer_id| (peer_id, address.clone())),
-            None if starts => self
+        if starts {
+            return self
                 .running_instance(&destination.app_id, &workspace, &address.action)
-                .map(|peer_id| (peer_id, address.clone())),
-            None => self.ready_delivery(
-                &destination.app_id,
-                &workspace,
-                destination.record.as_deref(),
-                address,
-            ),
+                .map(|peer_id| (peer_id, address.clone()));
         }
+        self.ready_delivery(
+            &destination.app_id,
+            &workspace,
+            destination.record.as_deref(),
+            address,
+        )
     }
 
     /// Answer `request`, a workspace's `start` of its app ([`super::windowless_instances::started_app`]),
@@ -2132,7 +2118,6 @@ impl AppBrokerState {
         destination: &LaunchDestination,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
-        native: Option<&super::native_task_execution::NativeLaunch>,
     ) -> Result<u64, ActionHostError> {
         let stopped_waiting = || ActionHostError::Unavailable {
             reason: "the caller stopped waiting for admission".into(),
@@ -2155,9 +2140,6 @@ impl AppBrokerState {
         let mut starting: Option<crate::services::WindowlessStart> = None;
         loop {
             self.check_launch_origin(caller, origin, &workspace_id)?;
-            if let Some(native) = native {
-                native.check(self).map_err(refusal)?;
-            }
             if completer.is_abandoned() {
                 return Err(stopped_waiting());
             }
@@ -2165,17 +2147,15 @@ impl AppBrokerState {
                 return Err(expired());
             }
             if let Some((peer_id, published)) =
-                self.ready_for(destination, native, started.is_some(), address)
+                self.ready_for(destination, started.is_some(), address)
             {
-                if native.is_none()
-                    && let Some(started) = started
-                {
+                if let Some(started) = started {
                     return self
                         .answer_started(caller, origin, request, started, peer_id)
                         .await;
                 }
                 return self
-                    .deliver_to(peer_id, caller, origin, (request, &published), native)
+                    .deliver_to(peer_id, caller, origin, (request, &published))
                     .await;
             }
             // An action that shows nothing runs in an instance of the app
@@ -2201,18 +2181,16 @@ impl AppBrokerState {
                         }
                         continue;
                     }
-                    () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => continue,
                     permit = super::launchable::launch_permits().acquire_owned() => {
                         permit.map_err(|_| ActionHostError::Unavailable { reason: "the launch queue stopped".into() })?
                     }
                 });
-                let current = self.readmit_launch(caller, origin, request, destination, native)?;
+                let current = self.readmit_launch(caller, origin, request, destination)?;
                 let launch = self.finish_retained_launch(
                     completer,
                     caller,
                     (origin, request),
                     current,
-                    native,
                     permit.take().ok_or(ActionHostError::NotPermitted)?,
                     (deadline.deadline(), &address.action),
                 );
@@ -2229,7 +2207,6 @@ impl AppBrokerState {
                 },
                 () = &mut deadline => return Err(expired()),
                 () = &mut abandoned => return Err(stopped_waiting()),
-                () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => {},
                 // A start that failed is the action's answer now, with why.
                 failed = super::windowless_instances::start_failed(&mut starting, app_id) => {
                     return Err(failed);
@@ -2263,7 +2240,6 @@ impl AppBrokerState {
         caller: &Caller,
         custody: (Option<&super::InvocationCaller>, &InvokeRequest),
         current: LaunchDestination,
-        native: Option<&super::native_task_execution::NativeLaunch>,
         permit: tokio::sync::OwnedSemaphorePermit,
         deadline: (tokio::time::Instant, &str),
     ) -> Result<(), ActionHostError> {
@@ -2288,18 +2264,9 @@ impl AppBrokerState {
         let caller = caller.clone();
         let origin = custody.0.cloned();
         let parent = custody.1.clone();
-        let native = native.cloned();
         let mut launch = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            match native {
-                // Native tasks retain different execution custody, not an
-                // InvocationCaller. Keep their checked launch path; actor text
-                // is not sufficient authority for a signed launch child.
-                Some(native) => native.launch(&state, &current, &place).map_err(refusal),
-                None => {
-                    state.launch_retained_child(&caller, origin.as_ref(), &parent, &current, &place)
-                }
-            }
+            state.launch_retained_child(&caller, origin.as_ref(), &parent, &current, &place)
         });
         let launched_result = tokio::select! {
             biased;
@@ -2558,7 +2525,8 @@ impl AppBrokerState {
 
     /// The live connection of `app_id` in `workspace` that publishes `address`
     /// and can receive invocations.
-    pub(super) fn ready_publisher(
+    #[cfg(test)]
+    pub(super) fn ready_peer(
         &self,
         app_id: &str,
         workspace: &str,
@@ -2569,7 +2537,7 @@ impl AppBrokerState {
             .map(|(peer_id, _)| peer_id)
     }
 
-    /// [`Self::ready_publisher`] and the address that connection publishes
+    /// [`Self::ready_peer`] and the address that connection publishes
     /// `address` under, which is what it is delivered as.
     ///
     /// An app names its resources by its own ids (`tasks.tracker`); a
@@ -3086,17 +3054,6 @@ impl AppBrokerState {
         }
         let own = actor.direct().then_some(confirmation).flatten();
         witnessed || confirmation_satisfied(&policy, own)
-    }
-
-    /// Agent runs of workspace tasks that ended since the last call, oldest
-    /// first.
-    pub fn take_ended_task_runs(&self) -> Vec<crate::task_runs::EndedTaskRun> {
-        self.ended_runs.tasks.take()
-    }
-
-    /// Whether an ended task run is waiting to be taken.
-    pub fn has_ended_task_runs(&self) -> bool {
-        self.ended_runs.tasks.has_ended()
     }
 
     /// Launch `app_id` into `workspace`, optionally opening content-addressed

@@ -173,7 +173,7 @@ impl AppConnection {
         }
         // A certified agent joins only as itself: a person's handle would name
         // it otherwise.
-        super::task_agents::joins_as(&verified_identity, if person { "person" } else { "agent" })
+        super::agent_cert::joins_as(&verified_identity, if person { "person" } else { "agent" })
             .map_err(BrokerError::failed)?;
         match member {
             None => {

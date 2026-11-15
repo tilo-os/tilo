@@ -75,7 +75,7 @@ tilo_test_env::scenario! {
         assert_eq!(ids, ["toolu_00", "toolu_01"]);
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Wrote it.".into()
             }
         );
@@ -114,8 +114,8 @@ tilo_test_env::scenario! {
         );
         for title in ["post hello", "what did you just do?"] {
             let mut run = f.run.clone();
-            run.title = title.into();
-            bind_context(&mut run);
+            run.asked.title = title.into();
+            run.asked.instruction = title.into();
             f.session.run_task(&run).unwrap();
         }
         let bodies = f.script.bodies.lock().unwrap().clone();

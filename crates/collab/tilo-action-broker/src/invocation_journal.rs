@@ -71,21 +71,6 @@ pub(super) enum InvocationOwner {
         #[serde(default = "omitted_agent")]
         agent: Option<String>,
     },
-    /// Retained ownership data only; observation still requires live task authority.
-    Enrolled {
-        root: [u8; 32],
-        device: [u8; 32],
-        task: String,
-        run: String,
-        channel: String,
-    },
-    /// Run-scoped replay data. Access still requires the current signed agent
-    /// channel and the canonical owner's task admission on every attempt.
-    NativeTask {
-        agent: String,
-        task: String,
-        epoch: u64,
-    },
 }
 
 /// The value an omitted `agent` deserializes to. Serde's default for an
@@ -123,46 +108,9 @@ impl InvocationOwner {
                 device: *device,
                 agent: agent.clone(),
             },
-            Self::Enrolled {
-                root,
-                device,
-                task,
-                run,
-                channel,
-            } => Actor::Enrolled {
-                root: *root,
-                device: *device,
-                task: task.clone(),
-                run: run.clone(),
-                channel: channel.clone(),
-            },
-            Self::NativeTask { agent, task, epoch } => Actor::NativeTask {
-                // Filled from original LocalCaller custody before signing.
-                root: [0; 32],
-                device: [0; 32],
-                agent: agent.clone(),
-                task: task.clone(),
-                epoch: *epoch,
-            },
         })
     }
     pub(super) fn validate(&self) -> Result<(), String> {
-        if let Self::NativeTask { agent, task, epoch } = self
-            && (agent.is_empty()
-                || agent.len() > 512
-                || agent.chars().any(char::is_control)
-                || task.is_empty()
-                || task.len() > 256
-                // A conversation turn's answer, an MCP server connection's
-                // run, or a workspace task's in a journal kept from before
-                // tasks were turns.
-                || !(task.starts_with("task:")
-                    || crate::services::is_conversation_turn(task)
-                    || crate::services::is_agent_session(task))
-                || *epoch == 0)
-        {
-            return Err("invalid native task invocation owner".into());
-        }
         if let Self::AuthenticatedLocal {
             agent: Some(agent), ..
         } = self
@@ -171,18 +119,6 @@ impl InvocationOwner {
                 || agent.bytes().any(|byte| byte.is_ascii_control()))
         {
             return Err("invalid authenticated local invocation agent".into());
-        }
-        if let Self::Enrolled {
-            task, run, channel, ..
-        } = self
-        {
-            for value in [task, run, channel] {
-                let id = uuid::Uuid::parse_str(value)
-                    .map_err(|_| "invalid enrolled invocation owner")?;
-                if value.len() != 36 || id.is_nil() || id.to_string() != *value {
-                    return Err("noncanonical enrolled invocation owner".into());
-                }
-            }
         }
         Ok(())
     }
@@ -524,22 +460,7 @@ fn check_evidence(
     intent: &serde_json::Value,
     evidence: &crate::action_evidence::AdmissionEvidence,
 ) -> Result<(), String> {
-    let mut expected = evidence_facts(key, intent)?;
-    if let (
-        crate::action_evidence::VerifiedActor::NativeTask { root, device, .. },
-        crate::action_evidence::VerifiedActor::NativeTask {
-            root: held_root,
-            device: held_device,
-            ..
-        },
-    ) = (&mut expected.actor, &evidence.receipt.facts.actor)
-    {
-        if *held_root == [0; 32] || *held_device == [0; 32] {
-            return Err("task admission lacks original caller identity".into());
-        }
-        *root = *held_root;
-        *device = *held_device;
-    }
+    let expected = evidence_facts(key, intent)?;
     evidence.validate(&expected)?;
     evidence.validate_retained(intent)
 }
@@ -1476,7 +1397,7 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    const PRIVATE_RECORD: &str = r#"{"version":7,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"workspace":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Enrolled":{"root":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"task":"00000000-0000-0000-0000-000000000005","run":"00000000-0000-0000-0000-000000000006","channel":"00000000-0000-0000-0000-000000000007"}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"private result"}},"uncertain":false,"cancellation_requested":false}]}"#;
+    const PRIVATE_RECORD: &str = r#"{"version":7,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"workspace":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Certified":{"root":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"private result"}},"uncertain":false,"cancellation_requested":false}]}"#;
 
     tilo_test_env::scenario! {
         fn a_journal_store_opens_only_for_its_owner_in_a_shape_it_knows;
@@ -1562,28 +1483,6 @@ mod tests {
             }
         }
 
-        phase enrolled_journal_rejects_private_downgrade_and_noncanonical_ownership;
-        {
-            for literal in [
-                PRIVATE_RECORD.replace("\"version\":7", "\"version\":6"),
-                PRIVATE_RECORD.replace(
-                    "00000000-0000-0000-0000-000000000005",
-                    "00000000000000000000000000000005",
-                ),
-                PRIVATE_RECORD.replace(
-                    "00000000-0000-0000-0000-000000000006",
-                    "00000000-0000-0000-0000-000000000000",
-                ),
-                PRIVATE_RECORD.replace("00000000-0000-0000-0000-000000000007", &"x".repeat(200)),
-            ] {
-                let dir = tempfile::tempdir().unwrap();
-                let root = dir.path().join("journal");
-                drop(InvocationJournal::open(&root).unwrap());
-                std::fs::write(root.join("records.json"), literal).unwrap();
-                assert!(InvocationJournal::open(&root).is_err());
-            }
-        }
-
         phase invocation_journal_rejects_preexisting_cross_owner_uuid_conflicts;
         {
             let dir = tempfile::tempdir().unwrap();
@@ -1631,7 +1530,7 @@ mod tests {
         #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
         fn a_journal_restart_or_failed_barrier_never_reissues_an_admission;
 
-        phase enrolled_journal_upgrade_barrier_never_returns_effect_permission_on_failure;
+        phase a_journal_barrier_never_returns_effect_permission_on_failure;
         {
             let private: Snapshot = serde_json::from_str(PRIVATE_RECORD).expect("private owner data");
             for failure in [BarrierFailure::File, BarrierFailure::Directory] {

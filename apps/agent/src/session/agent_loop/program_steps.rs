@@ -11,7 +11,7 @@ use ui::tilo_reference::ResourceAt;
 
 use super::{Handled, LoopState, StreamedCall, TaskActionStop};
 use crate::programs::{self, Mounted, Naming};
-use crate::session::Session;
+use crate::session::{Asked, Session};
 use crate::tools;
 use tilo_actions::remote::task_programs;
 
@@ -103,7 +103,7 @@ impl Session {
     /// app lines.
     pub(in crate::session) fn program_world(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &mut LoopState,
     ) -> Result<()> {
         let catalogue = self.task_catalogue();
@@ -144,7 +144,7 @@ impl Session {
     /// or the host's refusal in words.
     fn host_call(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &mut LoopState,
         operation: &str,
         parameters: &serde_json::Map<String, Value>,
@@ -178,7 +178,7 @@ impl Session {
     /// and answer the model with what it answered.
     pub(super) fn run_program(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &mut LoopState,
         call: &StreamedCall,
     ) -> Result<Handled> {
@@ -204,8 +204,6 @@ impl Session {
         let mut parameters = serde_json::Map::new();
         parameters.insert("program".into(), Value::String(program.source.clone()));
         parameters.insert("confirm".into(), Value::Bool(program.confirm));
-        parameters.insert("run".into(), Value::String(run.group()));
-        parameters.insert("label".into(), Value::String(run.title.clone()));
         if let Some(this) = run
             .subject
             .as_ref()
@@ -239,7 +237,7 @@ impl Session {
     /// `Err` is the refusal the model reads instead of finishing.
     pub(super) fn keep_view_answer(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &mut LoopState,
         view: &tools::ViewAnswer,
     ) -> Result<Result<(), String>> {
@@ -313,7 +311,7 @@ impl Session {
         parameters.insert("title".into(), Value::String(view.title.clone()));
         parameters.insert(
             "question".into(),
-            Value::String(run.instruction().trim().to_owned()),
+            Value::String(run.instruction.trim().to_owned()),
         );
         parameters.insert("definition".into(), Value::String(view.source.clone()));
         parameters.insert("shows".into(), Value::String(shows));
@@ -352,12 +350,11 @@ fn kept_resource(kept: &Value, naming: &Naming<'_>, title: &str) -> Option<Resou
 /// Where the task is, said once in its first message (agents.md, "What the agent knows from the
 /// start"): who it acts for, what `this` is when the person pointed at a tilolang resource, and
 /// the apps its programs can use.
-pub(super) fn where_section(run: &runtime_collab::TaskRunEnvelope, world: &ProgramWorld) -> String {
+pub(super) fn where_section(run: &Asked, world: &ProgramWorld) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
-    let context =
-        serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone()).ok();
-    if let Some(person) = context
+    if let Some(person) = run
+        .context
         .as_ref()
         .and_then(|context| context.invoker.as_ref())
         .and_then(|invoker| invoker.acting.acted_for_person())

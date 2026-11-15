@@ -91,13 +91,13 @@ fn session_answer(
     if need.privileged {
         return None;
     }
-    let scope = crate::services::issue_answer_scope(
+    let scope = crate::services::session_answer_scope(
         app,
         (&descriptor.resource_kind, &descriptor.address.action),
         descriptor.contract.asks_for_argument(None),
     );
     Some(tilo_action_policy::Grant::new(
-        crate::services::issue_answer_id(session.as_str(), (&scope, need.kind)),
+        crate::services::session_answer_id(session.as_str(), (&scope, need.kind)),
         tilo_action_policy::Grantee::agent(agent.to_owned()),
         scope.node(workspace),
         tilo_action_policy::KindSet::of(need.kind),
@@ -222,7 +222,10 @@ impl AppBrokerState {
         }
     }
 
-    pub(super) fn native_witness_binding(
+    /// The binding a confirmation of `offered`, invoked by `actor` with `argument` as
+    /// `invocation`, is held to.
+    #[cfg(test)]
+    pub(super) fn offered_witness_binding(
         &self,
         actor: &str,
         offered: &(super::PublishedSurface, super::PublishedAction),
@@ -251,107 +254,6 @@ impl AppBrokerState {
             Some(Confirmation::Witnessed(token)) => self.take_witness(token, binding),
             _ => false,
         }
-    }
-
-    /// A question must not outlive the publisher or the contract it showed.
-    pub(super) fn check_native_store_offer(
-        &self,
-        offered: &(super::PublishedSurface, super::PublishedAction),
-    ) -> Result<(), String> {
-        let current = self
-            .offered_by(offered.0.peer_id, &offered.1.resource, &offered.1.action)
-            .ok_or("Store action retired while awaiting confirmation")?;
-        if !current.0.live
-            || current.0.route != offered.0.route
-            || current.0.app_id != offered.0.app_id
-            || current.1.contract != offered.1.contract
-            || current.1.params != offered.1.params
-        {
-            return Err("Store action changed while awaiting confirmation".into());
-        }
-        Ok(())
-    }
-
-    /// Native task approval is not a disclosure witness. Ask on the same typed
-    /// host sheet as ordinary Store invocations, after any Task Center edits.
-    /// Dispatch consumes the returned witness, and revalidates task authority.
-    pub(super) async fn native_store_witness(
-        &self,
-        (run, confirmed): (&super::PendingTaskRun, bool),
-        publication: &(super::PublishedSurface, super::PublishedAction),
-        argument: Option<&str>,
-        caller: &super::durable_local_invocation::LocalCaller,
-        invocation: tilo_actions::InvocationId,
-    ) -> Result<Option<String>, String> {
-        let (surface, offered) = publication;
-        let app = surface.app_id.as_str();
-        if !requires_store_witness(app, &offered.action) {
-            return Ok(None);
-        }
-        let binding = run.native.clone();
-        let actor = binding.actor()?;
-        self.authorize_task_action(
-            run,
-            &crate::services::NativeTaskActionRequirement {
-                binding: binding.clone(),
-                app: app.into(),
-                resource_kind: offered.resource_kind.clone(),
-                resource: offered.resource.clone(),
-                action: offered.action.clone(),
-                need: offered.contract.need(),
-                consequential: offered.contract.asks_for_argument(argument),
-                attended: offered.contract.is_attended(),
-                confirmed,
-            },
-        )?;
-        let current = caller.current(self)?;
-        let argument_value = argument.map_or(tilo_actions::remote::InvokeArgument::None, |text| {
-            tilo_actions::remote::InvokeArgument::Text(text.into())
-        });
-        let moderation = crate::app_actions::ModerationConsentPreview::from_argument(
-            &offered.action,
-            &argument_value,
-            &current.verified.user_public_key,
-        )?;
-        let question = Question {
-            request: AppActionConsentRequest {
-                handle: format!("confirm:{}", uuid::Uuid::new_v4()),
-                workspace: run.cluster_id.clone(),
-                person: binding.starter.ok_or("native task starter absent")?,
-                app_id: run.agent_id.clone(),
-                agent_session: None,
-                target_app: app.into(),
-                resource: offered.resource.clone(),
-                action: offered.action.clone(),
-                resource_label: offered.resource_label.clone(),
-                action_label: offered.action_label.clone(),
-                risk: offered.contract.risk,
-                needs_confirmation: true,
-                confirming: true,
-                moderation: Some(moderation),
-                scope: None,
-                draft: None,
-            },
-            binding: self.native_witness_binding(actor.id(), publication, argument, invocation),
-            answer: None,
-            actor,
-            shown: None,
-        };
-        let answer = self
-            .ask_person(&question)
-            .ok_or("host confirmation unavailable")?
-            .await
-            .map_err(|_| "host confirmation ended")?;
-        if !answer.allowed() {
-            return Err("Store disclosure declined".into());
-        }
-        if !answer.edits.is_empty() {
-            // A disclosure is confirmed exactly as it is shown.
-            return Err("a Store disclosure cannot be changed on the sheet".into());
-        }
-        self.witness_confirmation(&question.binding)
-            .map(Some)
-            .ok_or_else(|| "host confirmation unavailable".into())
     }
 
     /// Ask the person `caller` acts for — `person`, or the person its

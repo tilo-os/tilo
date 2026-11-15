@@ -6,7 +6,6 @@ use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
 
 use super::super::AppBrokerState;
 use super::LaunchDestination;
-use super::refusal;
 
 impl AppBrokerState {
     /// After the launch queue's wait: custody and launch policy read again,
@@ -17,13 +16,9 @@ impl AppBrokerState {
         origin: Option<&super::super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
         destination: &LaunchDestination,
-        native: Option<&super::super::native_task_execution::NativeLaunch>,
     ) -> Result<LaunchDestination, ActionHostError> {
         self.check_launch_origin(caller, origin, &destination.workspace.id().to_string())?;
-        let current = match native {
-            Some(native) => native.destination(self).map_err(refusal)?,
-            None => self.admit_launchable(caller, request)?,
-        };
+        let current = self.admit_launchable(caller, request)?;
         if current.workspace.id() != destination.workspace.id()
             || current.app_id != destination.app_id
             || current.record != destination.record

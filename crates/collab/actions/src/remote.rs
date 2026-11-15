@@ -1153,7 +1153,8 @@ impl RemoteActionMessage {
     }
 
     /// Whether this request asks its host to hold the answer until the
-    /// invocation moves, so whatever carries it must not wait behind it.
+    /// invocation moves, or until a person answers, so whatever carries it must not wait behind
+    /// it.
     #[must_use]
     pub const fn waits(&self) -> bool {
         matches!(
@@ -1164,7 +1165,7 @@ impl RemoteActionMessage {
             } | Self::Invoke(InvokeRequest {
                 wait_ms: Some(_),
                 ..
-            })
+            }) | Self::Confirm { .. }
         )
     }
 

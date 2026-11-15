@@ -190,21 +190,6 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
         request_id: u64,
         result: Result<(u64, tilo_actions::InvocationUpdate), String>,
     },
-    /// A run addressed to this admitted agent. The envelope is broker-minted
-    /// and contains a lease, not a caller-selected authority token.
-    TaskRun(crate::TaskRunEnvelope),
-    TaskActionInvocationResult {
-        request_id: u64,
-        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
-    },
-    TaskRunCancellation {
-        request_id: u64,
-        result: Result<bool, String>,
-    },
-    TaskRunReportResult {
-        request_id: u64,
-        result: Result<(), String>,
-    },
     WorkspaceControl {
         session_id: u64,
         event: crate::WorkspaceControlEvent,

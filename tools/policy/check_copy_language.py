@@ -701,14 +701,14 @@ COPY_FIELDS = (
 )
 
 
-# What a run reports to the person whose task it is, in a message the task's
-# own surface shows as it is: the words a headless participant has instead of
+# What an agent reports of a turn to the person who asked it, in a message the
+# conversation shows as it is: the words a headless participant has instead of
 # a window. Its message is the first field of each.
 WIRE_MESSAGE_BUILDERS = (
-    "TaskRunUpdate::Progress {",
-    "TaskRunUpdate::Succeeded {",
-    "TaskRunUpdate::Failed {",
-    "TaskRunUpdate::Cancelled {",
+    "TurnUpdate::Progress {",
+    "TurnUpdate::Succeeded {",
+    "TurnUpdate::Failed {",
+    "TurnUpdate::Cancelled {",
 )
 
 # What a surface titles a published resource or action with: the action

@@ -5628,29 +5628,6 @@ async fn forward_action_catalogues(
     }
 }
 
-/// Bridge broker-addressed task leases only when this connection is an
-/// admitted agent. The server refuses the subscription for people and for
-/// unadmitted agent identities, leaving their normal collaboration intact.
-#[allow(
-    clippy::future_not_send,
-    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
-)]
-async fn spawn_task_run_stream(
-    channel: &runtime_collab::ChannelHandle,
-    inbound_tx: &InboundBridge,
-) {
-    if let Ok(stream) = channel.subscribe_task_runs().await {
-        let tx = inbound_tx.clone();
-        tokio::task::spawn_local(async move {
-            while let Ok(run) = stream.read().await {
-                if !tx.send_durable(CollabEvent::TaskRun(run)).await {
-                    break;
-                }
-            }
-        });
-    }
-}
-
 /// Open `channel`'s presence handle and, if available, bridge its stream
 /// into translated [`CollabEvent`]s on `inbound_tx`. Returns the handle so
 /// the caller can store it on the route (needed for outbound presence
@@ -6432,14 +6409,6 @@ fn directory_unavailable() -> runtime_collab::ActionDirectoryResolution {
     runtime_collab::ActionDirectoryResolution::Unavailable
 }
 
-type TaskActionResult = Result<(u64, tilo_actions::InvocationUpdate), String>;
-
-fn parse_task_update(id: u64, update: &str) -> TaskActionResult {
-    serde_json::from_str(update)
-        .map(|update| (id, update))
-        .map_err(|error| error.to_string())
-}
-
 // Not `Send`: the route state it holds stays on the shovel thread's `LocalSet`.
 /// Start `round_trip` in the order it was asked, and answer it beside the
 /// connection's other traffic: polled once here, so its call goes out now,
@@ -6909,107 +6878,6 @@ async fn dispatch_sdk_request(
                 });
             let _ = inbound_tx
                 .send_reply(CollabEvent::InstalledApplicationLaunchResult { request_id, result });
-        }
-        CollabRequest::ReportTaskRun {
-            request_id,
-            run_id,
-            lease,
-            update,
-        } => {
-            let result = route
-                .channel
-                .report_task_run(run_id, &lease, &update)
-                .await
-                .map_err(|error| error.to_string());
-            if let Some(request_id) = request_id {
-                let _ =
-                    inbound_tx.send_reply(CollabEvent::TaskRunReportResult { request_id, result });
-            } else if let Err(error) = result {
-                tracing::warn!(%error, run_id, "collab: reporting task run update failed");
-            }
-        }
-        CollabRequest::InvokeTaskAction {
-            request_id,
-            invocation,
-            run_id,
-            lease,
-            peer_id,
-            provider,
-            resource,
-            action,
-            arguments,
-            wait: Some(wait),
-        } => {
-            // The broker holds this answer until the child moves.
-            let channel = route.channel.clone();
-            let round_trip = Box::pin(async move {
-                let argument = format!(
-                    "{}{}",
-                    tilo_actions::ARGUMENTS_JSON_PREFIX,
-                    serde_json::Value::Object(arguments)
-                );
-                let target = runtime_collab::TaskAction {
-                    peer_id,
-                    provider: &provider,
-                    resource: &resource,
-                    action: &action,
-                    argument: Some(&argument),
-                };
-                channel
-                    .observe_task_child(run_id, &lease, target, &invocation.0.to_string(), wait)
-                    .await
-                    .map_err(|error| error.to_string())
-                    .and_then(|(id, update)| parse_task_update(id, &update))
-            });
-            answer_beside(round_trip, inbound_tx, move |result| {
-                CollabEvent::TaskActionInvocationResult { request_id, result }
-            })
-            .await;
-        }
-        CollabRequest::InvokeTaskAction {
-            request_id,
-            invocation,
-            run_id,
-            lease,
-            peer_id,
-            provider,
-            resource,
-            action,
-            arguments,
-            ..
-        } => {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(arguments)
-            );
-            let target = runtime_collab::TaskAction {
-                peer_id,
-                provider: &provider,
-                resource: &resource,
-                action: &action,
-                argument: Some(&argument),
-            };
-            let result = route
-                .channel
-                .invoke_task_action(run_id, &lease, target, &invocation.0.to_string())
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|(id, update)| parse_task_update(id, &update));
-            let _ = inbound_tx
-                .send_reply(CollabEvent::TaskActionInvocationResult { request_id, result });
-        }
-        CollabRequest::TaskRunCancellation {
-            request_id,
-            run_id,
-            lease,
-        } => {
-            let result = route
-                .channel
-                .task_run_cancelled(run_id, &lease)
-                .await
-                .map_err(|error| error.to_string());
-            let _ = inbound_tx.send_reply(CollabEvent::TaskRunCancellation { request_id, result });
         }
     }
     true

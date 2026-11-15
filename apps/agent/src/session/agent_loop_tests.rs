@@ -252,18 +252,15 @@ struct World {
     /// desktop's open starts it.
     fresh: bool,
     writer_opened: bool,
-    /// Cancel after this many successful status surveys (zero disables).
-    cancel_after_checks: usize,
-    cancellation_checks: usize,
-    /// Cancel once this many steps have been applied.
+    /// The person stops the turn once the agent's link polled the host this many times (zero
+    /// never).
+    cancel_after_polls: usize,
+    /// How many times the agent's link polled the host.
+    polls: usize,
+    /// The person stops the turn once this many steps have been applied.
     cancel_after_steps: Option<usize>,
-    /// How long the host takes to answer a cancellation poll; steps are
-    /// answered at once.
-    cancel_delay: Duration,
-    /// How many more of the agent's link polls a cancellation answer
-    /// takes, on top of `cancel_delay`: a count the agent's waiting
-    /// drives, where a delay is the machine's speed.
-    cancel_delay_polls: usize,
+    /// The host told the agent the turn stopped.
+    turn_stopped: bool,
     /// How the desktop's open of Writer behaves.
     opens: Opens,
     /// The record of a second Writer window (its own peer and record,
@@ -308,8 +305,8 @@ struct World {
     /// of them were answered with nothing new.
     observations: usize,
     idle_observations: usize,
-    /// An action that asks its person first, and how many more asks the
-    /// host answers with its draft waiting before the person confirms.
+    /// An action that asks its person first, and how many of the agent's link polls the person
+    /// takes to allow it.
     awaiting: Option<(String, usize)>,
     /// A mailbox of this many letters published beside the document, each
     /// read whole by `read-letter` (a host-owned read, which no view
@@ -810,8 +807,8 @@ struct Broker {
     /// Host answers not delivered yet, with when they are due and how
     /// many more link polls they take.
     held: Vec<(ui::time::Instant, usize, CollabEvent)>,
-    /// Re-asks the host holds: request id, child, what the agent had
-    /// seen, and when the hold ends.
+    /// Asks about running steps the host holds: the step, what the agent had seen, and when the
+    /// hold ends.
     holding: Vec<HeldReask>,
     /// A catalogue still on its way, and the polls until it arrives.
     late: Option<(usize, CollabEvent)>,
@@ -822,30 +819,122 @@ struct Broker {
     wake_at: Option<ui::time::Instant>,
 }
 
-/// A native re-ask the fake host holds until its child moves on.
+/// An ask the fake host holds until its step moves on.
 struct HeldReask {
-    request_id: u64,
     invocation: tilo_actions::InvocationId,
     seen: tilo_actions::remote::UpdateMark,
     until: ui::time::Instant,
 }
 
-/// The host reading a native run as cancelled cancels every child of it
-/// still running (`cancel_native_children`).
-fn cancel_native_children(world: &mut World) {
-    let now = ui::time::now();
-    let mut stopped = Vec::new();
-    for (invocation, (due, terminal)) in &mut world.settling {
-        if *due > now {
-            *due = now;
-            *terminal = tilo_actions::InvocationUpdate::Cancelled {
-                invocation: *invocation,
-                message: Some("Cancelled from Task Center".into()),
-            };
-            stopped.push(*invocation);
+/// The handle the fixture hands the agent its turn under.
+const TURN: u64 = 7;
+
+/// The host's message `message`, as the agent's connection reads it.
+fn remote(message: tilo_actions::remote::RemoteActionMessage) -> CollabEvent {
+    CollabEvent::RemoteAction { message }
+}
+
+/// The host's answer about a step: its state now.
+fn step_update(update: tilo_actions::InvocationUpdate) -> CollabEvent {
+    remote(tilo_actions::remote::RemoteActionMessage::Update {
+        invocation: update.invocation(),
+        state: Some(tilo_actions::remote::InvocationState {
+            update,
+            untrusted: false,
+            left_at: None,
+        }),
+    })
+}
+
+/// The host's receipt for the step `invocation`.
+fn step_receipt(
+    invocation: tilo_actions::InvocationId,
+    status: tilo_actions::remote::ReceiptStatus,
+) -> CollabEvent {
+    remote(tilo_actions::remote::RemoteActionMessage::Receipt(
+        tilo_actions::remote::InvocationReceipt { invocation, status },
+    ))
+}
+
+/// The receipt that says `update`.
+fn status_of(update: tilo_actions::InvocationUpdate) -> tilo_actions::remote::ReceiptStatus {
+    use tilo_actions::remote::ReceiptStatus;
+    match update {
+        tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
+            ReceiptStatus::Completed { output }
         }
+        tilo_actions::InvocationUpdate::Failed { error, .. } => ReceiptStatus::Failed { error },
+        tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
+            ReceiptStatus::Cancelled { message }
+        }
+        _ => ReceiptStatus::Accepted,
     }
-    world.cancelled.extend(stopped);
+}
+
+/// The step a request starts, when it starts one: its invocation, action and arguments.
+fn invoked(
+    request: &CollabRequest,
+) -> Option<(
+    tilo_actions::InvocationId,
+    &str,
+    serde_json::Map<String, Value>,
+    bool,
+)> {
+    let CollabRequest::RemoteAction {
+        message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+    } = request
+    else {
+        return None;
+    };
+    let arguments = match &invoke.argument {
+        tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
+        _ => serde_json::Map::new(),
+    };
+    Some((
+        invoke.invocation,
+        invoke.target.address.action.as_str(),
+        arguments,
+        invoke.confirmation.is_some(),
+    ))
+}
+
+/// What the turn reported, as the agent's answer sent it, read back as the agent tells it.
+fn reported(sent: &[CollabRequest]) -> Vec<TurnUpdate> {
+    sent.iter()
+        .filter_map(|request| match request {
+            CollabRequest::UpdateInvocation { id, update } if *id == TURN => Some(update),
+            _ => None,
+        })
+        .filter_map(|update| match update {
+            tilo_actions::InvocationUpdate::Progress { message, .. } => {
+                Some(TurnUpdate::Progress {
+                    message: message.clone().unwrap_or_default(),
+                })
+            }
+            tilo_actions::InvocationUpdate::Item { value, .. } => Some(TurnUpdate::Spent {
+                cost_micros: value["spent"].as_u64().unwrap_or_default(),
+            }),
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
+                Some(TurnUpdate::Succeeded {
+                    message: output
+                        .value
+                        .as_ref()
+                        .and_then(|value| value["reply"].as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                })
+            }
+            tilo_actions::InvocationUpdate::Failed { error, .. } => Some(TurnUpdate::Failed {
+                message: error.message.clone(),
+            }),
+            tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
+                Some(TurnUpdate::Cancelled {
+                    message: message.clone().unwrap_or_default(),
+                })
+            }
+            tilo_actions::InvocationUpdate::Accepted { .. } => None,
+        })
+        .collect()
 }
 
 impl Broker {
@@ -854,28 +943,23 @@ impl Broker {
         self.held.push((ui::time::now() + delay, polls, event));
     }
 
-    fn answer_cancellation(&mut self, request_id: u64) {
-        let (cancelled, delay) = {
-            let mut world = self.world.borrow_mut();
-            world.cancellation_checks += 1;
-            let cancelled = (world.cancel_after_checks != 0
-                && world.cancellation_checks > world.cancel_after_checks)
-                || world
-                    .cancel_after_steps
-                    .is_some_and(|steps| world.steps.len() >= steps);
-            if cancelled {
-                cancel_native_children(&mut world);
-            }
-            (cancelled, (world.cancel_delay, world.cancel_delay_polls))
-        };
-        self.answer_after(
-            delay.0,
-            delay.1,
-            CollabEvent::TaskRunCancellation {
-                request_id,
-                result: Ok(cancelled),
-            },
-        );
+    /// Ask the agent to stop its turn once the world says the person stopped it, as the host does
+    /// when the turn ends: once, ahead of anything the host answers after.
+    fn stop_when_due(&mut self) {
+        let mut world = self.world.borrow_mut();
+        if world.turn_stopped {
+            return;
+        }
+        world.polls += 1;
+        let due = (world.cancel_after_polls != 0 && world.polls > world.cancel_after_polls)
+            || world
+                .cancel_after_steps
+                .is_some_and(|steps| world.steps.len() >= steps);
+        if due {
+            world.turn_stopped = true;
+            self.events
+                .push(CollabEvent::InvocationCancellation { id: TURN });
+        }
     }
 }
 
@@ -884,6 +968,7 @@ impl ui::collaboration::PeerTransport for Broker {
         true
     }
     fn poll(&mut self) -> Vec<CollabEvent> {
+        self.stop_when_due();
         let now = ui::time::now();
         let (due, later) = std::mem::take(&mut self.held)
             .into_iter()
@@ -907,84 +992,82 @@ impl ui::collaboration::PeerTransport for Broker {
         std::mem::take(&mut self.events)
     }
     fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-        if self.observe_child(&request) {
-            self.sent.borrow_mut().push(request);
-            return Ok(());
-        }
-        if self.answer_awaiting(&request) {
-            self.sent.borrow_mut().push(request);
-            return Ok(());
-        }
+        use tilo_actions::remote::RemoteActionMessage;
         match &request {
-            CollabRequest::InvokeTaskAction {
-                request_id,
-                invocation,
-                action,
-                arguments,
-                ..
-            } if self.world.borrow().deny.contains(action)
-                || self.world.borrow().settle_after.is_some() =>
-            {
-                self.start_child(*request_id, *invocation, action, arguments);
-            }
-            CollabRequest::InvokeTaskAction {
-                request_id,
-                invocation,
-                action,
-                arguments,
-                ..
+            CollabRequest::RemoteAction {
+                message:
+                    RemoteActionMessage::Observe {
+                        invocation,
+                        wait_ms,
+                        seen,
+                    },
+            } => self.observe_child(*invocation, *wait_ms, *seen),
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Confirm { correlation, .. },
             } => {
-                let (outcome, republish) = self.world.borrow_mut().apply(action, arguments);
-                let update = if let Some(output) = outcome.get("succeeded") {
-                    tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: *invocation,
-                        output: serde_json::from_value(output.clone()).unwrap_or_default(),
-                    }
-                } else {
-                    tilo_actions::InvocationUpdate::Failed {
-                        invocation: *invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "app.refused".into(),
-                            // The host's own words, when it gave them.
-                            message: outcome
-                                .get("failed_with")
-                                .and_then(Value::as_str)
-                                .map_or_else(|| format!("{action} was refused"), str::to_owned),
-                            details: None,
-                            retryable: false,
-                        },
-                    }
+                // The person decides on the sheet, in their own time: the answer arrives this many
+                // polls later, allowing the step as asked.
+                let polls = self
+                    .world
+                    .borrow()
+                    .awaiting
+                    .as_ref()
+                    .map_or(0, |(_, polls)| *polls);
+                self.answer_after(
+                    Duration::ZERO,
+                    polls,
+                    remote(RemoteActionMessage::ConfirmResponse {
+                        correlation: *correlation,
+                        result: Ok(Box::new(
+                            tilo_actions::remote::ConfirmedInvocation::unchanged(
+                                tilo_actions::remote::Confirmation::Witnessed("allowed".into()),
+                            ),
+                        )),
+                    }),
+                );
+            }
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Cancel { invocation },
+            } => self.cancel_child(*invocation),
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(_),
+            } => {
+                let Some((invocation, action, arguments, confirmed)) = invoked(&request) else {
+                    unreachable!("an invoke names its step");
                 };
-                self.events.push(CollabEvent::TaskActionInvocationResult {
-                    request_id: *request_id,
-                    result: Ok((0, update)),
-                });
-                // Republished after the result, as a real host does: the
-                // loop must take it up after a view step.
-                if republish {
-                    let catalogue = CollabEvent::ActionCatalogue {
-                        change: CatalogueChange::snapshot(&self.world.borrow().surfaces()),
-                    };
-                    match self.world.borrow().republish_after_polls {
-                        0 => self.events.push(catalogue),
-                        polls => self.late = Some((polls, catalogue)),
-                    }
+                let action = action.to_owned();
+                let asks_first = self
+                    .world
+                    .borrow()
+                    .awaiting
+                    .as_ref()
+                    .is_some_and(|(waiting, _)| *waiting == action);
+                if self.world.borrow().turn_stopped {
+                    // The person stopped the turn: the host serves none of its steps from then on.
+                    self.events.push(step_receipt(
+                        invocation,
+                        tilo_actions::remote::ReceiptStatus::Rejected {
+                            error: tilo_actions::remote::ActionHostError::Refused {
+                                reason: "the turn this step answers is no longer going".into(),
+                            },
+                        },
+                    ));
+                } else if asks_first && !confirmed {
+                    self.events.push(step_receipt(
+                        invocation,
+                        tilo_actions::remote::ReceiptStatus::Rejected {
+                            error: tilo_actions::remote::ActionHostError::confirmation_required(),
+                        },
+                    ));
+                } else if self.world.borrow().deny.contains(&action)
+                    || self.world.borrow().settle_after.is_some()
+                {
+                    self.start_child(invocation, &action, &arguments);
+                } else {
+                    self.apply_at_once(invocation, &action, &arguments);
                 }
             }
-            CollabRequest::TaskRunCancellation { request_id, .. } => {
-                self.answer_cancellation(*request_id);
-            }
-            CollabRequest::ReportTaskRun { request_id, .. } => {
-                // A native report awaits its receipt; a Task Center
-                // run's report is sent without one.
-                if let Some(request_id) = request_id {
-                    self.events.push(CollabEvent::TaskRunReportResult {
-                        request_id: *request_id,
-                        result: Ok(()),
-                    });
-                }
-            }
-            CollabRequest::Presence { .. } => {}
+            CollabRequest::UpdateInvocation { .. } | CollabRequest::Presence { .. } => {}
             other => panic!("unexpected request {other:?}"),
         }
         self.sent.borrow_mut().push(request);
@@ -993,35 +1076,63 @@ impl ui::collaboration::PeerTransport for Broker {
 }
 
 impl Broker {
-    /// Answer an ask of the action that waits for its person with its
-    /// draft still waiting, as the host's confirmation gate does once a
-    /// held ask's wait ends;
-    /// `false` once the person confirmed it, or for anything else.
-    fn answer_awaiting(&mut self, request: &CollabRequest) -> bool {
-        let CollabRequest::InvokeTaskAction {
-            request_id, action, ..
-        } = request
-        else {
-            return false;
+    /// Run a step in its application at once and answer its outcome in the receipt.
+    fn apply_at_once(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        action: &str,
+        arguments: &serde_json::Map<String, Value>,
+    ) {
+        let (outcome, republish) = self.world.borrow_mut().apply(action, arguments);
+        let update = if let Some(output) = outcome.get("succeeded") {
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: serde_json::from_value(output.clone()).unwrap_or_default(),
+            }
+        } else {
+            tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "app.refused".into(),
+                    // The host's own words, when it gave them.
+                    message: outcome
+                        .get("failed_with")
+                        .and_then(Value::as_str)
+                        .map_or_else(|| format!("{action} was refused"), str::to_owned),
+                    details: None,
+                    retryable: false,
+                },
+            }
         };
+        self.events
+            .push(step_receipt(invocation, status_of(update)));
+        // Republished after the result, as a real host does: the
+        // loop must take it up after a view step.
+        if republish {
+            let catalogue = CollabEvent::ActionCatalogue {
+                change: CatalogueChange::snapshot(&self.world.borrow().surfaces()),
+            };
+            match self.world.borrow().republish_after_polls {
+                0 => self.events.push(catalogue),
+                polls => self.late = Some((polls, catalogue)),
+            }
+        }
+    }
+
+    /// Stop a step the agent asked to cancel, as its application does when it has not settled.
+    fn cancel_child(&self, invocation: tilo_actions::InvocationId) {
+        let now = ui::time::now();
         let mut world = self.world.borrow_mut();
-        let Some((_, left)) = world
-            .awaiting
-            .as_mut()
-            .filter(|(waiting, left)| waiting == action && *left > 0)
-        else {
-            return false;
-        };
-        *left -= 1;
-        drop(world);
-        self.events.push(CollabEvent::TaskActionInvocationResult {
-            request_id: *request_id,
-            result: Err(format!(
-                "Failed: {}: {action} waits for the person",
-                tilo_actions::draft::AWAITING_CONFIRMATION
-            )),
-        });
-        true
+        if let Some((due, terminal)) = world.settling.get_mut(&invocation)
+            && *due > now
+        {
+            *due = now;
+            *terminal = tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("Cancelled".into()),
+            };
+        }
+        world.cancelled.push(invocation);
     }
 
     /// The state of a started child as the host holds it now.
@@ -1045,7 +1156,7 @@ impl Broker {
             .iter()
             .map(|(at, _, _)| *at)
             .chain(self.holding.iter().map(|held| held.until))
-            // A child of the run moving on is news of its own.
+            // A step of the turn moving on is news of its own.
             .chain(self.world.borrow().settling.values().map(|(due, _)| *due))
             .filter(|at| *at > now)
             .min();
@@ -1065,25 +1176,15 @@ impl Broker {
         });
     }
 
-    /// Answer a native task's re-ask of a started child (by its stable
-    /// id) with the child's state, as `native_task_observation` does: at
-    /// once, or — when the re-ask asks to be held — once the child moves
-    /// past what the agent saw, the run is cancelled, or the hold ends.
-    /// `false` for any other request.
-    fn observe_child(&mut self, request: &CollabRequest) -> bool {
-        let &CollabRequest::InvokeTaskAction {
-            request_id,
-            invocation,
-            wait,
-            ..
-        } = request
-        else {
-            return false;
-        };
-        if !self.world.borrow().settling.contains_key(&invocation) {
-            return false;
-        }
-        if wait.is_some() {
+    /// Answer an ask about a started step with its state: at once, or — when the ask asks to be
+    /// held — once the step moves past what the agent saw or the hold ends.
+    fn observe_child(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        wait_ms: Option<u32>,
+        seen: Option<tilo_actions::remote::UpdateMark>,
+    ) {
+        if wait_ms.is_some() {
             let mut world = self.world.borrow_mut();
             let now = ui::time::now();
             world.reasked_at.push(now);
@@ -1094,32 +1195,29 @@ impl Broker {
             }
         }
         let update = self.child_state(invocation);
-        let held = wait.filter(|wait| {
+        let held = wait_ms.zip(seen).filter(|(_, seen)| {
             self.world.borrow().reask_hold != ReaskHold::AnswerAtOnce
                 && !update.is_terminal()
-                && tilo_actions::remote::UpdateMark::of(&update) == wait.seen
+                && tilo_actions::remote::UpdateMark::of(&update) == *seen
         });
         match held {
-            Some(wait) => self.holding.push(HeldReask {
-                request_id,
+            Some((wait_ms, seen)) => self.holding.push(HeldReask {
                 invocation,
-                seen: wait.seen,
+                seen,
                 until: ui::time::now()
                     + if self.world.borrow().reask_hold == ReaskHold::UntilNews {
                         tilo_test_env::hang_bound()
                     } else {
-                        Duration::from_millis(u64::from(wait.wait_ms))
+                        Duration::from_millis(u64::from(wait_ms))
                     },
             }),
-            None => self.answer_reask(request_id, invocation, wait.map(|wait| wait.seen)),
+            None => self.answer_reask(invocation, seen),
         }
-        true
     }
 
-    /// Answer the re-ask `request_id` with the child's state now.
+    /// Answer an ask about `invocation` with the step's state now.
     fn answer_reask(
         &mut self,
-        request_id: u64,
         invocation: tilo_actions::InvocationId,
         seen: Option<tilo_actions::remote::UpdateMark>,
     ) {
@@ -1133,35 +1231,18 @@ impl Broker {
                 world.idle_observations += 1;
             }
         }
-        self.events.push(CollabEvent::TaskActionInvocationResult {
-            request_id,
-            result: Ok((0, update)),
-        });
+        self.events.push(step_update(update));
     }
 
-    /// Answer every held re-ask whose child moved on or whose hold
-    /// ended; first sample the run's cancellation, as the host does
-    /// while it holds re-asks.
+    /// Answer every held ask whose step moved on or whose hold ended.
     fn answer_held_reasks(&mut self, now: ui::time::Instant) {
-        if self.holding.is_empty() {
-            return;
-        }
-        {
-            let mut world = self.world.borrow_mut();
-            if world
-                .cancel_after_steps
-                .is_some_and(|steps| world.steps.len() >= steps)
-            {
-                cancel_native_children(&mut world);
-            }
-        }
         for held in std::mem::take(&mut self.holding) {
             let update = self.child_state(held.invocation);
             if update.is_terminal()
                 || tilo_actions::remote::UpdateMark::of(&update) != held.seen
                 || now >= held.until
             {
-                self.answer_reask(held.request_id, held.invocation, Some(held.seen));
+                self.answer_reask(held.invocation, Some(held.seen));
             } else {
                 self.holding.push(held);
             }
@@ -1193,13 +1274,12 @@ impl Broker {
         }
     }
 
-    /// Start a child of the run as the action broker does: refused
+    /// Start a step of the turn as the action broker does: refused
     /// before anything runs when it is not permitted, else accepted at
     /// once and settled in its application `settle_after` later, which
-    /// a re-ask of it then answers.
+    /// an ask about it then answers.
     fn start_child(
         &mut self,
-        request_id: u64,
         invocation: tilo_actions::InvocationId,
         action: &str,
         arguments: &serde_json::Map<String, Value>,
@@ -1211,10 +1291,14 @@ impl Broker {
             .iter()
             .any(|denied| denied == action)
         {
-            self.events.push(CollabEvent::TaskActionInvocationResult {
-                request_id,
-                result: Err(format!("permission denied: the agent may not {action}")),
-            });
+            self.events.push(step_receipt(
+                invocation,
+                tilo_actions::remote::ReceiptStatus::Rejected {
+                    error: tilo_actions::remote::ActionHostError::Refused {
+                        reason: format!("permission denied: the agent may not {action}"),
+                    },
+                },
+            ));
             return;
         }
         let (outcome, _) = self.world.borrow_mut().apply(action, arguments);
@@ -1255,16 +1339,16 @@ impl Broker {
             self.world.borrow_mut().gated.push(invocation);
             self.open_the_gate(now + settle_after);
         }
-        self.events.push(CollabEvent::TaskActionInvocationResult {
-            request_id,
-            result: Ok((0, tilo_actions::InvocationUpdate::Accepted { invocation })),
-        });
+        self.events.push(step_receipt(
+            invocation,
+            tilo_actions::remote::ReceiptStatus::Accepted,
+        ));
     }
 }
 
 struct Fixture {
     session: Session,
-    run: runtime_collab::TaskRunEnvelope,
+    run: crate::session::Asked,
     world: Rc<RefCell<World>>,
     sent: Rc<RefCell<Vec<CollabRequest>>>,
     script: Arc<Script>,
@@ -1351,20 +1435,7 @@ fn execution_fixture(
         emitted,
     });
     let link = host_link(&world, &sent);
-    let mut run = runtime_collab::TaskRunEnvelope {
-        version: 1,
-        task_id: "chat.workspace/channels/loop/messages/asked".into(),
-        title: title.into(),
-        instruction: None,
-        subject: None,
-        run_id: 7,
-        lease: "native:00000000000000000000000000000000".into(),
-        planning: runtime_collab::TaskRunPlanning::Model,
-        presentation_version: Some(1),
-        action_context: serde_json::Value::Null,
-        spend: None,
-    };
-    bind_context(&mut run);
+    let run = asked(title);
     let surfaces = first_catalogue(&world.borrow());
     let session = Session {
         cfg: Config {
@@ -1391,14 +1462,14 @@ fn execution_fixture(
             agent_provider_config::ProviderProtocol::OpenAiCompatible,
             Arc::new(Scripted(script.clone())),
         ),
-        native_task: None,
+        children: HashMap::new(),
+        reported: 0,
         broker_catalogue: catalogue_of(&surfaces),
         next_broker_request: 1,
         record: None,
         broker_revision: 0,
         catalogue_cache: None,
         turn: None,
-        outstanding: crate::session::outstanding::Outstanding::default(),
         failure_detail: None,
         spending: None,
         web: None,
@@ -1412,15 +1483,22 @@ fn execution_fixture(
     }
 }
 
-/// Bind `run`'s action context to its title and id, as the broker does.
-fn bind_context(run: &mut runtime_collab::TaskRunEnvelope) {
-    run.action_context = serde_json::to_value(
-        tilo_actions::ActionContext::default()
-            .with_purpose(run.title.as_str())
-            .with_group(run.group(), run.title.as_str(), "task"),
-    )
-    .unwrap();
-    super::super::conversation::validate(run).unwrap();
+/// The turn `title` asks, answering the conversation's message as the host hands it.
+fn asked(title: &str) -> crate::session::Asked {
+    let asked = crate::session::Asked {
+        id: TURN,
+        invocation: tilo_actions::InvocationId(Uuid::from_u128(7)),
+        asked: runtime_collab::TurnRequest {
+            message: "chat.workspace/channels/loop/messages/asked".into(),
+            title: title.into(),
+            instruction: title.into(),
+            subject: None,
+            spend: None,
+        },
+        context: None,
+    };
+    super::super::conversation::validate(&asked).unwrap();
+    asked
 }
 
 fn op(action: &str) -> String {
@@ -1486,7 +1564,7 @@ tilo_test_env::scenario! {
             "Inspect every release-note section and preserve the complete compatibility matrix. "
                 .repeat(6);
         assert!(instruction.chars().count() > 240);
-        fixture.run.instruction = Some(instruction.clone());
+        fixture.run.asked.instruction.clone_from(&instruction);
         fixture.session.run_task(&fixture.run).unwrap();
         let bodies = fixture.script.bodies.lock().unwrap().clone();
         assert_eq!(bodies.len(), 1);
@@ -1497,7 +1575,7 @@ tilo_test_env::scenario! {
     {
         let mut fixture = native_fixture();
         let first_instruction = "first-native-private-instruction-secret";
-        fixture.run.instruction = Some(first_instruction.into());
+        fixture.run.asked.instruction = first_instruction.into();
         *fixture.script.turns.lock().unwrap() = vec![turn(
             &[finish("first-native-private-result-secret", true)],
             24,
@@ -1505,16 +1583,9 @@ tilo_test_env::scenario! {
         .into();
         fixture.session.run_task(&fixture.run).unwrap();
 
-        fixture.run.task_id = "chat.workspace/channels/second/messages/asked".into();
-        fixture.run.run_id += 1;
-        fixture.run.action_context = serde_json::to_value(
-            tilo_actions::ActionContext::default()
-                .with_purpose(fixture.run.title.as_str())
-                .with_group(fixture.run.group(), fixture.run.title.as_str(), "task"),
-        )
-        .unwrap();
+        fixture.run.asked.message = "chat.workspace/channels/second/messages/asked".into();
         let second_instruction = "second-native-private-instruction-secret";
-        fixture.run.instruction = Some(second_instruction.into());
+        fixture.run.asked.instruction = second_instruction.into();
         *fixture.script.turns.lock().unwrap() = vec![turn(
             &[finish("second-native-private-result-secret", true)],
             24,
@@ -1544,17 +1615,9 @@ tilo_test_env::scenario! {
             1,
             "must exercise the actual model request"
         );
-        let sent = fixture.sent.borrow();
-        let last = sent
-            .iter()
-            .rev()
-            .find_map(|request| match request {
-                CollabRequest::ReportTaskRun { update, .. } => Some(update),
-                _ => None,
-            })
-            .unwrap();
+        let last = reported(&fixture.sent.borrow()).pop().unwrap();
         assert!(
-            matches!(last, runtime_collab::TaskRunUpdate::Failed { message } if message == "I need the owner's decision"),
+            matches!(&last, TurnUpdate::Failed { message } if message == "I need the owner's decision"),
             "unfinished native work reported {last:?}"
         );
     }
@@ -1562,16 +1625,10 @@ tilo_test_env::scenario! {
 
 /// Every public note the run reported, in order.
 fn notes(sent: &[CollabRequest]) -> Vec<String> {
-    sent.iter()
-        .filter_map(|request| match request {
-            CollabRequest::ReportTaskRun {
-                update:
-                    runtime_collab::TaskRunUpdate::Progress {
-                        message,
-                        presentation: None,
-                    },
-                ..
-            } => Some(message.clone()),
+    reported(sent)
+        .into_iter()
+        .filter_map(|update| match update {
+            TurnUpdate::Progress { message } => Some(message),
             _ => None,
         })
         .collect()
@@ -1593,7 +1650,7 @@ fn a_run_with_no_model_says_so_and_never_blames_permissions() {
             .any(|note| note.contains("No model is set up") && note.contains("Agent models")),
         "the run announces the missing model where it decides: {notes:?}"
     );
-    let runtime_collab::TaskRunUpdate::Failed { message } = terminal(&sent) else {
+    let TurnUpdate::Failed { message } = terminal(&sent) else {
         panic!("a run with nothing to do fails: {:?}", terminal(&sent));
     };
     assert!(
@@ -1633,7 +1690,7 @@ fn a_german_desktop_reads_the_missing_model_in_german() {
         !notes.iter().any(|note| note.contains("No model")),
         "no note stays English on a German desktop: {notes:?}"
     );
-    let runtime_collab::TaskRunUpdate::Failed { message } = terminal(&sent) else {
+    let TurnUpdate::Failed { message } = terminal(&sent) else {
         panic!("a run with nothing to do fails: {:?}", terminal(&sent));
     };
     assert!(
@@ -1649,28 +1706,24 @@ fn a_german_desktop_reads_the_missing_model_in_german() {
 /// What the conversation was told, one entry per record, in order.
 fn recorded(sent: &[CollabRequest], action: &str) -> Vec<serde_json::Map<String, Value>> {
     sent.iter()
-        .filter_map(|request| match request {
-            CollabRequest::InvokeTaskAction {
-                action: invoked,
-                arguments,
-                ..
-            } if invoked == action => Some(arguments.clone()),
-            _ => None,
-        })
+        .filter_map(invoked)
+        .filter(|(_, invoked, _, _)| *invoked == action)
+        .map(|(_, _, arguments, _)| arguments)
         .collect()
 }
 
 /// The terminal task report.
-fn terminal(sent: &[CollabRequest]) -> runtime_collab::TaskRunUpdate {
-    sent.iter()
+fn terminal(sent: &[CollabRequest]) -> TurnUpdate {
+    reported(sent)
+        .into_iter()
         .rev()
-        .find_map(|request| match request {
-            CollabRequest::ReportTaskRun { update, .. }
-                if !matches!(update, runtime_collab::TaskRunUpdate::Progress { .. }) =>
-            {
-                Some(update.clone())
-            }
-            _ => None,
+        .find(|update| {
+            matches!(
+                update,
+                TurnUpdate::Succeeded { .. }
+                    | TurnUpdate::Failed { .. }
+                    | TurnUpdate::Cancelled { .. }
+            )
         })
         .expect("a terminal report")
 }
@@ -1723,7 +1776,7 @@ fn view_steps_that_change_no_operation_do_not_wait() {
     );
     assert!(matches!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded { .. }
+        TurnUpdate::Succeeded { .. }
     ));
 }
 
@@ -1879,7 +1932,7 @@ tilo_test_env::scenario! {
         let mut f = paced_fixture(
             "write a paragraph",
             World {
-                cancel_after_checks: 2,
+                cancel_after_polls: 2,
                 ..World::default()
             },
             vec![turn(
@@ -1904,20 +1957,18 @@ tilo_test_env::scenario! {
         assert!(f.session.turn.is_none());
         assert!(matches!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Cancelled { .. }
+            TurnUpdate::Cancelled { .. }
         ));
     }
 
     phase a_cancelled_task_still_stops_before_its_next_step;
-    // Not waiting for answers does not weaken cancellation: a poll already
-    // out is answered ahead of the next step, so the step waits for it and
-    // never reaches the host once the task is cancelled.
+    // The host tells the agent the turn stopped ahead of anything it answers after, and refuses
+    // every step of it from then on: the next step never runs.
     {
         let mut f = fixture(
             "write two paragraphs",
             World {
                 cancel_after_steps: Some(1),
-                cancel_delay: Duration::from_millis(100),
                 ..World::default()
             },
             vec![
@@ -1951,7 +2002,7 @@ tilo_test_env::scenario! {
         );
         assert!(matches!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Cancelled { .. }
+            TurnUpdate::Cancelled { .. }
         ));
     }
 
@@ -1970,7 +2021,7 @@ tilo_test_env::scenario! {
         assert_eq!(f.script.bodies.lock().unwrap().len(), 46);
         assert!(matches!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded { message } if message == "Looked everywhere."
+            TurnUpdate::Succeeded { message } if message == "Looked everywhere."
         ));
     }
 }
@@ -2030,116 +2081,8 @@ tilo_test_env::scenario! {
         // What the host hears is the sentence a person reads, and nothing of the
         // turn's record: no partial answer, no provider-exposed reasoning.
         assert!(matches!(terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Failed { message }
+            TurnUpdate::Failed { message }
                 if !message.contains("Partial answer") && !message.contains("Provider summary")));
-        let sent = f.sent.borrow();
-        let snapshots = sent
-            .iter()
-            .filter_map(|request| match request {
-                CollabRequest::ReportTaskRun {
-                    run_id,
-                    lease,
-                    update:
-                        runtime_collab::TaskRunUpdate::Progress {
-                            presentation: Some(p),
-                            ..
-                        },
-                    ..
-                } => {
-                    assert_eq!(*run_id, f.run.run_id);
-                    assert_eq!(lease, &f.run.lease);
-                    Some(p)
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let final_snapshot = snapshots
-            .last()
-            .expect("production report carries typed output");
-        // Every turn of the model was cut off, so each one published its partial
-        // text as truncated; the person reads the same sentence as any failure.
-        assert!(final_snapshot.text.starts_with("Partial answer"));
-        assert_eq!(final_snapshot.reasoning, "Provider summary");
-        assert_eq!(
-            final_snapshot.finish,
-            Some(runtime_collab::TaskPresentationFinish::Truncated)
-        );
-        assert!(
-            !serde_json::to_string(final_snapshot)
-                .unwrap()
-                .contains("Do not write")
-        );
-        // Each turn is its own run of presentation, its sequence starting over;
-        // within one run the sequence only ever goes forward.
-        let mut last: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
-        for snapshot in &snapshots {
-            let previous = last.insert(snapshot.run.as_str(), snapshot.sequence);
-            assert!(
-                previous.is_none_or(|previous| previous < snapshot.sequence),
-                "a run's presentation sequence only goes forward: {}",
-                snapshot.run
-            );
-        }
-    }
-
-    phase presentation_reports_coalesce_bound_output_and_fall_back_for_old_hosts;
-    {
-        let mut f = fixture("say hello", World::default(), Vec::new());
-        let (_tx, rx) = std::sync::mpsc::channel();
-        let mut active = ActiveTurn::new(rx);
-        active.presentation_run = "7:0".into();
-        active.presentation.text = "hello".into();
-        f.session.turn = Some(active);
-        // A hundred rapid tokens do not make a hundred host round trips.
-        for _ in 0..100 {
-            f.session.publish_turn_presentation(&f.run).unwrap();
-        }
-        assert!(f.sent.borrow().is_empty());
-        let active = f.session.turn.as_mut().unwrap();
-        active.presentation.text = "é".repeat(40 * 1024);
-        active.finished = Some(Err(Failure::said("stream lost")));
-        f.session.publish_turn_presentation(&f.run).unwrap();
-        f.session.publish_turn_presentation(&f.run).unwrap();
-        let sent = f.sent.borrow();
-        assert_eq!(sent.len(), 1);
-        let CollabRequest::ReportTaskRun {
-            update:
-                runtime_collab::TaskRunUpdate::Progress {
-                    presentation: Some(p),
-                    ..
-                },
-            ..
-        } = &sent[0]
-        else {
-            panic!("typed output report")
-        };
-        assert_eq!(
-            p.text.len(),
-            runtime_collab::TaskPresentation::MAX_TEXT_BYTES
-        );
-        assert_eq!(
-            p.finish,
-            Some(runtime_collab::TaskPresentationFinish::Truncated)
-        );
-        drop(sent);
-        f.run.presentation_version = None;
-        let (_tx, rx) = std::sync::mpsc::channel();
-        let mut active = ActiveTurn::new(rx);
-        active.presentation_run = "7:1".into();
-        active.presentation.text = "Readable answer".into();
-        active.finished = Some(Ok(String::new()));
-        f.session.turn = Some(active);
-        f.session.publish_turn_presentation(&f.run).unwrap();
-        let sent = f.sent.borrow();
-        let CollabRequest::ReportTaskRun { update, .. } = sent.last().unwrap() else {
-            panic!("a progress report")
-        };
-        let json = serde_json::to_value(update).unwrap();
-        assert_eq!(json["message"], "Readable answer");
-        assert!(
-            json.get("presentation").is_none(),
-            "strict old host can decode this report"
-        );
     }
 
     phase completed_stream_frames_cannot_dispatch_before_a_failed_final_response;
@@ -2160,12 +2103,12 @@ tilo_test_env::scenario! {
             !f.sent
                 .borrow()
                 .iter()
-                .any(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
+                .any(|request| invoked(request).is_some())
         );
         // The transport's own words are the record, kept for debugging; the
         // sentence a person reads is what happened, in their terms.
         assert!(matches!(terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Failed { message }
+            TurnUpdate::Failed { message }
                 if !message.contains("provider stream reset") && message.contains("The model")));
     }
 
@@ -2232,7 +2175,7 @@ tilo_test_env::scenario! {
         assert_eq!(ids, asked_ids(&bodies[1]), "each result under its call id");
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Wrote it.".into()
             }
         );
@@ -2305,12 +2248,12 @@ tilo_test_env::scenario! {
         let sent = f.sent.borrow();
         let invocations = sent
             .iter()
-            .filter(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
+            .filter(|request| invoked(request).is_some())
             .count();
         assert_eq!(invocations, 3, "one invocation each");
         assert_eq!(
             terminal(&sent),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Done: the second paragraph is bold now.".into()
             }
         );
@@ -2476,7 +2419,7 @@ tilo_test_env::scenario! {
         let sent = f.sent.borrow();
         assert_eq!(
             terminal(&sent),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Here you go: a paragraph about the ocean.".into()
             }
         );
@@ -2526,7 +2469,7 @@ tilo_test_env::scenario! {
         // model's words.
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Failed {
+            TurnUpdate::Failed {
                 message: "I could not write into the document.".into()
             }
         );
@@ -2560,7 +2503,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Nothing to do.".into()
             }
         );
@@ -2638,7 +2581,7 @@ tilo_test_env::scenario! {
         drop(world);
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Added the paragraph and posted hello.".into()
             }
         );
@@ -2694,7 +2637,7 @@ tilo_test_env::scenario! {
         assert_eq!(f.world.borrow().blocks[0].1, "Rain falls.");
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Wrote the essay.".into()
             }
         );

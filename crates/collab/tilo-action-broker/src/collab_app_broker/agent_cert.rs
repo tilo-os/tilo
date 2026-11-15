@@ -1,6 +1,6 @@
-//! Certified agents in the broker: a join admitted by the agent certificate a
-//! device of the agent's person signed, checked again on every revalidation,
-//! with whether its agent session still goes.
+//! Agents in the broker: a join admitted by the agent certificate a device of the agent's person
+//! signed, or as the agent the workspace keeps for that person, checked again on every
+//! revalidation, with whether the agent session it works in still goes.
 
 use super::{
     AdmittedJoinIdentity, AgentCert, AppBrokerState, CrdtRoute, VerifiedJoinIdentity,
@@ -137,18 +137,54 @@ impl AppBrokerState {
             .ok_or_else(|| "the agent's session has ended".to_owned())
     }
 
-    /// The agent session a connection admitted as `origin` works in, when it
-    /// is a certified agent's: `None` for any other connection.
+    /// The agent session `caller` works in, while it goes: a certified agent's connection
+    /// (`origin`) by its certificate, a turn's by the session its caller names. `None` for a
+    /// caller in no agent session.
     pub(super) fn agent_session_of(
         &self,
+        caller: Option<&tilo_actions::remote::Caller>,
         origin: Option<&super::InvocationCaller>,
         workspace: &str,
     ) -> Option<Result<crate::services::GoingSession, String>> {
-        let Some(super::InvocationCaller::Local { admitted, .. }) = origin else {
-            return None;
-        };
-        let cert = admitted.agent_cert.as_deref()?;
-        Some(self.agent_session_goes(workspace, cert))
+        if let Some(super::InvocationCaller::Local { admitted, .. }) = origin
+            && let Some(cert) = admitted.agent_cert.as_deref()
+        {
+            return Some(self.agent_session_goes(workspace, cert));
+        }
+        let acting = caller?.acting();
+        let (session, agent) = acting.agent_session.as_ref().zip(acting.agent_id())?;
+        Some(self.turn_session_goes(workspace, agent, session.as_str()))
+    }
+
+    /// The session `session` of `agent`, while it answers a turn in `workspace`: the workspace
+    /// lists the agent, and the turn goes.
+    pub(super) fn turn_session_goes(
+        &self,
+        workspace: &str,
+        agent: &str,
+        session: &str,
+    ) -> Result<crate::services::GoingSession, String> {
+        self.services
+            .agents
+            .as_deref()
+            .ok_or("this host reads no workspace's agents")?
+            .keeper(workspace, agent)
+            .ok_or_else(|| format!("the workspace lists no agent {agent}"))?;
+        self.services
+            .agent_sessions
+            .as_deref()
+            .ok_or("this host serves no agent sessions")?
+            .going(workspace, agent, session)
+            .ok_or_else(|| "the turn the agent answers is over".to_owned())
+    }
+
+    /// Whether agents in `workspace` act only in an agent session
+    /// ([`crate::services::AgentSessions::confines`]).
+    pub fn confines_agents(&self, workspace: &str) -> bool {
+        self.services
+            .agent_sessions
+            .as_deref()
+            .is_some_and(|sessions| sessions.confines(workspace))
     }
 
     /// Whether the workspace's record of its agents lists the agent `cert`

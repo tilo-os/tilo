@@ -51,21 +51,22 @@ pub use decide::{Authority, Basis, Cap, Decision, Party, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node, sentences};
 pub use door::{DoorError, DoorPolicy, ListingPolicy};
 pub use earlier::EarlierIds;
-/// The id prefix of the answers a person gives for one issue's runs: what
-/// "Allow for this issue" records, kept on the issue and deciding no other
-/// run of its agent ([`is_issue_answer`]).
-pub const ISSUE_ANSWER_PREFIX: &str = "issue-answer:";
+/// The id prefix of the answers a person gives an agent session: "Allow for this agent" records
+/// one, deciding that session's later steps and no other session's ([`is_session_answer`]).
+pub const SESSION_ANSWER_PREFIX: &str = "session-answer:";
 
-/// Whether `grant` is an answer a person gave for one issue's runs.
+/// Whether `grant` is an answer a person gave one agent session.
 #[must_use]
-pub fn is_issue_answer(grant: &Grant) -> bool {
-    grant.id.as_str().starts_with(ISSUE_ANSWER_PREFIX)
+pub fn is_session_answer(grant: &Grant) -> bool {
+    grant.id.as_str().starts_with(SESSION_ANSWER_PREFIX)
 }
 
-/// The answers a person gave for the work of `issue`: what that work is
-/// decided by, and no other is.
-pub fn issue_answers<'g>(grants: &'g [Grant], issue: &str) -> impl Iterator<Item = &'g Grant> + 'g {
-    let prefix = format!("{ISSUE_ANSWER_PREFIX}{issue}:");
+/// The answers a person gave the agent session `session`.
+pub fn session_answers<'g>(
+    grants: &'g [Grant],
+    session: &str,
+) -> impl Iterator<Item = &'g Grant> + 'g {
+    let prefix = format!("{SESSION_ANSWER_PREFIX}{session}:");
     grants
         .iter()
         .filter(move |grant| grant.id.as_str().starts_with(&prefix))

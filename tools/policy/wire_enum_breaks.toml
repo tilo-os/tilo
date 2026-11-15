@@ -317,3 +317,13 @@ reason = "each update travels as JSON, named by its `kind`, on the authenticated
 file = "crates/session/desktop-model/src/commands.rs"
 enum = "DesktopCommand"
 reason = "`SetArrangement` is renamed `SetLayout` at the same index: postcard writes no names, so the bytes read the same"
+
+[[break]]
+file = "crates/collab/tilo-action-broker/src/invocation_journal.rs"
+enum = "InvocationOwner"
+reason = "the task-run owners went with the task-run path; the variants left keep their tags (the journal is JSON, tagged by name), and a journal still holding a task run's record is refused as unsupported, as any record no build serves"
+
+[[break]]
+file = "crates/collab/tilo-action-broker/src/action_evidence.rs"
+enum = "VerifiedActor"
+reason = "the task-run actors went with the task-run path; the variants left keep their names in the JSON evidence, and evidence naming a task run is refused as unsupported"

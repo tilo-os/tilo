@@ -417,12 +417,11 @@ p99_tolerance = 2.5
 min_delta = 300.0
 source = "provisional: derived from the no-op p50 target"
 
-# Native task steps (apps/agent `native_task_benchmark`, a release test on
-# `runner`): the agent's own task loop with a scripted model and a broker
-# whose applications take 100 ms per step, one turn of three steps on three
-# records, timed for the whole task, as a native workspace task whose steps
-# are children the agent follows by re-asks the broker holds until a child
-# moves on. `pipelined` is the plan as the model marks it (independent steps
+# A turn's steps (apps/agent `turn_steps_benchmark`, a release test on
+# `runner`): the agent's own loop with a scripted model and a broker whose
+# applications take 100 ms per step, one turn of three steps on three
+# records, timed for the whole turn, whose steps the agent follows by asks
+# the broker holds until a step moves on. `pipelined` is the plan as the model marks it (independent steps
 # run alongside each other), `sequential` the same plan unmarked. Before held re-asks the agent re-asked every 50 ms: a focused
 # debug run measured 456 ms for the plan in order and in parallel alike (152
 # ms per 100 ms step) and 3.3 idle host round trips per step; with them, 307

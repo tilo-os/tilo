@@ -10,20 +10,14 @@
 ## Wie die Schritte eines Laufs gewählt wurden
 
 agent-plan-model = { $model } von { $provider } plant diesen Lauf.
-agent-plan-words-asked = Dieser Lauf wird ohne Modell geplant, deshalb werden seine Schritte den Aktionen zugeordnet, die die Apps dieses Arbeitsbereichs veröffentlichen.
 agent-plan-words-no-model = Für diesen Lauf ist kein Modell eingerichtet, deshalb werden seine Schritte den Aktionen zugeordnet, die die Apps dieses Arbeitsbereichs veröffentlichen. Wähle ein Modell in den Einstellungen unter „Agentenmodelle“, damit es stattdessen plant.
 agent-plan-no-action = Keine veröffentlichte Aktion passt zu den Wörtern der Anfrage.
-agent-plan-unmatched-asked = { $why } Nenne die App, in der gearbeitet werden soll, oder sag, was darin zu tun ist.
 agent-plan-no-model = So kann ich noch nicht arbeiten: Es ist kein Modell eingerichtet. Wähle eines in den Einstellungen unter „Agentenmodelle“.
 agent-plan-models-off = Für diesen Agenten sind Modelle abgeschaltet, deshalb kann nichts diesen Lauf planen. Starte ihn erneut mit einem eingeschalteten Modell.
 agent-plan-model-failed = Das Modell hat nicht geantwortet, deshalb ließ sich dieser Lauf nicht planen. Versuche es gleich noch einmal.
 
 ## Wie ein Lauf geendet hat
 
-agent-done-words-asked = { $actions ->
-        [one] Fertig: eine Aktion den Wörtern der Anfrage zugeordnet.
-       *[other] Fertig: { $actions } Aktionen den Wörtern der Anfrage zugeordnet.
-    }
 agent-done-words-no-model = { $actions ->
         [one] Fertig: eine Aktion den Wörtern der Anfrage zugeordnet, ohne Modell.
        *[other] Fertig: { $actions } Aktionen den Wörtern der Anfrage zugeordnet, ohne Modell.

@@ -540,15 +540,15 @@ impl WorkspacePolicy {
     }
 
     /// The workspace's grants naming a delegation grantee (an agent, a bot),
-    /// for bounding a person's authority. An answer a person gave for one
-    /// issue's runs is not among them: it decides that issue alone
-    /// ([`crate::is_issue_answer`]).
+    /// for bounding a person's authority. An answer a person gave one agent
+    /// session is not among them: it decides that session alone
+    /// ([`crate::is_session_answer`]).
     #[must_use]
     pub fn party_of(&self, grantee: Grantee) -> Party<'_> {
         Party::new(vec![grantee], &[]).with_grants(
             self.grants
                 .iter()
-                .filter(|grant| !crate::is_issue_answer(grant)),
+                .filter(|grant| !crate::is_session_answer(grant)),
         )
     }
 

@@ -1,36 +1,42 @@
-//! The task programs a Linux session runs: each task's door over its own tilolang host process.
+//! The programs a Linux session runs for agent sessions: each session's door over its own
+//! tilolang host process.
 //!
-//! One task has one session of the door: its own host, the `let`s and references its programs
-//! made, and the steps `undo` takes back. Every call the program makes is done as the agent
-//! working the task, for the person who started it, attributed to the run, and decided by the
-//! workspace's policy like the agent's own calls. A later run of the issue starts another.
+//! One agent session has one session of the door: its own host, the `let`s and references its
+//! programs made, and the steps `undo` takes back. Every call a program makes is done as the agent,
+//! for the person it acts for, attributed to the session, and decided by the workspace's policy
+//! like the agent's own calls.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tilo_actions::remote::Pending;
 use tilo_actions::remote::task_programs as wire;
-use tilo_broker_core::steps::{HostStepOutcome, TaskRun};
+use tilo_actions::remote::{ActionHost, Pending};
+use tilo_broker_core::steps::HostStepOutcome;
 use tilo_lock::MutexRecover as _;
 
 use crate::platform::programs::{ProgramRequest, Programs};
 
-/// One task's session of the door, over the run's own host.
-type Door = tilo_runtime::mcp::McpServer<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>>;
+type Host = Arc<dyn ActionHost + Send + Sync>;
 
-/// A task, by the workspace it runs in, its agent and its issue.
-type TaskKey = (String, String, String);
+/// One agent session's door, over its own host.
+type Door = tilo_runtime::mcp::McpServer<Arc<Current>>;
 
-/// The tasks' sessions of the door, with the run each is of.
+/// An agent session, by the workspace it works in, its agent and its id.
+type SessionKey = (String, String, String);
+
+/// Each agent session's door, with the door the broker serves its latest step on.
+type Sessions = HashMap<SessionKey, (Arc<Current>, Arc<Door>)>;
+
+/// The agent sessions' doors.
 pub(crate) struct TaskProgramHost {
-    /// What a task's host asks the session's own doors before it starts: the records the packages
-    /// the session runs itself keep.
+    /// What a session's host asks the session's own doors before it starts: the records the
+    /// packages the session runs itself keep.
     doors: Arc<crate::mcp_server::SessionDoors>,
-    sessions: std::sync::Mutex<HashMap<TaskKey, (String, Arc<Door>)>>,
+    sessions: std::sync::Mutex<Sessions>,
 }
 
 impl TaskProgramHost {
-    /// The tasks' programs, whose hosts read the session's own records through `doors`.
+    /// The sessions' programs, whose hosts read the session's own records through `doors`.
     pub(crate) fn new(doors: Arc<crate::mcp_server::SessionDoors>) -> Self {
         Self {
             doors,
@@ -38,41 +44,140 @@ impl TaskProgramHost {
         }
     }
 
-    /// The task's session of the door, started for its run `group` when it has none or its last
-    /// run's: over `host`, the run's own host, so everything its programs do is a step the run
-    /// admits.
-    fn session_of(
-        &self,
-        host: &dyn TaskRun,
-        workspace: &str,
-        agent: &str,
-        person: Option<&str>,
-        issue: &str,
-        group: tilo_actions::WorkGroup,
-    ) -> Arc<Door> {
-        let key = (workspace.to_owned(), agent.to_owned(), issue.to_owned());
+    /// The agent session's door, started when it has none, calling through `host`: the door the
+    /// broker serves the session's latest step on, so everything a program does is a step the
+    /// session admits even as one turn of it follows another.
+    fn session_of(&self, request: &ProgramRequest<'_>) -> Arc<Door> {
+        let key = (
+            request.workspace.to_owned(),
+            request.agent.to_owned(),
+            request.session.to_owned(),
+        );
         let mut sessions = self.sessions.lock_recover();
-        if let Some((run, door)) = sessions.get(&key)
-            && *run == group.id
-        {
+        if let Some((current, door)) = sessions.get(&key) {
+            *current.0.lock_recover() = Arc::clone(&request.door);
             return Arc::clone(door);
         }
-        let run = group.id.clone();
+        let current = Arc::new(Current(std::sync::Mutex::new(Arc::clone(&request.door))));
         let door = Arc::new(
-            Door::for_task(host.door(), workspace.to_owned(), agent, person)
-                .with_work_group(group)
-                .with_task_hosts(Some(Arc::new(crate::mcp_server::TaskHosts::new(
-                    person.unwrap_or_else(|| self.doors.person()),
-                    Arc::clone(&self.doors),
-                )))),
+            Door::for_task(
+                Arc::clone(&current),
+                request.workspace.to_owned(),
+                request.agent,
+                request.person,
+            )
+            .with_work_group(request.group.clone())
+            .with_task_hosts(Some(Arc::new(crate::mcp_server::TaskHosts::new(
+                request.person.unwrap_or_else(|| self.doors.person()),
+                Arc::clone(&self.doors),
+            )))),
         );
-        // A later run of the issue ends the earlier one's session, its host with it.
-        sessions.insert(key, (run, Arc::clone(&door)));
+        sessions.insert(key, (current, Arc::clone(&door)));
         door
     }
 }
 
-/// The run's program could not start or run at all.
+/// The door the broker serves an agent session's latest step on: each turn of the session is
+/// served on its own, and its programs call through the turn going now.
+pub(crate) struct Current(std::sync::Mutex<Host>);
+
+impl Current {
+    fn host(&self) -> Host {
+        Arc::clone(&self.0.lock_recover())
+    }
+}
+
+impl ActionHost for Current {
+    fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
+        self.host().retire_execution(caller);
+    }
+
+    fn query(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> Pending<Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>>
+    {
+        self.host().query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+    > {
+        self.host().invoke(caller, request)
+    }
+
+    fn observe(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        self.host().observe(caller, id)
+    }
+
+    fn next_change(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<Pending<()>> {
+        self.host().next_change(caller, id)
+    }
+
+    fn cancel(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+        self.host().cancel(caller, id)
+    }
+
+    fn confirm(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Pending<
+        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionHostError>,
+    > {
+        self.host().confirm(caller, request)
+    }
+
+    fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        self.host().content_puts()
+    }
+
+    fn content_gets(&self) -> Option<Arc<dyn tilo_actions::remote::ContentGets>> {
+        self.host().content_gets()
+    }
+
+    fn here(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Option<Vec<tilo_actions::remote::Here>> {
+        self.host().here(caller)
+    }
+
+    fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
+        self.host().record_reads()
+    }
+
+    fn record_changes(&self) -> Option<Arc<dyn tilo_actions::remote::RecordChanges>> {
+        self.host().record_changes()
+    }
+
+    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        self.host().resource_search()
+    }
+
+    fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
+        self.host().change_feed()
+    }
+}
+
+/// The session's program could not start or run at all.
 fn unavailable(message: String) -> HostStepOutcome {
     Err(Box::new(tilo_actions::ActionFailure {
         code: "task_program_unavailable".into(),
@@ -97,17 +202,10 @@ fn outcome(ran: tilo_runtime::mcp::TaskProgram) -> tilo_actions::ActionOutput {
 
 impl Programs for TaskProgramHost {
     fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        let door = self.session_of(
-            request.run,
-            request.workspace,
-            request.agent,
-            request.person,
-            request.issue,
-            request.group,
-        );
+        let door = self.session_of(&request);
         let (program, confirm, this) = (request.program, request.confirm, request.this);
         let (complete, answered) = tilo_actions::remote::pending();
-        // The program waits on the task's host and on every call it makes: never on the broker's
+        // The program waits on the session's host and on every call it makes: never on the broker's
         // thread.
         std::thread::Builder::new()
             .name("task-program".into())

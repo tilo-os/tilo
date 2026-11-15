@@ -30,7 +30,6 @@ use tilo_action_broker::services::{
     WifiContinuityServices, WorkspaceMemberships,
 };
 use tilo_actions::DoorError;
-use tilo_broker_core::services::TrackerRuns;
 use tilo_broker_core::services::{
     ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
 };
@@ -382,9 +381,6 @@ pub struct Hosted {
     pub layout: std::sync::Arc<LayoutAuthority>,
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
-    /// The turns this session's agents answer, which the broker delivers
-    /// as runs.
-    pub turns: Option<std::sync::Arc<crate::conversations::Runs>>,
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
     pub agents: Option<std::sync::Arc<dyn tilo_broker_core::services::AgentRoster>>,
@@ -1089,7 +1085,6 @@ fn seams(
         layout,
         shortcuts,
         activity,
-        turns,
         agents,
         agent_sessions,
         sealed,
@@ -1187,10 +1182,6 @@ fn seams(
         #[cfg(not(target_os = "linux"))]
         audio_output: Seam::unserved("this host plays no app audio itself"),
         workspace_memberships: Seam::when(memberships),
-        // What people ask this session's agents to do: a turn a person's
-        // message in a conversation started. A run is the broker's to
-        // deliver, and its reports come back to the turn.
-        tracker_runs: Seam::when(turns.map(|turns| turns as std::sync::Arc<dyn TrackerRuns>)),
         // Which agents each workspace keeps, and whose session runs each: the
         // record the broker admits an agent's join on.
         agents: Seam::when(agents),
@@ -1730,7 +1721,6 @@ mod tests {
             )),
             shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),
-            turns: None,
             agents: None,
             agent_sessions: None,
             native_media: None,

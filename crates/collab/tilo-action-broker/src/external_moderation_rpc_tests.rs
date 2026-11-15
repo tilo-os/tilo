@@ -139,7 +139,7 @@ mod external_moderation_rpc_tests {
                 .clone();
             let (actor, origin) = self.caller();
             let surface = self.state.surfaces.lock().unwrap()[&peer].clone();
-            let binding = self.state.native_witness_binding(
+            let binding = self.state.offered_witness_binding(
                 actor.id(),
                 &(surface, offered.clone()),
                 Some(argument),
@@ -339,7 +339,7 @@ mod external_moderation_rpc_tests {
                     let operation = operation(action == "appeal");
                     let exact = argument(&operation);
                     let surface = workspace.state.surfaces.lock().unwrap()[&980].clone();
-                    let binding = workspace.state.native_witness_binding(
+                    let binding = workspace.state.offered_witness_binding(
                         actor.id(),
                         &(surface, offered.clone()),
                         Some(&exact),
@@ -452,7 +452,7 @@ mod external_moderation_rpc_tests {
                     assert!(actor.direct());
                     let exact = argument(&operation(action == "appeal"));
                     let surface = workspace.state.surfaces.lock().unwrap()[&980].clone();
-                    let binding = workspace.state.native_witness_binding(
+                    let binding = workspace.state.offered_witness_binding(
                         actor.id(),
                         &(surface, offered.clone()),
                         Some(&exact),

@@ -26,7 +26,6 @@ pub mod record_content;
 /// The route an app's traffic is addressed on, the same on every host.
 pub use tilo_broker_core::route;
 pub mod services;
-pub mod task_runs;
 
 pub use broker_error::{BrokerError, BrokerErrorKind};
 pub use certificate_authority::CertificateAuthority;

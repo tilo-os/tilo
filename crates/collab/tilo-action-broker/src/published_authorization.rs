@@ -23,7 +23,7 @@ mod tests {
     ) -> Result<bool, String> {
         BrokerActor::person(person)
             .capped(capped)
-            .admit_published_in(workspace, now, None, (surface, action))
+            .admit_published_in(workspace, now, (surface, action))
             .map(|(asks, _)| asks)
     }
 
@@ -221,7 +221,7 @@ mod tests {
             let s = surface("rec-1", vec![read.clone(), save.clone(), choose.clone()]);
             let asks = |w: &Workspace, action: &PublishedAction| {
                 agent()
-                    .admit_published_in(w, 10, None, (&s, action))
+                    .admit_published_in(w, 10, (&s, action))
                     .map(|(asks, _)| asks)
             };
             assert_eq!(asks(&w, &read), Ok(false));

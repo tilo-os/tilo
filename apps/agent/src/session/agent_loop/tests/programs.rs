@@ -113,8 +113,6 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
                 ActionParam::required("program", ParamType::Text, "program"),
                 ActionParam::optional("confirm", ParamType::Boolean, "confirm"),
                 ActionParam::optional("this", ParamType::Text, "this"),
-                ActionParam::required("run", ParamType::Text, "run"),
-                ActionParam::optional("label", ParamType::Text, "label"),
             ],
             Availability::Available,
             vec![],
@@ -170,14 +168,9 @@ fn tilo(program: &str) -> (&'static str, Value) {
 /// What the conversation was asked to record, by action.
 fn recorded(sent: &[CollabRequest], action: &str) -> Vec<Value> {
     sent.iter()
-        .filter_map(|request| match request {
-            CollabRequest::InvokeTaskAction {
-                action: invoked,
-                arguments,
-                ..
-            } if invoked == action => Some(Value::Object(arguments.clone())),
-            _ => None,
-        })
+        .filter_map(invoked)
+        .filter(|(_, invoked, _, _)| *invoked == action)
+        .map(|(_, _, arguments, _)| Value::Object(arguments))
         .collect()
 }
 
@@ -262,7 +255,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "One card is left.".into()
             }
         );
@@ -299,7 +292,8 @@ tilo_test_env::scenario! {
         assert_eq!(steps[2]["outcome"], "applied", "{steps:?}");
         assert_eq!(steps[2]["label"], "move_card");
         assert_eq!(steps[2]["resource"], format!("tl:{BOARD}:root/cards:c1"));
-        // Every program went to the door as a step of the task's run.
+        // Every program went to the door as a step of the turn, which the host names the session
+        // of: the program itself names no group.
         let world = f.world.borrow();
         let ran: Vec<&serde_json::Map<String, Value>> = world
             .steps
@@ -308,7 +302,7 @@ tilo_test_env::scenario! {
             .map(|(_, arguments)| arguments)
             .collect();
         assert_eq!(ran.len(), 3);
-        assert_eq!(ran[0]["run"], Value::String(f.run.group()));
+        assert!(ran[0].get("run").is_none(), "{:?}", ran[0]);
         drop(world);
         // The view was checked by the Views host before it was kept, and the answer names the
         // resource keeping it.
@@ -368,7 +362,7 @@ tilo_test_env::scenario! {
         drop(bodies);
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "There are 42.".into()
             }
         );
@@ -463,7 +457,7 @@ fn a_program_that_asks_a_field_for_when_a_note_changed_is_taught_the_filter_and_
     drop(bodies);
     assert_eq!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
+        TurnUpdate::Succeeded {
             message: "Only Groceries changed this week: you pinned it.".into()
         }
     );

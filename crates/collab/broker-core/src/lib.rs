@@ -18,14 +18,13 @@ pub mod route;
 pub mod services;
 pub mod steps;
 
-pub use actor::{BrokerActor, RunFacts, person_id_for_root};
+pub use actor::{BrokerActor, person_id_for_root};
 pub use published::{
     PublishedAction, PublishedInput, PublishedSurface, validate_published_surface,
 };
 pub use route::CrdtRoute;
 pub use steps::{
     ContinuationServices, HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView,
-    TaskRun,
 };
 
 // Workspace records are decoded in automerge worker processes started from this test binary;

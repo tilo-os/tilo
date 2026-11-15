@@ -94,9 +94,6 @@ TIMERS = {
     Path(
         "crates/collab/tilo-action-broker/src/collab_app_broker/committed_document.rs"
     ): TIMER_REASON,
-    Path(
-        "crates/collab/tilo-action-broker/src/collab_app_broker/native_task_execution.rs"
-    ): TIMER_REASON,
     Path("crates/hosting/tilo-workspace-host/src/peer/arriving.rs"): TIMER_REASON,
     Path("crates/hosting/tilo-workspace-host/src/peer/access_audit.rs"): TIMER_REASON,
     Path("crates/hosting/tilo-workspace-host/src/peer/delivery.rs"): TIMER_REASON,

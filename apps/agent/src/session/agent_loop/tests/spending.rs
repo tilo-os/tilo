@@ -20,12 +20,10 @@ fn priced(events: Vec<TurnEvent>, cost_micros: u64) -> Vec<TurnEvent> {
 
 /// What a run was charged, as its host heard it.
 fn charges(sent: &[CollabRequest]) -> Vec<u64> {
-    sent.iter()
-        .filter_map(|request| match request {
-            CollabRequest::ReportTaskRun {
-                update: runtime_collab::TaskRunUpdate::Spent { cost_micros },
-                ..
-            } => Some(*cost_micros),
+    reported(sent)
+        .into_iter()
+        .filter_map(|update| match update {
+            TurnUpdate::Spent { cost_micros } => Some(cost_micros),
             _ => None,
         })
         .collect()
@@ -53,7 +51,7 @@ tilo_test_env::scenario! {
                 turn(&[finish("Done.", true)], 8),
             ],
         );
-        f.run.spend = Some(runtime_collab::TaskRunSpend {
+        f.run.asked.spend = Some(runtime_collab::AgentSpend {
             day: ui::clock::today().to_string(),
             limit_micros: Some(5_000_000),
             spent_micros: 4_000_000,
@@ -69,7 +67,7 @@ tilo_test_env::scenario! {
         assert_eq!(charges(&sent), vec![3_000_000], "the run's total, once");
         assert_eq!(
             terminal(&sent),
-            runtime_collab::TaskRunUpdate::Failed {
+            TurnUpdate::Failed {
                 message: "agent-1 has used today's $5; ask its keeper to raise it".into()
             }
         );
@@ -94,7 +92,7 @@ tilo_test_env::scenario! {
                 turn(&[finish("Done.", true)], 8),
             ],
         );
-        f.run.spend = None;
+        f.run.asked.spend = None;
         f.session.run_task(&f.run).unwrap();
         assert_eq!(
             f.script.bodies.lock().unwrap().len(),

@@ -1882,7 +1882,7 @@ fn connect(
     broker: &Arc<AppBrokerState>,
     admitted: &Admitted<'_>,
 ) -> Result<Option<AgentConnection>, String> {
-    if !broker.confines_agents_to_tasks(admitted.workspace) {
+    if !broker.confines_agents(admitted.workspace) {
         return Ok(None);
     }
     let (device, certificate) =

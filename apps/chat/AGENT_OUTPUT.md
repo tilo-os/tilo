@@ -1,17 +1,11 @@
 # Agent output in Chat
 
-Chat receives model output through two authenticated paths, without giving
-readers a provider connection:
+Chat receives model output without giving readers a provider connection: an
+agent answering a turn records its work on the reply through `record-work`, and
+the host-provided prose assistant writes the workspace's replicated typed Chat
+record through the `stream-output` action described below.
 
-- Task conversations receive negotiated `TaskPresentation` updates through Task
-  Center. The host validates the agent, run epoch and sequence, authors receipt
-  timestamps, and retains incremental CRDT text separately from task control.
-  Chat projects one stable reply per model turn, including exposed reasoning and
-  terminal outcome. Older hosts retain readable progress updates.
-- The host-provided prose assistant writes the workspace's replicated typed Chat
-  record through the `stream-output` action described below.
-
-Neither presentation path grants authority to execute tools.
+Neither path grants authority to execute tools.
 
 The channel's `stream-output` action takes `channel`, a fresh `reply` id, an
 optional display `name` (never authority) and an `event` JSON value. The first accepted event creates an empty reply attributed

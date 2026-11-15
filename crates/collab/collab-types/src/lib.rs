@@ -71,7 +71,6 @@ pub mod role;
 pub mod scope;
 pub mod signer;
 pub mod surface;
-pub mod task_presentation;
 pub mod units;
 pub mod validator;
 pub mod workspace_id;

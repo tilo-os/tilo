@@ -43,7 +43,7 @@ tilo_test_env::scenario! {
         f.session.run_task(&f.run).unwrap();
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "You have three things on your task list: bins, milk, and the boiler.".into(),
             },
             "the model's own words are the reply"
@@ -77,7 +77,7 @@ tilo_test_env::scenario! {
         assert_eq!(f.world.borrow().blocks[0].1, "Hello", "the step ran");
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "I typed “Hello” into the document.".into(),
             },
             "the words after the step are the reply"
@@ -115,7 +115,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "You have three things on your task list: bins, milk, and the boiler.".into(),
             },
             "the joined answer ends the turn complete, never as a failure"

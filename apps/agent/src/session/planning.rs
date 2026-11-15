@@ -18,18 +18,8 @@ use ui::i18n::ArgValue;
 pub(super) enum Planner {
     /// A model chose them, named as the person knows it.
     Model { provider: String, model: String },
-    /// The published actions answered the request's own words: the run was
-    /// set up without a model, or none could be reached.
-    Words { reason: Words },
-}
-
-/// Why a run's steps were matched to the request's words.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Words {
-    /// The run itself is planned without a model (its issue asks for that).
-    Asked,
-    /// The run asked for a model and there is none to ask.
-    NoModel,
+    /// The published actions answered the request's own words: no model could be reached.
+    Words,
 }
 
 impl Planner {
@@ -43,12 +33,7 @@ impl Planner {
                     ("provider", ArgValue::from(provider.clone())),
                 ],
             ),
-            Self::Words {
-                reason: Words::Asked,
-            } => t("agent-plan-words-asked"),
-            Self::Words {
-                reason: Words::NoModel,
-            } => t("agent-plan-words-no-model"),
+            Self::Words => t("agent-plan-words-no-model"),
         }
     }
 
@@ -70,12 +55,7 @@ impl Planner {
 pub(super) fn unmatched(plan: &Planner, why: &str) -> String {
     match plan {
         Planner::Model { .. } => why.to_owned(),
-        Planner::Words {
-            reason: Words::NoModel,
-        } => t("agent-plan-no-model"),
-        Planner::Words {
-            reason: Words::Asked,
-        } => t_args("agent-plan-unmatched-asked", &[("why", why.into())]),
+        Planner::Words => t("agent-plan-no-model"),
     }
 }
 
@@ -87,12 +67,7 @@ pub(super) fn finished(plan: &Planner, actions: usize) -> Option<String> {
     let actions = ArgValue::from(actions);
     match plan {
         Planner::Model { .. } => None,
-        Planner::Words {
-            reason: Words::NoModel,
-        } => Some(t_args("agent-done-words-no-model", &[("actions", actions)])),
-        Planner::Words {
-            reason: Words::Asked,
-        } => Some(t_args("agent-done-words-asked", &[("actions", actions)])),
+        Planner::Words => Some(t_args("agent-done-words-no-model", &[("actions", actions)])),
     }
 }
 
@@ -129,9 +104,7 @@ mod tests {
 
         phase a_run_without_a_model_says_so_once_and_names_the_door;
         {
-            let plan = Planner::Words {
-                reason: Words::NoModel,
-            };
+            let plan = Planner::Words;
             assert!(plan.announcing().contains("No model is set up"));
             assert!(plan.announcing().contains("Agent models"));
             let unmatched = unmatched(
@@ -153,21 +126,6 @@ mod tests {
             );
         }
 
-        phase a_run_asked_to_plan_without_a_model_does_not_blame_a_missing_one;
-        {
-            let plan = Planner::Words {
-                reason: Words::Asked,
-            };
-            assert!(!plan.announcing().contains("No model is set up"));
-            assert!(
-                !unmatched(
-                    &plan,
-                    "No published action carries the words of the request."
-                )
-                .contains("Agent models")
-            );
-        }
-
         phase an_outcome_says_whether_a_model_produced_it;
         {
             // A model-planned run's result is the model's own reply: the agent
@@ -175,9 +133,7 @@ mod tests {
             assert_eq!(finished(&model(), 2), None);
             assert_eq!(
                 finished(
-                    &Planner::Words {
-                        reason: Words::NoModel
-                    },
+                    &Planner::Words,
                     1
                 )
                 .as_deref(),
@@ -192,9 +148,7 @@ mod tests {
     fn a_german_desktop_reads_the_run_in_german() {
         let _german = crate::i18n::chosen("de-DE");
         crate::i18n::follow();
-        let plan = Planner::Words {
-            reason: Words::NoModel,
-        };
+        let plan = Planner::Words;
         let announcing = plan.announcing();
         assert!(announcing.contains("kein Modell"), "{announcing}");
         assert!(announcing.contains("Agentenmodelle"), "{announcing}");
@@ -203,16 +157,6 @@ mod tests {
             unmatched.contains("Einstellungen") && unmatched.contains("Agentenmodelle"),
             "{unmatched}"
         );
-        let asked = Planner::Words {
-            reason: Words::Asked,
-        };
-        assert_eq!(
-            finished(&asked, 1).as_deref(),
-            Some("Fertig: eine Aktion den Wörtern der Anfrage zugeordnet.")
-        );
-        assert_eq!(
-            finished(&asked, 2).as_deref(),
-            Some("Fertig: 2 Aktionen den Wörtern der Anfrage zugeordnet.")
-        );
+        assert!(finished(&plan, 2).is_some_and(|done| done.contains('2')));
     }
 }

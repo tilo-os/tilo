@@ -26,7 +26,7 @@ use tilo_action_broker::services::{
 };
 use tilo_broker_core::services::{
     ContentStoreServices, KeyboardShortcutServices, LegacyWorkspaceProjection, LocalPersonServices,
-    OwnDeviceActions, RecordChangeServices, RecordIndexChanges, SearchIndexServices, TrackerRuns,
+    OwnDeviceActions, RecordChangeServices, RecordIndexChanges, SearchIndexServices,
     WorkspaceGovernanceServices, WorkspaceNodeActions,
 };
 use tilo_broker_core::steps::{ContinuationServices, HostStepServices};
@@ -113,7 +113,6 @@ seams! {
     native_media: Arc<dyn tilo_action_broker::services::NativeMediaServices>,
     audio_output: Arc<dyn AudioOutputServices>,
     workspace_memberships: Arc<dyn WorkspaceMemberships>,
-    tracker_runs: Arc<dyn TrackerRuns>,
     agents: Arc<dyn tilo_broker_core::services::AgentRoster>,
     agent_sessions: Arc<dyn tilo_broker_core::services::AgentSessions>,
     native_certificates: Arc<dyn tilo_action_broker::certificate_authority::CertificateAuthority>,

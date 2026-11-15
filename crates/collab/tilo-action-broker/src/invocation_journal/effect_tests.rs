@@ -215,15 +215,15 @@ const CORRUPTIONS: [&str; 7] = [
     "oversized",
 ];
 
-/// Admits a native task invocation, which raises the writer floor to 6.
-fn admit_native_task(journal: &mut InvocationJournal, workspace: &str) -> InvocationKey {
+/// Admits an agent's invocation.
+fn admit_agent(journal: &mut InvocationJournal, workspace: &str) -> InvocationKey {
     let key = InvocationKey {
         workspace: workspace.into(),
         host: journal.host(),
-        owner: InvocationOwner::NativeTask {
-            agent: "scribe".into(),
-            task: "task:00000000-0000-4000-8000-000000000001".into(),
-            epoch: 1,
+        owner: InvocationOwner::AuthenticatedLocal {
+            root: [1; 32],
+            device: [2; 32],
+            agent: Some("scribe".into()),
         },
         invocation: tilo_actions::InvocationId::new(),
     };
@@ -250,7 +250,7 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("journal");
         let (mut journal, key, request, update) = fixture(&root);
-        let native = admit_native_task(&mut journal, &key.workspace);
+        let agent = admit_agent(&mut journal, &key.workspace);
         journal.prepare_effect(&key, update, &request).unwrap();
         drop(journal);
         assert_eq!(
@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
         );
         let journal = InvocationJournal::open(&root).expect("the store reopens after a restart");
         assert_eq!(journal.snapshot.version, VERSION);
-        assert!(journal.lookup(&native).unwrap().unwrap().uncertain);
+        assert!(journal.lookup(&agent).unwrap().unwrap().uncertain);
         assert!(
             journal
                 .lookup(&key)
@@ -276,7 +276,7 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("journal");
         let (mut journal, key, _, _) = fixture(&root);
-        admit_native_task(&mut journal, &key.workspace);
+        admit_agent(&mut journal, &key.workspace);
         drop(journal);
         let path = root.join("records.json");
         let stored = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();

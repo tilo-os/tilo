@@ -52,7 +52,7 @@ pub(crate) struct Roster {
     listed: Mutex<BTreeMap<String, Vec<tilo_broker_core::services::ListedAgent>>>,
     /// What each agent may spend today and has, by workspace and agent: what a run of its is
     /// admitted with.
-    spend: Mutex<BTreeMap<(String, String), runtime_collab::TaskRunSpend>>,
+    spend: Mutex<BTreeMap<(String, String), runtime_collab::AgentSpend>>,
 }
 
 impl tilo_broker_core::services::AgentRoster for Roster {
@@ -64,7 +64,7 @@ impl tilo_broker_core::services::AgentRoster for Roster {
             .unwrap_or_default()
     }
 
-    fn spend(&self, workspace: &str, agent: &str) -> Option<runtime_collab::TaskRunSpend> {
+    fn spend(&self, workspace: &str, agent: &str) -> Option<runtime_collab::AgentSpend> {
         self.spend
             .lock()
             .ok()?
@@ -162,7 +162,7 @@ impl Agents {
             .unwrap_or_default();
         listed.retain(|workspace, _| workspaces.iter().any(|(held, _)| held == workspace));
         // What each agent may spend, kept the same way: a workspace read this pass replaces it.
-        let mut spend: BTreeMap<(String, String), runtime_collab::TaskRunSpend> = self
+        let mut spend: BTreeMap<(String, String), runtime_collab::AgentSpend> = self
             .roster
             .spend
             .lock()
@@ -200,7 +200,7 @@ impl Agents {
                 });
                 spend.insert(
                     (workspace.clone(), agent.id.0.clone()),
-                    runtime_collab::TaskRunSpend {
+                    runtime_collab::AgentSpend {
                         day: day.clone(),
                         limit_micros: agent.spend_limit_micros,
                         spent_micros: agent.spent_on(&day),
@@ -344,7 +344,7 @@ impl crate::Shared {
                     .collect()
             });
         self.agents
-            .charge(&workspaces, &self.person, &self.conversations.take_spent());
+            .charge(&workspaces, &self.person, &self.agent_sessions.take_spent());
         let (kept, listed) = self.agents.feed(&self.person, &workspaces);
         self.search.set_kept_agents(&kept);
         self.search.set_listed_agents(&listed);

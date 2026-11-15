@@ -916,10 +916,6 @@ impl App {
                 | CollabEvent::ApplicationsChanged
                 | CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::NativeMediaCommandResult { .. }
-                | CollabEvent::TaskRun(_)
-                | CollabEvent::TaskActionInvocationResult { .. }
-                | CollabEvent::TaskRunCancellation { .. }
-                | CollabEvent::TaskRunReportResult { .. }
                 | CollabEvent::WorkspaceControl { .. }
                 | CollabEvent::RealtimeCommandResult { .. }
                 | CollabEvent::Realtime(_)
@@ -1013,10 +1009,6 @@ impl App {
             CollabEvent::InstalledApplicationLaunchResult { .. }
             | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
-            | CollabEvent::TaskRun(_)
-            | CollabEvent::TaskActionInvocationResult { .. }
-            | CollabEvent::TaskRunCancellation { .. }
-            | CollabEvent::TaskRunReportResult { .. }
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }

@@ -59,9 +59,6 @@ mod native_checkout;
 #[path = "collab_app_broker/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
-mod native_task_confirmation;
-mod native_task_execution;
-mod native_task_launch;
 #[cfg(test)]
 mod policy_turn_tests;
 #[cfg(target_os = "linux")]
@@ -70,7 +67,6 @@ mod published;
 mod published_invocation;
 mod resolved_invocation;
 mod route_holds;
-mod tracker_runs;
 #[cfg_attr(
     not(test),
     allow(
@@ -90,11 +86,6 @@ use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
 use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
 
-/// A durable local invocation's original caller and its invocation id.
-type LocalProvenance = (
-    durable_local_invocation::LocalCaller,
-    tilo_actions::InvocationId,
-);
 pub use native_media::{
     AudioOutputFuture, AudioOutputServices, NativeMediaFuture, NativeMediaRequestContext,
     NativeMediaServices,
@@ -274,8 +265,8 @@ pub(crate) struct AdmittedJoinIdentity {
 }
 
 use tilo_peer_state::join::agent_cert::AgentCert;
-mod task_agents;
-use task_agents::{admit_agent_cert, admit_kept_agent, verify_agent_cert, verify_agent_join};
+mod agent_cert;
+use agent_cert::{admit_agent_cert, admit_kept_agent, verify_agent_cert, verify_agent_join};
 
 /// The node of opening the application `app` in `workspace`: launching it is
 /// an action of the app itself.
@@ -374,7 +365,7 @@ impl AdmittedJoinIdentity {
                 };
                 // A certified agent works in its session alone.
                 match &self.agent_cert {
-                    Some(cert) => actor.working_on(cert.session.clone()),
+                    Some(cert) => actor.in_session(cert.session.clone()),
                     None => actor,
                 }
             }
@@ -731,7 +722,7 @@ struct PresenceEnvelope {
 /// One inert operation published by a live application connection: the one
 /// exported-action shape `runtime-collab` decodes off the wire, typed.
 /// The broker's actor, its published actions and their admission: every host's.
-pub use tilo_broker_core::actor::{BrokerActor, RunFacts, person_id_for_root};
+pub use tilo_broker_core::actor::{BrokerActor, person_id_for_root};
 pub use tilo_broker_core::published::{PublishedAction, PublishedInput, PublishedSurface};
 pub(crate) use tilo_broker_core::published::{
     validate_published_surface, validate_resource_view_descriptors,
@@ -755,38 +746,6 @@ impl InvocationEnvelope {
     pub fn context(&self) -> Option<&tilo_actions::ActionContext> {
         self.context.as_ref()
     }
-}
-
-#[derive(Clone, Debug)]
-struct TaskRunEnvelope {
-    task_id: String,
-    title: String,
-    instruction: Option<String>,
-    subject: Option<tilo_actions::SelectionSubject>,
-    run_id: u64,
-    lease: String,
-    planning: runtime_collab::TaskRunPlanning,
-    action_context: tilo_actions::ActionContext,
-    spend: Option<runtime_collab::TaskRunSpend>,
-}
-
-#[derive(Clone, Debug)]
-struct TaskSubscription {
-    agent_id: String,
-    cluster_id: String,
-    tx: mpsc::UnboundedSender<TaskRunEnvelope>,
-}
-
-#[derive(Clone, Debug)]
-struct PendingTaskRun {
-    peer_id: u64,
-    agent_id: String,
-    cluster_id: String,
-    task_id: String,
-    lease: String,
-    action_context: tilo_actions::ActionContext,
-    terminal: bool,
-    native: crate::services::NativeTaskBinding,
 }
 
 /// The application's terminal answer to a directed invocation.
@@ -931,9 +890,7 @@ fn same_root_and_device(owner: &InvocationOwner) -> Option<([u8; 32], [u8; 32])>
     match owner {
         InvocationOwner::Certified { root, device }
         | InvocationOwner::AuthenticatedLocal { root, device, .. } => Some((*root, *device)),
-        InvocationOwner::Local { .. }
-        | InvocationOwner::Enrolled { .. }
-        | InvocationOwner::NativeTask { .. } => None,
+        InvocationOwner::Local { .. } => None,
     }
 }
 
@@ -1085,19 +1042,11 @@ enum ContinuingCaller {
 
 impl ContinuingCaller {
     fn from_durable(durable: DurableContext<'_>) -> Self {
-        match durable {
-            DurableContext::Peer(caller, _) => Self::Certified {
-                caller: Box::new(caller.clone()),
-                foreign_restriction: false,
-                direct: None,
-            },
-            DurableContext::Task { caller, .. } => {
-                let (workspace, admitted) = caller.admitted_in();
-                Self::Admitted {
-                    workspace,
-                    admitted: Box::new(admitted),
-                }
-            }
+        let DurableContext::Peer(caller, _) = durable;
+        Self::Certified {
+            caller: Box::new(caller.clone()),
+            foreign_restriction: false,
+            direct: None,
         }
     }
 
@@ -1224,9 +1173,11 @@ impl PendingInvocation {
 pub(super) mod action_host;
 mod admission_memo;
 mod agent_connection;
+#[cfg(test)]
+#[path = "collab_app_broker/agent_tests.rs"]
+mod agent_tests;
 mod app_consent;
 mod app_open_door;
-mod conversation_ask;
 mod foreign_ask;
 mod host_action_admission;
 mod host_steps;
@@ -1235,9 +1186,8 @@ mod launchable;
 mod live_views;
 mod local_action_host;
 mod remaining_workspace_actions;
-mod task_run_host;
+mod turns;
 pub use agent_connection::AgentConnection;
-pub use task_run_host::TaskRunHost;
 mod windowless_instances;
 mod witness;
 use witness::requires_store_witness;
@@ -1607,6 +1557,7 @@ impl AppBrokerState {
     /// Ask `record`'s application to stop. Answer the asker only once the
     /// returned write resolves; the application hears of it no sooner
     /// either (see `invocation_cancellation`).
+    #[cfg(test)]
     fn cancel_durable_record(
         &self,
         record: &DurableInvocation,
@@ -2777,9 +2728,8 @@ pub struct AppBrokerState {
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
-    /// Shortcut runs the door finished and agent runs of workspace tasks
-    /// that ended, until history records them.
-    ended_runs: crate::task_runs::EndedRuns,
+    /// Shortcut runs the door finished, until history records them.
+    ended_runs: crate::automation::EndedRuns,
     /// What each application declared it may do on the action door under
     /// its own identity.
     app_action_access: RwLock<crate::app_actions::AppActionAccessResolver>,
@@ -2788,9 +2738,6 @@ pub struct AppBrokerState {
     /// action the person has not let it take. Nobody, until the host
     /// installs its sheet: such a request is then refused.
     app_action_consent: RwLock<Option<Arc<dyn crate::app_actions::AppActionConsentPrompter>>>,
-    /// A conversation turn's questions, waiting for the person's answer on
-    /// the system's sheet ([`conversation_ask`]).
-    conversation_asks: std::sync::Arc<conversation_ask::ConversationAsks>,
     /// The grant questions on screen ([`app_consent::ConsentKey`]): one at a
     /// time for each action an app asks for, so an app cannot bury the person
     /// in sheets, while the two apps one action of it changes are asked about
@@ -2834,13 +2781,8 @@ pub struct AppBrokerState {
     /// someone acting for them makes; see [`Self::witness_confirmation`].
     witnessed_confirmations: Mutex<HashMap<String, Witness>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
-    task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
-    pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
-    /// The host each launched task agent's run takes its host steps through
-    /// (a task's programs), by run: the same the MCP server's connection is,
-    /// one for the run, so each step is read back by the caller that took
-    /// it. Made at its first host step; gone with the agent's stream.
-    run_task_hosts: Mutex<HashMap<u64, TaskRunHost>>,
+    /// The turns people asked agents in, and the agent connections that answer them.
+    turns: turns::Turns,
     invocation_id: AtomicU64,
     services: HostServices,
     workers: Mutex<Vec<PendingWorker>>,
@@ -2985,8 +2927,6 @@ impl AppBrokerState {
         clear!(self.workspace_governance_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
-        clear!(self.task_subscribers);
-        clear!(self.pending_task_runs);
         clear!(self.workers);
         // A launch waiting for an app to publish learns the broker stopped.
         self.invocation_streams_changed();
@@ -3549,7 +3489,7 @@ impl AppBrokerState {
                 approved_check_jobs: Mutex::default(),
                 external_moderation_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
-                ended_runs: crate::task_runs::EndedRuns::default(),
+                ended_runs: crate::automation::EndedRuns::default(),
                 app_action_access: RwLock::new(
                     services
                         .app_action_access
@@ -3558,9 +3498,6 @@ impl AppBrokerState {
                 ),
                 app_resource_kinds: RwLock::new(services.app_resource_kinds.clone()),
                 app_action_consent: RwLock::new(None),
-                conversation_asks: std::sync::Arc::new(
-                    conversation_ask::ConversationAsks::default(),
-                ),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 app_consent_session: Mutex::new(std::collections::HashSet::new()),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
@@ -3579,9 +3516,7 @@ impl AppBrokerState {
                 confirmation_grants: Mutex::new(HashMap::new()),
                 witnessed_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
-                task_subscribers: Mutex::new(HashMap::new()),
-                pending_task_runs: Mutex::new(HashMap::new()),
-                run_task_hosts: Mutex::new(HashMap::new()),
+                turns: turns::Turns::default(),
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),
@@ -3811,20 +3746,6 @@ impl AppBrokerState {
             ))
         }));
         result
-    }
-
-    /// `action` on `resource` as connection `peer` publishes it now.
-    pub(super) fn offered_by(
-        &self,
-        peer: u64,
-        resource: &str,
-        action: &str,
-    ) -> Option<(PublishedSurface, PublishedAction)> {
-        self.surfaces
-            .lock()
-            .ok()?
-            .get(&peer)?
-            .action_projection(resource, action)
     }
 
     /// Resolve against the current selected source, independently of the
@@ -4611,9 +4532,10 @@ impl AppBrokerState {
             .iter()
             .map(|surface| surface.route.clone())
             .collect::<Vec<_>>();
-        let retained = self.launchable.surfaces().into_iter().filter(|surface| {
-            self.task_admitted_workspace(cluster_id) && !routes.contains(&surface.route)
-        });
+        let retained =
+            self.launchable.surfaces().into_iter().filter(|surface| {
+                self.confines_agents(cluster_id) && !routes.contains(&surface.route)
+            });
         let published = live
             .into_iter()
             .chain(retained)
@@ -4639,21 +4561,15 @@ impl AppBrokerState {
             .into_iter()
             .filter(|app| !live_apps.contains(&app.package_id))
             .collect::<Vec<_>>();
-        // A step marked for tasks (a task's programs) is an agent's step in one of its runs: a
-        // task agent's through its issue's run, and the workspace's kept agent's through the run
-        // of each turn it answers — whose catalogue is its connection's, not one turn's. Listed
-        // to every agent, as a run's steps; taken only inside a run, which admits it. A session
-        // step (for turns) is listed to every caller the grants allow, as an app action is, and
-        // admitted by the turn when an agent takes it.
-        let by_turn = actor.turn().is_some()
-            || actor
-                .issue()
-                .is_some_and(|issue| !crate::services::is_agent_session(issue));
+        // A step of an agent session's own (the programs it writes) is listed to an agent while
+        // it works in a session, and taken only there. A session step (for turns) is listed to
+        // every caller the grants allow, as an app action is.
+        let in_session = actor.session().is_some();
         let task_steps = self
             .services
             .host_steps
             .iter()
-            .filter(|steps| steps.for_turns() || (by_turn && steps.for_tasks()))
+            .filter(|steps| steps.for_turns() || (in_session && steps.for_agent_sessions()))
             .map(|steps| {
                 let actions = steps.descriptors().into_iter().collect::<Vec<_>>();
                 (steps.provider(), steps.app_id().to_owned(), actions)
@@ -4679,15 +4595,16 @@ impl AppBrokerState {
                             surface.actions.clear();
                         }
                         // Listed when the actor may take it, or would be asked
-                        // first.
+                        // first; how an agent answers a turn is the host's to invoke.
                         surface.actions.retain(|action| {
-                            actor.action_answer_in(
-                                workspace,
-                                &surface.app_id,
-                                (&action.resource_kind, &action.resource, &action.action),
-                                &action.contract.need(),
-                                now,
-                            ) != Answer::Deny
+                            !turns::is_answer(&surface.app_id, action)
+                                && actor.action_answer_in(
+                                    workspace,
+                                    &surface.app_id,
+                                    (&action.resource_kind, &action.resource, &action.action),
+                                    &action.contract.need(),
+                                    now,
+                                ) != Answer::Deny
                         });
                         surface
                     })
@@ -5137,28 +5054,23 @@ impl AppBrokerState {
             origin,
             retained_time,
         } = provenance;
+        if turns::is_answer(&offered.0.app_id, &offered.1) {
+            return Err("an agent answers a turn only when the host hands it one".into());
+        }
         let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
         let owner = match durable {
             Some(context) => context.owner()?,
             None => self.invocation_owner(origin.as_ref(), &offered.0.route.cluster_id, actor)?,
         };
         owner.validate()?;
-        // In native workspaces an agent acts only in a task's run, or in an
-        // agent session that still goes, never on a workspace grant alone.
-        let session = self.agent_session_of(origin.as_ref(), &offered.0.route.cluster_id);
-        if actor.is_agent
-            && !actor.is_app()
-            && self.confines_agents_to_tasks(&offered.0.route.cluster_id)
-        {
+        // In native workspaces an agent acts only in an agent session that still goes, never on
+        // a workspace grant alone.
+        let session = self.agent_session_of(caller, origin.as_ref(), &offered.0.route.cluster_id);
+        if actor.is_agent && !actor.is_app() && self.confines_agents(&offered.0.route.cluster_id) {
             match (durable, &session) {
-                (Some(DurableContext::Task { binding, .. }), _)
-                    if actor.id.strip_prefix("agent:").unwrap_or(&actor.id) == binding.agent_id => {
-                }
                 (None, Some(Ok(_))) => {}
                 (None, Some(Err(ended))) => return Err(ended.clone()),
-                _ => {
-                    return Err("an agent acts only in a task's run or an agent session".into());
-                }
+                _ => return Err("an agent acts only in an agent session".into()),
             }
         }
         // Never trust an envelope's invoker: the host sets it.
@@ -5168,11 +5080,6 @@ impl AppBrokerState {
         let context = invoker::working_from(
             context,
             match (durable, &session) {
-                (Some(DurableContext::Task { binding, .. }), _)
-                    if actor.id.strip_prefix("agent:") == Some(binding.agent_id.as_str()) =>
-                {
-                    binding.origin.as_ref()
-                }
                 (None, Some(Ok(going))) => going.origin.as_ref(),
                 _ => None,
             },
@@ -5303,15 +5210,7 @@ impl AppBrokerState {
                     answered = copy;
                     &answered
                 };
-                let run = match durable {
-                    Some(DurableContext::Task { binding, .. }) => Some(binding),
-                    _ => None,
-                };
-                let run = run.map(|binding| RunFacts {
-                    agent: &binding.agent_id,
-                    issue: &binding.task_id,
-                });
-                actor.admit_published_in(workspace, now, run, (&offered.0, &offered.1))
+                actor.admit_published_in(workspace, now, (&offered.0, &offered.1))
             })??;
 
         if (durable.is_some() || execution.is_some())
@@ -5500,23 +5399,7 @@ impl AppBrokerState {
                 Some(key)
             } else {
                 let admission = if owner.verified_actor().is_some() {
-                    let mut facts = invocation_journal::evidence_facts(&key, &intent)?;
-                    if let Some(DurableContext::Task { caller, .. }) = durable {
-                        let admitted = caller.current(self)?;
-                        let certificate = admitted
-                            .certificate
-                            .as_ref()
-                            .ok_or("task caller certificate missing")?;
-                        if let crate::action_evidence::VerifiedActor::NativeTask {
-                            root,
-                            device,
-                            ..
-                        } = &mut facts.actor
-                        {
-                            *root = certificate.user_public_key;
-                            *device = certificate.device_public_key;
-                        }
-                    }
+                    let facts = invocation_journal::evidence_facts(&key, &intent)?;
                     Some(crate::action_evidence::mint(facts, &intent).map_err(|_| {
                         "action_evidence_unavailable: host signing identity unavailable".to_string()
                     })?)
@@ -6213,162 +6096,6 @@ impl AppBrokerState {
             .unwrap_or(false)
     }
 
-    /// Whether this workspace currently has a subscribed, admitted agent that can
-    /// receive a task lease. Presence or membership alone is not sufficient.
-    pub fn agent_is_live_task_capable(&self, cluster_id: &str, agent_id: &str) -> bool {
-        self.task_subscribers.lock().is_ok_and(|subscribers| {
-            subscribers.values().any(|subscriber| {
-                subscriber.cluster_id == cluster_id && subscriber.agent_id == agent_id
-            })
-        })
-    }
-
-    fn task_run_for(
-        &self,
-        peer_id: u64,
-        agent_id: &str,
-        run_id: u64,
-        lease: &str,
-    ) -> Result<PendingTaskRun, String> {
-        self.pending_task_runs
-            .lock()
-            .map_err(|_| "the task run registry is unavailable".to_string())?
-            .get(&run_id)
-            .filter(|run| {
-                run.peer_id == peer_id
-                    && run.agent_id == agent_id
-                    && runtime_collab::native_task_lease(lease).is_some()
-                    && runtime_collab::native_task_lease(lease)
-                        == runtime_collab::native_task_lease(&run.lease)
-                    && !run.terminal
-            })
-            .cloned()
-            .ok_or_else(|| {
-                "the task run lease is unknown, expired, or belongs to another agent".to_string()
-            })
-    }
-
-    /// Whether the person stopped this run on its issue. Agents may observe
-    /// that; only the issue's own actions change it.
-    fn task_run_cancelled(
-        &self,
-        peer_id: u64,
-        agent_id: &str,
-        run_id: u64,
-        lease: &str,
-    ) -> Result<bool, String> {
-        let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
-        self.tracker_status(&run)
-    }
-
-    fn record_task_run_update(
-        &self,
-        peer_id: u64,
-        agent_id: &str,
-        run_id: u64,
-        lease: &str,
-        update: &runtime_collab::TaskRunUpdate,
-    ) -> Result<(), String> {
-        let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
-        self.report_tracker_run(&run, update)
-    }
-
-    fn start_task_action(
-        &self,
-        peer_id: u64,
-        agent_id: &str,
-        run_id: u64,
-        lease: &str,
-        target: runtime_collab::TaskAction<'_>,
-        (provenance, confirmed): (Option<&LocalProvenance>, (bool, Option<&str>)),
-    ) -> Result<StagedJob, String> {
-        // The action as its window publishes it now: one mounted anew as the
-        // window settled carries it under a new alias.
-        let current = self.published_now(target);
-        let target = runtime_collab::TaskAction {
-            resource: current.as_deref().unwrap_or(target.resource),
-            ..target
-        };
-        let runtime_collab::TaskAction {
-            peer_id: target_peer,
-            provider: _,
-            resource,
-            action,
-            argument: _,
-        } = target;
-        let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
-        if self.task_run_cancelled(peer_id, agent_id, run_id, lease)? {
-            return Err("the task was cancelled; no further action may start".into());
-        }
-        let (surface, descriptor) = self
-            .offered_by(target_peer, resource, action)
-            .filter(|(surface, _)| surface.route.cluster_id == run.cluster_id)
-            .ok_or("the task action is no longer published in this workspace")?;
-        self.admit_task_action(&run, target, (provenance, confirmed), (surface, descriptor))
-    }
-
-    fn admit_task_action(
-        &self,
-        run: &PendingTaskRun,
-        target: runtime_collab::TaskAction<'_>,
-        (provenance, confirmed): (Option<&LocalProvenance>, (bool, Option<&str>)),
-        offered: (PublishedSurface, PublishedAction),
-    ) -> Result<StagedJob, String> {
-        let runtime_collab::TaskAction {
-            peer_id: target_peer,
-            provider: _,
-            resource,
-            action: _,
-            argument,
-        } = target;
-        let (surface, descriptor) = offered;
-        if surface.route.cluster_id != run.cluster_id
-            || surface.peer_id != target_peer
-            || !surface.live
-        {
-            return Err("task action publisher changed workspace or retired".into());
-        }
-        // Task transport carries a JSON argument map directly; the contract
-        // evaluator also accepts the action door's prefixed map encoding.
-        let contract_argument = argument.and_then(|text| {
-            tilo_failure::ignored!(
-                "a JSON-map probe: text that is no such map is evaluated as it is",
-                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
-                    .ok()
-                    .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
-            )
-        });
-        let consequential = descriptor
-            .contract
-            .asks_for_argument(contract_argument.as_deref().or(argument));
-        // A run pauses for its person where an action asks first
-        // (`native_task_confirmation`).
-        let requirement = crate::services::NativeTaskActionRequirement {
-            binding: run.native.clone(),
-            app: surface.app_id.clone(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource: resource.into(),
-            action: descriptor.action.clone(),
-            need: descriptor.contract.need(),
-            consequential,
-            attended: descriptor.contract.is_attended(),
-            confirmed: confirmed.0,
-        };
-        let (caller, invocation) =
-            provenance.ok_or("native task action requires authenticated original caller")?;
-        let mut start = || {
-            self.start_native_task_invocation(
-                run,
-                target,
-                caller,
-                *invocation,
-                (surface.clone(), descriptor.clone()),
-                (confirmed.0 || consequential, confirmed.1),
-            )
-        };
-        self.admit_tracker_action(run, &requirement, &mut start)
-    }
-
     fn disconnect_device_media(&self, peer_id: u64) {
         if let Some(media) = self.services.native_media.as_ref() {
             media.disconnect(peer_id);
@@ -6436,7 +6163,7 @@ impl AppBrokerState {
             drop(subscribers);
             self.invocation_streams_changed();
         }
-        self.disconnect_native_task_stream(peer_id);
+        self.turns.forget(peer_id);
         self.fail_pending_invocations_of(peer_id);
         self.catalogue_changed();
     }
@@ -6555,28 +6282,6 @@ impl AppBrokerState {
         if let Some(clipboard) = self.services.file_clipboard.as_ref() {
             clipboard.disconnect(peer_id);
         }
-    }
-
-    fn disconnect_native_task_stream(&self, peer_id: u64) {
-        if let Ok(mut subscribers) = self.task_subscribers.lock() {
-            subscribers.remove(&peer_id);
-        }
-        if let Ok(mut runs) = self.pending_task_runs.lock() {
-            runs.retain(|_, run| run.peer_id != peer_id);
-        }
-        // Taken out under the lock and dropped after it: a host's own drop
-        // may come back here.
-        let mut ended: Vec<TaskRunHost> = Vec::new();
-        if let Ok(mut hosts) = self.run_task_hosts.lock() {
-            hosts.retain(|_, host| {
-                let goes = host.peer() != peer_id;
-                if !goes {
-                    ended.push(host.clone());
-                }
-                goes
-            });
-        }
-        drop(ended);
     }
 
     /// Stable authenticated actor id for native presence and interactions.
@@ -6908,10 +6613,6 @@ impl AppBrokerState {
             | CollabEvent::LocalDocumentActionReported { .. }
             | CollabEvent::InstalledApplicationLaunchResult { .. }
             | CollabEvent::WorkspaceControl { .. }
-            | CollabEvent::TaskRun(_)
-            | CollabEvent::TaskActionInvocationResult { .. }
-            | CollabEvent::TaskRunCancellation { .. }
-            | CollabEvent::TaskRunReportResult { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
@@ -9113,26 +8814,6 @@ struct InvocationStreamServer {
     delivered: Option<Box<dyn Fn()>>,
 }
 
-/// A task run as the agent receives it: `runtime_collab::TaskRunEnvelope`
-/// JSON.
-fn task_run_json(run: TaskRunEnvelope) -> Result<String, BrokerError> {
-    let payload = runtime_collab::TaskRunEnvelope {
-        version: 1,
-        task_id: run.task_id,
-        title: run.title,
-        instruction: run.instruction,
-        subject: run.subject,
-        run_id: run.run_id,
-        presentation_version: Some(1),
-        lease: run.lease,
-        planning: run.planning,
-        action_context: serde_json::to_value(run.action_context)
-            .map_err(|error| BrokerError::failed(error.to_string()))?,
-        spend: run.spend,
-    };
-    serde_json::to_string(&payload).map_err(|error| BrokerError::failed(error.to_string()))
-}
-
 struct ActionCatalogueStreamServer {
     follower: Arc<CatalogueFollower>,
 }
@@ -9912,8 +9593,8 @@ async fn serve_broker_thread(
             let clocked = state.refresh_policy_surfaces();
             policy.checked(now, epoch, clocked);
         }
-        if state.has_native_task_subscribers() && delivered != Some(epoch) {
-            state.refresh_native_task_delivery();
+        if state.turns.answering() && (delivered != Some(epoch) || state.turns.take_due()) {
+            state.refresh_turns();
             delivered = Some(epoch);
         }
         let workers = state
@@ -9959,7 +9640,7 @@ async fn serve_broker_thread(
         let mut recheck = policy.due(now, tilo_identity_host::policy_change::epoch());
         let armed = policy_watch.arm();
         if (recheck.is_none() && armed != policy.epoch())
-            || (state.has_native_task_subscribers() && delivered != Some(armed))
+            || (state.turns.answering() && delivered != Some(armed))
         {
             // Announced between the checks above and arming: nothing will
             // wake the turn for it.
@@ -15167,7 +14848,10 @@ impl AppBrokerState {
             }
             let _ = pending.tx.send(completion);
             state.record_effect_receipt(&pending, &update);
+        } else {
+            drop(registry);
         }
+        state.turn_updated(id, &update);
         Ok(())
     }
 }

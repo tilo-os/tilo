@@ -629,43 +629,6 @@ pub enum CollabRequest {
         package_root: Option<String>,
         on_behalf_of: Option<tilo_actions::InvocationId>,
     },
-    /// Lifecycle record for a broker-minted task lease. Only an admitted
-    /// agent connection can make this request; the broker checks the lease.
-    ReportTaskRun {
-        request_id: Option<u64>,
-        run_id: u64,
-        lease: String,
-        update: runtime_collab::TaskRunUpdate,
-    },
-    /// Invoke an already permission-filtered published action under the
-    /// broker-owned task context. `request_id` correlates the async reply.
-    InvokeTaskAction {
-        request_id: u64,
-        /// The caller's id for this invocation. A retry reuses it; the
-        /// broker reports the original, and [`Self::RemoteAction`] observes
-        /// or cancels it.
-        invocation: tilo_actions::InvocationId,
-        run_id: u64,
-        lease: String,
-        peer_id: u64,
-        /// Stable catalogue provider for a closed app; never a publisher identity.
-        provider: String,
-        resource: String,
-        action: String,
-        arguments: serde_json::Map<String, serde_json::Value>,
-        /// On a re-ask of a native task's own child: let the broker hold
-        /// the answer until the child moves on (see
-        /// [`runtime_collab::TaskChildWait`]). The connection's other
-        /// requests do not wait behind it.
-        wait: Option<runtime_collab::TaskChildWait>,
-    },
-    /// Poll the native Task Center's cooperative cancellation bit for a
-    /// lease. It cannot cancel a task and carries no task state itself.
-    TaskRunCancellation {
-        request_id: u64,
-        run_id: u64,
-        lease: String,
-    },
 }
 
 impl CollabRequest {

@@ -8,20 +8,14 @@
 ## How a run's steps were chosen
 
 agent-plan-model = Planning with { $model } from { $provider }.
-agent-plan-words-asked = This run is planned without a model, so its steps are matched to the actions this workspace's apps publish.
 agent-plan-words-no-model = No model is set up to plan this run, so its steps are matched to the actions this workspace's apps publish. Choose a model in Settings, under Agent models, to have one plan instead.
 agent-plan-no-action = No published action carries the words of the request.
-agent-plan-unmatched-asked = { $why } Name the app to work in, or say what to do in it.
 agent-plan-no-model = I can't work on this yet: no model is set up. Choose one in Settings, under Agent models.
 agent-plan-models-off = Models are turned off for this agent, so nothing can plan this run. Start it again with a model turned on.
 agent-plan-model-failed = The model didn't answer, so this run couldn't be planned. Try again in a moment.
 
 ## How a run ended
 
-agent-done-words-asked = { $actions ->
-        [one] Done: one action matched to the request's words.
-       *[other] Done: { $actions } actions matched to the request's words.
-    }
 agent-done-words-no-model = { $actions ->
         [one] Done: one action matched to the request's words, without a model.
        *[other] Done: { $actions } actions matched to the request's words, without a model.

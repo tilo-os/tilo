@@ -94,7 +94,7 @@ case $group in
     # own beside it. Its records are the agent group's.
     env_json release none kvm > "$out/env-pipeline.json"
     TILO_AGENT_NATIVE_REPS=30 TILO_AGENT_NATIVE_SAMPLES="$out/native" \
-      cargo test --locked --release -p agent --lib native_task_benchmark -- --nocapture
+      cargo test --locked --release -p agent --lib turn_steps_benchmark -- --nocapture
     for plan in pipelined sequential; do
       python3 tools/perf/record.py emit --kpi "agent.task.native.${plan}.wall" --unit ms \
         --samples-file "$out/native/${plan}.txt" --env-json "$out/env-pipeline.json" \

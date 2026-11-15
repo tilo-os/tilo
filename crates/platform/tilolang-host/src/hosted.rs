@@ -1657,9 +1657,7 @@ impl Hosted {
                 tracing::debug!(id, "a cancellation of an invocation already answered");
                 return false;
             }
-            CollabEvent::TaskRun(_)
-            | CollabEvent::TaskRunCancellation { .. }
-            | CollabEvent::WorkspaceControl { .. } => {
+            CollabEvent::WorkspaceControl { .. } => {
                 tracing::warn!(
                     app = self.spec.app,
                     instance = self.spec.instance,

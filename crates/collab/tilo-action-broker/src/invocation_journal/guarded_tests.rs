@@ -86,29 +86,6 @@ tilo_test_env::scenario! {
         assert!(InvocationJournal::open(&root).is_ok());
     }
 
-    phase guarded_journal_v3_enrolled_write_cannot_downgrade_or_forget_marker;
-    {
-        let value = fixture(terminal());
-        let (_dir, root) = disk(&value);
-        let mut journal = InvocationJournal::open(&root).expect("v3 baseline");
-        let mut key: InvocationKey =
-            serde_json::from_value(value["records"][0]["key"].clone()).unwrap();
-        key.invocation = InvocationId(uuid::Uuid::from_u128(9));
-        key.owner = InvocationOwner::Enrolled {
-            root: [1; 32],
-            device: [2; 32],
-            task: uuid::Uuid::from_u128(10).to_string(),
-            run: uuid::Uuid::from_u128(11).to_string(),
-            channel: uuid::Uuid::from_u128(12).to_string(),
-        };
-        assert!(journal.admit(key, json!({}), 2).unwrap());
-        drop(journal);
-        let saved: Value =
-            serde_json::from_slice(&std::fs::read(root.join("records.json")).unwrap()).unwrap();
-        assert_eq!(saved["version"], 7);
-        assert_eq!(saved["records"][0], value["records"][0]);
-    }
-
     phase guarded_journal_real_requirement_and_terminal_barriers_poison_without_redispatch;
     {
         for terminal_stage in [false, true] {

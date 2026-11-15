@@ -21,24 +21,17 @@ pub struct HostStepRequest<'a> {
     pub actor: &'a crate::actor::BrokerActor,
     pub address: &'a ActionAddress,
     pub argument: Option<&'a str>,
-    /// The task run the step is taken in, when it is one of a run's steps (a task's program):
-    /// what the step does in turn goes through it, so it is admitted by the run too.
-    pub task_run: Option<&'a dyn TaskRun>,
-    /// The run the invocation names itself a step of (its context's group, as an agent's
-    /// connection stamps every call): what a step that changes a record makes is that run's,
-    /// which History groups and an undo of the run takes back, as an app's action is.
-    pub run: Option<&'a tilo_actions::WorkGroup>,
+    /// The agent session's own door, when the step is one of an agent session's (a program it
+    /// writes): what the step does in turn goes through it, so the session admits that too.
+    pub door: Option<Arc<dyn ActionHost + Send + Sync>>,
+    /// The work the invocation names itself a part of (its context's group, as an agent session
+    /// stamps every call): what a step that changes a record makes is that work's, which History
+    /// groups and an undo of it takes back, as an app's action is.
+    pub group: Option<&'a tilo_actions::WorkGroup>,
 }
 
 /// How a host step ended.
 pub type HostStepOutcome = Result<ActionOutput, Box<ActionFailure>>;
-
-/// A task's run, as one of its steps names it: the host those steps run against, so every call a
-/// run's program makes is a call the run admits.
-pub trait TaskRun: Send + Sync {
-    /// The door the run's programs call through.
-    fn door(&self) -> Arc<dyn ActionHost + Send + Sync>;
-}
 
 /// Steps the host itself runs for the person at this device: pairing a nearby device,
 /// administering the person's identities and the devices trusted under them, changing the
@@ -69,9 +62,9 @@ pub trait HostStepServices: Send + Sync {
     fn for_turns(&self) -> bool {
         false
     }
-    /// Whether its steps are steps a task agent takes in its run (a task's programs). No other
-    /// host step is a task agent's.
-    fn for_tasks(&self) -> bool {
+    /// Whether its steps are an agent session's own (the programs it writes). Such a step is
+    /// offered to an agent while it works in a session and taken only there.
+    fn for_agent_sessions(&self) -> bool {
         false
     }
     /// The step at `address` as one invocation with `argument` (its slot form) is: by default as

@@ -92,12 +92,9 @@ impl PreparedEffect {
             | InvocationOwner::AuthenticatedLocal {
                 root, agent: None, ..
             } => Some(super::super::person_id_for_root(*root)),
-            InvocationOwner::NativeTask { agent, .. }
-            | InvocationOwner::AuthenticatedLocal {
+            InvocationOwner::AuthenticatedLocal {
                 agent: Some(agent), ..
             } => Some(format!("agent:{agent}")),
-            // Its exact current task/source admission is checked by the observing caller.
-            InvocationOwner::Enrolled { .. } => None,
         };
         let context: tilo_actions::ActionContext =
             serde_json::from_value(record.intent.get("context").cloned().unwrap_or_default())

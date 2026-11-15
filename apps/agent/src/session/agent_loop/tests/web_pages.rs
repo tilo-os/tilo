@@ -141,7 +141,7 @@ tilo_test_env::scenario! {
         f.session.run_task(&f.run).unwrap();
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Jane Doe's portfolio shows two solid projects.".into()
             }
         );
@@ -200,7 +200,7 @@ tilo_test_env::scenario! {
         f.session.run_task(&f.run).unwrap();
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            TurnUpdate::Succeeded {
                 message: "Read all the pages.".into()
             }
         );
@@ -211,7 +211,9 @@ tilo_test_env::scenario! {
         assert!(
             !f.sent.borrow().iter().any(|request| matches!(
                 request,
-                CollabRequest::InvokeTaskAction { wait: Some(_), .. }
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Confirm { .. }
+                }
             )),
             "no step waits for a person"
         );

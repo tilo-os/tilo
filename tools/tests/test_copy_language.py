@@ -859,7 +859,7 @@ class CopyLanguageTests(unittest.TestCase):
                 "content, and so is one built as sample data")
 
 
-    def test_a_task_runs_update_is_copy_too(self):
+    def test_a_turns_update_is_copy_too(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             locales = root / "apps/demo/locales"
@@ -870,19 +870,16 @@ class CopyLanguageTests(unittest.TestCase):
             source.mkdir(parents=True)
             (source / "lib.rs").write_text("\n".join([
                 "fn run(&mut self) -> Result<()> {",
-                "    self.report(TaskRunUpdate::Progress {",
+                "    self.report(TurnUpdate::Progress {",
                 '        message: "Reading the actions this workspace publishes".into(),',
-                "        presentation: None,",
                 "    })?;",
-                "    self.report(TaskRunUpdate::Progress {",
+                "    self.report(TurnUpdate::Progress {",
                 "        message: format!(\"Running {} of {}\", index, total),",
-                "        presentation: None,",
                 "    })?;",
-                "    self.report(TaskRunUpdate::Progress {",
+                "    self.report(TurnUpdate::Progress {",
                 "        message: crate::i18n::t(\"demo-name\"),",
-                "        presentation: None,",
                 "    })?;",
-                "    self.report(TaskRunUpdate::Failed {",
+                "    self.report(TurnUpdate::Failed {",
                 "        message: self.why(),",
                 "    })",
                 "}",
@@ -890,7 +887,7 @@ class CopyLanguageTests(unittest.TestCase):
             self.assertEqual(
                 [text for _, _, text in copy.source_copy_literals(root)],
                 ["Reading the actions this workspace publishes", "Running {} of {}"],
-                "a headless participant has no window: the words it hands a run's "
+                "a headless participant has no window: the words it hands a turn's "
                 "update are what the person reads, and a sentence built around a "
                 "value is copy like any other; what it resolved through its own "
                 "catalogue, or holds in its own words, is not")

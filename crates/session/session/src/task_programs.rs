@@ -1,15 +1,14 @@
-//! An agent's task programs: the tilolang an agent writes as one step of its task, run here.
-//! An agent working an issue writes programs; this session runs them, in the same door an MCP
-//! client reaches for its `tilo` tool (`docs/designs/app-language/agents.md`). The Tasks agent
-//! reaches it through the broker as a host step under
-//! [`task_programs::PROVIDER`](tilo_actions::remote::task_programs::PROVIDER), admitted by the run
-//! the step is a step of, and gets back what the program answered.
-//! One task has one session of the door: its own tilolang host, the `let` s and references its
-//! programs made, and the steps `undo` takes back. Every call the program makes is done as the
-//! agent working the task, for the person who started it, attributed to the run, and decided by the
-//! workspace's policy like the agent's own calls. A later run of the issue starts another.
+//! An agent session's programs: the tilolang an agent writes as one step of its session, run here,
+//! in the same door an MCP client reaches for its `tilo` tool (`docs/designs/app-language/agents.md`).
+//! An agent reaches it through the broker as a host step under
+//! [`task_programs::PROVIDER`](tilo_actions::remote::task_programs::PROVIDER), admitted by the
+//! session the step is a step of, and gets back what the program answered.
+//! One agent session has one session of the door: its own tilolang host, the `let` s and references
+//! its programs made, and the steps `undo` takes back. Every call the program makes is done as the
+//! agent, for the person it acts for, attributed to the session, and decided by the workspace's
+//! policy like the agent's own calls.
 //!
-//! Where a program runs is the host's: [`Programs`], a task's own process on a Linux desktop and
+//! Where a program runs is the host's: [`Programs`], a process of its own on a Linux desktop and
 //! the page's in-process host on the web.
 #![cfg_attr(
     target_arch = "wasm32",
@@ -28,9 +27,9 @@ use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices
 
 use crate::platform::programs::{ProgramRequest, Programs};
 
-/// A task agent's programs, as this host runs them.
+/// An agent session's programs, as this host runs them.
 pub(crate) struct TaskPrograms {
-    /// Where a program runs: the task's door on this host, started for its run.
+    /// Where a program runs: the session's door on this host.
     programs: Arc<dyn Programs>,
 }
 
@@ -55,20 +54,9 @@ const THIS: ActionParam = ActionParam::optional(
     ParamType::Text,
     "What the person pointed at, as a resource literal, which `this` names.",
 );
-const RUN: ActionParam = ActionParam::required(
-    "run",
-    ParamType::Text,
-    "The run of the task the program is a step of: its group.",
-);
-const RUN_LABEL: ActionParam = ActionParam::optional(
-    "label",
-    ParamType::Text,
-    "The run's title, as history names it.",
-);
+const PARAMS: &[ActionParam] = &[PROGRAM, CONFIRM, THIS];
 
-const PARAMS: &[ActionParam] = &[PROGRAM, CONFIRM, THIS, RUN, RUN_LABEL];
-
-/// The task's program, described for the broker's catalogue.
+/// The session's program, described for the broker's catalogue.
 fn descriptor() -> tilo_actions::ActionDescriptor {
     use tilo_desktop_surface::i18n::t;
     tilo_actions::ActionDescriptor {
@@ -105,7 +93,7 @@ fn bind(argument: Option<&str>) -> Result<ActionArgs, String> {
         Some(slot) => {
             let json = slot
                 .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-                .ok_or("a task's program takes JSON arguments")?;
+                .ok_or("a program takes JSON arguments")?;
             serde_json::from_str(json).map_err(|error| error.to_string())?
         }
     };
@@ -125,7 +113,7 @@ impl HostStepServices for TaskPrograms {
         vec![descriptor()]
     }
 
-    fn for_tasks(&self) -> bool {
+    fn for_agent_sessions(&self) -> bool {
         true
     }
 
@@ -135,43 +123,43 @@ impl HostStepServices for TaskPrograms {
         }
         let actor = request.actor;
         if !actor.is_agent() {
-            return Err("a task's programs are its agent's".into());
+            return Err("a session's programs are its agent's".into());
         }
-        let issue = actor
-            .issue()
-            .ok_or("an agent runs programs as a step of a task it works on")?;
+        let session = actor
+            .session()
+            .ok_or("an agent runs programs as a step of its session")?;
+        let door = request
+            .door
+            .clone()
+            .ok_or("an agent runs programs only through its session's door")?;
         let args = bind(request.argument)?;
-        let run = args.text("run").unwrap_or_default().trim().to_owned();
-        // The run is one of the issue's: its group names the issue it is a run of.
-        if !run.starts_with(&format!("{issue}@")) {
-            return Err("the run is not one of the task's".into());
-        }
         let program = args.text("program").unwrap_or_default().to_owned();
         let confirm = args.boolean("confirm").unwrap_or(false);
         let this = args
             .text("this")
             .filter(|this| !this.trim().is_empty())
             .map(str::to_owned);
-        let label = args.text("label").unwrap_or(issue).to_owned();
         let agent = actor
             .id()
             .strip_prefix("agent:")
             .unwrap_or_else(|| actor.id());
-        self.programs.run(ProgramRequest {
-            workspace: request.workspace,
-            run: request
-                .task_run
-                .ok_or("a task's programs run only as steps of its run")?,
-            agent,
-            person: actor.acting_for(),
-            issue,
-            group: tilo_actions::WorkGroup {
-                id: run,
-                label,
-                kind: "task".into(),
+        let group = request
+            .group
+            .cloned()
+            .unwrap_or_else(|| tilo_actions::WorkGroup {
+                id: session.to_owned(),
+                label: agent.to_owned(),
+                kind: tilo_actions::context::AGENT_RUN_GROUP.to_owned(),
                 title: None,
                 declared_id: None,
-            },
+            });
+        self.programs.run(ProgramRequest {
+            workspace: request.workspace,
+            door,
+            agent,
+            person: actor.acting_for(),
+            session,
+            group,
             program,
             confirm,
             this,
@@ -184,7 +172,6 @@ mod tests {
     use super::*;
     use tilo_actions::ActionAddress;
     use tilo_broker_core::BrokerActor;
-    use tilo_broker_core::steps::TaskRun;
 
     /// A host no step reaches: every case below is refused before a program runs.
     struct NoPrograms;
@@ -200,36 +187,34 @@ mod tests {
         TaskPrograms::new(Arc::new(NoPrograms))
     }
 
-    /// The issue an agent's run is of.
-    const ISSUE: &str = "tasks.tracker/issues/tidy-the-inbox";
-
     fn request<'a>(
         actor: &'a BrokerActor,
         address: &'a ActionAddress,
         argument: &'a str,
-        task_run: Option<&'a dyn TaskRun>,
     ) -> HostStepRequest<'a> {
         HostStepRequest {
             workspace: "the-workspace",
             actor,
             address,
             argument: Some(argument),
-            task_run,
-            run: None,
+            door: None,
+            group: None,
         }
     }
 
     tilo_test_env::scenario! {
-        fn only_an_agents_own_task_step_is_offered_and_taken;
+        fn only_an_agents_own_session_step_is_offered_and_taken;
 
-        phase a_task_step_is_the_agents_and_is_offered_for_tasks;
-        // The step is the agent's, offered to a task agent's catalogue and nowhere else: a program is
-        // a step of a run, and only a task agent has one.
+        phase a_program_step_is_the_agents_and_is_offered_in_its_sessions;
+        // The step is the agent's, offered to an agent in a session and nowhere else.
         {
             let programs = programs();
             assert_eq!(programs.provider(), wire::PROVIDER);
             assert_eq!(programs.app_id(), wire::APP);
-            assert!(programs.for_tasks(), "a task agent's catalogue offers it");
+            assert!(
+                programs.for_agent_sessions(),
+                "an agent session's catalogue offers it"
+            );
             let described = programs.descriptors();
             assert_eq!(described.len(), 1);
             let step = &described[0];
@@ -246,51 +231,29 @@ mod tests {
             );
         }
 
-        phase only_an_agents_program_of_its_own_run_is_taken;
-        // A program is a step of a task its agent works on: anyone else, and a program outside a run
-        // of the issue, is refused before anything starts.
+        phase only_an_agents_program_in_its_session_is_taken;
+        // A program is a step of an agent's session, through the session's door: anyone else, and
+        // an agent outside a session, is refused before anything starts.
         {
             let programs = programs();
             let address = ActionAddress::new(wire::RESOURCE, wire::RUN);
             let argument = format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::json!({ "program": "ls", "run": format!("{ISSUE}@0") })
+                serde_json::json!({ "program": "ls" })
             );
-            let took = |actor: &BrokerActor| {
-                programs
-                    .start(&request(actor, &address, &argument, None))
-                    .err()
-            };
+            let took = |actor: &BrokerActor| programs.start(&request(actor, &address, &argument)).err();
             assert_eq!(
                 took(&BrokerActor::person("Pat")),
-                Some("a task's programs are its agent's".to_owned())
+                Some("a session's programs are its agent's".to_owned())
             );
             assert_eq!(
                 took(&BrokerActor::agent("claude")),
-                Some("an agent runs programs as a step of a task it works on".to_owned())
-            );
-            // An agent working the issue, but outside a run: the step names the run it is of.
-            assert_eq!(
-                took(&BrokerActor::agent("claude").working_on(ISSUE)),
-                Some("a task's programs run only as steps of its run".to_owned())
-            );
-            // A run of another issue is not the task's.
-            let other = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::json!({ "program": "ls", "run": "another-issue@0" })
+                Some("an agent runs programs as a step of its session".to_owned())
             );
             assert_eq!(
-                programs
-                    .start(&request(
-                        &BrokerActor::agent("claude").working_on(ISSUE),
-                        &address,
-                        &other,
-                        None
-                    ))
-                    .err(),
-                Some("the run is not one of the task's".to_owned())
+                took(&BrokerActor::agent("claude").in_session("agent-session:1")),
+                Some("an agent runs programs only through its session's door".to_owned())
             );
         }
     }

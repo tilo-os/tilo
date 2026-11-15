@@ -1,11 +1,11 @@
-//! The turn a run answers, recorded in its conversation.
+//! The turn the agent answers, recorded in its conversation.
 //!
 //! A person asks an agent by writing in a conversation the agent takes part
-//! in; the run the broker delivers is that message's turn, and its task id is
-//! the message's address in the workspace. The answer is written in the same
-//! conversation: the run tells the reply to its message what it was taken
-//! for, what it does at each step, and how it ended, by invoking chat's
-//! `record-work` as a child of the run. The reply is the message its id and
+//! in; the turn the broker hands over names that message by its address in
+//! the workspace. The answer is written in the same conversation: the agent
+//! tells the reply to the message what it was taken for, what it does at each
+//! step, and how it ended, by invoking chat's `record-work` as a step of the
+//! turn. The reply is the message its id and
 //! the summons derive (chat keeps that rule), so nothing here has to be
 //! stored to find it, and the conversation needs no record of its own.
 //!
@@ -17,7 +17,7 @@
 use anyhow::Result;
 use serde_json::{Map, Value, json};
 
-use super::{Session, TaskAction, TaskActionStop};
+use super::{Asked, Session, TaskAction, TaskActionStop, TurnUpdate};
 
 /// What a conversation's address in the workspace starts with: the chat
 /// record's kind and the collection its conversations are kept in.
@@ -45,10 +45,10 @@ pub(super) struct Cause {
 }
 
 impl Cause {
-    /// The turn `run` answers, read from its task id, or `None` when the run
-    /// answers no conversation's message.
-    pub(super) fn of(run: &runtime_collab::TaskRunEnvelope) -> Option<Self> {
-        let (address, message) = run.task_id.rsplit_once(MESSAGES)?;
+    /// The turn `run` answers, read from the message it names, or `None` when it names no
+    /// conversation's message.
+    pub(super) fn of(run: &runtime_collab::TurnRequest) -> Option<Self> {
+        let (address, message) = run.message.rsplit_once(MESSAGES)?;
         let conversation = address.strip_prefix(CONVERSATION_PREFIX)?;
         let bounded = |id: &str| !id.is_empty() && id.len() <= MAX_ID_CHARS && !id.contains('/');
         (bounded(conversation) && bounded(message)).then(|| Self {
@@ -77,27 +77,14 @@ pub(super) struct Record {
 
 /// The turn `run` answers, checked against what a conversation gives and
 /// what a turn of one may carry.
-pub(super) fn validate(run: &runtime_collab::TaskRunEnvelope) -> Result<Cause, String> {
-    if run.version != 1 || run.run_id == 0 {
-        return Err("The run has an unsupported version or empty run id".into());
-    }
-    let cause = Cause::of(run).ok_or("The run answers no conversation's message")?;
+pub(super) fn validate(run: &runtime_collab::TurnRequest) -> Result<Cause, String> {
+    let cause = Cause::of(run).ok_or("The turn answers no conversation's message")?;
     if run.title.trim().is_empty()
         || run.title.len() > 4 * 1024
-        || run.instruction().trim().is_empty()
-        || run.instruction().len() > 32 * 1024
-        || run.lease.len() > 128
-        || runtime_collab::native_task_lease(&run.lease).is_none()
+        || run.instruction.trim().is_empty()
+        || run.instruction.len() > 32 * 1024
     {
-        return Err("The run has an invalid title, instruction, or lease".into());
-    }
-    let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
-        .map_err(|_| "The run has an invalid action context".to_string())?;
-    let valid_group = context.group.as_ref().is_some_and(|group| {
-        group.id == run.group() && group.label == run.title && group.kind == "task"
-    });
-    if context.purpose.as_deref() != Some(run.title.as_str()) || !valid_group {
-        return Err("The run's action context does not bind its title and id".into());
+        return Err("The turn has an invalid title or instruction".into());
     }
     Ok(cause)
 }
@@ -126,7 +113,7 @@ impl Session {
     /// finished without answering.
     pub(super) fn succeed_turn(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         answer: Option<String>,
         done: Option<String>,
     ) -> Result<()> {
@@ -139,31 +126,26 @@ impl Session {
                 &crate::session::Failure::said(crate::i18n::t("agent-failure-no-answer")),
             );
         };
-        self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
+        self.report_task(run, TurnUpdate::Succeeded { message })
     }
 
     /// Tell the conversation what `run` reports now, as the reply to its
     /// message keeps it.
-    pub(super) fn show_turn(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        update: &runtime_collab::TaskRunUpdate,
-    ) -> Result<()> {
-        use runtime_collab::TaskRunUpdate;
+    pub(super) fn show_turn(&mut self, run: &Asked, update: &TurnUpdate) -> Result<()> {
         match update {
-            TaskRunUpdate::Accepted => self.record_state(run, "taken", json!({}), None),
+            TurnUpdate::Accepted => self.record_state(run, "taken", json!({}), None),
             // Progress narrates the run to its own record; the reply shows
             // the operations it dispatched instead. What a run spent is its
             // keeper's count. Neither is a state of the turn.
-            TaskRunUpdate::Progress { .. } | TaskRunUpdate::Spent { .. } => Ok(()),
-            TaskRunUpdate::Succeeded { .. } => {
+            TurnUpdate::Progress { .. } | TurnUpdate::Spent { .. } => Ok(()),
+            TurnUpdate::Succeeded { .. } => {
                 let answer = self
                     .record
                     .as_ref()
                     .and_then(|record| record.answer.clone());
                 self.record_state(run, "provider_complete", json!({}), answer.as_deref())
             }
-            TaskRunUpdate::Failed { message } => {
+            TurnUpdate::Failed { message } => {
                 // What the host heard is the failure's sentence for a person —
                 // what happened, and at most what to do — and the run keeps the
                 // failure's record beside it for whoever debugs it later.
@@ -176,7 +158,7 @@ impl Session {
                     detail.as_deref(),
                 )
             }
-            TaskRunUpdate::Cancelled { message } => {
+            TurnUpdate::Cancelled { message } => {
                 self.record_state(run, "provider_cancelled", json!({}), Some(message))
             }
         }
@@ -188,7 +170,7 @@ impl Session {
     /// and what came of it.
     pub(super) fn record_action(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         action: &TaskAction,
         settled: Result<&super::StepOutcome, &TaskActionStop>,
     ) -> Result<()> {
@@ -251,7 +233,7 @@ impl Session {
     /// Add one `tilo` program the run ran to the reply's step list.
     pub(super) fn record_program(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         step: &ui::tilo_reference::ProgramStep,
     ) -> Result<()> {
         use ui::tilo_reference::StepOutcome;
@@ -289,7 +271,7 @@ impl Session {
     /// it asked for or read, and what came of it.
     pub(super) fn record_web(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         call: &crate::tools::web::Call,
         report: &crate::tools::InvokeReport,
     ) -> Result<()> {
@@ -318,7 +300,7 @@ impl Session {
     /// Record one step of the turn, keyed by the place it takes in the list.
     fn push_step(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         resource: &str,
         label: &str,
         outcome: &str,
@@ -348,7 +330,7 @@ impl Session {
     /// cancellation.
     fn record_state(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &str,
         fields: Value,
         say: Option<&str>,
@@ -362,7 +344,7 @@ impl Session {
     /// whoever debugs it later, never the reply's own sentence.
     fn record_state_with_detail(
         &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
+        run: &Asked,
         state: &str,
         fields: Value,
         say: Option<&str>,
@@ -392,8 +374,8 @@ impl Session {
         let started = self.start_task_invocation(run, &child, &arguments);
         match started? {
             Ok(following) if ENDS.contains(&state) => {
-                // Started, not followed: the record ends the turn, and the
-                // host reads a turn that ended as the run's cancellation.
+                // Started, not followed: the record ends the turn, and the host
+                // reads a turn that ended as its answer's cancellation.
                 drop(following);
                 Ok(())
             }
@@ -488,46 +470,32 @@ impl Session {
 mod tests {
     use super::*;
 
-    /// A run that answers `asked` in the conversation `conversation`, with
-    /// its action context bound as the broker binds it.
-    fn run(task_id: &str) -> runtime_collab::TaskRunEnvelope {
-        let mut run = runtime_collab::TaskRunEnvelope {
-            version: 1,
-            task_id: task_id.into(),
+    /// A turn that answers the message at `message`.
+    fn asked(message: &str) -> runtime_collab::TurnRequest {
+        runtime_collab::TurnRequest {
+            message: message.into(),
             title: "Split the launch checklist".into(),
-            instruction: Some("Split the launch checklist into subtasks".into()),
+            instruction: "Split the launch checklist into subtasks".into(),
             subject: None,
-            run_id: 7,
-            lease: "native:00000000000000000000000000000000".into(),
-            planning: runtime_collab::TaskRunPlanning::Model,
-            presentation_version: Some(1),
             spend: None,
-            action_context: Value::Null,
-        };
-        run.action_context = serde_json::to_value(
-            tilo_actions::ActionContext::default()
-                .with_purpose(run.title.as_str())
-                .with_group(run.group(), run.title.as_str(), "task"),
-        )
-        .unwrap();
-        run
+        }
     }
 
     tilo_test_env::scenario! {
-        fn a_run_is_bound_to_the_conversation_message_it_answers;
+        fn a_turn_is_bound_to_the_conversation_message_it_answers;
 
-        phase a_runs_task_id_names_the_conversations_message_it_answers;
+        phase a_turn_names_the_conversations_message_it_answers;
         {
-            let cause = validate(&run("chat.workspace/channels/launch/messages/asked")).unwrap();
+            let cause = validate(&asked("chat.workspace/channels/launch/messages/asked")).unwrap();
             assert_eq!(cause.conversation, "launch");
             assert_eq!(cause.message, "asked");
             let address = "chat.workspace/channels/launch/messages/asked";
-            assert_eq!(Cause::of(&run(address)).unwrap(), cause);
+            assert_eq!(Cause::of(&asked(address)).unwrap(), cause);
         }
 
-        phase a_run_that_answers_no_conversations_message_is_refused;
+        phase a_turn_that_answers_no_conversations_message_is_refused;
         {
-            for task_id in [
+            for message in [
                 "tasks.tracker/issues/42",
                 "chat.workspace/channels/launch",
                 "chat.workspace/channels//messages/asked",
@@ -535,33 +503,17 @@ mod tests {
                 "conversation/messages/asked",
             ] {
                 assert!(
-                    validate(&run(task_id)).is_err(),
-                    "{task_id} names no message of a conversation"
+                    validate(&asked(message)).is_err(),
+                    "{message} names no message of a conversation"
                 );
             }
         }
 
-        phase a_run_whose_context_does_not_bind_its_turn_is_refused;
+        phase a_turn_without_words_is_refused;
         {
-            let mut unbound = run("chat.workspace/channels/launch/messages/asked");
-            unbound.action_context = Value::Null;
-            assert!(validate(&unbound).is_err());
-            let mut other_group = run("chat.workspace/channels/launch/messages/asked");
-            other_group.action_context = serde_json::to_value(
-                tilo_actions::ActionContext::default()
-                    .with_purpose(other_group.title.as_str())
-                    .with_group("another-run", other_group.title.as_str(), "task"),
-            )
-            .unwrap();
-            assert!(validate(&other_group).is_err());
-            let mut wrong_purpose = run("chat.workspace/channels/launch/messages/asked");
-            wrong_purpose.action_context = serde_json::to_value(
-                tilo_actions::ActionContext::default()
-                    .with_purpose("something else")
-                    .with_group(wrong_purpose.group(), wrong_purpose.title.as_str(), "task"),
-            )
-            .unwrap();
-            assert!(validate(&wrong_purpose).is_err());
+            let mut silent = asked("chat.workspace/channels/launch/messages/asked");
+            silent.instruction = "  ".into();
+            assert!(validate(&silent).is_err());
         }
     }
 }

@@ -417,10 +417,10 @@ fn exported(descriptor: &ActionDescriptor) -> ExportedAction {
     }
 }
 
-/// Publish the transforms under the agent's own route.
+/// Publish the transforms, and `also` beside them, under the agent's own route.
 #[must_use]
-pub fn publication() -> CollabRequest {
-    let actions: Vec<ExportedAction> = descriptors().iter().map(exported).collect();
+pub fn publication(also: &[ActionDescriptor]) -> CollabRequest {
+    let actions: Vec<ExportedAction> = descriptors().iter().chain(also).map(exported).collect();
     CollabRequest::PublishActionSurface {
         delta: ui::collaboration::SurfacePublication::next(None, &actions).0,
     }
@@ -1416,7 +1416,7 @@ mod tests {
                     assert_ne!(param.ty, ParamType::Secret);
                 }
             }
-            let CollabRequest::PublishActionSurface { delta } = publication() else {
+            let CollabRequest::PublishActionSurface { delta } = publication(&[]) else {
                 panic!("the publication publishes actions");
             };
             let mut surface = ui::collaboration::SurfaceTable::default();

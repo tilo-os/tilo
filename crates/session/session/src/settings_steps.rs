@@ -141,7 +141,7 @@ impl HostStepServices for SettingsSteps {
             request.address.clone(),
             argument,
             beside,
-            request.run.cloned(),
+            request.group.cloned(),
             done,
         );
         Ok(asked.map(|ran| match ran {

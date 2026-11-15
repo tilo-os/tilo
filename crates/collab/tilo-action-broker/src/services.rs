@@ -313,7 +313,6 @@ pub trait ShortcutLibraryServices: Send + Sync {
 
 pub use tilo_broker_core::steps::{
     ContinuationServices, HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView,
-    TaskRun,
 };
 
 /// What a workspace control session's calls answer.
@@ -836,12 +835,10 @@ pub struct HostServices {
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
-    /// The Tasks app's tracker, whose issues assigned to an agent are its runs; without it agents
-    /// run no tasks.
-    pub tracker_runs: Option<Arc<dyn TrackerRuns>>,
     /// The workspaces' agents, as their records name them; without it no agent joins.
     pub agents: Option<Arc<dyn AgentRoster>>,
-    /// The agent sessions this host serves; without it no certified agent joins.
+    /// The agent sessions this host serves; without it no certified agent joins and no agent is
+    /// handed a turn.
     pub agent_sessions: Option<Arc<dyn AgentSessions>>,
     pub native_certificates: Option<Arc<dyn crate::certificate_authority::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
@@ -933,7 +930,6 @@ impl HostServices {
         "native_media",
         "audio_output",
         "workspace_memberships",
-        "tracker_runs",
         "agents",
         "native_certificates",
         "local_person",

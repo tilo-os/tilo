@@ -100,14 +100,6 @@ pub enum Operation {
         id: u64,
         call: InvocationCall,
     },
-    /// A delegated agent's call about the task run `run_id` it holds under
-    /// `lease`.
-    Task {
-        channel: Handle,
-        run_id: u64,
-        lease: String,
-        call: TaskCall,
-    },
     /// A call on the app's own settings.
     Settings { channel: Handle, call: SettingsCall },
     /// A call on the app's live activity: what it shows outside its
@@ -200,36 +192,6 @@ pub struct Invocation {
     pub actor: String,
     /// The `tilo_actions::ActionContext` it was invoked in, as JSON.
     pub context: Option<String>,
-}
-
-/// What an agent says or asks about a task run it holds.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TaskCall {
-    /// The run's progress, as `TaskRunUpdate` JSON.
-    Report(String),
-    /// Whether the run was cancelled, answered as [`Reply::Cancelled`].
-    Cancelled,
-    /// Run an action as a step of the run, answered as [`Reply::Invoked`].
-    Invoke(TaskStep),
-}
-
-/// An action a task run takes as one of its steps.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TaskStep {
-    /// The live peer that provides the action; 0 when `provider` names it.
-    pub peer_id: u64,
-    /// A retained or application provider; empty for the live peer.
-    pub provider: String,
-    pub resource: String,
-    pub action: String,
-    pub argument: Option<String>,
-    /// The native invocation this step re-asks under; empty for none.
-    pub invocation: String,
-    /// How long a re-ask may wait for its person to decide, in
-    /// milliseconds; 0 answers at once.
-    pub wait_ms: u32,
-    /// The update mark, as JSON, a waiting re-ask has already seen.
-    pub seen: Option<String>,
 }
 
 /// A call on the app's settings.
@@ -440,8 +402,6 @@ pub enum Topic {
     /// Who is in the channel and what this endpoint may do there, and the
     /// session's directed asks of it.
     Context,
-    /// The task runs the workspace hands this delegated agent.
-    TaskRuns,
     /// The invocations of the app's published actions, replacing any
     /// stream it held; `stable_ids` asks for stable invocation ids.
     Invocations { stable_ids: bool },
@@ -467,9 +427,9 @@ pub enum Reply {
     /// What the call opened.
     Opened(Handle),
     Workspace(WorkspaceStatus),
-    /// Whether an invocation's cancellation was asked, or a task run's.
+    /// Whether an invocation's cancellation was asked.
     Cancelled(bool),
-    /// The invocation a task step or launch started, and its state now as
+    /// The invocation a launch started, and its state now as
     /// `InvocationUpdate` JSON.
     Invoked {
         id: u64,
@@ -550,9 +510,6 @@ pub enum Event {
     Invocation(Invocation),
     /// The next change to the action catalogue, as `CatalogueChange` JSON.
     Catalogue(String),
-    /// A task run handed to this agent, as `TaskRunEnvelope` JSON (its
-    /// action context is free-form JSON, which postcard cannot carry).
-    TaskRun(String),
     /// A realtime continuity event, as JSON.
     Realtime(Vec<u8>),
     ApprovedCheck(CheckProgress),

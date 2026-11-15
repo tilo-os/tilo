@@ -343,32 +343,6 @@ impl AppBrokerState {
         })
     }
 
-    /// Native host activation retains its run-scoped durable identity, but its
-    /// attestation must name the original authenticated channel's certificate.
-    /// The owner serializes task admission before invoking this barrier.
-    pub(super) fn native_host_action_evidence(
-        &self,
-        caller: &super::durable_local_invocation::LocalCaller,
-        key: &InvocationKey,
-        intent: &serde_json::Value,
-    ) -> Result<crate::action_evidence::AdmissionEvidence, String> {
-        let current = caller.current(self)?;
-        let certificate = current
-            .certificate
-            .as_ref()
-            .ok_or("task caller certificate missing")?;
-        let mut facts = invocation_journal::evidence_facts(key, intent)?;
-        let crate::action_evidence::VerifiedActor::NativeTask { root, device, .. } =
-            &mut facts.actor
-        else {
-            return Err("native activation requires task-owned admission".into());
-        };
-        *root = certificate.user_public_key;
-        *device = certificate.device_public_key;
-        crate::action_evidence::mint(facts, intent)
-            .map_err(|_| "action_evidence_unavailable: host signing identity unavailable".into())
-    }
-
     /// Recover an observation, never a service dispatch permit. Ownership uses
     /// exactly the same key as admission; certificate-shaped owners are not
     /// interchangeable, even when their principal happens to match.

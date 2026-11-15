@@ -243,10 +243,9 @@ fn acting_fabric(
 /// the launcher hands its apps, and the link the loop answers their calls through.
 /// The broker it serves on is `collaboration` 's, which the session's channel service gates a
 /// workspace's sealed records with, and whose keys an endpoint asks a record's keys from. What the
-/// plane takes from the session besides its broker: the turns its agents answer, who keeps those
-/// agents, and the tools service apps reach their lists' changes through.
+/// plane takes from the session besides its broker: who keeps its agents, the sessions they work
+/// in, and the tools service apps reach their lists' changes through.
 pub(crate) struct Knitted {
-    pub(crate) turns: Option<std::sync::Arc<crate::conversations::Runs>>,
     pub(crate) agents: Option<std::sync::Arc<dyn tilo_broker_core::services::AgentRoster>>,
     pub(crate) agent_sessions:
         Option<std::sync::Arc<dyn tilo_broker_core::services::AgentSessions>>,
@@ -328,9 +327,6 @@ pub(crate) fn start_action_plane(
             layout: std::sync::Arc::clone(&layout),
             shortcuts,
             activity: activity_wire,
-            // The turns the broker delivers to the agents admitted here, and hears back what they
-            // report of them.
-            turns: seams.turns,
             agents: seams.agents,
             agent_sessions: seams.agent_sessions,
             sealed,

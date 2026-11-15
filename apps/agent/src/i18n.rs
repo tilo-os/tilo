@@ -127,13 +127,10 @@ mod tests {
     fn every_sentence_is_written_in_every_language() {
         let keys = [
             "agent-plan-model",
-            "agent-plan-words-asked",
             "agent-plan-words-no-model",
             "agent-plan-no-action",
-            "agent-plan-unmatched-asked",
             "agent-plan-no-model",
             "agent-plan-model-failed",
-            "agent-done-words-asked",
             "agent-done-words-no-model",
             "agent-match-nothing",
             "agent-match-several",
