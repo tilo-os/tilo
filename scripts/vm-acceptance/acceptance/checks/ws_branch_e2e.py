@@ -1103,9 +1103,14 @@ def snapshot(pid, age, scope):
     more.write("stack: " + " | ".join(read(f"{d}/stack").splitlines()[:10]) + "\n")
     more.write("files: " + ", ".join(f"{k} x{n}" for k, n in fds.most_common(16)) + "\n")
     more.write("env: " + " ".join(v[:160] for v in env) + "\n")
-scopes, pids, end = {}, {}, time.time() + seconds
+scopes, pids, end, passes, beat = {}, {}, time.time() + seconds, 0, 0.0
 while time.time() < end:
     now = time.time()
+    passes += 1
+    # A line a minute: a file with no event in it then says nothing came, not that the watch stopped.
+    if now - beat >= 60:
+        beat = now
+        out.write(f"{time.strftime('%T')} watching: pass {passes}, {len(scopes)} scopes, {len(pids)} processes\n")
     found = {}
     for app in apps:
         for c in glob.glob(f"/sys/fs/cgroup/user.slice/*/*/*/app-tilo-{app}-*.scope") + \
@@ -1265,12 +1270,58 @@ def debug_switch(ctx) -> str:
         return f"(could not read it: {exc})"
 
 
+# What the session unit's journal says of one launch of Chat, by kind: every process the session
+# starts writes there, which the session's own log files (the compositor's output) do not cover.
+JOURNAL_KINDS = {
+    "launches": r"application launch requested|application launcher spawned|application toplevel mapped|"
+                r"application first frame|launch timing retired|running process opens the window|"
+                r"window door is closed|raised the window|asked for without a window",
+    "ends": r"an app closed|an app stopped|could not open|launch was refused|launch did not start|"
+            r"an app this session did not start|no notice for the app|app_output|\\[app so\\.tilo\\.chat",
+    "scopes": r"app-tilo-so\\.tilo\\.chat-",
+}
+
+
+def chat_journal(ctx, kind: str, lines: int = 24) -> str:
+    """The lines of `kind` ([`JOURNAL_KINDS`]) the box's journal holds of Chat, cut short so a
+    data file's last 4 KiB in the report holds the most recent of them."""
+    noise = "COLLAB-JOIN|PROBE join_channel|FRAME-LIFECYCLE|paint-stats|HEAP-MILESTONE"
+    app = r"so\\.tilo\\.chat" if kind != "scopes" else "."
+    return ctx.vm.root_exec(
+        "journalctl --no-pager -o short-precise -b 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' "
+        f"| grep -aE '{app}' | grep -aE '{JOURNAL_KINDS[kind]}' | grep -avE '{noise}' "
+        "| sed -E 's/^[A-Z][a-z]{2} [0-9]+ //; s/ ip-[^ ]+ / /' "
+        f"| tail -n {lines} | cut -c1-170", timeout=180, check=False)
+
+
+def chat_scope_units(ctx) -> str:
+    """What the slot user's systemd still knows of each Chat scope: its state, result and when it
+    came and went (systemd does not sample, so a scope shorter than the watcher's pass is here)."""
+    return ctx.vm.exec(
+        "for u in $(systemctl --user list-units --all --plain --no-legend 'app-tilo-so.tilo.chat-*' 2>/dev/null "
+        "| awk '{print $1}'); do systemctl --user show \"$u\" -p Id -p ActiveState -p SubState -p Result "
+        "-p ActiveEnterTimestamp -p InactiveEnterTimestamp 2>&1 | tr '\\n' ' '; echo; done | cut -c1-300 | tail -n 20",
+        timeout=120, check=False)
+
+
+def chat_journals(ctx, label: str) -> str:
+    """[`chat_journal`] of each kind, each in a data file of its own (`<label>-chat-journal-<kind>.txt`)
+    so none is cut for another; returns the launches and ends, for a failure's message."""
+    said = {kind: chat_journal(ctx, kind) for kind in JOURNAL_KINDS}
+    said["scopes"] = said["scopes"] + "\n== what systemd still knows of them\n" + chat_scope_units(ctx)
+    for kind, text in said.items():
+        ctx.write(f"{label}-chat-journal-{kind}.txt", text or "(nothing)")
+    return (f"Chat's launches: {said['launches'].strip()[-1200:] or '(none)'}; "
+            f"its ends: {said['ends'].strip()[-1200:] or '(none)'}")
+
+
 def chat_evidence(ctx, since: int) -> str:
     """Everything this box says of Chat that ended without a window, each part kept short so all
     of it reaches the report: whether the session runs with the launcher's debug output, Chat's
     own output (that debug log), what the session said of launching it, the core dumps."""
     def part(title: str, text: str, keep: int = 1500) -> str:
         return f"== {title}\n{(text or '(nothing)').strip()[-keep:]}"
+    chat_journals(ctx, "WB01")
     return "\n".join([
         part("the session's debug switch", ctx.facts.get("wsb:debug-switch", "(not set up)") + "\nnow: "
              + debug_switch(ctx), 900),
