@@ -459,7 +459,17 @@ display list while a member's shell shows the window, the list travels the
 live plane on a track of its own, sealed as the pictures are, and the device
 showing the window draws it with its own text and vector stack. Nothing of
 such a window is captured or encoded, and the device showing it sends it no
-input. The tile that draws the page names the page's text, each run where it
+input. Pictures of it would show a watcher what the page masks, so it is never
+shared as pictures, also not for a while: the session knows that an app draws
+its windows' pages from the app's package (`[entrypoint] window = "device"`
+with `webview` among the capabilities it requires) and from the moment the app
+says so on any of its connections, which is before it knows which window
+speaks there. A share of such a window that is asked for before its page is
+offered waits and says so (`starting`, `awaits_page`); a window of an app this
+device holds no package of, shared as pictures before its app spoke, stops
+going out as pictures in the pass the app does, and is the page's from then
+on. The page goes out in the workspace the window is shared with, whatever
+workspace its app was started in. The tile that draws the page names the page's text, each run where it
 is drawn, so a reader who cannot see the page, and a tool that lists what a
 shell shows, read what is on the screen.
 

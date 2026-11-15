@@ -405,8 +405,9 @@ impl AppTabs {
             .map(crate::calls::planes_of)
             .unwrap_or_default();
         let now_us = tilo_clock::unix_now_ms().saturating_mul(1000);
-        // Only a window shared as its page goes out: a member's shell that asks for the page of
-        // a window nobody shared is sent nothing, and its app is never asked.
+        // Only a window shared as its page goes out, and only in the workspace it is shared
+        // with: a member's shell that asks for the page of a window nobody shared is sent
+        // nothing, and its app is never asked.
         let shared_pages = shared.window_shares.borrow().paged();
         let asks = shared
             .pages
@@ -1131,7 +1132,12 @@ impl Answers<'_> {
             // for, which is never guessed from which window is in front: an app has several
             // windows, each with a page and a connection of its own, and a page offered as
             // another window's would be shown to whoever watches that one.
+            //
+            // What the offer does say at once is that the app draws its windows' pages: from
+            // here on none of them is shared as pictures, also not one whose page is not taken
+            // up yet.
             FloatingSurfaceClientMessage::PaintCapable => {
+                self.pages.borrow_mut().engine_of(&app);
                 if let Some(link) = self.links.get_mut(&connection) {
                     link.offers = true;
                 }

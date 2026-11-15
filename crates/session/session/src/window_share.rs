@@ -138,56 +138,9 @@ struct Starting {
     waiting_for: String,
     /// The members the person let control it, carried across a restart.
     controlled: BTreeSet<PeerId>,
-}
-
-/// A window of this device whose page this session publishes for the members that show it: the
-/// app draws it, so no picture of it is captured or encoded here.
-struct Paged {
-    /// The tab the window stands in on every device of the workspace, and the surface its
-    /// announcement names.
-    tab: TabId,
-    /// The compositor's identifier of the window, as the share named it.
-    window: String,
-    app_id: String,
-    workspace: String,
-    /// The workspace's topic the announcement goes out on.
-    ws: WorkspaceId,
-    /// The window's size, which the announcement carries so a viewer reserves its place before the
-    /// page's first frame.
-    width: u32,
-    height: u32,
-    /// The viewers the announcement went to, and their devices: the ones a page's track is
-    /// published for.
-    announced: BTreeMap<PeerId, EndpointId>,
-}
-
-impl Paged {
-    /// The announcement of this window's page: a stream of its own, its codec the display list.
-    fn stream_start_msg(&self, peer: PeerId) -> NeighbourMsg {
-        NeighbourMsg::SurfaceStreamStart {
-            surface: self.tab,
-            source_peer: peer,
-            app_id: self.app_id.clone(),
-            width: self.width,
-            height: self.height,
-            codec: ui::webview::paint::stream::wire::CODEC.to_owned(),
-            ts: 0,
-            sender_monotonic_ns_at_send: 0,
-            colorimetry: None,
-            hdr_static_metadata: None,
-            bit_depth: 8,
-            tab: self.tab,
-        }
-    }
-
-    /// The end of it, for a viewer that stops showing the window or a share that ends.
-    fn stream_end_msg(&self, peer: PeerId) -> NeighbourMsg {
-        NeighbourMsg::SurfaceStreamEnd {
-            surface: self.tab,
-            source_peer: peer,
-            ts: 0,
-        }
-    }
+    /// Whether the window's app draws its page ([`paged`]): the share is that page's and waits
+    /// for it, and nothing starts it as pictures.
+    page: bool,
 }
 
 /// A member viewing a window of this device: its device, when it last asked, and what it can
@@ -232,7 +185,9 @@ pub(crate) struct WindowShares {
     hosted: BTreeMap<TabId, Hosted>,
     /// The windows whose page this session publishes for the members showing them: their apps draw
     /// them, and nothing of them is captured here.
-    pages: BTreeMap<TabId, Paged>,
+    pages: BTreeMap<TabId, paged::Paged>,
+    /// Which apps' packages say a window of theirs is its page ([`paged`]).
+    declared: paged::Declared,
     /// The tracks this device shows of other members' windows (their pictures or pages), by
     /// workspace and the device hosting them: what each plane is asked for, so the ones it stops
     /// showing are published no longer.
@@ -544,6 +499,7 @@ impl WindowShares {
                         workspace,
                         waiting_for: String::new(),
                         controlled: BTreeSet::new(),
+                        page: false,
                     });
                 }
                 ShareCommand::Stop { tab } => {
@@ -588,7 +544,8 @@ impl WindowShares {
                 ShareCommand::Unwatch { tab, workspace } => self.unwatch(tab, workspace),
             }
         }
-        self.start_waiting(compositor, session, sync, engine, pages, now);
+        self.settle_pages(compositor, tree, sync, &pages.borrow());
+        self.start_waiting(compositor, session, sync, engine, now);
     }
 
     /// Ask the device hosting the window this session shows in its tab `tab` for it, in `workspace`.
@@ -1026,7 +983,6 @@ impl WindowShares {
         session: &DesktopHandle,
         sync: &Client,
         engine: Option<&Arc<Engine>>,
-        pages: &Rc<RefCell<crate::page_track::PageTracks>>,
         now: Instant,
     ) {
         if self.starting.is_empty() {
@@ -1048,16 +1004,15 @@ impl WindowShares {
                 self.retract(session, engine, start.tab);
                 continue;
             }
-            let Some(ws) = sync.workspace_of(&start.workspace) else {
+            if sync.workspace_of(&start.workspace).is_none() {
                 t("session-window-share-workspace-left").clone_into(&mut start.waiting_for);
                 self.starting.push(start);
                 continue;
-            };
-            // A window whose app draws its page hands that page over rather than a picture of it.
-            if pages.borrow().streamed(start.tab, &start.workspace) {
-                self.pages
-                    .insert(start.tab, page_of(compositor, &start, ws));
-                self.changed();
+            }
+            // A window whose app draws its page hands that page over and never a picture of it:
+            // until the page is offered its share waits for it ([`paged`]).
+            if start.page {
+                self.wait_for_page(start);
                 continue;
             }
             match self.begin_share(compositor, sync, &start, now) {
@@ -1273,14 +1228,6 @@ impl WindowShares {
         self.changed();
     }
 
-    /// Send the end of `page` 's announcement to the viewers it went to, so each drops the window
-    /// rather than reading a track nothing publishes any more.
-    fn end_page(page: &Paged, sync: &Client) {
-        for device in page.announced.values() {
-            sync.publish_control(page.ws, page.stream_end_msg(sync.peer()), *device);
-        }
-    }
-
     /// Tell the members that said they view `hosted`, the window of `tab`, that its share ended,
     /// so each lets its tile go rather than waiting on pictures that stopped. A member that shows
     /// it because the workspace's governance names it learns it from the governance too.
@@ -1358,13 +1305,17 @@ impl WindowShares {
                     start.tab = place;
                     // Whose stream it is is the device its route authenticated.
                     start.peer = from;
-                    // A stream that is already decoded keeps its tile until its sender ends it,
-                    // which is how a restarted stream reaches this device.
-                    let shown = self
-                        .received
-                        .get(&(from, surface))
-                        .is_some_and(|stream| stream.shown);
                     let page = start.codec == ui::webview::paint::stream::wire::CODEC;
+                    // A stream that is already decoded keeps its tile until its sender ends it,
+                    // which is how a restarted stream reaches this device. One announced as the
+                    // window's page over its pictures starts over in a tile of its own: a tile
+                    // that decodes pictures draws no page.
+                    let held = self.received.get(&(from, surface));
+                    let mut shown = held.is_some_and(|stream| stream.shown);
+                    if shown && held.is_some_and(|stream| stream.page != page) {
+                        session.end_peer_surface(from, surface, WhyEnded::Restarted);
+                        shown = false;
+                    }
                     self.received.insert(
                         (from, surface),
                         Received {
@@ -1476,6 +1427,11 @@ impl WindowShares {
         };
         let peer = neighbour_wire::peer_handle(from.as_bytes());
         let key = (peer, tab);
+        // A window announced as its page takes no pictures: one sent before the page took its
+        // share over, and carried here after, draws nothing over the page.
+        if self.received.get(&key).is_some_and(|stream| stream.page) {
+            return;
+        }
         if object.keyframe {
             let place = self.pictured_in(tab);
             let start =
@@ -2034,45 +1990,6 @@ impl WindowShares {
         }
     }
 
-    /// Announce the windows whose page this session publishes to the members showing them, and tell
-    /// the ones that stopped showing it. Nothing of a page is captured or encoded here: its app
-    /// draws it, and the plane carries it.
-    fn announce_pages(&mut self, sync: &Client) {
-        let tabs: Vec<TabId> = self.pages.keys().copied().collect();
-        for tab in tabs {
-            let viewers: BTreeMap<PeerId, EndpointId> = self
-                .asked
-                .iter()
-                .filter(|((asking, _), _)| *asking == tab)
-                .map(|((_, peer), asked)| (*peer, asked.device))
-                .collect();
-            let Some(page) = self.pages.get(&tab) else {
-                continue;
-            };
-            let ws = page.ws;
-            let start = page.stream_start_msg(sync.peer());
-            let end = page.stream_end_msg(sync.peer());
-            let mut announced = page.announced.clone();
-            let dropped: Vec<(PeerId, EndpointId)> = announced
-                .iter()
-                .map(|(peer, device)| (*peer, *device))
-                .filter(|(peer, _)| !viewers.contains_key(peer))
-                .collect();
-            for (peer, device) in dropped {
-                announced.remove(&peer);
-                sync.publish_control(ws, end.clone(), device);
-            }
-            for (peer, device) in &viewers {
-                if announced.insert(*peer, *device).is_none() {
-                    sync.publish_control(ws, start.clone(), *device);
-                }
-            }
-            if let Some(page) = self.pages.get_mut(&tab) {
-                page.announced = announced;
-            }
-        }
-    }
-
     /// Capture the shared windows a member's session shows that are due, and publish what they
     /// encoded on their workspace's plane. A window nobody shows is neither captured nor encoded,
     /// and a member that starts showing one starts at a keyframe.
@@ -2174,26 +2091,9 @@ impl WindowShares {
             workspace: hosted.workspace,
             waiting_for: String::new(),
             controlled: hosted.controlled,
+            page: false,
         });
         self.changed();
-    }
-}
-
-/// The page of a window whose app draws it: the members showing it read the workspace's live
-/// plane, so no picture of it is captured or encoded here.
-fn page_of(compositor: &Compositor, start: &Starting, ws: WorkspaceId) -> Paged {
-    let (_, _, width, height) = compositor
-        .shareable_window_rect(&start.window)
-        .unwrap_or_default();
-    Paged {
-        tab: start.tab,
-        window: start.window.clone(),
-        app_id: start.app_id.clone(),
-        workspace: start.workspace.clone(),
-        ws,
-        width: width.unsigned_abs(),
-        height: height.unsigned_abs(),
-        announced: BTreeMap::new(),
     }
 }
 
@@ -2783,14 +2683,15 @@ fn tab_of(args: &tilo_actions::ActionArgs) -> TabId {
     )
 }
 
-/// The text argument `name` , or nothing.
+/// The text argument `name` , or nothing: an argument left out, empty or of blanks alone.
 fn text_of(args: &tilo_actions::ActionArgs, name: &str) -> String {
-    args.text(name).unwrap_or_default().to_owned()
+    args.text(name).unwrap_or_default().trim().to_owned()
 }
 
 /// Share the window `tab` shows with the workspace the tab stands in. `window` , `app_id` and
-/// `room` say which window, whose and with which workspace for a caller that knows them; left out,
-/// they are what the session says of the tab ([`share_of`]).
+/// `workspace` say which window, whose and with which workspace for a caller that knows them; left
+/// out or empty, they are what the session says of the tab ([`share_of`]): the window it maps
+/// there, that window's app, and the workspace whose layout holds the tab.
 fn share_action() -> ActionSpec {
     action(
         "share",
@@ -2881,6 +2782,7 @@ fn unwatch_action() -> ActionSpec {
 mod hosts;
 mod menu;
 mod page;
+mod paged;
 mod reading;
 mod viewer;
 pub(crate) use menu::{follow_asks, reading_for_menus};

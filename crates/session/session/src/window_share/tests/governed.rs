@@ -580,7 +580,7 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
             .window_shares
             .borrow()
             .paged()
-            .contains(&tab),
+            .contains_key(&tab),
         "the window is shared as its page: nothing of it is captured"
     );
     alone(

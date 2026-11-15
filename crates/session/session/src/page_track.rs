@@ -20,6 +20,13 @@
 //! among [`PageTracks::withheld`]: the shares' reading says of it that its app has not handed its
 //! page over, rather than that the page is on its way.
 //!
+//! An offer says that a window draws its page, and the share says where the page goes. An app
+//! offers on a connection that names no window, so it is first known as an app that runs a page
+//! engine ([`PageTracks::draws_pages`]) and its offer is taken up once the session knows which
+//! window speaks ([`PageTracks::offers`]): from the first a window of it is never shared as
+//! pictures ([`crate::window_share`]). The page then goes out in the workspace its window is
+//! shared with, whatever name its app's launch filed the offer under.
+//!
 //! A page is carried whole or not at all. Its app hands a payload over in as many parts as its
 //! connection needs, and the session joins them ([`crate::app_tabs`]); what the plane carries as
 //! one object ([`MAX_PAYLOAD`]) is the bound. A whole frame past it reaches nobody, and its
@@ -82,7 +89,8 @@ enum Asked {
 /// One window whose app offers its page.
 #[derive(Default)]
 struct Offered {
-    /// The workspace whose plane carries the page.
+    /// The workspace whose plane carries the page: the one the window is shared with, and until
+    /// it is shared the one its app runs in.
     workspace: String,
     /// Whether the app was told someone shows the window.
     watched: bool,
@@ -157,6 +165,9 @@ impl Offered {
 #[derive(Default)]
 pub(crate) struct PageTracks {
     offered: BTreeMap<TabId, Offered>,
+    /// The apps that said a window of theirs runs a page engine, on any connection, since the
+    /// session started: an app says so before the session knows which of its windows speaks.
+    engines: BTreeSet<String>,
 }
 
 impl PageTracks {
@@ -171,8 +182,35 @@ impl PageTracks {
         workspace.clone_into(&mut page.workspace);
     }
 
-    /// Whether the window `tab` hands over the page it draws to `workspace`'s
-    /// members: its app says it streams one there.
+    /// The app `app` said a window of its runs a page engine
+    /// (`FloatingSurfaceClientMessage::PaintCapable`). It says so on a connection that names no
+    /// window, so the page is offered only once the session knows which window speaks
+    /// ([`Self::capable`]). From here on the app is known to draw its windows' pages, and a
+    /// window of it whose page is not offered yet is not shared as pictures meanwhile.
+    pub(crate) fn engine_of(&mut self, app: &str) {
+        if !self.engines.contains(app) {
+            self.engines.insert(app.to_owned());
+        }
+    }
+
+    /// Whether the app a window belongs to, by the id the window announces or the one its
+    /// package goes by, said it draws its windows' pages.
+    pub(crate) fn draws_pages(&self, app: &str) -> bool {
+        self.engines.iter().any(|said| {
+            tilo_desktop_policy::app_ids_match(app, said)
+                || tilo_desktop_policy::app_ids_match(said, app)
+        })
+    }
+
+    /// Whether the app of the window `tab` offers the window's page: the window is shared as
+    /// that page, in whichever workspace it is shared with.
+    pub(crate) fn offers(&self, tab: TabId) -> bool {
+        self.offered.contains_key(&tab)
+    }
+
+    /// Whether the page of the window `tab` is filed under `workspace`: the workspace its app
+    /// runs in, until the window is shared with one.
+    #[cfg(test)]
     pub(crate) fn streamed(&self, tab: TabId, workspace: &str) -> bool {
         self.offered
             .get(&tab)
@@ -265,13 +303,16 @@ impl PageTracks {
     /// answers none within [`HAND_OVER_BOUND`] is asked again. `now_us` is a
     /// clock in microseconds.
     ///
-    /// `shared` are the windows this session shares as their page. A plane takes any member's
-    /// ask for any window's page track, so what a shell asks for is no word on whether it may
-    /// have it: a window that is not shared is shown to nobody, whoever asks.
+    /// `shared` are the windows this session shares as their page, each with the workspace it
+    /// is shared with. A plane takes any member's ask for any window's page track, so what a
+    /// shell asks for is no word on whether it may have it: a window that is not shared is shown
+    /// to nobody, whoever asks, and a shared one only to the workspace it is shared with. The
+    /// share is also what names that workspace: the name an app's launch filed its offer under
+    /// (none, for an app started in no workspace) decides nothing about where its page goes.
     pub(crate) fn step(
         &mut self,
         planes: &BTreeMap<String, Arc<Plane>>,
-        shared: &BTreeSet<TabId>,
+        shared: &BTreeMap<TabId, String>,
         now_us: u64,
     ) -> Vec<(TabId, Watch)> {
         let mut wanted: BTreeSet<(String, TabId)> = BTreeSet::new();
@@ -286,8 +327,20 @@ impl PageTracks {
         }
         let mut asks = Vec::new();
         for (tab, page) in &mut self.offered {
+            let shared_with = shared.get(tab);
+            if let Some(workspace) = shared_with
+                && *workspace != page.workspace
+            {
+                // The window is shared with another workspace than its page was filed under:
+                // what was asked and queued for that one ends there, and the page is followed
+                // in this one from here on.
+                if let Some(stop) = page.follow(false, false, now_us) {
+                    asks.push((*tab, stop));
+                }
+                workspace.clone_into(&mut page.workspace);
+            }
             let key = (page.workspace.clone(), *tab);
-            let shown = shared.contains(tab) && wanted.contains(&key);
+            let shown = shared_with.is_some() && wanted.contains(&key);
             let ask = page.follow(shown, wholes.contains(&key), now_us);
             if let Some(watch) = ask {
                 asks.push((*tab, watch));
@@ -580,6 +633,32 @@ mod tests {
             Some(Watch::Whole)
         );
     }
+
+    /// An app says it runs a page engine before the session knows which of its windows speaks:
+    /// from then on it is known to draw its windows' pages, by the id its package goes by and by
+    /// the short one a window of it may announce, and no page is offered for any window yet.
+    #[test]
+    fn an_app_that_said_it_runs_a_page_engine_is_known_before_any_page_is_offered() {
+        let mut pages = PageTracks::default();
+        assert!(!pages.draws_pages("so.tilo.browser"));
+        pages.engine_of("so.tilo.browser");
+        assert!(pages.draws_pages("so.tilo.browser"));
+        assert!(
+            pages.draws_pages("browser"),
+            "a window announces its app by its short name"
+        );
+        assert!(
+            !pages.draws_pages("so.tilo.notes") && !pages.draws_pages("notes"),
+            "another app said nothing"
+        );
+        assert!(
+            pages.offered().is_empty() && !pages.offers(7),
+            "saying so offers no window's page"
+        );
+        pages.capable(7, "w1");
+        assert!(pages.offers(7));
+        assert!(!pages.offers(8), "each window's page is offered by itself");
+    }
 }
 
 /// A window's page on the workspace's live plane, as a session runs it: what
@@ -679,7 +758,7 @@ mod over_the_plane {
     /// the window is shown to nobody.
     fn unshared_is_shown_to_nobody(pages: &mut PageTracks, planes: &BTreeMap<String, Arc<Plane>>) {
         assert!(
-            pages.step(planes, &BTreeSet::new(), 0).is_empty(),
+            pages.step(planes, &BTreeMap::new(), 0).is_empty(),
             "the page of a window nobody shared was asked of its app"
         );
         assert!(pages.viewed().is_empty());
@@ -708,7 +787,7 @@ mod over_the_plane {
         });
         let mut pages = PageTracks::default();
         pages.capable(TAB, WORKSPACE);
-        let shared = BTreeSet::from([TAB]);
+        let shared = BTreeMap::from([(TAB, WORKSPACE.to_owned())]);
         // Nobody shows the window: the session asks the app for nothing, and
         // publishes nothing.
         assert!(pages.step(&planes, &shared, 0).is_empty());
@@ -802,5 +881,69 @@ mod over_the_plane {
                 )
                 .is_err()
         );
+    }
+
+    /// A page goes out in the workspace its window is shared with, whatever name its app's
+    /// launch filed the offer under. The offer here is filed under no workspace, as that of an
+    /// app started in none is; while the name alone decided, such a window had no page to share
+    /// and was shared as pictures. Shared with another workspace than the one a shell asks in,
+    /// the page reaches nobody there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_page_goes_out_in_the_workspace_its_window_is_shared_with() {
+        let relay = relay();
+        let (a, b) = ([0xA3; 32], [0xB4; 32]);
+        let devices = [a, b];
+        let keys = keys();
+        let publishing = plane(&relay, a, &devices, &keys);
+        let watching = plane(&relay, b, &devices, &keys);
+        let planes = BTreeMap::from([(WORKSPACE.to_owned(), Arc::clone(&publishing))]);
+
+        let mut pages = PageTracks::default();
+        pages.capable(TAB, "");
+        assert!(pages.offers(TAB));
+        assert!(
+            pages.streamed(TAB, ""),
+            "the offer is filed under no workspace"
+        );
+        watching.show(a, &[Track::Page(TAB)]);
+        wait_until("the window's page is asked for", || {
+            publishing.wanted_pages() == [TAB]
+        });
+
+        // Shared with another workspace: nothing of the page is asked of its app for this one.
+        let elsewhere = BTreeMap::from([(TAB, "another-workspace".to_owned())]);
+        assert!(
+            pages.step(&planes, &elsewhere, 0).is_empty(),
+            "a page shared with another workspace was asked for in this one"
+        );
+        assert!(pages.viewed().is_empty());
+
+        // Shared with the workspace the shell asks in: asked of its app, and published there.
+        let shared = BTreeMap::from([(TAB, WORKSPACE.to_owned())]);
+        assert_eq!(pages.step(&planes, &shared, 0), [(TAB, Watch::Whole)]);
+        assert!(pages.streamed(TAB, WORKSPACE));
+        let whole = vec![7_u8; 16];
+        pages.received(TAB, true, whole.clone());
+        assert!(pages.step(&planes, &shared, 1_000).is_empty());
+        assert_eq!(pages.sent(), [TAB], "its whole frame went out");
+        let mut carried = None;
+        wait_until("the page reaches the workspace it is shared with", || {
+            while let Some(heard) = watching.try_recv() {
+                if heard.track == Track::Page(TAB) {
+                    carried = Some(PageObject::decode(&heard.body).expect("a page object"));
+                }
+            }
+            carried.is_some()
+        });
+        let carried = carried.expect("the page's object");
+        assert!(carried.whole);
+        assert_eq!(carried.payload, whole);
+
+        // Shared with another workspace from here on: the app is told nobody here shows the
+        // window, and nothing more of the page goes out in this workspace.
+        assert_eq!(pages.step(&planes, &elsewhere, 2_000), [(TAB, Watch::Stop)]);
+        pages.received(TAB, true, vec![8_u8; 16]);
+        assert!(pages.step(&planes, &elsewhere, 3_000).is_empty());
+        assert!(pages.sent().is_empty());
     }
 }

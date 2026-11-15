@@ -2183,6 +2183,24 @@ pub(crate) fn runs_on_its_device(app: &str) -> bool {
     installed(app).is_some_and(|package| package.manifest.window_runs_on_its_device())
 }
 
+/// Whether a window of `app` is its page, as the app's installed package says: its windows run
+/// only on their device (`[entrypoint] window = "device"`) and the app requires a page engine
+/// (`[capabilities] required` names `webview`), so what a window of it shows is the page its
+/// engine draws. Such a window is shared as that page and never as pictures of it, from before
+/// its app said anything to the session ([`crate::window_share`]). An app this machine holds no
+/// package of says nothing.
+pub(crate) fn window_is_its_page(app: &str) -> bool {
+    installed(app).is_some_and(|package| {
+        package.manifest.window_runs_on_its_device()
+            && package
+                .manifest
+                .capabilities
+                .required
+                .iter()
+                .any(|capability| capability == "webview")
+    })
+}
+
 /// Why an action an app publishes cannot be run here: the action host an app's resources arrive on
 /// is not mounted in this session.
 fn no_action_host() -> DoorError {

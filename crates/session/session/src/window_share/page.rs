@@ -13,7 +13,6 @@
 //! pass of the shares, so the tiles are asked once more when the frame is drawn
 //! ([`WindowShares::follow_drawn`]): a turn never ends with the reading and the tile apart.
 
-use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use iroh::EndpointId;
@@ -45,12 +44,6 @@ pub(super) enum Awaited {
 }
 
 impl WindowShares {
-    /// The windows this session shares as their page: the only ones whose page leaves the device
-    /// ([`crate::page_track::PageTracks::step`]).
-    pub(crate) fn paged(&self) -> BTreeSet<TabId> {
-        self.pages.keys().copied().collect()
-    }
-
     /// One object of the page of the window `tab` the device `from` shares, as the plane opened
     /// it: its payload goes to the tile that draws that window.
     pub(super) fn page_heard(

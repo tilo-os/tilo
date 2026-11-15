@@ -21,6 +21,9 @@ use ui::webview::{WebViewCommand, WebViewEngine};
 
 use super::*;
 
+/// A window whose app draws its page is never shared as pictures of it.
+mod never_pictures;
+
 /// The engine's page: a snapshot with a header, a sidebar and a button.
 const TOP: &str =
     include_str!("../../../../../browser/paint-stream/tests/fixtures/layers.top.json");
