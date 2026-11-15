@@ -29,9 +29,14 @@ const EMBEDDED_SDK_MANIFEST: &str = include_str!("../../../sdk/tilo-app/Cargo.to
 const SDK_ROOTS: [&str; 2] = ["tilo-app", "runtime-dylib"];
 /// Profiles an app build selects. `thin-app` inherits `release`.
 const APP_PROFILES: [&str; 4] = ["dev", "test", "release", "thin-app"];
-/// hakari's feature union spans the whole monorepo; an app uses the
-/// placeholder crate instead.
-const UNPATCHED: [&str; 1] = ["workspace-hack"];
+/// hakari's feature union spans the whole monorepo; an app gets the empty
+/// crate written beside it instead.
+const STUBBED: [&str; 1] = ["workspace-hack"];
+/// Where that crate is written, from the app's root.
+const STUB_DIR: &str = "workspace-hack";
+/// The empty `workspace-hack` manifest: the crate unifies features for the
+/// whole monorepo and names nothing an app links.
+const STUB_MANIFEST: &str = "[package]\nname = \"workspace-hack\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"MIT\"\ndescription = \"Empty stand-in for Tilo's hakari crate\"\n";
 /// Crates only tests depend on. The lockfile lists a package's
 /// dev-dependencies beside its others, so walking it from the SDK would
 /// reach whatever an SDK crate's tests start (a relay host, its agents and
@@ -219,6 +224,7 @@ impl Standalone {
     pub fn manifest_tail(&self) -> Result<String> {
         let packages = self.baseline.locked_packages();
         let closure = Baseline::sdk_closure(&packages);
+        let mut stubs = Vec::new();
         let mut patches = Vec::new();
         let registry = self.source.is_registry();
         let workspace_patches = self
@@ -228,7 +234,11 @@ impl Standalone {
             .and_then(|patch| patch.get("crates-io"))
             .and_then(toml::Value::as_table);
         for (name, patch) in workspace_patches.into_iter().flatten() {
-            if registry || UNPATCHED.contains(&name.as_str()) || !closure.contains(name) {
+            if registry || !closure.contains(name) {
+                continue;
+            }
+            if STUBBED.contains(&name.as_str()) {
+                stubs.push(format!("{name} = {{ path = {STUB_DIR:?} }}\n"));
                 continue;
             }
             let location = match patch.get("path").and_then(toml::Value::as_str) {
@@ -241,11 +251,20 @@ impl Standalone {
             patches.push(format!("{name} = {{ {location} }}\n"));
         }
         let mut tail = String::new();
-        if !patches.is_empty() {
-            tail.push_str(
-                "\n# The forks the SDK is built and tested with; see Tilo's vendor/. Cargo warns\n# about one your features do not reach yet. Keep it for when they do.\n[patch.crates-io]\n",
-            );
-            tail.extend(patches);
+        if !(stubs.is_empty() && patches.is_empty()) {
+            tail.push_str("\n[patch.crates-io]\n");
+            if !stubs.is_empty() {
+                tail.push_str(
+                    "# The empty crate Tilo's crates name to unify features: the app builds it\n# itself, so a build outside the workspace needs no registry for it.\n",
+                );
+                tail.extend(stubs);
+            }
+            if !patches.is_empty() {
+                tail.push_str(
+                    "# The forks the SDK is built and tested with; see Tilo's vendor/. Cargo warns\n# about one your features do not reach yet. Keep it for when they do.\n",
+                );
+                tail.extend(patches);
+            }
         }
         let profiles = self.profiles(&closure);
         if !profiles.is_empty() {
@@ -295,6 +314,11 @@ impl Standalone {
         // resolve from the registry on the first build.
         if !self.source.is_registry() {
             files.insert(0, (PathBuf::from("Cargo.lock"), self.baseline.lock.clone()));
+            files.push((
+                Path::new(STUB_DIR).join("Cargo.toml"),
+                STUB_MANIFEST.to_owned(),
+            ));
+            files.push((Path::new(STUB_DIR).join("src/lib.rs"), String::new()));
         }
         Ok(files)
     }

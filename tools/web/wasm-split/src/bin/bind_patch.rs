@@ -1227,11 +1227,11 @@ fn record(options: &Options) -> Result<()> {
     }
     let mut unpaired: HashMap<&str, Vec<u32>> = HashMap::new();
     for (function, target) in map.iter().enumerate() {
-        let local = function as u32 - lmeta.imported;
-        if *target != u32::MAX || (function as u32) < lmeta.imported {
+        if *target != u32::MAX || function < lmeta.imported as usize {
             continue;
         }
-        if let Some(name) = lmeta.name(local + lmeta.imported) {
+        let local = function as u32 - lmeta.imported;
+        if let Some(name) = lmeta.name(function as u32) {
             unpaired.entry(name).or_default().push(local);
         }
     }

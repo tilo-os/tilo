@@ -4868,7 +4868,14 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
             );
         }
         pinned_as_workspace(patches);
-        assert!(!patches.contains_key("workspace-hack"));
+        // The hakari crate the SDK's crates name is the empty one written beside the app: the
+        // monorepo's union unifies features for crates an app never links.
+        let hack = patches
+            .get("workspace-hack")
+            .and_then(|patch| patch.get("path"))
+            .and_then(toml::Value::as_str)
+            .expect("workspace-hack is patched to the app's own stub");
+        assert!(app.join(hack).join("src/lib.rs").is_file(), "{hack}");
         assert!(
             patches
                 .keys()
