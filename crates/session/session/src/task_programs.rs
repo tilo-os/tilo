@@ -219,75 +219,79 @@ mod tests {
         }
     }
 
-    /// The step is the agent's, offered to a task agent's catalogue and nowhere else: a program is
-    /// a step of a run, and only a task agent has one.
-    #[test]
-    fn a_task_step_is_the_agents_and_is_offered_for_tasks() {
-        let programs = programs();
-        assert_eq!(programs.provider(), wire::PROVIDER);
-        assert_eq!(programs.app_id(), wire::APP);
-        assert!(programs.for_tasks(), "a task agent's catalogue offers it");
-        let described = programs.descriptors();
-        assert_eq!(described.len(), 1);
-        let step = &described[0];
-        assert_eq!(step.address, ActionAddress::new(wire::RESOURCE, wire::RUN));
-        assert_eq!(step.kind, tilo_actions::OperationKind::View);
-        assert!(
-            matches!(
-                &step.contract.result,
-                tilo_actions::ResultSpec::Json { schema }
-                    if schema["required"] == serde_json::json!(["text", "failed"])
-            ),
-            "the step answers what a program made: {:?}",
-            step.contract.result
-        );
-    }
+    tilo_test_env::scenario! {
+        fn only_an_agents_own_task_step_is_offered_and_taken;
 
-    /// A program is a step of a task its agent works on: anyone else, and a program outside a run
-    /// of the issue, is refused before anything starts.
-    #[test]
-    fn only_an_agents_program_of_its_own_run_is_taken() {
-        let programs = programs();
-        let address = ActionAddress::new(wire::RESOURCE, wire::RUN);
-        let argument = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::json!({ "program": "ls", "run": format!("{ISSUE}@0") })
-        );
-        let took = |actor: &BrokerActor| {
-            programs
-                .start(&request(actor, &address, &argument, None))
-                .err()
-        };
-        assert_eq!(
-            took(&BrokerActor::person("Pat")),
-            Some("a task's programs are its agent's".to_owned())
-        );
-        assert_eq!(
-            took(&BrokerActor::agent("claude")),
-            Some("an agent runs programs as a step of a task it works on".to_owned())
-        );
-        // An agent working the issue, but outside a run: the step names the run it is of.
-        assert_eq!(
-            took(&BrokerActor::agent("claude").working_on(ISSUE)),
-            Some("a task's programs run only as steps of its run".to_owned())
-        );
-        // A run of another issue is not the task's.
-        let other = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::json!({ "program": "ls", "run": "another-issue@0" })
-        );
-        assert_eq!(
-            programs
-                .start(&request(
-                    &BrokerActor::agent("claude").working_on(ISSUE),
-                    &address,
-                    &other,
-                    None
-                ))
-                .err(),
-            Some("the run is not one of the task's".to_owned())
-        );
+        phase a_task_step_is_the_agents_and_is_offered_for_tasks;
+        // The step is the agent's, offered to a task agent's catalogue and nowhere else: a program is
+        // a step of a run, and only a task agent has one.
+        {
+            let programs = programs();
+            assert_eq!(programs.provider(), wire::PROVIDER);
+            assert_eq!(programs.app_id(), wire::APP);
+            assert!(programs.for_tasks(), "a task agent's catalogue offers it");
+            let described = programs.descriptors();
+            assert_eq!(described.len(), 1);
+            let step = &described[0];
+            assert_eq!(step.address, ActionAddress::new(wire::RESOURCE, wire::RUN));
+            assert_eq!(step.kind, tilo_actions::OperationKind::View);
+            assert!(
+                matches!(
+                    &step.contract.result,
+                    tilo_actions::ResultSpec::Json { schema }
+                        if schema["required"] == serde_json::json!(["text", "failed"])
+                ),
+                "the step answers what a program made: {:?}",
+                step.contract.result
+            );
+        }
+
+        phase only_an_agents_program_of_its_own_run_is_taken;
+        // A program is a step of a task its agent works on: anyone else, and a program outside a run
+        // of the issue, is refused before anything starts.
+        {
+            let programs = programs();
+            let address = ActionAddress::new(wire::RESOURCE, wire::RUN);
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "program": "ls", "run": format!("{ISSUE}@0") })
+            );
+            let took = |actor: &BrokerActor| {
+                programs
+                    .start(&request(actor, &address, &argument, None))
+                    .err()
+            };
+            assert_eq!(
+                took(&BrokerActor::person("Pat")),
+                Some("a task's programs are its agent's".to_owned())
+            );
+            assert_eq!(
+                took(&BrokerActor::agent("claude")),
+                Some("an agent runs programs as a step of a task it works on".to_owned())
+            );
+            // An agent working the issue, but outside a run: the step names the run it is of.
+            assert_eq!(
+                took(&BrokerActor::agent("claude").working_on(ISSUE)),
+                Some("a task's programs run only as steps of its run".to_owned())
+            );
+            // A run of another issue is not the task's.
+            let other = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "program": "ls", "run": "another-issue@0" })
+            );
+            assert_eq!(
+                programs
+                    .start(&request(
+                        &BrokerActor::agent("claude").working_on(ISSUE),
+                        &address,
+                        &other,
+                        None
+                    ))
+                    .err(),
+                Some("the run is not one of the task's".to_owned())
+            );
+        }
     }
 }

@@ -308,76 +308,106 @@ fn read_store(root: &Path) -> io::Result<AccountStore> {
 mod tests {
     use super::*;
 
-    /// Settings seals an email account's password, which Settings is never released; Mail, which
-    /// keeps email accounts, is released it while the account is enabled; no other app is, and no
-    /// other type of account is released to Mail.
-    #[test]
-    fn custody_seals_for_settings_and_releases_only_to_the_accounts_keeper() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let root = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let store_secret = |app: &str, account: &str| {
-            account_secret(
-                root.path(),
-                app,
-                Command::StoreAccountSecret {
-                    account: account.into(),
-                    password: zeroize::Zeroizing::new("app-password".into()),
-                },
-            )
-        };
-        let release = |app: &str, account: &str| {
-            account_secret(
-                root.path(),
-                app,
-                Command::ReleaseAccountSecret {
-                    account: account.into(),
-                },
-            )
-        };
-        assert!(store_secret("so.tilo.mail", "me@example.test").is_err());
-        assert!(matches!(
-            store_secret("so.tilo.settings", "me@example.test").unwrap(),
-            Reply::AccountSecretStored { account } if account == "me@example.test"
-        ));
-        assert!(matches!(
-            store_secret("so.tilo.settings", "dav@example.test").unwrap(),
-            Reply::AccountSecretStored { .. }
-        ));
-        // Sealed, but no account of the person's yet: nothing is released.
-        assert!(release("so.tilo.mail", "me@example.test").is_err());
+    tilo_test_env::scenario! {
+        fn custody_is_kept_only_for_the_accounts_keeper_and_under_its_own_metadata;
 
-        let mut store = AccountStore::new();
-        let mut mail = accounts::Account::new(AccountId::from("me@example.test"), "email");
-        store.upsert(mail.clone());
-        store.upsert(accounts::Account::new(
-            AccountId::from("dav@example.test"),
-            "caldav",
-        ));
-        store.save_in(root.path()).unwrap();
-        let Reply::AccountSecret { account, password } =
-            release("so.tilo.mail", "me@example.test").unwrap()
-        else {
-            panic!("Mail is released its email account's secret");
-        };
-        assert_eq!(account, "me@example.test");
-        assert_eq!(password.as_str(), "app-password");
-        for (app, account) in [
-            ("so.tilo.settings", "me@example.test"),
-            ("so.tilo.calendar", "me@example.test"),
-            ("so.tilo.notes", "me@example.test"),
-            ("so.tilo.mail", "dav@example.test"),
-            ("so.tilo.mail", "nobody@example.test"),
-        ] {
-            assert!(
-                release(app, account).is_err(),
-                "{app} must not be released {account}"
-            );
+        phase custody_seals_for_settings_and_releases_only_to_the_accounts_keeper;
+        // Settings seals an email account's password, which Settings is never released; Mail, which
+        // keeps email accounts, is released it while the account is enabled; no other app is, and no
+        // other type of account is released to Mail.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let root = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let store_secret = |app: &str, account: &str| {
+                account_secret(
+                    root.path(),
+                    app,
+                    Command::StoreAccountSecret {
+                        account: account.into(),
+                        password: zeroize::Zeroizing::new("app-password".into()),
+                    },
+                )
+            };
+            let release = |app: &str, account: &str| {
+                account_secret(
+                    root.path(),
+                    app,
+                    Command::ReleaseAccountSecret {
+                        account: account.into(),
+                    },
+                )
+            };
+            assert!(store_secret("so.tilo.mail", "me@example.test").is_err());
+            assert!(matches!(
+                store_secret("so.tilo.settings", "me@example.test").unwrap(),
+                Reply::AccountSecretStored { account } if account == "me@example.test"
+            ));
+            assert!(matches!(
+                store_secret("so.tilo.settings", "dav@example.test").unwrap(),
+                Reply::AccountSecretStored { .. }
+            ));
+            // Sealed, but no account of the person's yet: nothing is released.
+            assert!(release("so.tilo.mail", "me@example.test").is_err());
+
+            let mut store = AccountStore::new();
+            let mut mail = accounts::Account::new(AccountId::from("me@example.test"), "email");
+            store.upsert(mail.clone());
+            store.upsert(accounts::Account::new(
+                AccountId::from("dav@example.test"),
+                "caldav",
+            ));
+            store.save_in(root.path()).unwrap();
+            let Reply::AccountSecret { account, password } =
+                release("so.tilo.mail", "me@example.test").unwrap()
+            else {
+                panic!("Mail is released its email account's secret");
+            };
+            assert_eq!(account, "me@example.test");
+            assert_eq!(password.as_str(), "app-password");
+            for (app, account) in [
+                ("so.tilo.settings", "me@example.test"),
+                ("so.tilo.calendar", "me@example.test"),
+                ("so.tilo.notes", "me@example.test"),
+                ("so.tilo.mail", "dav@example.test"),
+                ("so.tilo.mail", "nobody@example.test"),
+            ] {
+                assert!(
+                    release(app, account).is_err(),
+                    "{app} must not be released {account}"
+                );
+            }
+            mail.enabled = false;
+            store.upsert(mail);
+            store.save_in(root.path()).unwrap();
+            assert!(release("so.tilo.mail", "me@example.test").is_err());
         }
-        mail.enabled = false;
-        store.upsert(mail);
-        store.save_in(root.path()).unwrap();
-        assert!(release("so.tilo.mail", "me@example.test").is_err());
+
+        phase missing_redirected_or_public_metadata_never_creates_or_adopts_custody;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let root = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(resolve(root.path(), [7; 32], Command::List {}).is_err());
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+            let external = tempfile::tempdir().unwrap();
+            AccountStore::new().save_in(external.path()).unwrap();
+            symlink(
+                external.path().join("accounts"),
+                root.path().join("accounts"),
+            )
+            .unwrap();
+            assert!(read_store(root.path()).is_err());
+            std::fs::remove_file(root.path().join("accounts")).unwrap();
+            AccountStore::new().save_in(root.path()).unwrap();
+            std::fs::set_permissions(
+                root.path().join("accounts/store.json"),
+                std::fs::Permissions::from_mode(0o666),
+            )
+            .unwrap();
+            assert!(read_store(root.path()).is_err());
+            assert!(!root.path().join("accounts/vault").exists());
+        }
     }
 
     use browser_continuity::sessions::{Cookie, SameSite, Service, SessionCookies};
@@ -504,31 +534,5 @@ mod tests {
             panic!("Expected list after revocation");
         };
         assert!(sessions.is_empty());
-    }
-
-    #[test]
-    fn missing_redirected_or_public_metadata_never_creates_or_adopts_custody() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let root = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(resolve(root.path(), [7; 32], Command::List {}).is_err());
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
-        let external = tempfile::tempdir().unwrap();
-        AccountStore::new().save_in(external.path()).unwrap();
-        symlink(
-            external.path().join("accounts"),
-            root.path().join("accounts"),
-        )
-        .unwrap();
-        assert!(read_store(root.path()).is_err());
-        std::fs::remove_file(root.path().join("accounts")).unwrap();
-        AccountStore::new().save_in(root.path()).unwrap();
-        std::fs::set_permissions(
-            root.path().join("accounts/store.json"),
-            std::fs::Permissions::from_mode(0o666),
-        )
-        .unwrap();
-        assert!(read_store(root.path()).is_err());
-        assert!(!root.path().join("accounts/vault").exists());
     }
 }

@@ -473,214 +473,244 @@ mod tests {
         }
     }
 
-    /// An open plane waits for nothing, and says which device carries it.
-    #[test]
-    fn an_open_plane_waits_for_nothing_and_names_its_relay() {
-        let row = live_row(
-            WORKSPACE,
-            &Standing::Open {
-                relay: relay("Ada's desktop", true),
+    tilo_test_env::scenario! {
+        fn a_planes_standing_reads_in_a_word_and_in_the_persons_words;
+
+        phase an_open_plane_waits_for_nothing_and_names_its_relay;
+        // An open plane waits for nothing, and says which device carries it.
+        {
+            let row = live_row(
+                WORKSPACE,
+                &Standing::Open {
+                    relay: relay("Ada's desktop", true),
+                    epoch: 3,
+                    lent: false,
+                },
+                None,
+                &[],
+            );
+            assert_eq!(row["epoch"], json!(3));
+            assert_eq!(row["lent_keys"], json!(false));
+            assert_eq!(row["presented"], Value::Null);
+            assert_eq!(row["turned_away"], json!([]));
+            assert_eq!(row["workspace"], json!(WORKSPACE));
+            assert_eq!(row["state"], json!("open"));
+            assert_eq!(row["waiting_for"], json!(""));
+            assert_eq!(row["relay"], json!(hex::encode([0xab; 32])));
+            assert_eq!(row["relay_name"], json!("Ada's desktop"));
+            assert_eq!(row["relay_here"], json!(true));
+        }
+
+        phase a_plane_on_lent_keys_says_so;
+        // A device in a plane on keys its host lent it says so: it sends what it shares and opens
+        // nothing, so that it hears nobody there is no fault, and what it shares waits for nothing.
+        {
+            let lent = Standing::Open {
+                relay: relay("Ada's desktop", false),
+                epoch: 4,
+                lent: true,
+            };
+            let row = live_row(WORKSPACE, &lent, None, &[]);
+            assert_eq!(row["state"], json!("open"));
+            assert_eq!(row["lent_keys"], json!(true));
+            assert_eq!(row["waiting_for"], json!(""));
+        }
+
+        phase a_plane_that_did_not_reach_its_relay_names_the_device_it_waits_for;
+        // A plane that waits for the device relaying the workspace names that device, by the name its
+        // person gave it or, for one they never named, by the start of its key; one that was refused
+        // says so in other words than one that merely waits.
+        {
+            let named = Standing::Unreached {
+                relay: relay("Ada's desktop", false),
+            };
+            let row = live_row(WORKSPACE, &named, None, &[]);
+            assert_eq!(
+                row["epoch"],
+                Value::Null,
+                "a plane that is not open seals nothing"
+            );
+            assert_eq!(row["state"], json!("relay-unreached"));
+            assert_eq!(row["relay_here"], json!(false));
+            let waits = row["waiting_for"].as_str().expect("what it waits for");
+            assert!(waits.contains("Ada's desktop"), "{waits}");
+
+            let unnamed = waiting_for(Some(&Standing::Unreached {
+                relay: relay("", false),
+            }));
+            assert!(unnamed.contains("abababab"), "{unnamed}");
+
+            let refused = Standing::Refused {
+                relay: relay("Ada's desktop", false),
                 epoch: 3,
+            };
+            let row = live_row(WORKSPACE, &refused, None, &[]);
+            assert_eq!(row["state"], json!("refused"));
+            assert_eq!(
+                row["presented"],
+                json!(3),
+                "a refused plane says whose epoch's keys it presented"
+            );
+            assert_eq!(row["epoch"], Value::Null);
+            let refusal = row["waiting_for"].as_str().expect("what it waits for");
+            assert!(refusal.contains("Ada's desktop"), "{refusal}");
+            assert_ne!(refusal, waits);
+        }
+
+        phase a_relay_says_which_devices_it_turned_away_and_why;
+        // The device that relays a workspace says which endpoints it turned away from its plane and
+        // why: a device whose keys are behind with both epochs, any other by its reason alone.
+        {
+            let open = Standing::Open {
+                relay: relay("Ada's desktop", true),
+                epoch: 4,
                 lent: false,
-            },
-            None,
-            &[],
-        );
-        assert_eq!(row["epoch"], json!(3));
-        assert_eq!(row["lent_keys"], json!(false));
-        assert_eq!(row["presented"], Value::Null);
-        assert_eq!(row["turned_away"], json!([]));
-        assert_eq!(row["workspace"], json!(WORKSPACE));
-        assert_eq!(row["state"], json!("open"));
-        assert_eq!(row["waiting_for"], json!(""));
-        assert_eq!(row["relay"], json!(hex::encode([0xab; 32])));
-        assert_eq!(row["relay_name"], json!("Ada's desktop"));
-        assert_eq!(row["relay_here"], json!(true));
-    }
-
-    /// A device in a plane on keys its host lent it says so: it sends what it shares and opens
-    /// nothing, so that it hears nobody there is no fault, and what it shares waits for nothing.
-    #[test]
-    fn a_plane_on_lent_keys_says_so() {
-        let lent = Standing::Open {
-            relay: relay("Ada's desktop", false),
-            epoch: 4,
-            lent: true,
-        };
-        let row = live_row(WORKSPACE, &lent, None, &[]);
-        assert_eq!(row["state"], json!("open"));
-        assert_eq!(row["lent_keys"], json!(true));
-        assert_eq!(row["waiting_for"], json!(""));
-    }
-
-    /// A plane that waits for the device relaying the workspace names that device, by the name its
-    /// person gave it or, for one they never named, by the start of its key; one that was refused
-    /// says so in other words than one that merely waits.
-    #[test]
-    fn a_plane_that_did_not_reach_its_relay_names_the_device_it_waits_for() {
-        let named = Standing::Unreached {
-            relay: relay("Ada's desktop", false),
-        };
-        let row = live_row(WORKSPACE, &named, None, &[]);
-        assert_eq!(
-            row["epoch"],
-            Value::Null,
-            "a plane that is not open seals nothing"
-        );
-        assert_eq!(row["state"], json!("relay-unreached"));
-        assert_eq!(row["relay_here"], json!(false));
-        let waits = row["waiting_for"].as_str().expect("what it waits for");
-        assert!(waits.contains("Ada's desktop"), "{waits}");
-
-        let unnamed = waiting_for(Some(&Standing::Unreached {
-            relay: relay("", false),
-        }));
-        assert!(unnamed.contains("abababab"), "{unnamed}");
-
-        let refused = Standing::Refused {
-            relay: relay("Ada's desktop", false),
-            epoch: 3,
-        };
-        let row = live_row(WORKSPACE, &refused, None, &[]);
-        assert_eq!(row["state"], json!("refused"));
-        assert_eq!(
-            row["presented"],
-            json!(3),
-            "a refused plane says whose epoch's keys it presented"
-        );
-        assert_eq!(row["epoch"], Value::Null);
-        let refusal = row["waiting_for"].as_str().expect("what it waits for");
-        assert!(refusal.contains("Ada's desktop"), "{refusal}");
-        assert_ne!(refusal, waits);
-    }
-
-    /// The device that relays a workspace says which endpoints it turned away from its plane and
-    /// why: a device whose keys are behind with both epochs, any other by its reason alone.
-    #[test]
-    fn a_relay_says_which_devices_it_turned_away_and_why() {
-        let open = Standing::Open {
-            relay: relay("Ada's desktop", true),
-            epoch: 4,
-            lent: false,
-        };
-        let turned = [
-            TurnedAway {
-                peer: [0x0f; 32],
-                name: "Ada's laptop".to_owned(),
-                why: Refusal::KeysBehind {
-                    presented: 3,
-                    newest: 4,
+            };
+            let turned = [
+                TurnedAway {
+                    peer: [0x0f; 32],
+                    name: "Ada's laptop".to_owned(),
+                    why: Refusal::KeysBehind {
+                        presented: 3,
+                        newest: 4,
+                    },
+                    times: 7,
                 },
-                times: 7,
-            },
-            TurnedAway {
-                peer: [0x19; 32],
-                name: String::new(),
-                why: Refusal::NotAMember,
-                times: 1,
-            },
-        ];
-        let row = live_row(WORKSPACE, &open, None, &turned);
-        assert_eq!(
-            row["turned_away"],
-            json!([
-                {
-                    "device": hex::encode([0x0f; 32]),
-                    "name": "Ada's laptop",
-                    "why": "keys-behind",
-                    "presented": 3,
-                    "newest": 4,
-                    "times": 7,
+                TurnedAway {
+                    peer: [0x19; 32],
+                    name: String::new(),
+                    why: Refusal::NotAMember,
+                    times: 1,
                 },
-                {
-                    "device": hex::encode([0x19; 32]),
-                    "name": "",
-                    "why": "not-a-member",
-                    "presented": null,
-                    "newest": null,
-                    "times": 1,
-                },
-            ])
-        );
-    }
+            ];
+            let row = live_row(WORKSPACE, &open, None, &turned);
+            assert_eq!(
+                row["turned_away"],
+                json!([
+                    {
+                        "device": hex::encode([0x0f; 32]),
+                        "name": "Ada's laptop",
+                        "why": "keys-behind",
+                        "presented": 3,
+                        "newest": 4,
+                        "times": 7,
+                    },
+                    {
+                        "device": hex::encode([0x19; 32]),
+                        "name": "",
+                        "why": "not-a-member",
+                        "presented": null,
+                        "newest": null,
+                        "times": 1,
+                    },
+                ])
+            );
+        }
 
-    /// A plane whose relay was admitting as many devices as it takes says that, by the relay's
-    /// name: it is a state and words of its own, apart from a relay that was not reached and from
-    /// one that refused this device, in English and in German.
-    #[test]
-    fn a_plane_whose_relay_was_busy_says_so_in_its_own_words() {
-        let busy = Standing::Busy {
-            relay: relay("Ada's phone", false),
-        };
-        let row = live_row(WORKSPACE, &busy, None, &[]);
-        assert_eq!(row["state"], json!("relay-busy"));
-        assert_eq!(row["relay"], json!(hex::encode([0xab; 32])));
-        assert_eq!(row["relay_name"], json!("Ada's phone"));
-        assert_eq!(row["epoch"], Value::Null);
-        assert_eq!(
-            row["presented"],
-            Value::Null,
-            "a busy relay judged nothing this device presented"
-        );
-        let says = row["waiting_for"].as_str().expect("what it waits for");
-        assert_eq!(
-            says,
-            "Ada's phone, the device that carries this workspace's calls and shared windows, is \
+        phase a_plane_whose_relay_was_busy_says_so_in_its_own_words;
+        // A plane whose relay was admitting as many devices as it takes says that, by the relay's
+        // name: it is a state and words of its own, apart from a relay that was not reached and from
+        // one that refused this device, in English and in German.
+        {
+            let busy = Standing::Busy {
+                relay: relay("Ada's phone", false),
+            };
+            let row = live_row(WORKSPACE, &busy, None, &[]);
+            assert_eq!(row["state"], json!("relay-busy"));
+            assert_eq!(row["relay"], json!(hex::encode([0xab; 32])));
+            assert_eq!(row["relay_name"], json!("Ada's phone"));
+            assert_eq!(row["epoch"], Value::Null);
+            assert_eq!(
+                row["presented"],
+                Value::Null,
+                "a busy relay judged nothing this device presented"
+            );
+            let says = row["waiting_for"].as_str().expect("what it waits for");
+            assert_eq!(
+                says,
+                "Ada's phone, the device that carries this workspace's calls and shared windows, is \
              taking in as many devices as it can at once; this device asks it again shortly"
-        );
-        let unreached = waiting_for(Some(&Standing::Unreached {
-            relay: relay("Ada's phone", false),
-        }));
-        let refused = waiting_for(Some(&Standing::Refused {
-            relay: relay("Ada's phone", false),
-            epoch: 3,
-        }));
-        assert_ne!(says, unreached);
-        assert_ne!(says, refused);
+            );
+            let unreached = waiting_for(Some(&Standing::Unreached {
+                relay: relay("Ada's phone", false),
+            }));
+            let refused = waiting_for(Some(&Standing::Refused {
+                relay: relay("Ada's phone", false),
+                epoch: 3,
+            }));
+            assert_ne!(says, unreached);
+            assert_ne!(says, refused);
 
-        ui::i18n::I18nManager::set_locale("de-DE");
-        let german = waiting_for(Some(&busy));
-        ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(
-            german,
-            "Ada's phone, das Gerät, das die Anrufe und geteilten Fenster dieses Arbeitsbereichs \
+            ui::i18n::I18nManager::set_locale("de-DE");
+            let german = waiting_for(Some(&busy));
+            ui::i18n::I18nManager::set_locale("en-US");
+            assert_eq!(
+                german,
+                "Ada's phone, das Gerät, das die Anrufe und geteilten Fenster dieses Arbeitsbereichs \
              überträgt, nimmt gerade so viele Geräte auf, wie es auf einmal kann; dieses Gerät \
              fragt gleich noch einmal"
-        );
-    }
+            );
+        }
 
-    /// A plane that hears every device in it says nothing of the rest; one that does not says
-    /// how many it does not hear and why, by the word a tool branches on and in the person's
-    /// words, in English and in German.
-    #[test]
-    fn the_devices_a_plane_does_not_hear_are_counted_and_said_in_words() {
-        assert_eq!(unheard_why(0), "");
-        assert_eq!(not_heard(0), "");
-        assert_eq!(unheard_why(3), "reading-bound");
-        assert_eq!(
-            not_heard(3),
-            "3 more devices are in this workspace's calls and shared windows and are not heard \
+        phase the_devices_a_plane_does_not_hear_are_counted_and_said_in_words;
+        // A plane that hears every device in it says nothing of the rest; one that does not says
+        // how many it does not hear and why, by the word a tool branches on and in the person's
+        // words, in English and in German.
+        {
+            assert_eq!(unheard_why(0), "");
+            assert_eq!(not_heard(0), "");
+            assert_eq!(unheard_why(3), "reading-bound");
+            assert_eq!(
+                not_heard(3),
+                "3 more devices are in this workspace's calls and shared windows and are not heard \
              here: this device hears 32 others at once"
-        );
-        assert_eq!(
-            not_heard(1),
-            "One more device is in this workspace's calls and shared windows and is not heard \
+            );
+            assert_eq!(
+                not_heard(1),
+                "One more device is in this workspace's calls and shared windows and is not heard \
              here: this device hears 32 others at once"
-        );
+            );
 
-        ui::i18n::I18nManager::set_locale("de-DE");
-        let german = (not_heard(3), not_heard(1));
-        ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(
-            german.0,
-            "3 weitere Geräte sind in den Anrufen und geteilten Fenstern dieses Arbeitsbereichs \
+            ui::i18n::I18nManager::set_locale("de-DE");
+            let german = (not_heard(3), not_heard(1));
+            ui::i18n::I18nManager::set_locale("en-US");
+            assert_eq!(
+                german.0,
+                "3 weitere Geräte sind in den Anrufen und geteilten Fenstern dieses Arbeitsbereichs \
              und werden hier nicht gehört: Dieses Gerät hört 32 andere gleichzeitig"
-        );
-        assert_eq!(
-            german.1,
-            "Ein weiteres Gerät ist in den Anrufen und geteilten Fenstern dieses Arbeitsbereichs \
+            );
+            assert_eq!(
+                german.1,
+                "Ein weiteres Gerät ist in den Anrufen und geteilten Fenstern dieses Arbeitsbereichs \
              und wird hier nicht gehört: Dieses Gerät hört 32 andere gleichzeitig"
-        );
+            );
+        }
+
+        phase every_plane_that_is_not_open_says_what_it_waits_for;
+        // Every standing but an open one says something, each its own, and a workspace no plane runs
+        // for says so too: a row never reads as flowing by saying nothing.
+        {
+            let said: Vec<(&str, String)> = [
+                Some(Standing::WaitingForKeys),
+                Some(Standing::Keyless),
+                Some(Standing::Unread),
+                Some(Standing::NoRelay),
+                None,
+            ]
+            .iter()
+            .map(|standing| (state_of(standing.as_ref()), waiting_for(standing.as_ref())))
+            .collect();
+            let states: BTreeSet<&str> = said.iter().map(|(state, _)| *state).collect();
+            let words: BTreeSet<&str> = said.iter().map(|(_, words)| words.as_str()).collect();
+            assert_eq!(states.len(), said.len(), "{said:?}");
+            assert_eq!(words.len(), said.len(), "{said:?}");
+            assert!(
+                said.iter()
+                    .all(|(_, words)| !words.trim().is_empty()
+                        && !words.starts_with("session-window-share")),
+                "{said:?}"
+            );
+        }
     }
 
     /// The reading of an open plane says what the plane itself says of the devices it does not
@@ -758,31 +788,5 @@ mod tests {
         assert_eq!(row["unheard"], json!(0));
         assert_eq!(row["unheard_why"], json!(""));
         assert_eq!(row["not_heard"], json!(""));
-    }
-
-    /// Every standing but an open one says something, each its own, and a workspace no plane runs
-    /// for says so too: a row never reads as flowing by saying nothing.
-    #[test]
-    fn every_plane_that_is_not_open_says_what_it_waits_for() {
-        let said: Vec<(&str, String)> = [
-            Some(Standing::WaitingForKeys),
-            Some(Standing::Keyless),
-            Some(Standing::Unread),
-            Some(Standing::NoRelay),
-            None,
-        ]
-        .iter()
-        .map(|standing| (state_of(standing.as_ref()), waiting_for(standing.as_ref())))
-        .collect();
-        let states: BTreeSet<&str> = said.iter().map(|(state, _)| *state).collect();
-        let words: BTreeSet<&str> = said.iter().map(|(_, words)| words.as_str()).collect();
-        assert_eq!(states.len(), said.len(), "{said:?}");
-        assert_eq!(words.len(), said.len(), "{said:?}");
-        assert!(
-            said.iter()
-                .all(|(_, words)| !words.trim().is_empty()
-                    && !words.starts_with("session-window-share")),
-            "{said:?}"
-        );
     }
 }

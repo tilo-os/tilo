@@ -127,104 +127,108 @@ mod tests {
         directory
     }
 
-    #[test]
-    fn an_ordered_restart_keeps_the_lock_and_a_verified_unlock() {
-        let directory = channel();
-        let path = directory.path().join("lock-state");
-        tilo_files::native::private::write_atomic(&path, UNLOCKED).expect("the wrapper's record");
-        let request = directory.path().join("logout-request");
-        let first = Recovery::begin(&request).expect("a fresh login");
-        assert!(
-            !first.starts_locked(),
-            "an authenticated login starts unlocked"
-        );
-        first.finish(true).expect("the session ended in order");
-        let second = Recovery::begin(&request).expect("a restart");
-        assert!(second.starts_locked(), "a lock survives an ordered end");
-        second.finish(false).expect("the session ended in order");
-        let third = Recovery::begin(&request).expect("a restart");
-        assert!(
-            !third.starts_locked(),
-            "an ordered end preserves the unlock"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_restarted_session_recovers_only_what_its_record_and_channel_prove;
 
-    #[test]
-    fn a_crashed_missing_or_corrupt_record_recovers_locked() {
-        let directory = channel();
-        let request = directory.path().join("logout-request");
-        let path = directory.path().join("lock-state");
-        tilo_files::native::private::write_atomic(&path, UNLOCKED).expect("the wrapper's record");
-        let running = Recovery::begin(&request).expect("a session");
-        // No ordered end, as after a kill.
-        drop(running);
-        assert!(
-            Recovery::begin(&request)
-                .expect("a restart")
-                .starts_locked()
-        );
-        fs::remove_file(&path).expect("no record");
-        assert!(
-            Recovery::begin(&request)
-                .expect("a fresh record")
-                .starts_locked()
-        );
-        tilo_files::native::private::write_atomic(&path, b"partial").expect("a corrupt record");
-        assert!(
-            Recovery::begin(&request)
-                .expect("a corrupt record")
-                .starts_locked()
-        );
-    }
+        phase an_ordered_restart_keeps_the_lock_and_a_verified_unlock;
+        {
+            let directory = channel();
+            let path = directory.path().join("lock-state");
+            tilo_files::native::private::write_atomic(&path, UNLOCKED).expect("the wrapper's record");
+            let request = directory.path().join("logout-request");
+            let first = Recovery::begin(&request).expect("a fresh login");
+            assert!(
+                !first.starts_locked(),
+                "an authenticated login starts unlocked"
+            );
+            first.finish(true).expect("the session ended in order");
+            let second = Recovery::begin(&request).expect("a restart");
+            assert!(second.starts_locked(), "a lock survives an ordered end");
+            second.finish(false).expect("the session ended in order");
+            let third = Recovery::begin(&request).expect("a restart");
+            assert!(
+                !third.starts_locked(),
+                "an ordered end preserves the unlock"
+            );
+        }
 
-    #[test]
-    fn the_wrapper_names_the_login_and_no_variable_names_none() {
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.remove("TILO_SESSION_LOGOUT_REQUEST");
-        assert!(
-            Recovery::from_environment().expect("no channel").is_none(),
-            "a session started by hand keeps no record"
-        );
-        let directory = channel();
-        let path = directory.path().join("lock-state");
-        tilo_files::native::private::write_atomic(&path, UNLOCKED).expect("the wrapper's record");
-        let request = directory.path().join("logout-request");
-        environment.set("TILO_SESSION_LOGOUT_REQUEST", request.as_os_str());
-        let started = Recovery::from_environment()
-            .expect("the wrapper's channel")
-            .expect("the login's record");
-        assert!(!started.starts_locked(), "the login was left unlocked");
-        // A session that ends without publishing its state, as after a kill.
-        drop(started);
-        assert!(
-            Recovery::from_environment()
+        phase a_crashed_missing_or_corrupt_record_recovers_locked;
+        {
+            let directory = channel();
+            let request = directory.path().join("logout-request");
+            let path = directory.path().join("lock-state");
+            tilo_files::native::private::write_atomic(&path, UNLOCKED).expect("the wrapper's record");
+            let running = Recovery::begin(&request).expect("a session");
+            // No ordered end, as after a kill.
+            drop(running);
+            assert!(
+                Recovery::begin(&request)
+                    .expect("a restart")
+                    .starts_locked()
+            );
+            fs::remove_file(&path).expect("no record");
+            assert!(
+                Recovery::begin(&request)
+                    .expect("a fresh record")
+                    .starts_locked()
+            );
+            tilo_files::native::private::write_atomic(&path, b"partial").expect("a corrupt record");
+            assert!(
+                Recovery::begin(&request)
+                    .expect("a corrupt record")
+                    .starts_locked()
+            );
+        }
+
+        phase the_wrapper_names_the_login_and_no_variable_names_none;
+        {
+            let mut environment = tilo_test_env::ScopedEnv::new();
+            environment.remove("TILO_SESSION_LOGOUT_REQUEST");
+            assert!(
+                Recovery::from_environment().expect("no channel").is_none(),
+                "a session started by hand keeps no record"
+            );
+            let directory = channel();
+            let path = directory.path().join("lock-state");
+            tilo_files::native::private::write_atomic(&path, UNLOCKED).expect("the wrapper's record");
+            let request = directory.path().join("logout-request");
+            environment.set("TILO_SESSION_LOGOUT_REQUEST", request.as_os_str());
+            let started = Recovery::from_environment()
                 .expect("the wrapper's channel")
-                .expect("the login's record")
-                .starts_locked(),
-            "the next session starts locked"
-        );
-    }
+                .expect("the login's record");
+            assert!(!started.starts_locked(), "the login was left unlocked");
+            // A session that ends without publishing its state, as after a kill.
+            drop(started);
+            assert!(
+                Recovery::from_environment()
+                    .expect("the wrapper's channel")
+                    .expect("the login's record")
+                    .starts_locked(),
+                "the next session starts locked"
+            );
+        }
 
-    #[test]
-    fn a_public_or_redirected_channel_admits_no_session() {
-        let directory = tempfile::tempdir().expect("a channel");
-        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755))
-            .expect("the channel is everyone's");
-        assert!(Recovery::begin(&directory.path().join("logout-request")).is_err());
-        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-            .expect("the channel is this person's");
-        let request = directory.path().join("logout-request");
-        std::os::unix::fs::symlink("untrusted", directory.path().join("lock-state"))
-            .expect("a redirect");
-        assert!(Recovery::begin(&request).is_err());
-        let record = directory.path().join("lock-state");
-        fs::remove_file(&record).expect("the redirect");
-        fs::write(&record, UNLOCKED).expect("a record");
-        fs::set_permissions(&record, fs::Permissions::from_mode(0o644)).expect("a public record");
-        assert!(Recovery::begin(&request).is_err());
-        fs::set_permissions(&record, fs::Permissions::from_mode(0o600))
-            .expect("this person's record");
-        fs::hard_link(&record, directory.path().join("redirected-record")).expect("a link");
-        assert!(Recovery::begin(&request).is_err());
+        phase a_public_or_redirected_channel_admits_no_session;
+        {
+            let directory = tempfile::tempdir().expect("a channel");
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755))
+                .expect("the channel is everyone's");
+            assert!(Recovery::begin(&directory.path().join("logout-request")).is_err());
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+                .expect("the channel is this person's");
+            let request = directory.path().join("logout-request");
+            std::os::unix::fs::symlink("untrusted", directory.path().join("lock-state"))
+                .expect("a redirect");
+            assert!(Recovery::begin(&request).is_err());
+            let record = directory.path().join("lock-state");
+            fs::remove_file(&record).expect("the redirect");
+            fs::write(&record, UNLOCKED).expect("a record");
+            fs::set_permissions(&record, fs::Permissions::from_mode(0o644)).expect("a public record");
+            assert!(Recovery::begin(&request).is_err());
+            fs::set_permissions(&record, fs::Permissions::from_mode(0o600))
+                .expect("this person's record");
+            fs::hard_link(&record, directory.path().join("redirected-record")).expect("a link");
+            assert!(Recovery::begin(&request).is_err());
+        }
     }
 }

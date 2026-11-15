@@ -385,104 +385,265 @@ mod tests {
         )
     }
 
-    /// A record this device holds nothing of is the app's own channel, in a workspace it holds and
-    /// one it does not. A session with no collaboration plane reaches no host, so it decides on
-    /// what it holds.
-    #[test]
-    fn a_record_this_device_holds_nothing_of_is_the_apps_own_channel() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (engine, cert, key) = device(state.path(), 0x51);
-        let records = Records::new(Arc::clone(&engine));
-        let elsewhere = WorkspaceId::new().to_string();
-        assert_eq!(
-            records.record_read(&elsewhere, APP, RECORD),
-            RecordRead::Own
-        );
-        assert!(!records.seals_records(&elsewhere));
-        assert!(!records.requires_workspace(&elsewhere));
-        let elsewhere_read = NativeDocumentReadContext::for_reader(
-            CrdtRoute::record(APP, elsewhere, RECORD),
-            cert.clone(),
-        );
-        assert!(
-            records.authorize(&elsewhere_read).is_err(),
-            "a read of a workspace this device does not hold is refused"
-        );
+    tilo_test_env::scenario! {
+        fn a_record_is_read_from_this_devices_copy_or_awaited_from_its_host;
 
-        // A workspace this device holds, of a record it holds nothing of: the app's channel too.
-        let workspace = workspace_with_record(&engine, &key);
-        assert_eq!(
-            records.record_read(&workspace.to_string(), APP, "another-note"),
-            RecordRead::Own
-        );
-        assert!(!engine.reaches_host());
-        assert!(
-            records
-                .await_arriving_record(&context(workspace, "another-note", cert))
-                .is_none(),
-            "nothing is waited for where no host is reached"
-        );
-    }
+        phase a_record_this_device_holds_nothing_of_is_the_apps_own_channel;
+        // A record this device holds nothing of is the app's own channel, in a workspace it holds and
+        // one it does not. A session with no collaboration plane reaches no host, so it decides on
+        // what it holds.
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (engine, cert, key) = device(state.path(), 0x51);
+            let records = Records::new(Arc::clone(&engine));
+            let elsewhere = WorkspaceId::new().to_string();
+            assert_eq!(
+                records.record_read(&elsewhere, APP, RECORD),
+                RecordRead::Own
+            );
+            assert!(!records.seals_records(&elsewhere));
+            assert!(!records.requires_workspace(&elsewhere));
+            let elsewhere_read = NativeDocumentReadContext::for_reader(
+                CrdtRoute::record(APP, elsewhere, RECORD),
+                cert.clone(),
+            );
+            assert!(
+                records.authorize(&elsewhere_read).is_err(),
+                "a read of a workspace this device does not hold is refused"
+            );
 
-    /// A record the workspace holds reads from this device's own copy; a device the workspace does
-    /// not certify reads nothing.
-    #[test]
-    fn a_record_the_workspace_holds_reads_from_this_devices_copy() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (engine, cert, key) = device(state.path(), 0x52);
-        let workspace = workspace_with_record(&engine, &key);
-        let records = Records::new(Arc::clone(&engine));
-        // A workspace whose host takes part in its channels seals its records.
-        assert!(records.seals_records(&workspace.to_string()));
-        assert!(!records.requires_workspace(&workspace.to_string()));
-        assert_eq!(
-            records.record_read(&workspace.to_string(), APP, RECORD),
-            RecordRead::Sealed
-        );
-        assert!(engine.holds_record(&workspace.to_string(), APP, RECORD));
-
-        let reading = context(workspace, RECORD, cert);
-        records.authorize(&reading).expect("this device reads it");
-        let NativeDocumentRead::Captured {
-            revision,
-            heads,
-            body,
-        } = records
-            .capture(&reading, None, MAXIMUM)
-            .expect("the record reads")
-        else {
-            panic!("the workspace holds the record whole");
-        };
-        // The record was founded empty: no heads yet, and its document still reads back.
-        assert!(heads.is_empty(), "an empty record has no heads");
-        assert!(!body.bytes().is_empty(), "the record reads back");
-        assert!(
-            matches!(
+            // A workspace this device holds, of a record it holds nothing of: the app's channel too.
+            let workspace = workspace_with_record(&engine, &key);
+            assert_eq!(
+                records.record_read(&workspace.to_string(), APP, "another-note"),
+                RecordRead::Own
+            );
+            assert!(!engine.reaches_host());
+            assert!(
                 records
-                    .capture(&reading, Some(revision), MAXIMUM)
-                    .expect("the record reads"),
-                NativeDocumentRead::Unchanged(stood) if stood == revision
-            ),
-            "a record that did not change since the caller's revision is answered as it"
-        );
-        assert_eq!(records.unchanged(&reading, Some(revision)), Ok(Some(true)));
-        assert_eq!(
-            records.unchanged(&reading, None),
-            Ok(Some(false)),
-            "a reader holding nothing does not hold the record, decided without reading it"
-        );
+                    .await_arriving_record(&context(workspace, "another-note", cert))
+                    .is_none(),
+                "nothing is waited for where no host is reached"
+            );
+        }
 
-        let stranger = testing::member_certificate(
-            &SigningKey::from_bytes(&[0x41; 32]),
-            &SigningKey::from_bytes(&[0x53; 32]),
-            "Someone else's laptop",
-        );
-        assert!(
-            records
-                .authorize(&context(workspace, RECORD, stranger))
-                .is_err(),
-            "a device the workspace does not certify reads nothing"
-        );
+        phase a_record_the_workspace_holds_reads_from_this_devices_copy;
+        // A record the workspace holds reads from this device's own copy; a device the workspace does
+        // not certify reads nothing.
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (engine, cert, key) = device(state.path(), 0x52);
+            let workspace = workspace_with_record(&engine, &key);
+            let records = Records::new(Arc::clone(&engine));
+            // A workspace whose host takes part in its channels seals its records.
+            assert!(records.seals_records(&workspace.to_string()));
+            assert!(!records.requires_workspace(&workspace.to_string()));
+            assert_eq!(
+                records.record_read(&workspace.to_string(), APP, RECORD),
+                RecordRead::Sealed
+            );
+            assert!(engine.holds_record(&workspace.to_string(), APP, RECORD));
+
+            let reading = context(workspace, RECORD, cert);
+            records.authorize(&reading).expect("this device reads it");
+            let NativeDocumentRead::Captured {
+                revision,
+                heads,
+                body,
+            } = records
+                .capture(&reading, None, MAXIMUM)
+                .expect("the record reads")
+            else {
+                panic!("the workspace holds the record whole");
+            };
+            // The record was founded empty: no heads yet, and its document still reads back.
+            assert!(heads.is_empty(), "an empty record has no heads");
+            assert!(!body.bytes().is_empty(), "the record reads back");
+            assert!(
+                matches!(
+                    records
+                        .capture(&reading, Some(revision), MAXIMUM)
+                        .expect("the record reads"),
+                    NativeDocumentRead::Unchanged(stood) if stood == revision
+                ),
+                "a record that did not change since the caller's revision is answered as it"
+            );
+            assert_eq!(records.unchanged(&reading, Some(revision)), Ok(Some(true)));
+            assert_eq!(
+                records.unchanged(&reading, None),
+                Ok(Some(false)),
+                "a reader holding nothing does not hold the record, decided without reading it"
+            );
+
+            let stranger = testing::member_certificate(
+                &SigningKey::from_bytes(&[0x41; 32]),
+                &SigningKey::from_bytes(&[0x53; 32]),
+                "Someone else's laptop",
+            );
+            assert!(
+                records
+                    .authorize(&context(workspace, RECORD, stranger))
+                    .is_err(),
+                "a device the workspace does not certify reads nothing"
+            );
+        }
+
+        phase an_open_in_a_workspace_this_device_hosts_waits_for_nobody;
+        // A workspace this device hosts itself keeps everything it retains here: an app's Open of a
+        // record it holds nothing of is answered as new at once, with a host reached, never held for a
+        // replay no device sends (a new Terminal session's record waited for one for good).
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (engine, cert, key) = device(state.path(), 0x54);
+            let workspace = workspace_with_record(&engine, &key);
+            let (_link, mut said) = planed(&engine);
+            let records = Records::new(Arc::clone(&engine));
+            assert!(engine.reaches_host(), "a plane is running");
+            assert!(
+                engine.hosts_itself(&workspace.to_string()),
+                "it was founded here"
+            );
+            assert!(
+                records
+                    .await_arriving_record(&context(workspace, "terminal-session", cert))
+                    .is_none(),
+                "nothing is waited for"
+            );
+            assert!(said.try_recv().is_err(), "and nobody is asked");
+        }
+
+        phase a_record_not_held_is_asked_of_nobody_and_the_replay_answers_for_it;
+        // Every record comes with the workspace's history, asked for or not: a read of a record this
+        // device holds nothing of — a part of Chat's messages a send opens — is never left pending on
+        // asking the host for that record alone, which no host answers on the workspace's link (a
+        // send waited on it for good), and a waiting Open wakes when the host's replay ends.
+        {
+            const PART: &str = "derived:part.0@derived:messages@derived:default";
+            let state = tempfile::tempdir().expect("a state directory");
+            let (engine, _cert, key) = device(state.path(), 0x55);
+            let workspace = workspace_with_record(&engine, &key);
+            let (link, mut said) = planed(&engine);
+            let id = workspace.to_string();
+            let replays = engine.replays().expect("a plane is running");
+            for record in [ON_DEMAND, PART] {
+                assert!(!engine.holds_record(&id, APP, record));
+                assert!(
+                    !matches!(
+                        engine.read_record(&id, (APP, record), Holding::default(), 1 << 20),
+                        Ok(RecordReading::Pending)
+                    ),
+                    "a read of {record} is not left waiting"
+                );
+            }
+            assert!(said.try_recv().is_err(), "nobody is asked for a record");
+            assert!(!engine.host_replayed(&id));
+            link.host_ready(tilo_session_client::plane::topic_of(workspace), false);
+            assert!(
+                replays.has_changed().expect("the plane's word"),
+                "a waiting Open wakes"
+            );
+            assert!(engine.host_replayed(&id), "the replay ended");
+        }
+
+        phase a_record_a_host_sends_once_opened_waits_for_the_host_and_is_new_only_once_it_answers;
+        // A workspace whose host sends each record once a device opens it: opening a record this
+        // device holds nothing of asks that host for it, and the record is on its way meanwhile. The
+        // host's answer that it holds none of it is what makes the record new here — deciding before
+        // that answer would have the app found a second copy of the workspace's own record.
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (engine, cert, key) = device(state.path(), 0x56);
+            let (workspace, _host) = joined(&engine, &cert, &key);
+            let (link, mut said) = planed(&engine);
+            let records = Records::new(Arc::clone(&engine));
+            let id = workspace.to_string();
+            assert!(!engine.hosts_itself(&id), "another device hosts it");
+            link.host_ready(topic_of(workspace), true);
+            assert!(!engine.holds_record(&id, APP, RECORD));
+
+            let channel = neighbour_wire::app_document_channel(APP, RECORD);
+            let mut arriving = records
+                .await_arriving_record(&context(workspace, RECORD, cert))
+                .expect("the record may be the workspace's, which the host has not sent yet");
+            assert!(
+                matches!(
+                    said.try_recv(),
+                    Ok(Cmd::OpenRecord { ws, channel: asked })
+                        if ws == topic_of(workspace) && asked == channel
+                ),
+                "the host is asked for the record"
+            );
+            assert!(said.try_recv().is_err(), "and asked once");
+            assert!(
+                arriving.as_mut().now_or_never().is_none(),
+                "the open waits for the host's word rather than founding a record"
+            );
+
+            // The host sent everything it holds of the record, which is none of it: the record is new.
+            link.record_opened(topic_of(workspace), channel, 0);
+            assert!(
+                arriving.as_mut().now_or_never().is_some(),
+                "the host's word settles the open"
+            );
+            assert_eq!(records.record_read(&id, APP, RECORD), RecordRead::Own);
+        }
+
+        phase a_record_the_host_sends_reaches_the_open_that_asked_for_it;
+        // The host has the record this device opened: what it sent arrives, and the open reads it
+        // instead of deciding it is new.
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (engine, cert, key) = device(state.path(), 0x57);
+            let (workspace, host) = joined(&engine, &cert, &key);
+            let (link, mut said) = planed(&engine);
+            let records = Records::new(Arc::clone(&engine));
+            let id = workspace.to_string();
+            link.host_ready(topic_of(workspace), true);
+            let channel = neighbour_wire::app_document_channel(APP, RECORD);
+            let mut arriving = records
+                .await_arriving_record(&context(workspace, RECORD, cert.clone()))
+                .expect("the record asks for itself");
+            assert!(matches!(said.try_recv(), Ok(Cmd::OpenRecord { .. })));
+            assert!(
+                arriving.as_mut().now_or_never().is_none(),
+                "the record is not new while the host has not answered"
+            );
+
+            // The record the host opened for this device arrives, and then the host's word that it
+            // sent everything it holds of it.
+            let message = host.writes(workspace, APP, RECORD);
+            engine
+                .owner()
+                .receive(
+                    workspace,
+                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                        host.key.verifying_key().to_bytes(),
+                    ),
+                    message,
+                    testing::now(),
+                )
+                .expect("this device takes what the host sent");
+            link.record_opened(topic_of(workspace), channel, 1);
+            assert!(
+                arriving.as_mut().now_or_never().is_some(),
+                "the record arrived and the open settles"
+            );
+            assert!(engine.holds_record(&id, APP, RECORD), "the record is here");
+            assert_ne!(
+                records.record_read(&id, APP, RECORD),
+                RecordRead::Own,
+                "the record is the workspace's, not the app's own to found"
+            );
+            assert!(
+                matches!(
+                    records
+                        .capture(&context(workspace, RECORD, cert), None, MAXIMUM)
+                        .expect("the record reads"),
+                    NativeDocumentRead::Captured { .. }
+                ),
+                "the open reads what the host sent"
+            );
+        }
     }
 
     /// A plane this engine asks its workspaces' hosts on, the commands it says kept.
@@ -497,63 +658,6 @@ mod tests {
         link.attach(Arc::new(said));
         engine.attach_link(Arc::clone(&link));
         (link, heard)
-    }
-
-    /// A workspace this device hosts itself keeps everything it retains here: an app's Open of a
-    /// record it holds nothing of is answered as new at once, with a host reached, never held for a
-    /// replay no device sends (a new Terminal session's record waited for one for good).
-    #[test]
-    fn an_open_in_a_workspace_this_device_hosts_waits_for_nobody() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (engine, cert, key) = device(state.path(), 0x54);
-        let workspace = workspace_with_record(&engine, &key);
-        let (_link, mut said) = planed(&engine);
-        let records = Records::new(Arc::clone(&engine));
-        assert!(engine.reaches_host(), "a plane is running");
-        assert!(
-            engine.hosts_itself(&workspace.to_string()),
-            "it was founded here"
-        );
-        assert!(
-            records
-                .await_arriving_record(&context(workspace, "terminal-session", cert))
-                .is_none(),
-            "nothing is waited for"
-        );
-        assert!(said.try_recv().is_err(), "and nobody is asked");
-    }
-
-    /// Every record comes with the workspace's history, asked for or not: a read of a record this
-    /// device holds nothing of — a part of Chat's messages a send opens — is never left pending on
-    /// asking the host for that record alone, which no host answers on the workspace's link (a
-    /// send waited on it for good), and a waiting Open wakes when the host's replay ends.
-    #[test]
-    fn a_record_not_held_is_asked_of_nobody_and_the_replay_answers_for_it() {
-        const PART: &str = "derived:part.0@derived:messages@derived:default";
-        let state = tempfile::tempdir().expect("a state directory");
-        let (engine, _cert, key) = device(state.path(), 0x55);
-        let workspace = workspace_with_record(&engine, &key);
-        let (link, mut said) = planed(&engine);
-        let id = workspace.to_string();
-        let replays = engine.replays().expect("a plane is running");
-        for record in [ON_DEMAND, PART] {
-            assert!(!engine.holds_record(&id, APP, record));
-            assert!(
-                !matches!(
-                    engine.read_record(&id, (APP, record), Holding::default(), 1 << 20),
-                    Ok(RecordReading::Pending)
-                ),
-                "a read of {record} is not left waiting"
-            );
-        }
-        assert!(said.try_recv().is_err(), "nobody is asked for a record");
-        assert!(!engine.host_replayed(&id));
-        link.host_ready(tilo_session_client::plane::topic_of(workspace), false);
-        assert!(
-            replays.has_changed().expect("the plane's word"),
-            "a waiting Open wakes"
-        );
-        assert!(engine.host_replayed(&id), "the replay ended");
     }
 
     /// A workspace this device is a member of and another device hosts, and that host's own engine:
@@ -620,106 +724,6 @@ mod tests {
         }
     }
 
-    /// A workspace whose host sends each record once a device opens it: opening a record this
-    /// device holds nothing of asks that host for it, and the record is on its way meanwhile. The
-    /// host's answer that it holds none of it is what makes the record new here — deciding before
-    /// that answer would have the app found a second copy of the workspace's own record.
-    #[test]
-    fn a_record_a_host_sends_once_opened_waits_for_the_host_and_is_new_only_once_it_answers() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (engine, cert, key) = device(state.path(), 0x56);
-        let (workspace, _host) = joined(&engine, &cert, &key);
-        let (link, mut said) = planed(&engine);
-        let records = Records::new(Arc::clone(&engine));
-        let id = workspace.to_string();
-        assert!(!engine.hosts_itself(&id), "another device hosts it");
-        link.host_ready(topic_of(workspace), true);
-        assert!(!engine.holds_record(&id, APP, RECORD));
-
-        let channel = neighbour_wire::app_document_channel(APP, RECORD);
-        let mut arriving = records
-            .await_arriving_record(&context(workspace, RECORD, cert))
-            .expect("the record may be the workspace's, which the host has not sent yet");
-        assert!(
-            matches!(
-                said.try_recv(),
-                Ok(Cmd::OpenRecord { ws, channel: asked })
-                    if ws == topic_of(workspace) && asked == channel
-            ),
-            "the host is asked for the record"
-        );
-        assert!(said.try_recv().is_err(), "and asked once");
-        assert!(
-            arriving.as_mut().now_or_never().is_none(),
-            "the open waits for the host's word rather than founding a record"
-        );
-
-        // The host sent everything it holds of the record, which is none of it: the record is new.
-        link.record_opened(topic_of(workspace), channel, 0);
-        assert!(
-            arriving.as_mut().now_or_never().is_some(),
-            "the host's word settles the open"
-        );
-        assert_eq!(records.record_read(&id, APP, RECORD), RecordRead::Own);
-    }
-
-    /// The host has the record this device opened: what it sent arrives, and the open reads it
-    /// instead of deciding it is new.
-    #[test]
-    fn a_record_the_host_sends_reaches_the_open_that_asked_for_it() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (engine, cert, key) = device(state.path(), 0x57);
-        let (workspace, host) = joined(&engine, &cert, &key);
-        let (link, mut said) = planed(&engine);
-        let records = Records::new(Arc::clone(&engine));
-        let id = workspace.to_string();
-        link.host_ready(topic_of(workspace), true);
-        let channel = neighbour_wire::app_document_channel(APP, RECORD);
-        let mut arriving = records
-            .await_arriving_record(&context(workspace, RECORD, cert.clone()))
-            .expect("the record asks for itself");
-        assert!(matches!(said.try_recv(), Ok(Cmd::OpenRecord { .. })));
-        assert!(
-            arriving.as_mut().now_or_never().is_none(),
-            "the record is not new while the host has not answered"
-        );
-
-        // The record the host opened for this device arrives, and then the host's word that it
-        // sent everything it holds of it.
-        let message = host.writes(workspace, APP, RECORD);
-        engine
-            .owner()
-            .receive(
-                workspace,
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                    host.key.verifying_key().to_bytes(),
-                ),
-                message,
-                testing::now(),
-            )
-            .expect("this device takes what the host sent");
-        link.record_opened(topic_of(workspace), channel, 1);
-        assert!(
-            arriving.as_mut().now_or_never().is_some(),
-            "the record arrived and the open settles"
-        );
-        assert!(engine.holds_record(&id, APP, RECORD), "the record is here");
-        assert_ne!(
-            records.record_read(&id, APP, RECORD),
-            RecordRead::Own,
-            "the record is the workspace's, not the app's own to found"
-        );
-        assert!(
-            matches!(
-                records
-                    .capture(&context(workspace, RECORD, cert), None, MAXIMUM)
-                    .expect("the record reads"),
-                NativeDocumentRead::Captured { .. }
-            ),
-            "the open reads what the host sent"
-        );
-    }
-
     /// A chat's chain of message parts: the name of its newest part, and part 1.
     fn chain_records() -> (String, String) {
         let chain = RecordId::derived("messages", &RecordId::workspace_default());
@@ -729,126 +733,130 @@ mod tests {
         )
     }
 
-    /// The head of a chain names whichever of the chain's parts is the newest, and holds nothing of
-    /// its own: a device holding no part asks the workspace for it, and is answered with none — the
-    /// chain starts its first — or with that part, which arrives on the part's own route and is the
-    /// chain's from then on.
-    #[test]
-    fn a_chains_head_is_answered_with_its_newest_part_or_with_none() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (engine, cert, key) = device(state.path(), 0x58);
-        let (workspace, host) = joined(&engine, &cert, &key);
-        let (link, mut said) = planed(&engine);
-        let records = Records::new(Arc::clone(&engine));
-        let id = workspace.to_string();
-        let (head_record, newest_record) = chain_records();
-        let channel = neighbour_wire::app_document_channel(APP, &head_record);
-        link.host_ready(topic_of(workspace), true);
-        let head = context(workspace, &head_record, cert);
+    tilo_test_env::scenario! {
+        fn a_chains_head_is_answered_from_what_the_workspace_holds;
 
-        let mut arriving = records
-            .await_arriving_record(&head)
-            .expect("the head may be answered with a part");
-        assert!(
-            matches!(said.try_recv(), Ok(Cmd::OpenRecord { channel: asked, .. }) if asked == channel),
-            "the workspace is asked for the chain's head"
-        );
-        assert_eq!(
-            records.chain_head_answer(&head),
-            Some(ChainHeadAnswer::NewestPartOnItsWay),
-            "a part may still be on its way"
-        );
-        assert!(
-            arriving.as_mut().now_or_never().is_none(),
-            "the head waits for the host's word"
-        );
+        phase a_chains_head_is_answered_with_its_newest_part_or_with_none;
+        // The head of a chain names whichever of the chain's parts is the newest, and holds nothing of
+        // its own: a device holding no part asks the workspace for it, and is answered with none — the
+        // chain starts its first — or with that part, which arrives on the part's own route and is the
+        // chain's from then on.
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (engine, cert, key) = device(state.path(), 0x58);
+            let (workspace, host) = joined(&engine, &cert, &key);
+            let (link, mut said) = planed(&engine);
+            let records = Records::new(Arc::clone(&engine));
+            let id = workspace.to_string();
+            let (head_record, newest_record) = chain_records();
+            let channel = neighbour_wire::app_document_channel(APP, &head_record);
+            link.host_ready(topic_of(workspace), true);
+            let head = context(workspace, &head_record, cert);
 
-        // The host sent the newest part, and then its word: what it holds of the head is that part,
-        // which the chain follows on its own route.
-        let message = host.writes(workspace, APP, &newest_record);
-        engine
-            .owner()
-            .receive(
-                workspace,
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                    host.key.verifying_key().to_bytes(),
-                ),
-                message,
-                testing::now(),
-            )
-            .expect("this device takes what the host sent");
-        link.record_opened(topic_of(workspace), channel, 1);
-        assert!(
-            arriving.as_mut().now_or_never().is_some(),
-            "the host's word settles the head"
-        );
-        assert_eq!(
-            records.chain_head_answer(&head),
-            Some(ChainHeadAnswer::NewestPartOnItsWay),
-            "a part came, so the chain does not start its first"
-        );
-        assert!(
-            engine.holds_record(&id, APP, &newest_record),
-            "the newest part is here"
-        );
-        assert!(
-            !engine.holds_record(&id, APP, &head_record),
-            "the head itself is no document"
-        );
-    }
+            let mut arriving = records
+                .await_arriving_record(&head)
+                .expect("the head may be answered with a part");
+            assert!(
+                matches!(said.try_recv(), Ok(Cmd::OpenRecord { channel: asked, .. }) if asked == channel),
+                "the workspace is asked for the chain's head"
+            );
+            assert_eq!(
+                records.chain_head_answer(&head),
+                Some(ChainHeadAnswer::NewestPartOnItsWay),
+                "a part may still be on its way"
+            );
+            assert!(
+                arriving.as_mut().now_or_never().is_none(),
+                "the head waits for the host's word"
+            );
 
-    /// A chain the workspace holds no part of at all: its head is answered with nothing, and the
-    /// chain starts its first part rather than waiting for one forever.
-    #[test]
-    fn a_chains_head_the_workspace_has_no_part_of_is_answered_with_none() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (engine, cert, key) = device(state.path(), 0x59);
-        let (workspace, _host) = joined(&engine, &cert, &key);
-        let (link, mut said) = planed(&engine);
-        let records = Records::new(Arc::clone(&engine));
-        let (head_record, _) = chain_records();
-        let channel = neighbour_wire::app_document_channel(APP, &head_record);
-        link.host_ready(topic_of(workspace), true);
-        let head = context(workspace, &head_record, cert);
-        let mut arriving = records
-            .await_arriving_record(&head)
-            .expect("the head asks for itself");
-        assert!(matches!(said.try_recv(), Ok(Cmd::OpenRecord { .. })));
-        assert!(arriving.as_mut().now_or_never().is_none());
-        link.record_opened(topic_of(workspace), channel, 0);
-        assert!(
-            arriving.as_mut().now_or_never().is_some(),
-            "the host's word settles the head"
-        );
-        assert_eq!(
-            records.chain_head_answer(&head),
-            Some(ChainHeadAnswer::NoPart),
-            "the workspace has no part of the chain, so the app starts the first"
-        );
-    }
+            // The host sent the newest part, and then its word: what it holds of the head is that part,
+            // which the chain follows on its own route.
+            let message = host.writes(workspace, APP, &newest_record);
+            engine
+                .owner()
+                .receive(
+                    workspace,
+                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                        host.key.verifying_key().to_bytes(),
+                    ),
+                    message,
+                    testing::now(),
+                )
+                .expect("this device takes what the host sent");
+            link.record_opened(topic_of(workspace), channel, 1);
+            assert!(
+                arriving.as_mut().now_or_never().is_some(),
+                "the host's word settles the head"
+            );
+            assert_eq!(
+                records.chain_head_answer(&head),
+                Some(ChainHeadAnswer::NewestPartOnItsWay),
+                "a part came, so the chain does not start its first"
+            );
+            assert!(
+                engine.holds_record(&id, APP, &newest_record),
+                "the newest part is here"
+            );
+            assert!(
+                !engine.holds_record(&id, APP, &head_record),
+                "the head itself is no document"
+            );
+        }
 
-    /// A workspace that replays every record answered for its chains' heads with that replay: what
-    /// this device holds is all of the chain there is, so nothing is asked and a chain with no part
-    /// starts its first.
-    #[test]
-    fn a_workspace_that_replays_every_record_answered_for_the_heads_too() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (engine, cert, key) = device(state.path(), 0x5a);
-        let (workspace, _host) = joined(&engine, &cert, &key);
-        let (link, mut said) = planed(&engine);
-        let records = Records::new(Arc::clone(&engine));
-        link.host_ready(topic_of(workspace), false);
-        let (head_record, _) = chain_records();
-        let head = context(workspace, &head_record, cert);
-        let arriving = records.await_arriving_record(&head);
-        assert!(
-            arriving.is_none_or(|wait| wait.now_or_never().is_some()),
-            "nothing is waited for: the replay answered for the chain"
-        );
-        assert!(said.try_recv().is_err(), "and nobody is asked");
-        assert_eq!(
-            records.chain_head_answer(&head),
-            Some(ChainHeadAnswer::NoPart)
-        );
+        phase a_chains_head_the_workspace_has_no_part_of_is_answered_with_none;
+        // A chain the workspace holds no part of at all: its head is answered with nothing, and the
+        // chain starts its first part rather than waiting for one forever.
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (engine, cert, key) = device(state.path(), 0x59);
+            let (workspace, _host) = joined(&engine, &cert, &key);
+            let (link, mut said) = planed(&engine);
+            let records = Records::new(Arc::clone(&engine));
+            let (head_record, _) = chain_records();
+            let channel = neighbour_wire::app_document_channel(APP, &head_record);
+            link.host_ready(topic_of(workspace), true);
+            let head = context(workspace, &head_record, cert);
+            let mut arriving = records
+                .await_arriving_record(&head)
+                .expect("the head asks for itself");
+            assert!(matches!(said.try_recv(), Ok(Cmd::OpenRecord { .. })));
+            assert!(arriving.as_mut().now_or_never().is_none());
+            link.record_opened(topic_of(workspace), channel, 0);
+            assert!(
+                arriving.as_mut().now_or_never().is_some(),
+                "the host's word settles the head"
+            );
+            assert_eq!(
+                records.chain_head_answer(&head),
+                Some(ChainHeadAnswer::NoPart),
+                "the workspace has no part of the chain, so the app starts the first"
+            );
+        }
+
+        phase a_workspace_that_replays_every_record_answered_for_the_heads_too;
+        // A workspace that replays every record answered for its chains' heads with that replay: what
+        // this device holds is all of the chain there is, so nothing is asked and a chain with no part
+        // starts its first.
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (engine, cert, key) = device(state.path(), 0x5a);
+            let (workspace, _host) = joined(&engine, &cert, &key);
+            let (link, mut said) = planed(&engine);
+            let records = Records::new(Arc::clone(&engine));
+            link.host_ready(topic_of(workspace), false);
+            let (head_record, _) = chain_records();
+            let head = context(workspace, &head_record, cert);
+            let arriving = records.await_arriving_record(&head);
+            assert!(
+                arriving.is_none_or(|wait| wait.now_or_never().is_some()),
+                "nothing is waited for: the replay answered for the chain"
+            );
+            assert!(said.try_recv().is_err(), "and nobody is asked");
+            assert_eq!(
+                records.chain_head_answer(&head),
+                Some(ChainHeadAnswer::NoPart)
+            );
+        }
     }
 }

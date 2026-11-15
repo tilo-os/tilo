@@ -1738,126 +1738,331 @@ mod tests {
         std::sync::Arc::new(ShortcutLibrary::new(runtime.handle().clone(), None))
     }
 
-    /// An app publishes what it holds through the broker, and the index the
-    /// session handed it keeps it: it is the same index search reads.
-    #[test]
-    fn an_apps_search_publication_lands_in_the_index_search_reads() {
-        use ui::search::index_publication::{IndexDelta, IndexEntry};
+    tilo_test_env::scenario! {
+        fn the_plane_serves_an_app_what_this_session_keeps_for_it;
 
-        let content = std::sync::Arc::new(AppContentIndex::in_memory());
-        let services = host_services(
-            Link::for_test(),
-            std::sync::Arc::new(Launches::default()),
-            None,
-            hosted(Some(std::sync::Arc::clone(&content))),
-            None,
-            None,
-        );
-        let search_index = services
-            .search_index
-            .expect("a session with an index offers apps its search index");
-        let workspace_id = tilo_desktop_model::WorkspaceId::new();
-        let delta = IndexDelta {
-            reset: true,
-            upsert: vec![IndexEntry {
-                key: "n1".into(),
-                resource: "n1".into(),
-                action: None,
-                title: "Groceries".into(),
-                subtitle: None,
-                group: None,
-                icon: None,
-                boost: 0,
-                fields: Vec::new(),
-                secret: false,
-                references: Vec::new(),
-                ..IndexEntry::default()
-            }],
-            ..IndexDelta::default()
-        };
-        search_index
-            .publish(
-                workspace_id,
+        phase an_apps_search_publication_lands_in_the_index_search_reads;
+        // An app publishes what it holds through the broker, and the index the
+        // session handed it keeps it: it is the same index search reads.
+        {
+            use ui::search::index_publication::{IndexDelta, IndexEntry};
+
+            let content = std::sync::Arc::new(AppContentIndex::in_memory());
+            let services = host_services(
+                Link::for_test(),
+                std::sync::Arc::new(Launches::default()),
+                None,
+                hosted(Some(std::sync::Arc::clone(&content))),
+                None,
+                None,
+            );
+            let search_index = services
+                .search_index
+                .expect("a session with an index offers apps its search index");
+            let workspace_id = tilo_desktop_model::WorkspaceId::new();
+            let delta = IndexDelta {
+                reset: true,
+                upsert: vec![IndexEntry {
+                    key: "n1".into(),
+                    resource: "n1".into(),
+                    action: None,
+                    title: "Groceries".into(),
+                    subtitle: None,
+                    group: None,
+                    icon: None,
+                    boost: 0,
+                    fields: Vec::new(),
+                    secret: false,
+                    references: Vec::new(),
+                    ..IndexEntry::default()
+                }],
+                ..IndexDelta::default()
+            };
+            search_index
+                .publish(
+                    workspace_id,
+                    "so.tilo.notes",
+                    "tab:0001",
+                    &delta.encode().expect("a delta"),
+                )
+                .expect("the index takes the publication");
+            assert_eq!(
+                content.title(&workspace_id.to_string(), "n1").as_deref(),
+                Some("Groceries"),
+                "what the app published is in the index search reads"
+            );
+        }
+
+        phase an_app_keeps_and_asks_for_content_through_the_services_of_this_session;
+        // An app's `offerBlob`, `wantBlob` and `subscribeBlobs`, and the content
+        // put door, are served by the plane this session keeps: the same store
+        // and the same asks of the workspace's other devices. A session that
+        // keeps no content hands the broker none of it.
+        {
+            let kept = crate::content::Plane::open(None);
+            let wake: Wake = std::sync::Arc::new(|| ());
+            let with = host_services(
+                Link::new(wake),
+                std::sync::Arc::new(Launches::default()),
+                None,
+                Hosted {
+                    record_content: Some(kept),
+                    ..hosted(None)
+                },
+                None,
+                None,
+            );
+            assert!(
+                with.record_content.is_some(),
+                "the broker asks the workspace through this session's plane"
+            );
+            assert!(
+                with.content_store.is_some(),
+                "and uploads into the store this device keeps"
+            );
+
+            let without = services(None);
+            assert!(
+                without.record_content.is_none() && without.content_store.is_none(),
+                "a session that keeps content hands the broker no content plane"
+            );
+        }
+
+        phase the_session_answers_settings_speaker_route_from_its_fabric;
+        // Settings reaches the speaker groups of the fabric this session runs
+        // on, and of nothing else: a session without one has no speaker route.
+        {
+            assert!(
+                services(None).speakers.is_none(),
+                "a session on no fabric carries no speaker groups"
+            );
+
+            let speakers = services(Some(std::sync::Arc::new(Fabric::laptop())))
+                .speakers
+                .expect("the speaker route is registered");
+            let runtime_collab::SpeakerReply::Snapshot { snapshot } =
+                speakers.command(runtime_collab::SpeakerCommand::Snapshot)
+            else {
+                panic!("Settings asks for a snapshot");
+            };
+            assert!(snapshot.media_enabled);
+            let labels = snapshot
+                .devices
+                .iter()
+                .map(|device| device.label.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(labels, ["This laptop"]);
+            assert_eq!(
+                snapshot.devices[0].outputs.len(),
+                1,
+                "the output this laptop publishes is what Settings can put in a set"
+            );
+            assert!(
+                speakers.changed(0).is_some(),
+                "and it tells Settings when that changes"
+            );
+        }
+
+        phase a_session_that_holds_workspaces_reads_a_record_outside_its_app;
+        // A session that holds workspaces reads an app's record outside the app, from this device's
+        // own copy; one that holds none reads only on the app's own channel.
+        {
+            let wake: Wake = std::sync::Arc::new(|| ());
+            let services = |engine| {
+                let mut hosted = hosted(None);
+                hosted.engine = engine;
+                host_services(
+                    Link::new(std::sync::Arc::clone(&wake)),
+                    std::sync::Arc::new(Launches::default()),
+                    None,
+                    hosted,
+                    None,
+                    None,
+                )
+                .committed_documents
+                .is_some()
+            };
+            assert!(
+                !services(None),
+                "a session that holds no workspace reads a record only on the app's own channel"
+            );
+            let state = tempfile::tempdir().expect("a state directory");
+            let engine = std::sync::Arc::new(
+                crate::engine::Engine::open(
+                    held_identity(),
+                    Some(state.path()),
+                    std::iter::empty(),
+                    crate::platform::custody::of_this_session(),
+                )
+                .expect("this device's engine opens"),
+            );
+            assert!(
+                services(Some(engine)),
+                "this device's copy of the workspace's records is what an app's Open reads"
+            );
+        }
+
+        phase an_apps_settings_are_the_document_this_session_keeps;
+        // An app's settings are this session's own document: the call the
+        // broker answers through its settings server reads and writes what this
+        // device keeps, scoped to that app, and serves the person's dictionary
+        // from the same document.
+        {
+            let dir = tempfile::tempdir().expect("a profile of the test's own");
+            let records: std::sync::Arc<dyn settings_store::SettingsSource> =
+                std::sync::Arc::new(settings_store::Store::open(dir.path()).expect("a settings store"));
+            let _scoped = settings_store::scoped_source(Some(std::sync::Arc::clone(&records)));
+
+            let settings = services(None)
+                .settings
+                .expect("this person's settings are served to their apps");
+            assert!(
+                std::sync::Arc::ptr_eq(&settings, &records),
+                "the app writes where the session keeps settings, not a copy"
+            );
+
+            let notes = runtime_collab::settings::host::AppSettingsServer::new(
                 "so.tilo.notes",
-                "tab:0001",
-                &delta.encode().expect("a delta"),
+                settings,
+                std::sync::Arc::new(|| Ok(())),
+            );
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime for the app's calls");
+            let local = tokio::task::LocalSet::new();
+            let (_, written) = notes
+                .update(
+                    "app_personal",
+                    br#"{"so.tilo.notes": {"font": "serif"}}"#,
+                    Some("set-font"),
+                )
+                .expect("the app writes its own setting");
+            let written: serde_json::Value = serde_json::from_slice(&written).expect("a settings view");
+            assert_eq!(
+                written["app_personal"],
+                serde_json::json!({"so.tilo.notes": {"font": "serif"}})
+            );
+            assert_eq!(
+                serde_json::Value::Object(records.load()),
+                serde_json::json!({"app_personal": {"so.tilo.notes": {"font": "serif"}}}),
+                "the write lands in this device's settings document, and the view's dictionary is \
+             not kept there"
+            );
+            // The view carries the person's dictionary as the same document holds it.
+            let projected = |view: &serde_json::Value| {
+                view["app_device_local"]["so.tilo.notes"]
+                    [settings_store::personal_dictionary::delivery::VIEW_KEY]
+                    .clone()
+            };
+            assert_eq!(
+                projected(&written),
+                serde_json::to_value(settings_store::personal_dictionary::snapshot_of(
+                    &records.load()
+                ))
+                .expect("the dictionary's snapshot")
+            );
+            let word =
+                settings_store::personal_dictionary::Word::new("Tilo", None).expect("a word to add");
+            settings_store::personal_dictionary::edit_in(
+                records.as_ref(),
+                0,
+                settings_store::personal_dictionary::Edit::Add(word),
             )
-            .expect("the index takes the publication");
-        assert_eq!(
-            content.title(&workspace_id.to_string(), "n1").as_deref(),
-            Some("Groceries"),
-            "what the app published is in the index search reads"
-        );
-    }
+            .expect("the person adds a word");
+            let (_, read) = local
+                .block_on(&runtime, notes.read(0))
+                .expect("the app reads its setting back");
+            let read: serde_json::Value = serde_json::from_slice(&read).expect("a settings view");
+            assert_eq!(read["app_personal"], written["app_personal"]);
+            assert_eq!(
+                projected(&read)["words"],
+                serde_json::json!([{"spelling": "Tilo", "language": null}]),
+                "a word the person adds reaches the app's view"
+            );
+        }
 
-    /// An app's `offerBlob`, `wantBlob` and `subscribeBlobs`, and the content
-    /// put door, are served by the plane this session keeps: the same store
-    /// and the same asks of the workspace's other devices. A session that
-    /// keeps no content hands the broker none of it.
-    #[test]
-    fn an_app_keeps_and_asks_for_content_through_the_services_of_this_session() {
-        let kept = crate::content::Plane::open(None);
-        let wake: Wake = std::sync::Arc::new(|| ());
-        let with = host_services(
-            Link::new(wake),
-            std::sync::Arc::new(Launches::default()),
-            None,
-            Hosted {
-                record_content: Some(kept),
-                ..hosted(None)
-            },
-            None,
-            None,
-        );
-        assert!(
-            with.record_content.is_some(),
-            "the broker asks the workspace through this session's plane"
-        );
-        assert!(
-            with.content_store.is_some(),
-            "and uploads into the store this device keeps"
-        );
+        phase an_apps_declared_access_is_what_this_device_read;
+        // What an app declared it may do on the action door is served out of the
+        // lists this device read: its own declaration, and nothing for an app
+        // that declared nothing.
+        {
+            use tilo_broker_core::access::AppActionAccess;
 
-        let without = services(None);
-        assert!(
-            without.record_content.is_none() && without.content_store.is_none(),
-            "a session that keeps content hands the broker no content plane"
-        );
-    }
+            let mut lists = crate::lists::AppLists::default();
+            lists.declared.insert(
+                "so.tilo.notes".into(),
+                AppActionAccess {
+                    query: true,
+                    invoke: false,
+                },
+            );
+            let services = host_services(
+                Link::for_test(),
+                std::sync::Arc::new(Launches::default()),
+                None,
+                hosted_with(None, Lists::fixed(lists)),
+                None,
+                None,
+            );
+            let access = services
+                .app_action_access
+                .expect("what an installed app declared is served");
+            assert_eq!(
+                access("so.tilo.notes"),
+                AppActionAccess {
+                    query: true,
+                    invoke: false
+                }
+            );
+            assert_eq!(
+                access("so.tilo.not-installed"),
+                AppActionAccess::default(),
+                "an app this device did not read declared nothing"
+            );
+        }
 
-    /// Settings reaches the speaker groups of the fabric this session runs
-    /// on, and of nothing else: a session without one has no speaker route.
-    #[test]
-    fn the_session_answers_settings_speaker_route_from_its_fabric() {
-        assert!(
-            services(None).speakers.is_none(),
-            "a session on no fabric carries no speaker groups"
-        );
+        phase a_resource_no_service_publishes_is_told_once;
+        // An app watching a resource no service of this device publishes hears it
+        // once, and again only when a service is added: a machine without a
+        // battery does not tell it on every reading of another service.
+        {
+            let link = Link::new(std::sync::Arc::new(|| {}));
+            let (sink, mut heard) = mpsc::unbounded_channel();
+            let caller = Caller {
+                app_id: "so.tilo.quick-settings".to_owned(),
+                workspace: String::new(),
+            };
+            let _watch = link.watch(&caller, "power:battery", sink);
+            let mut services = Services::default();
+            link.publish(&services);
+            assert!(
+                matches!(heard.try_recv(), Ok(Event::Reading { reading: None, .. })),
+                "the app is told no service publishes it"
+            );
 
-        let speakers = services(Some(std::sync::Arc::new(Fabric::laptop())))
-            .speakers
-            .expect("the speaker route is registered");
-        let runtime_collab::SpeakerReply::Snapshot { snapshot } =
-            speakers.command(runtime_collab::SpeakerCommand::Snapshot)
-        else {
-            panic!("Settings asks for a snapshot");
-        };
-        assert!(snapshot.media_enabled);
-        let labels = snapshot
-            .devices
-            .iter()
-            .map(|device| device.label.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(labels, ["This laptop"]);
-        assert_eq!(
-            snapshot.devices[0].outputs.len(),
-            1,
-            "the output this laptop publishes is what Settings can put in a set"
-        );
-        assert!(
-            speakers.changed(0).is_some(),
-            "and it tells Settings when that changes"
-        );
+            // Another service's reading moves: nothing is said of the battery
+            // again, however many revisions go by.
+            let counted = std::sync::Arc::new(std::sync::Mutex::new(1_u8));
+            services.add(Box::new(Counted(std::sync::Arc::clone(&counted))));
+            link.publish(&services);
+            // The catalogue moved with the service added, so it is asked again
+            // once, and that is all.
+            assert!(
+                matches!(heard.try_recv(), Ok(Event::Reading { reading: None, .. })),
+                "a service was added, so it is asked again once"
+            );
+            *counted.lock().unwrap() = 2;
+            services
+                .invoke("test:counted", "bump", &Map::new())
+                .expect("the service is published")
+                .expect("the bump is taken");
+            link.publish(&services);
+            assert!(
+                heard.try_recv().is_err(),
+                "a reading of another service says nothing of the battery"
+            );
+        }
     }
 
     /// What each shipped app's sources call of the action door: the seam each
@@ -1948,45 +2153,6 @@ mod tests {
                 "`{seam}` is served now: take it off the list of seams still to serve"
             );
         }
-    }
-
-    /// A session that holds workspaces reads an app's record outside the app, from this device's
-    /// own copy; one that holds none reads only on the app's own channel.
-    #[test]
-    fn a_session_that_holds_workspaces_reads_a_record_outside_its_app() {
-        let wake: Wake = std::sync::Arc::new(|| ());
-        let services = |engine| {
-            let mut hosted = hosted(None);
-            hosted.engine = engine;
-            host_services(
-                Link::new(std::sync::Arc::clone(&wake)),
-                std::sync::Arc::new(Launches::default()),
-                None,
-                hosted,
-                None,
-                None,
-            )
-            .committed_documents
-            .is_some()
-        };
-        assert!(
-            !services(None),
-            "a session that holds no workspace reads a record only on the app's own channel"
-        );
-        let state = tempfile::tempdir().expect("a state directory");
-        let engine = std::sync::Arc::new(
-            crate::engine::Engine::open(
-                held_identity(),
-                Some(state.path()),
-                std::iter::empty(),
-                crate::platform::custody::of_this_session(),
-            )
-            .expect("this device's engine opens"),
-        );
-        assert!(
-            services(Some(engine)),
-            "this device's copy of the workspace's records is what an app's Open reads"
-        );
     }
 
     /// A device of a person, certified for their root, that holds workspaces.
@@ -2111,126 +2277,6 @@ mod tests {
         );
     }
 
-    /// An app's settings are this session's own document: the call the
-    /// broker answers through its settings server reads and writes what this
-    /// device keeps, scoped to that app, and serves the person's dictionary
-    /// from the same document.
-    #[test]
-    fn an_apps_settings_are_the_document_this_session_keeps() {
-        let dir = tempfile::tempdir().expect("a profile of the test's own");
-        let records: std::sync::Arc<dyn settings_store::SettingsSource> =
-            std::sync::Arc::new(settings_store::Store::open(dir.path()).expect("a settings store"));
-        let _scoped = settings_store::scoped_source(Some(std::sync::Arc::clone(&records)));
-
-        let settings = services(None)
-            .settings
-            .expect("this person's settings are served to their apps");
-        assert!(
-            std::sync::Arc::ptr_eq(&settings, &records),
-            "the app writes where the session keeps settings, not a copy"
-        );
-
-        let notes = runtime_collab::settings::host::AppSettingsServer::new(
-            "so.tilo.notes",
-            settings,
-            std::sync::Arc::new(|| Ok(())),
-        );
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("a runtime for the app's calls");
-        let local = tokio::task::LocalSet::new();
-        let (_, written) = notes
-            .update(
-                "app_personal",
-                br#"{"so.tilo.notes": {"font": "serif"}}"#,
-                Some("set-font"),
-            )
-            .expect("the app writes its own setting");
-        let written: serde_json::Value = serde_json::from_slice(&written).expect("a settings view");
-        assert_eq!(
-            written["app_personal"],
-            serde_json::json!({"so.tilo.notes": {"font": "serif"}})
-        );
-        assert_eq!(
-            serde_json::Value::Object(records.load()),
-            serde_json::json!({"app_personal": {"so.tilo.notes": {"font": "serif"}}}),
-            "the write lands in this device's settings document, and the view's dictionary is \
-             not kept there"
-        );
-        // The view carries the person's dictionary as the same document holds it.
-        let projected = |view: &serde_json::Value| {
-            view["app_device_local"]["so.tilo.notes"]
-                [settings_store::personal_dictionary::delivery::VIEW_KEY]
-                .clone()
-        };
-        assert_eq!(
-            projected(&written),
-            serde_json::to_value(settings_store::personal_dictionary::snapshot_of(
-                &records.load()
-            ))
-            .expect("the dictionary's snapshot")
-        );
-        let word =
-            settings_store::personal_dictionary::Word::new("Tilo", None).expect("a word to add");
-        settings_store::personal_dictionary::edit_in(
-            records.as_ref(),
-            0,
-            settings_store::personal_dictionary::Edit::Add(word),
-        )
-        .expect("the person adds a word");
-        let (_, read) = local
-            .block_on(&runtime, notes.read(0))
-            .expect("the app reads its setting back");
-        let read: serde_json::Value = serde_json::from_slice(&read).expect("a settings view");
-        assert_eq!(read["app_personal"], written["app_personal"]);
-        assert_eq!(
-            projected(&read)["words"],
-            serde_json::json!([{"spelling": "Tilo", "language": null}]),
-            "a word the person adds reaches the app's view"
-        );
-    }
-
-    /// What an app declared it may do on the action door is served out of the
-    /// lists this device read: its own declaration, and nothing for an app
-    /// that declared nothing.
-    #[test]
-    fn an_apps_declared_access_is_what_this_device_read() {
-        use tilo_broker_core::access::AppActionAccess;
-
-        let mut lists = crate::lists::AppLists::default();
-        lists.declared.insert(
-            "so.tilo.notes".into(),
-            AppActionAccess {
-                query: true,
-                invoke: false,
-            },
-        );
-        let services = host_services(
-            Link::for_test(),
-            std::sync::Arc::new(Launches::default()),
-            None,
-            hosted_with(None, Lists::fixed(lists)),
-            None,
-            None,
-        );
-        let access = services
-            .app_action_access
-            .expect("what an installed app declared is served");
-        assert_eq!(
-            access("so.tilo.notes"),
-            AppActionAccess {
-                query: true,
-                invoke: false
-            }
-        );
-        assert_eq!(
-            access("so.tilo.not-installed"),
-            AppActionAccess::default(),
-            "an app this device did not read declared nothing"
-        );
-    }
-
     use tilo_actions::ResourceSpec;
 
     /// A service publishing one reading the test moves.
@@ -2273,47 +2319,5 @@ mod tests {
         ) -> Result<Started, DoorError> {
             Ok(Started::Done(tilo_actions::ActionOutput::default()))
         }
-    }
-
-    /// An app watching a resource no service of this device publishes hears it
-    /// once, and again only when a service is added: a machine without a
-    /// battery does not tell it on every reading of another service.
-    #[test]
-    fn a_resource_no_service_publishes_is_told_once() {
-        let link = Link::new(std::sync::Arc::new(|| {}));
-        let (sink, mut heard) = mpsc::unbounded_channel();
-        let caller = Caller {
-            app_id: "so.tilo.quick-settings".to_owned(),
-            workspace: String::new(),
-        };
-        let _watch = link.watch(&caller, "power:battery", sink);
-        let mut services = Services::default();
-        link.publish(&services);
-        assert!(
-            matches!(heard.try_recv(), Ok(Event::Reading { reading: None, .. })),
-            "the app is told no service publishes it"
-        );
-
-        // Another service's reading moves: nothing is said of the battery
-        // again, however many revisions go by.
-        let counted = std::sync::Arc::new(std::sync::Mutex::new(1_u8));
-        services.add(Box::new(Counted(std::sync::Arc::clone(&counted))));
-        link.publish(&services);
-        // The catalogue moved with the service added, so it is asked again
-        // once, and that is all.
-        assert!(
-            matches!(heard.try_recv(), Ok(Event::Reading { reading: None, .. })),
-            "a service was added, so it is asked again once"
-        );
-        *counted.lock().unwrap() = 2;
-        services
-            .invoke("test:counted", "bump", &Map::new())
-            .expect("the service is published")
-            .expect("the bump is taken");
-        link.publish(&services);
-        assert!(
-            heard.try_recv().is_err(),
-            "a reading of another service says nothing of the battery"
-        );
     }
 }

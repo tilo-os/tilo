@@ -450,188 +450,192 @@ mod tests {
         pages
     }
 
-    #[test]
-    fn a_page_capable_window_is_offered_and_goes_with_its_tab() {
-        let mut pages = page("w1");
-        assert_eq!(pages.offered(), [7]);
-        pages.closed(7);
-        assert!(pages.offered().is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn a_pages_track_carries_whole_frames_in_order_while_someone_shows_it;
 
-    #[test]
-    fn nothing_is_kept_of_a_page_nobody_shows() {
-        let mut pages = page("w1");
-        pages.received(7, true, vec![0, 1, 2]);
-        pages.received(7, false, vec![1, 2, 3]);
-        let page = pages.offered.get(&7).unwrap();
-        assert!(page.queue.is_empty(), "no plane asked for it");
-        assert!(!page.watched);
-    }
-
-    #[test]
-    fn a_watched_page_keeps_its_payloads_in_order() {
-        let mut pages = page("w1");
-        let page = pages.offered.get_mut(&7).unwrap();
-        page.watched = true;
-        pages.received(7, true, vec![0, 1, 2]);
-        pages.received(7, false, vec![3]);
-        let page = pages.offered.get(&7).unwrap();
-        assert_eq!(
-            page.queue.iter().cloned().collect::<Vec<_>>(),
-            [(true, vec![0, 1, 2]), (false, vec![3])]
-        );
-    }
-
-    #[test]
-    fn a_change_that_arrives_before_the_whole_frame_is_dropped() {
-        let mut pages = page("w1");
-        let page = pages.offered.get_mut(&7).unwrap();
-        page.watched = true;
-        page.awaiting_whole = true;
-        pages.received(7, false, vec![3]);
-        assert!(pages.offered.get(&7).unwrap().queue.is_empty());
-        pages.received(7, true, vec![0, 1, 2]);
-        let page = pages.offered.get(&7).unwrap();
-        assert!(!page.awaiting_whole);
-        assert_eq!(
-            page.queue.iter().cloned().collect::<Vec<_>>(),
-            [(true, vec![0, 1, 2])]
-        );
-    }
-
-    #[test]
-    fn a_backlog_past_the_bound_starts_over_at_a_whole_frame() {
-        let mut pages = page("w1");
+        phase a_page_capable_window_is_offered_and_goes_with_its_tab;
         {
+            let mut pages = page("w1");
+            assert_eq!(pages.offered(), [7]);
+            pages.closed(7);
+            assert!(pages.offered().is_empty());
+        }
+
+        phase nothing_is_kept_of_a_page_nobody_shows;
+        {
+            let mut pages = page("w1");
+            pages.received(7, true, vec![0, 1, 2]);
+            pages.received(7, false, vec![1, 2, 3]);
+            let page = pages.offered.get(&7).unwrap();
+            assert!(page.queue.is_empty(), "no plane asked for it");
+            assert!(!page.watched);
+        }
+
+        phase a_watched_page_keeps_its_payloads_in_order;
+        {
+            let mut pages = page("w1");
             let page = pages.offered.get_mut(&7).unwrap();
             page.watched = true;
+            pages.received(7, true, vec![0, 1, 2]);
+            pages.received(7, false, vec![3]);
+            let page = pages.offered.get(&7).unwrap();
+            assert_eq!(
+                page.queue.iter().cloned().collect::<Vec<_>>(),
+                [(true, vec![0, 1, 2]), (false, vec![3])]
+            );
         }
-        for _ in 0..MAX_QUEUED {
-            pages.received(7, false, vec![1]);
-        }
-        pages.received(7, false, vec![1]);
-        let page = pages.offered.get_mut(&7).unwrap();
-        assert!(page.queue.is_empty());
-        assert!(page.awaiting_whole, "a whole frame catches up the plane");
-        assert_eq!(
-            page.follow(true, false, 5),
-            Some(Watch::Whole),
-            "and the app is asked for the frame the session waits for"
-        );
-    }
 
-    /// An app that is asked for a whole frame and hands none over is asked again once the bound
-    /// passed, and from then its window is said to be withheld by it; the whole frame it then
-    /// hands over ends both.
-    #[test]
-    fn an_app_that_hands_nothing_over_is_asked_again_and_said_to_withhold_its_page() {
-        let mut pages = page("w1");
-        let asked = |pages: &mut PageTracks, now_us: u64| {
-            pages
-                .offered
-                .get_mut(&7)
-                .unwrap()
-                .follow(true, false, now_us)
-        };
-        assert_eq!(asked(&mut pages, 1_000), Some(Watch::Whole));
-        assert_eq!(
-            pages.due_in(1_000),
-            Some(HAND_OVER_BOUND),
-            "the session comes back for it when the bound passes"
-        );
-        assert_eq!(asked(&mut pages, 1_000 + HAND_OVER_BOUND_US - 1), None);
-        assert!(pages.withheld().is_empty(), "the app still has time");
-        // A change is no answer to an ask for a whole frame.
-        pages.received(7, false, vec![3]);
-        assert_eq!(
-            asked(&mut pages, 1_000 + HAND_OVER_BOUND_US),
-            Some(Watch::Whole),
-            "the bound passed: the app is asked again"
-        );
-        assert_eq!(pages.withheld(), [7]);
-        assert!(pages.sent().is_empty());
-        assert_eq!(asked(&mut pages, 1_001 + HAND_OVER_BOUND_US), None);
-        assert_eq!(
-            asked(&mut pages, 1_000 + 2 * HAND_OVER_BOUND_US),
-            Some(Watch::Whole),
-            "and again a bound later"
-        );
-        pages.received(7, true, vec![0, 1, 2]);
-        assert!(pages.withheld().is_empty(), "the app handed its page over");
-        assert_eq!(pages.due_in(1_000 + 2 * HAND_OVER_BOUND_US), None);
-        assert_eq!(asked(&mut pages, 1_000 + 3 * HAND_OVER_BOUND_US), None);
-        // Nobody shows the window any more: nothing is held against the app.
-        let page = pages.offered.get_mut(&7).unwrap();
-        page.awaiting_whole = true;
-        page.asked = Asked::Overdue(0);
-        assert_eq!(pages.withheld(), [7]);
-        assert_eq!(
-            asked_stop(&mut pages),
-            Some(Watch::Stop),
-            "the app is told nobody shows the window"
-        );
-        assert!(pages.withheld().is_empty());
+        phase a_change_that_arrives_before_the_whole_frame_is_dropped;
+        {
+            let mut pages = page("w1");
+            let page = pages.offered.get_mut(&7).unwrap();
+            page.watched = true;
+            page.awaiting_whole = true;
+            pages.received(7, false, vec![3]);
+            assert!(pages.offered.get(&7).unwrap().queue.is_empty());
+            pages.received(7, true, vec![0, 1, 2]);
+            let page = pages.offered.get(&7).unwrap();
+            assert!(!page.awaiting_whole);
+            assert_eq!(
+                page.queue.iter().cloned().collect::<Vec<_>>(),
+                [(true, vec![0, 1, 2])]
+            );
+        }
+
+        phase a_backlog_past_the_bound_starts_over_at_a_whole_frame;
+        {
+            let mut pages = page("w1");
+            {
+                let page = pages.offered.get_mut(&7).unwrap();
+                page.watched = true;
+            }
+            for _ in 0..MAX_QUEUED {
+                pages.received(7, false, vec![1]);
+            }
+            pages.received(7, false, vec![1]);
+            let page = pages.offered.get_mut(&7).unwrap();
+            assert!(page.queue.is_empty());
+            assert!(page.awaiting_whole, "a whole frame catches up the plane");
+            assert_eq!(
+                page.follow(true, false, 5),
+                Some(Watch::Whole),
+                "and the app is asked for the frame the session waits for"
+            );
+        }
+
+        phase an_app_that_hands_nothing_over_is_asked_again_and_said_to_withhold_its_page;
+        // An app that is asked for a whole frame and hands none over is asked again once the bound
+        // passed, and from then its window is said to be withheld by it; the whole frame it then
+        // hands over ends both.
+        {
+            let mut pages = page("w1");
+            let asked = |pages: &mut PageTracks, now_us: u64| {
+                pages
+                    .offered
+                    .get_mut(&7)
+                    .unwrap()
+                    .follow(true, false, now_us)
+            };
+            assert_eq!(asked(&mut pages, 1_000), Some(Watch::Whole));
+            assert_eq!(
+                pages.due_in(1_000),
+                Some(HAND_OVER_BOUND),
+                "the session comes back for it when the bound passes"
+            );
+            assert_eq!(asked(&mut pages, 1_000 + HAND_OVER_BOUND_US - 1), None);
+            assert!(pages.withheld().is_empty(), "the app still has time");
+            // A change is no answer to an ask for a whole frame.
+            pages.received(7, false, vec![3]);
+            assert_eq!(
+                asked(&mut pages, 1_000 + HAND_OVER_BOUND_US),
+                Some(Watch::Whole),
+                "the bound passed: the app is asked again"
+            );
+            assert_eq!(pages.withheld(), [7]);
+            assert!(pages.sent().is_empty());
+            assert_eq!(asked(&mut pages, 1_001 + HAND_OVER_BOUND_US), None);
+            assert_eq!(
+                asked(&mut pages, 1_000 + 2 * HAND_OVER_BOUND_US),
+                Some(Watch::Whole),
+                "and again a bound later"
+            );
+            pages.received(7, true, vec![0, 1, 2]);
+            assert!(pages.withheld().is_empty(), "the app handed its page over");
+            assert_eq!(pages.due_in(1_000 + 2 * HAND_OVER_BOUND_US), None);
+            assert_eq!(asked(&mut pages, 1_000 + 3 * HAND_OVER_BOUND_US), None);
+            // Nobody shows the window any more: nothing is held against the app.
+            let page = pages.offered.get_mut(&7).unwrap();
+            page.awaiting_whole = true;
+            page.asked = Asked::Overdue(0);
+            assert_eq!(pages.withheld(), [7]);
+            assert_eq!(
+                asked_stop(&mut pages),
+                Some(Watch::Stop),
+                "the app is told nobody shows the window"
+            );
+            assert!(pages.withheld().is_empty());
+        }
+
+        phase a_whole_frame_larger_than_the_plane_carries_is_said_and_asked_for_again;
+        // A whole frame larger than the plane carries goes to nobody and is said to be too large,
+        // in other words than a page its app withholds; the app is asked again a bound later, and
+        // the whole frame the plane does carry ends it. A change too large only starts the viewers
+        // over.
+        {
+            let mut pages = page("w1");
+            let asked = |pages: &mut PageTracks, now_us: u64| {
+                pages
+                    .offered
+                    .get_mut(&7)
+                    .unwrap()
+                    .follow(true, false, now_us)
+            };
+            assert_eq!(asked(&mut pages, 1_000), Some(Watch::Whole));
+            pages.received(7, true, vec![0; MAX_PAYLOAD + 1]);
+            assert_eq!(pages.oversized(), [7]);
+            assert!(pages.sent().is_empty(), "nobody was sent the page");
+            assert!(pages.offered.get(&7).unwrap().queue.is_empty());
+            assert_eq!(asked(&mut pages, 2_000), None, "the app was just asked");
+            assert_eq!(
+                asked(&mut pages, 1_000 + HAND_OVER_BOUND_US),
+                Some(Watch::Whole),
+                "a page changes: the app is asked again"
+            );
+            assert_eq!(pages.oversized(), [7]);
+            assert!(
+                pages.withheld().is_empty(),
+                "the app handed over what it has: it withholds nothing"
+            );
+            // The same said by the first part of a payload, before the rest came.
+            pages.too_large(7, true, 9 * 1024 * 1024);
+            assert_eq!(pages.oversized(), [7]);
+            // The page became one the plane carries.
+            pages.received(7, true, vec![0; MAX_PAYLOAD]);
+            assert!(pages.oversized().is_empty());
+            assert_eq!(pages.offered.get(&7).unwrap().queue.len(), 1);
+            // A change too large for the plane: the viewers start over at a whole frame.
+            pages.received(7, false, vec![1; MAX_PAYLOAD + 1]);
+            assert!(
+                pages.oversized().is_empty(),
+                "the page itself is not said to be too large"
+            );
+            assert!(pages.offered.get(&7).unwrap().queue.is_empty());
+            assert_eq!(
+                asked(&mut pages, 3_000 + HAND_OVER_BOUND_US),
+                Some(Watch::Whole)
+            );
+            // A payload that broke off does the same.
+            pages.received(7, true, vec![0, 1]);
+            pages.lost(7);
+            assert_eq!(
+                asked(&mut pages, 4_000 + HAND_OVER_BOUND_US),
+                Some(Watch::Whole)
+            );
+        }
     }
 
     fn asked_stop(pages: &mut PageTracks) -> Option<Watch> {
         pages.offered.get_mut(&7).unwrap().follow(false, false, 0)
-    }
-
-    /// A whole frame larger than the plane carries goes to nobody and is said to be too large,
-    /// in other words than a page its app withholds; the app is asked again a bound later, and
-    /// the whole frame the plane does carry ends it. A change too large only starts the viewers
-    /// over.
-    #[test]
-    fn a_whole_frame_larger_than_the_plane_carries_is_said_and_asked_for_again() {
-        let mut pages = page("w1");
-        let asked = |pages: &mut PageTracks, now_us: u64| {
-            pages
-                .offered
-                .get_mut(&7)
-                .unwrap()
-                .follow(true, false, now_us)
-        };
-        assert_eq!(asked(&mut pages, 1_000), Some(Watch::Whole));
-        pages.received(7, true, vec![0; MAX_PAYLOAD + 1]);
-        assert_eq!(pages.oversized(), [7]);
-        assert!(pages.sent().is_empty(), "nobody was sent the page");
-        assert!(pages.offered.get(&7).unwrap().queue.is_empty());
-        assert_eq!(asked(&mut pages, 2_000), None, "the app was just asked");
-        assert_eq!(
-            asked(&mut pages, 1_000 + HAND_OVER_BOUND_US),
-            Some(Watch::Whole),
-            "a page changes: the app is asked again"
-        );
-        assert_eq!(pages.oversized(), [7]);
-        assert!(
-            pages.withheld().is_empty(),
-            "the app handed over what it has: it withholds nothing"
-        );
-        // The same said by the first part of a payload, before the rest came.
-        pages.too_large(7, true, 9 * 1024 * 1024);
-        assert_eq!(pages.oversized(), [7]);
-        // The page became one the plane carries.
-        pages.received(7, true, vec![0; MAX_PAYLOAD]);
-        assert!(pages.oversized().is_empty());
-        assert_eq!(pages.offered.get(&7).unwrap().queue.len(), 1);
-        // A change too large for the plane: the viewers start over at a whole frame.
-        pages.received(7, false, vec![1; MAX_PAYLOAD + 1]);
-        assert!(
-            pages.oversized().is_empty(),
-            "the page itself is not said to be too large"
-        );
-        assert!(pages.offered.get(&7).unwrap().queue.is_empty());
-        assert_eq!(
-            asked(&mut pages, 3_000 + HAND_OVER_BOUND_US),
-            Some(Watch::Whole)
-        );
-        // A payload that broke off does the same.
-        pages.received(7, true, vec![0, 1]);
-        pages.lost(7);
-        assert_eq!(
-            asked(&mut pages, 4_000 + HAND_OVER_BOUND_US),
-            Some(Watch::Whole)
-        );
     }
 
     /// An app says it runs a page engine before the session knows which of its windows speaks:

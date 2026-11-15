@@ -145,21 +145,25 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_turn_follows_the_edge_that_points_up() {
-        assert_eq!(turn(DeviceOrientation::Normal), Transform::Normal);
-        assert_eq!(turn(DeviceOrientation::LeftUp), Transform::_90);
-        assert_eq!(turn(DeviceOrientation::BottomUp), Transform::_180);
-        assert_eq!(turn(DeviceOrientation::RightUp), Transform::_270);
-    }
+    tilo_test_env::scenario! {
+        fn a_built_in_panel_turns_with_the_edge_that_points_up;
 
-    #[test]
-    fn only_a_built_in_panel_turns() {
-        assert_eq!(panel(&[output("DP-1"), output("HDMI-A-1")]), None);
-        let outputs = [output("DP-1"), output("eDP-1")];
-        assert_eq!(
-            panel(&outputs).map(|output| output.name.as_str()),
-            Some("eDP-1")
-        );
+        phase the_turn_follows_the_edge_that_points_up;
+        {
+            assert_eq!(turn(DeviceOrientation::Normal), Transform::Normal);
+            assert_eq!(turn(DeviceOrientation::LeftUp), Transform::_90);
+            assert_eq!(turn(DeviceOrientation::BottomUp), Transform::_180);
+            assert_eq!(turn(DeviceOrientation::RightUp), Transform::_270);
+        }
+
+        phase only_a_built_in_panel_turns;
+        {
+            assert_eq!(panel(&[output("DP-1"), output("HDMI-A-1")]), None);
+            let outputs = [output("DP-1"), output("eDP-1")];
+            assert_eq!(
+                panel(&outputs).map(|output| output.name.as_str()),
+                Some("eDP-1")
+            );
+        }
     }
 }

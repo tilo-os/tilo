@@ -693,58 +693,62 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_drive_is_named_by_its_block_device_and_is_open_only_when_mounted() {
-        let handle = Handle::new(Arc::new(Launches::default()), std::sync::Arc::new(|| {}));
-        handle.saw_media(vec![medium("sdb1")]);
-        let listed = drives(&handle.inner);
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, "sdb1");
-        assert_eq!(listed[0].label, "KINGSTON");
-        assert!(
-            listed[0].open_at.is_none(),
-            "a mount the machine does not have is not open"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_tools_door_answers_drives_openers_and_the_app_list;
 
-    #[test]
-    fn the_apps_that_open_a_document_are_answered_to_files_alone() {
-        let handle = Handle::new(Arc::new(Launches::default()), std::sync::Arc::new(|| {}));
-        let caller = Caller {
-            app: "so.tilo.notes".into(),
-            workspace: "ws".into(),
-        };
-        let reply = document_apps(&handle.inner, &caller, "/home/you/notes.pdf");
-        assert!(!reply.accepted);
-        assert!(reply.documents.is_empty());
-    }
+        phase a_drive_is_named_by_its_block_device_and_is_open_only_when_mounted;
+        {
+            let handle = Handle::new(Arc::new(Launches::default()), std::sync::Arc::new(|| {}));
+            handle.saw_media(vec![medium("sdb1")]);
+            let listed = drives(&handle.inner);
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].id, "sdb1");
+            assert_eq!(listed[0].label, "KINGSTON");
+            assert!(
+                listed[0].open_at.is_none(),
+                "a mount the machine does not have is not open"
+            );
+        }
 
-    #[test]
-    fn the_app_list_announces_a_change_only_when_it_changes() {
-        let handle = Handle::new(Arc::new(Launches::default()), std::sync::Arc::new(|| {}));
-        let first = vec![AppEntry {
-            id: "so.tilo.notes".into(),
-            name: "Notes".into(),
-            package: Some("so.tilo.notes".into()),
-            icon: None,
-            program: None,
-            removal: AppRemoval::RemoveFromApps,
-            kind: AppKind::Tilo,
-            size: None,
-        }];
-        handle.saw_apps(&first);
-        assert_eq!(
-            *handle.inner.apps_changed.borrow(),
-            2,
-            "the first list is a change from none"
-        );
-        handle.saw_apps(&first);
-        assert_eq!(
-            *handle.inner.apps_changed.borrow(),
-            2,
-            "the same list wakes nobody"
-        );
-        handle.saw_apps(&[]);
-        assert_eq!(*handle.inner.apps_changed.borrow(), 3);
+        phase the_apps_that_open_a_document_are_answered_to_files_alone;
+        {
+            let handle = Handle::new(Arc::new(Launches::default()), std::sync::Arc::new(|| {}));
+            let caller = Caller {
+                app: "so.tilo.notes".into(),
+                workspace: "ws".into(),
+            };
+            let reply = document_apps(&handle.inner, &caller, "/home/you/notes.pdf");
+            assert!(!reply.accepted);
+            assert!(reply.documents.is_empty());
+        }
+
+        phase the_app_list_announces_a_change_only_when_it_changes;
+        {
+            let handle = Handle::new(Arc::new(Launches::default()), std::sync::Arc::new(|| {}));
+            let first = vec![AppEntry {
+                id: "so.tilo.notes".into(),
+                name: "Notes".into(),
+                package: Some("so.tilo.notes".into()),
+                icon: None,
+                program: None,
+                removal: AppRemoval::RemoveFromApps,
+                kind: AppKind::Tilo,
+                size: None,
+            }];
+            handle.saw_apps(&first);
+            assert_eq!(
+                *handle.inner.apps_changed.borrow(),
+                2,
+                "the first list is a change from none"
+            );
+            handle.saw_apps(&first);
+            assert_eq!(
+                *handle.inner.apps_changed.borrow(),
+                2,
+                "the same list wakes nobody"
+            );
+            handle.saw_apps(&[]);
+            assert_eq!(*handle.inner.apps_changed.borrow(), 3);
+        }
     }
 }

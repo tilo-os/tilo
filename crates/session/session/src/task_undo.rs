@@ -482,109 +482,113 @@ mod tests {
         )
     }
 
-    /// The run's change is taken back by the document's own history, and the document it was
-    /// undone in is reported.
-    #[test]
-    fn a_tasks_run_is_undone_in_the_document_it_changed() {
-        let (doc, body) = edited(TASK);
-        let door = door(doc, true, true);
-        assert_eq!(
-            undo(&door).expect("the document publishes its history"),
-            vec![TaskRunDocument {
-                app: APP.into(),
-                record: RECORD.into(),
-            }]
-        );
-        assert_eq!(
-            door.doc.lock_recover().text(&body).unwrap(),
-            "Shipping notes."
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_run_is_undone_where_its_history_is_kept;
 
-    /// An agent connection's run is taken back by its group like a task's: the document's own
-    /// history undoes what it grouped under the connection, and the person's later sentence stays.
-    #[test]
-    fn a_connections_run_is_undone_by_its_group_and_keeps_later_edits() {
-        const CONNECTION: &str = "mcp:5b1f0c2e-3a9d";
-        let (mut doc, body) = edited(CONNECTION);
-        // The person writes elsewhere in the same note after the run: their words are no step of
-        // it, and the revert leaves them.
-        doc.set_actor(ActorId::from(b"person".as_slice()));
-        doc.splice_text(&body, 0, 0, "Reviewed: ").unwrap();
-        doc.commit();
-        let door = door(doc, true, true);
-        assert_eq!(
-            undo_run(&door, CONNECTION).expect("the document publishes its history"),
-            vec![TaskRunDocument {
-                app: APP.into(),
-                record: RECORD.into(),
-            }]
-        );
-        assert_eq!(
-            door.doc.lock_recover().text(&body).unwrap(),
-            "Reviewed: Shipping notes.",
-            "the run's sentence went, the person's later one stayed"
-        );
-    }
+        phase a_tasks_run_is_undone_in_the_document_it_changed;
+        // The run's change is taken back by the document's own history, and the document it was
+        // undone in is reported.
+        {
+            let (doc, body) = edited(TASK);
+            let door = door(doc, true, true);
+            assert_eq!(
+                undo(&door).expect("the document publishes its history"),
+                vec![TaskRunDocument {
+                    app: APP.into(),
+                    record: RECORD.into(),
+                }]
+            );
+            assert_eq!(
+                door.doc.lock_recover().text(&body).unwrap(),
+                "Shipping notes."
+            );
+        }
 
-    /// The host cannot undo a run it cannot reach or that publishes no history: it says so, and
-    /// writes nothing.
-    #[test]
-    fn a_run_no_open_document_can_take_back_is_refused_by_name() {
-        let (doc, _) = edited(TASK);
-        let refused = undo(&door(doc.clone(), true, false)).unwrap_err();
-        assert!(refused.contains("open the documents"), "{refused}");
-        let refused = undo(&door(doc, false, true)).unwrap_err();
-        assert!(
-            refused.contains(APP) && refused.contains("history"),
-            "{refused}"
-        );
-    }
+        phase a_connections_run_is_undone_by_its_group_and_keeps_later_edits;
+        // An agent connection's run is taken back by its group like a task's: the document's own
+        // history undoes what it grouped under the connection, and the person's later sentence stays.
+        {
+            const CONNECTION: &str = "mcp:5b1f0c2e-3a9d";
+            let (mut doc, body) = edited(CONNECTION);
+            // The person writes elsewhere in the same note after the run: their words are no step of
+            // it, and the revert leaves them.
+            doc.set_actor(ActorId::from(b"person".as_slice()));
+            doc.splice_text(&body, 0, 0, "Reviewed: ").unwrap();
+            doc.commit();
+            let door = door(doc, true, true);
+            assert_eq!(
+                undo_run(&door, CONNECTION).expect("the document publishes its history"),
+                vec![TaskRunDocument {
+                    app: APP.into(),
+                    record: RECORD.into(),
+                }]
+            );
+            assert_eq!(
+                door.doc.lock_recover().text(&body).unwrap(),
+                "Reviewed: Shipping notes.",
+                "the run's sentence went, the person's later one stayed"
+            );
+        }
 
-    /// A record the session keeps itself — no app's process holds it — is undone the same way, at
-    /// the session's own provider: the run is asked of the root of the app's record there, not of
-    /// a provider an app process never published.
-    #[test]
-    fn a_run_in_a_record_the_session_keeps_is_undone_at_the_session() {
-        let (doc, body) = edited(TASK);
-        let door = session_door(doc);
-        // The activity names a session-kept record as the app's own record of the workspace.
-        let primary = ui::record::RecordId::package_primary().as_str().to_owned();
-        let undone = undo_task_run(
-            &door,
-            &caller(),
-            TASK,
-            &[(APP.to_owned(), primary.clone())],
-            Duration::from_secs(5),
-        )
-        .expect("the session keeps the record's history");
-        assert_eq!(
-            undone,
-            vec![TaskRunDocument {
-                app: APP.into(),
-                record: primary,
-            }]
-        );
-        assert_eq!(
-            door.doc.lock_recover().text(&body).unwrap(),
-            "Shipping notes."
-        );
-    }
+        phase a_run_no_open_document_can_take_back_is_refused_by_name;
+        // The host cannot undo a run it cannot reach or that publishes no history: it says so, and
+        // writes nothing.
+        {
+            let (doc, _) = edited(TASK);
+            let refused = undo(&door(doc.clone(), true, false)).unwrap_err();
+            assert!(refused.contains("open the documents"), "{refused}");
+            let refused = undo(&door(doc, false, true)).unwrap_err();
+            assert!(
+                refused.contains(APP) && refused.contains("history"),
+                "{refused}"
+            );
+        }
 
-    /// The session answers for the records its services keep: an app whose record it keeps none of
-    /// has no history to undo there, and the refusal says so rather than claiming the undo.
-    #[test]
-    fn a_record_the_session_does_not_keep_has_no_history_to_undo_there() {
-        let (doc, _) = edited(TASK);
-        let door = session_door(doc);
-        let refused = undo_task_run(
-            &door,
-            &caller(),
-            TASK,
-            &[("so.tilo.elsewhere".to_owned(), RECORD.to_owned())],
-            Duration::from_secs(5),
-        )
-        .unwrap_err();
-        assert!(refused.contains("no history"), "{refused}");
+        phase a_run_in_a_record_the_session_keeps_is_undone_at_the_session;
+        // A record the session keeps itself — no app's process holds it — is undone the same way, at
+        // the session's own provider: the run is asked of the root of the app's record there, not of
+        // a provider an app process never published.
+        {
+            let (doc, body) = edited(TASK);
+            let door = session_door(doc);
+            // The activity names a session-kept record as the app's own record of the workspace.
+            let primary = ui::record::RecordId::package_primary().as_str().to_owned();
+            let undone = undo_task_run(
+                &door,
+                &caller(),
+                TASK,
+                &[(APP.to_owned(), primary.clone())],
+                Duration::from_secs(5),
+            )
+            .expect("the session keeps the record's history");
+            assert_eq!(
+                undone,
+                vec![TaskRunDocument {
+                    app: APP.into(),
+                    record: primary,
+                }]
+            );
+            assert_eq!(
+                door.doc.lock_recover().text(&body).unwrap(),
+                "Shipping notes."
+            );
+        }
+
+        phase a_record_the_session_does_not_keep_has_no_history_to_undo_there;
+        // The session answers for the records its services keep: an app whose record it keeps none of
+        // has no history to undo there, and the refusal says so rather than claiming the undo.
+        {
+            let (doc, _) = edited(TASK);
+            let door = session_door(doc);
+            let refused = undo_task_run(
+                &door,
+                &caller(),
+                TASK,
+                &[("so.tilo.elsewhere".to_owned(), RECORD.to_owned())],
+                Duration::from_secs(5),
+            )
+            .unwrap_err();
+            assert!(refused.contains("no history"), "{refused}");
+        }
     }
 }

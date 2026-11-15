@@ -1771,50 +1771,163 @@ mod tests {
         (applications, host)
     }
 
-    #[test]
-    fn a_change_to_the_lists_reaches_the_next_search() {
-        let dir = tempfile::tempdir().expect("a directory");
-        let file = dir.path().join("apps");
-        std::fs::write(&file, "Sheets\n").expect("the first list");
-        let lists = crate::lists::Lists::follow(
-            "search-lists-test",
-            vec![dir.path().to_path_buf()],
-            lists_in(file.clone()),
-        )
-        .expect("lists followed");
-        let search = SessionSearch::new(
-            SearchOptions::default(),
-            Some(Arc::new(lists)),
-            "",
-            None,
-            None,
-            None,
-        );
-        // Starting the lists reads them on a worker, so the first search waits for that read to
-        // land before it can see what they hold.
-        tilo_test_env::wait_until("the lists' first read", || {
-            found(&search, "viewer").0 == ["Sheets"]
-        });
-        assert_eq!(
-            found(&search, "viewer"),
-            (vec!["Sheets".to_owned()], vec!["Sheets Viewer".to_owned()])
-        );
+    tilo_test_env::scenario! {
+        fn search_reads_the_lists_it_was_given;
 
-        std::fs::write(dir.path().join("apps.new"), "Calendar\n").expect("the next list");
-        std::fs::rename(dir.path().join("apps.new"), &file).expect("the list replaced");
-        let started = Instant::now();
-        let mut now = found(&search, "viewer");
-        while now.0 != ["Calendar"] && started.elapsed() < Duration::from_secs(10) {
-            std::thread::park_timeout(Duration::from_millis(10));
-            now = found(&search, "viewer");
-        }
-        assert_eq!(
-            now,
-            (
-                vec!["Calendar".to_owned()],
-                vec!["Calendar Viewer".to_owned()]
+        phase a_change_to_the_lists_reaches_the_next_search;
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let file = dir.path().join("apps");
+            std::fs::write(&file, "Sheets\n").expect("the first list");
+            let lists = crate::lists::Lists::follow(
+                "search-lists-test",
+                vec![dir.path().to_path_buf()],
+                lists_in(file.clone()),
             )
-        );
+            .expect("lists followed");
+            let search = SessionSearch::new(
+                SearchOptions::default(),
+                Some(Arc::new(lists)),
+                "",
+                None,
+                None,
+                None,
+            );
+            // Starting the lists reads them on a worker, so the first search waits for that read to
+            // land before it can see what they hold.
+            tilo_test_env::wait_until("the lists' first read", || {
+                found(&search, "viewer").0 == ["Sheets"]
+            });
+            assert_eq!(
+                found(&search, "viewer"),
+                (vec!["Sheets".to_owned()], vec!["Sheets Viewer".to_owned()])
+            );
+
+            std::fs::write(dir.path().join("apps.new"), "Calendar\n").expect("the next list");
+            std::fs::rename(dir.path().join("apps.new"), &file).expect("the list replaced");
+            let started = Instant::now();
+            let mut now = found(&search, "viewer");
+            while now.0 != ["Calendar"] && started.elapsed() < Duration::from_secs(10) {
+                std::thread::park_timeout(Duration::from_millis(10));
+                now = found(&search, "viewer");
+            }
+            assert_eq!(
+                now,
+                (
+                    vec!["Calendar".to_owned()],
+                    vec!["Calendar Viewer".to_owned()]
+                )
+            );
+        }
+
+        phase an_agents_search_finds_nothing_of_the_shells_own_rows;
+        // The shell's own rows (a window, by the title of what it shows) span every workspace: the
+        // person's search finds them, and an agent's, confined to one workspace, never does.
+        {
+            let search = SessionSearch::new(SearchOptions::default(), None, "", None, None, None);
+            let window =
+                tilo_actions::ResourceSpec::new("window:7", "desktop.window", "Quarterly plan — Notes")
+                    .with_action(tilo_actions::ActionSpec::immediate_encoded(
+                        "focus",
+                        "Quarterly plan — Notes",
+                        tilo_actions::ExecutionLocus::ClientLocal,
+                        tilo_actions::EncodedAction {
+                            type_id: "desktop.window".into(),
+                            payload: Vec::new(),
+                        },
+                    ));
+            search.observe(&[window], Vec::new(), None, Vec::new());
+            let titles = |hits: Vec<tilo_desktop_search::Hit>| -> Vec<String> {
+                hits.into_iter().map(|hit| hit.title).collect()
+            };
+            let person = titles(search.find("Quarterly plan"));
+            assert!(
+                person.iter().any(|title| title.contains("Quarterly plan")),
+                "the person's search finds the window: {person:?}"
+            );
+            let agent = titles(search.find_in("Quarterly plan", Some("garden")));
+            assert!(
+                !agent.iter().any(|title| title.contains("Quarterly plan")),
+                "an agent in one workspace finds no window of the shell: {agent:?}"
+            );
+        }
+
+        phase widening_search_lists_other_workspaces_places_by_name;
+        {
+            let mut recent = RecentPlaces::default();
+            recent.record(place("Groceries", "here"));
+            recent.record(place("Quarterly plan", "elsewhere"));
+            let search = SessionSearch::new(
+                SearchOptions {
+                    places: recent,
+                    ..SearchOptions::default()
+                },
+                None,
+                "",
+                None,
+                None,
+                None,
+            );
+            search.set_workspaces(vec![
+                ("here".into(), "Main".into()),
+                ("elsewhere".into(), "Lounge".into()),
+            ]);
+
+            // Narrowed to the workspace in front, its own places only.
+            assert_eq!(
+                places_listed(&search, "here", &Scope::Workspace)
+                    .into_iter()
+                    .map(|(title, _)| title)
+                    .collect::<Vec<_>>(),
+                ["Groceries"]
+            );
+
+            // Widened, another workspace's place is found beside its own, saying where it is.
+            let wide = places_listed(&search, "here", &Scope::Everywhere);
+            let elsewhere = wide
+                .iter()
+                .find(|(title, _)| title == "Quarterly plan")
+                .expect("another workspace's place is found");
+            assert!(
+                elsewhere.1.iter().any(|fact| fact.contains("Lounge")),
+                "the row says which workspace holds it: {:?}",
+                elsewhere.1
+            );
+            assert!(
+                wide.iter().any(|(title, _)| title == "Groceries"),
+                "the workspace in front keeps its places: {wide:?}"
+            );
+        }
+
+        phase fixed_lists_keep_what_search_built_from_them;
+        {
+            let lists = crate::lists::Lists::fixed(crate::lists::AppLists::default());
+            let search = SessionSearch::new(
+                SearchOptions::default(),
+                Some(Arc::new(lists)),
+                "",
+                None,
+                None,
+                None,
+            );
+            let before = search
+                .kept
+                .borrow()
+                .reading
+                .clone()
+                .expect("the reading the sources were built from")
+                .generation();
+            let _ = search.feed("workspace", &Scope::Workspace);
+            let kept = search.kept.borrow();
+            assert_eq!(
+                before,
+                kept.reading
+                    .clone()
+                    .expect("still the same reading")
+                    .generation(),
+                "a list that did not change is not read again"
+            );
+        }
     }
 
     /// A row is collected from one reading of the device's indexes and chosen later, so the record
@@ -1870,67 +1983,334 @@ mod tests {
         );
     }
 
-    /// A record this workspace holds is found by the name its index gives it, and choosing it opens
-    /// it in its app as a link to it does: the app's `open` on that record, through the action host,
-    /// which brings the window on it forward or opens the app there.
-    #[test]
-    fn a_record_held_here_chosen_in_search_opens_in_its_app() {
-        const PDF: &str = "so.tilo.pdf-viewer";
-        const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
-        let home = tilo_test_env::TestHome::new().expect("a home");
-        let directory = app_state::workspace_index_directory(home.data(), PDF, "here")
-            .expect("an index directory");
-        std::fs::create_dir_all(&directory).expect("the index's directory");
-        let mut index = automerge::AutoCommit::new();
-        let form = ui::record::RecordId::parse(FORM).expect("a record id");
-        assert!(ui::record::index::reference(
-            &mut index,
-            &form,
-            &ui::record::RecordKind::new("pdf.document")
-        ));
-        assert!(ui::record::index::set_name(
-            &mut index,
-            &form,
-            Some("application.pdf")
-        ));
-        std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+    tilo_test_env::scenario! {
+        fn a_record_chosen_in_search_opens_in_its_app;
 
-        let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
-        let search = SessionSearch::new(
-            SearchOptions {
-                records: Some(crate::records::Records::of(home.data().to_path_buf())),
-                ..SearchOptions::default()
-            },
-            None,
-            "",
-            Some(Rc::new(Opening(Rc::clone(&opened)))),
-            None,
-            None,
-        );
-        let feed = search.feed("here", &Scope::Workspace);
-        let hit = feed
-            .sources
-            .iter()
-            .find(|source| source.id() == "records")
-            .and_then(|source| source.query("application").into_iter().next())
-            .expect("the form is found by its name");
-        assert_eq!(hit.title, "application.pdf");
-        search
-            .perform_checked("here", hit.target, &mut |_| Ok(()))
-            .expect("the record opens");
-        let link = crate::platform::notice::open_target(
-            "here",
-            &crate::platform::notice::Place {
-                app: PDF.into(),
-                record: FORM.into(),
-                resource: String::new(),
-            },
-        );
-        assert_eq!(
-            opened.borrow().as_slice(),
-            [(link.provider, link.address.action)],
-            "the record opens in its app, as a link to it does"
-        );
+        phase a_record_held_here_chosen_in_search_opens_in_its_app;
+        // A record this workspace holds is found by the name its index gives it, and choosing it opens
+        // it in its app as a link to it does: the app's `open` on that record, through the action host,
+        // which brings the window on it forward or opens the app there.
+        {
+            const PDF: &str = "so.tilo.pdf-viewer";
+            const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
+            let home = tilo_test_env::TestHome::new().expect("a home");
+            let directory = app_state::workspace_index_directory(home.data(), PDF, "here")
+                .expect("an index directory");
+            std::fs::create_dir_all(&directory).expect("the index's directory");
+            let mut index = automerge::AutoCommit::new();
+            let form = ui::record::RecordId::parse(FORM).expect("a record id");
+            assert!(ui::record::index::reference(
+                &mut index,
+                &form,
+                &ui::record::RecordKind::new("pdf.document")
+            ));
+            assert!(ui::record::index::set_name(
+                &mut index,
+                &form,
+                Some("application.pdf")
+            ));
+            std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+
+            let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let search = SessionSearch::new(
+                SearchOptions {
+                    records: Some(crate::records::Records::of(home.data().to_path_buf())),
+                    ..SearchOptions::default()
+                },
+                None,
+                "",
+                Some(Rc::new(Opening(Rc::clone(&opened)))),
+                None,
+                None,
+            );
+            let feed = search.feed("here", &Scope::Workspace);
+            let hit = feed
+                .sources
+                .iter()
+                .find(|source| source.id() == "records")
+                .and_then(|source| source.query("application").into_iter().next())
+                .expect("the form is found by its name");
+            assert_eq!(hit.title, "application.pdf");
+            search
+                .perform_checked("here", hit.target, &mut |_| Ok(()))
+                .expect("the record opens");
+            let link = crate::platform::notice::open_target(
+                "here",
+                &crate::platform::notice::Place {
+                    app: PDF.into(),
+                    record: FORM.into(),
+                    resource: String::new(),
+                },
+            );
+            assert_eq!(
+                opened.borrow().as_slice(),
+                [(link.provider, link.address.action)],
+                "the record opens in its app, as a link to it does"
+            );
+        }
+
+        phase a_page_s_search_finds_a_workspace_record_by_name_and_opens_it_in_its_app;
+        // The page's search: the session's search mounted with no action host — a page opens an app
+        // on its own shell — over the records its store holds, as the page's replication took them in.
+        // A PDF its workspace's index names `application.pdf` is offered for "application", and
+        // choosing it opens PDF Viewer on that record, as a link to the record opens it on the page.
+        {
+            const PDF: &str = "so.tilo.pdf-viewer";
+            const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
+            let _settled = ui::motion::testing::settled();
+            let mut minter = tilo_desktop_model::IdMinter::new(7);
+            let tree = tilo_desktop_surface::seed_tree(&mut minter, "Visa", Vec::new());
+            let workspace = tree
+                .active_workspace()
+                .map(|held| held.id().to_string())
+                .expect("the shell shows a workspace");
+
+            // The workspace's index of PDF Viewer's records, as it reached the page's store.
+            let home = tilo_test_env::TestHome::new().expect("a home");
+            let directory = app_state::workspace_index_directory(home.data(), PDF, &workspace)
+                .expect("an index directory");
+            std::fs::create_dir_all(&directory).expect("the index's directory");
+            let mut index = automerge::AutoCommit::new();
+            let form = ui::record::RecordId::parse(FORM).expect("a record id");
+            assert!(ui::record::index::reference(
+                &mut index,
+                &form,
+                &ui::record::RecordKind::new("pdf.document")
+            ));
+            assert!(ui::record::index::set_name(
+                &mut index,
+                &form,
+                Some("application.pdf")
+            ));
+            std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+            let store: crate::platform::Store =
+                std::sync::Arc::new(app_state::FsStore::new(home.data()));
+
+            let search = Rc::new(SessionSearch::new(
+                SearchOptions {
+                    records: Some(crate::records::Records::over(
+                        store,
+                        crate::platform::records::Changes::default(),
+                    )),
+                    ..SearchOptions::default()
+                },
+                None,
+                "ada",
+                None,
+                None,
+                None,
+            ));
+            let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(
+                tree,
+                7,
+                Box::new(RecordWindows(Rc::clone(&opened))),
+            );
+            handle.set_viewport_width(1200.0);
+            handle.set_search_host(Rc::clone(&search) as Rc<dyn SearchHost>);
+            let mut frame = ui::headless::FrameHarness::for_root(
+                ui::State::new(),
+                surface,
+                (1200, 800),
+                ui::Theme::dark(),
+            );
+
+            handle.open_search(Scope::Workspace, Some("application".into()));
+            let started = Instant::now();
+            let at = loop {
+                frame.relayout();
+                let (_, rows) = handle.search_rows();
+                if let Some(at) = rows.iter().position(|row| row.title == "application.pdf") {
+                    break at;
+                }
+                assert!(
+                    started.elapsed() < tilo_test_env::hang_bound(),
+                    "the form is offered by its name: {rows:?}"
+                );
+                std::thread::park_timeout(Duration::from_millis(5));
+            };
+            handle.choose_search_row(at, None);
+            for _ in 0..3 {
+                frame.relayout();
+            }
+            assert!(
+                search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
+                "the page's shell opens the record itself"
+            );
+            assert_eq!(
+                opened.borrow().as_slice(),
+                [(PDF.to_owned(), FORM.to_owned())],
+                "PDF Viewer opens on the form"
+            );
+        }
+
+        phase a_page_s_search_finds_a_note_by_its_title_and_its_words_and_opens_that_note;
+        // The page's search over the notebook its store holds, as the page's replication took it in
+        // and with no window of Notes open: a note is offered by its title, and by what is written in
+        // it, within a moment, and choosing it opens that very note in Notes.
+        {
+            let _settled = ui::motion::testing::settled();
+            let mut minter = tilo_desktop_model::IdMinter::new(7);
+            let tree = tilo_desktop_surface::seed_tree(&mut minter, "My workspace", Vec::new());
+            let workspace = tree
+                .active_workspace()
+                .map(|held| held.id().to_string())
+                .expect("the shell shows a workspace");
+            let home = tilo_test_env::TestHome::new().expect("a home");
+            let (store, hello, handbook) = a_page_s_notebook(&home, &workspace);
+
+            let invoked = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let search = Rc::new(SessionSearch::new(
+                SearchOptions {
+                    records: Some(crate::records::Records::over(
+                        store,
+                        crate::platform::records::Changes::default(),
+                    )),
+                    ..SearchOptions::default()
+                },
+                None,
+                "ada",
+                Some(Rc::new(Revealing(Rc::clone(&invoked))) as Rc<dyn AppActions>),
+                None,
+                None,
+            ));
+            let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(
+                tree,
+                7,
+                Box::new(RecordWindows(Rc::new(std::cell::RefCell::new(Vec::new())))),
+            );
+            handle.set_viewport_width(1200.0);
+            handle.set_search_host(Rc::clone(&search) as Rc<dyn SearchHost>);
+            let mut frame = ui::headless::FrameHarness::for_root(
+                ui::State::new(),
+                surface,
+                (1200, 800),
+                ui::Theme::dark(),
+            );
+
+            for (query, title, note) in [
+                ("net 30", "Hello from Claude Code", &hello),
+                ("handbook", "files/notes/handbook.md", &handbook),
+            ] {
+                handle.open_search(Scope::Workspace, Some(query.into()));
+                let started = Instant::now();
+                let at = loop {
+                    frame.relayout();
+                    let (_, rows) = handle.search_rows();
+                    if let Some(at) = rows.iter().position(|row| row.title == title) {
+                        break at;
+                    }
+                    assert!(
+                        started.elapsed() < tilo_test_env::hang_bound(),
+                        "{query:?} offers the note {title:?}: {rows:?}"
+                    );
+                    std::thread::park_timeout(Duration::from_millis(5));
+                };
+                let took = started.elapsed();
+                assert!(
+                    took < Duration::from_secs(1),
+                    "{query:?} offered {title:?} only after {took:?}"
+                );
+                handle.choose_search_row(at, None);
+                for _ in 0..3 {
+                    frame.relayout();
+                }
+                assert!(
+                    search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
+                    "the row runs"
+                );
+                let (provider, resource, action, _) = invoked
+                    .borrow_mut()
+                    .pop()
+                    .unwrap_or_else(|| panic!("choosing {title:?} opens something"));
+                assert_eq!(
+                    tilo_actions::remote::application_provider(&provider).map(|(_, app)| app),
+                    Some(NOTES_APP),
+                    "{title:?} opens in Notes"
+                );
+                assert_eq!(
+                    (resource.as_str(), action.as_str()),
+                    (note.as_str(), "open"),
+                    "{title:?} opens that note"
+                );
+            }
+        }
+
+        phase a_file_record_chosen_in_search_is_brought_here_and_opened;
+        // A record kept as a file is brought here and opened: the row a person chose in search leaves
+        // the workspace naming the record *and* shows them the document, in the app that takes its
+        // type.
+        {
+            let home = tilo_test_env::TestHome::new().expect("a home");
+            let file = home.home().join("Budget.note");
+            std::fs::write(&file, "what the record holds").expect("the record's file");
+            let record = ui::record::RecordId::for_file(&file);
+            // The workspace that holds it names it in its index.
+            let directory =
+                app_state::workspace_index_directory(home.data(), "so.tilo.notes", "elsewhere")
+                    .expect("an index directory");
+            std::fs::create_dir_all(&directory).expect("the index's directory");
+            let mut index = automerge::AutoCommit::new();
+            assert!(ui::record::index::reference(
+                &mut index,
+                &record,
+                &ui::record::RecordKind::new("document")
+            ));
+            std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+
+            let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let search = SessionSearch::new(
+                SearchOptions {
+                    records: Some(crate::records::Records::of(home.data().to_path_buf())),
+                    ..SearchOptions::default()
+                },
+                None,
+                "",
+                Some(Rc::new(Opening(Rc::clone(&opened)))),
+                None,
+                None,
+            );
+            let row = Target::Invoke(Box::new(
+                InvokeTarget::action(
+                    DESKTOP_APP,
+                    "here",
+                    record_rows::RECORDS_RESOURCE,
+                    record_rows::BRING_HERE,
+                )
+                .with_argument(record_rows::RECORD_PARAM, record.as_str())
+                .with_argument(record_rows::KIND_PARAM, "document")
+                .with_argument(record_rows::PACKAGE_PARAM, "so.tilo.notes"),
+            ));
+            search
+                .perform_checked("here", row, &mut |_| Ok(()))
+                .expect("the record is brought here and opened");
+            assert_eq!(
+                opened.borrow().as_slice(),
+                [("here".to_owned(), tilo_desktop_search::file_uri(&file))],
+                "the document is opened by its path, not by the record id's `file:/…`"
+            );
+
+            // The file going away leaves the record held and says what is gone.
+            std::fs::remove_file(&file).expect("the file goes");
+            let row = Target::Invoke(Box::new(
+                InvokeTarget::action(
+                    DESKTOP_APP,
+                    "here",
+                    record_rows::RECORDS_RESOURCE,
+                    record_rows::BRING_HERE,
+                )
+                .with_argument(record_rows::RECORD_PARAM, record.as_str())
+                .with_argument(record_rows::KIND_PARAM, "document")
+                .with_argument(record_rows::PACKAGE_PARAM, "so.tilo.notes"),
+            ));
+            assert!(
+                matches!(
+                    search.perform_checked("here", row, &mut |_| Ok(())),
+                    Err(DoorError::Failed(ref reason)) if reason.contains("is gone")
+                ),
+                "a record whose file is gone is still held, and the launch says why it does not open"
+            );
+        }
     }
 
     /// The windows a page's shell opens on records: each record launch opens its app on that
@@ -1973,101 +2353,6 @@ mod tests {
                 pinned: false,
             })
         }
-    }
-
-    /// The page's search: the session's search mounted with no action host — a page opens an app
-    /// on its own shell — over the records its store holds, as the page's replication took them in.
-    /// A PDF its workspace's index names `application.pdf` is offered for "application", and
-    /// choosing it opens PDF Viewer on that record, as a link to the record opens it on the page.
-    #[test]
-    fn a_page_s_search_finds_a_workspace_record_by_name_and_opens_it_in_its_app() {
-        const PDF: &str = "so.tilo.pdf-viewer";
-        const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
-        let _settled = ui::motion::testing::settled();
-        let mut minter = tilo_desktop_model::IdMinter::new(7);
-        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Visa", Vec::new());
-        let workspace = tree
-            .active_workspace()
-            .map(|held| held.id().to_string())
-            .expect("the shell shows a workspace");
-
-        // The workspace's index of PDF Viewer's records, as it reached the page's store.
-        let home = tilo_test_env::TestHome::new().expect("a home");
-        let directory = app_state::workspace_index_directory(home.data(), PDF, &workspace)
-            .expect("an index directory");
-        std::fs::create_dir_all(&directory).expect("the index's directory");
-        let mut index = automerge::AutoCommit::new();
-        let form = ui::record::RecordId::parse(FORM).expect("a record id");
-        assert!(ui::record::index::reference(
-            &mut index,
-            &form,
-            &ui::record::RecordKind::new("pdf.document")
-        ));
-        assert!(ui::record::index::set_name(
-            &mut index,
-            &form,
-            Some("application.pdf")
-        ));
-        std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
-        let store: crate::platform::Store =
-            std::sync::Arc::new(app_state::FsStore::new(home.data()));
-
-        let search = Rc::new(SessionSearch::new(
-            SearchOptions {
-                records: Some(crate::records::Records::over(
-                    store,
-                    crate::platform::records::Changes::default(),
-                )),
-                ..SearchOptions::default()
-            },
-            None,
-            "ada",
-            None,
-            None,
-            None,
-        ));
-        let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
-        let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(
-            tree,
-            7,
-            Box::new(RecordWindows(Rc::clone(&opened))),
-        );
-        handle.set_viewport_width(1200.0);
-        handle.set_search_host(Rc::clone(&search) as Rc<dyn SearchHost>);
-        let mut frame = ui::headless::FrameHarness::for_root(
-            ui::State::new(),
-            surface,
-            (1200, 800),
-            ui::Theme::dark(),
-        );
-
-        handle.open_search(Scope::Workspace, Some("application".into()));
-        let started = Instant::now();
-        let at = loop {
-            frame.relayout();
-            let (_, rows) = handle.search_rows();
-            if let Some(at) = rows.iter().position(|row| row.title == "application.pdf") {
-                break at;
-            }
-            assert!(
-                started.elapsed() < tilo_test_env::hang_bound(),
-                "the form is offered by its name: {rows:?}"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        };
-        handle.choose_search_row(at, None);
-        for _ in 0..3 {
-            frame.relayout();
-        }
-        assert!(
-            search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
-            "the page's shell opens the record itself"
-        );
-        assert_eq!(
-            opened.borrow().as_slice(),
-            [(PDF.to_owned(), FORM.to_owned())],
-            "PDF Viewer opens on the form"
-        );
     }
 
     /// A page's action host that carries out every invocation a row runs, as the page's own
@@ -2163,174 +2448,6 @@ mod tests {
     /// Notes, as the page's bundle registers it.
     const NOTES_APP: &str = "so.tilo.notes";
 
-    /// The page's search over the notebook its store holds, as the page's replication took it in
-    /// and with no window of Notes open: a note is offered by its title, and by what is written in
-    /// it, within a moment, and choosing it opens that very note in Notes.
-    #[test]
-    fn a_page_s_search_finds_a_note_by_its_title_and_its_words_and_opens_that_note() {
-        let _settled = ui::motion::testing::settled();
-        let mut minter = tilo_desktop_model::IdMinter::new(7);
-        let tree = tilo_desktop_surface::seed_tree(&mut minter, "My workspace", Vec::new());
-        let workspace = tree
-            .active_workspace()
-            .map(|held| held.id().to_string())
-            .expect("the shell shows a workspace");
-        let home = tilo_test_env::TestHome::new().expect("a home");
-        let (store, hello, handbook) = a_page_s_notebook(&home, &workspace);
-
-        let invoked = Rc::new(std::cell::RefCell::new(Vec::new()));
-        let search = Rc::new(SessionSearch::new(
-            SearchOptions {
-                records: Some(crate::records::Records::over(
-                    store,
-                    crate::platform::records::Changes::default(),
-                )),
-                ..SearchOptions::default()
-            },
-            None,
-            "ada",
-            Some(Rc::new(Revealing(Rc::clone(&invoked))) as Rc<dyn AppActions>),
-            None,
-            None,
-        ));
-        let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(
-            tree,
-            7,
-            Box::new(RecordWindows(Rc::new(std::cell::RefCell::new(Vec::new())))),
-        );
-        handle.set_viewport_width(1200.0);
-        handle.set_search_host(Rc::clone(&search) as Rc<dyn SearchHost>);
-        let mut frame = ui::headless::FrameHarness::for_root(
-            ui::State::new(),
-            surface,
-            (1200, 800),
-            ui::Theme::dark(),
-        );
-
-        for (query, title, note) in [
-            ("net 30", "Hello from Claude Code", &hello),
-            ("handbook", "files/notes/handbook.md", &handbook),
-        ] {
-            handle.open_search(Scope::Workspace, Some(query.into()));
-            let started = Instant::now();
-            let at = loop {
-                frame.relayout();
-                let (_, rows) = handle.search_rows();
-                if let Some(at) = rows.iter().position(|row| row.title == title) {
-                    break at;
-                }
-                assert!(
-                    started.elapsed() < tilo_test_env::hang_bound(),
-                    "{query:?} offers the note {title:?}: {rows:?}"
-                );
-                std::thread::park_timeout(Duration::from_millis(5));
-            };
-            let took = started.elapsed();
-            assert!(
-                took < Duration::from_secs(1),
-                "{query:?} offered {title:?} only after {took:?}"
-            );
-            handle.choose_search_row(at, None);
-            for _ in 0..3 {
-                frame.relayout();
-            }
-            assert!(
-                search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
-                "the row runs"
-            );
-            let (provider, resource, action, _) = invoked
-                .borrow_mut()
-                .pop()
-                .unwrap_or_else(|| panic!("choosing {title:?} opens something"));
-            assert_eq!(
-                tilo_actions::remote::application_provider(&provider).map(|(_, app)| app),
-                Some(NOTES_APP),
-                "{title:?} opens in Notes"
-            );
-            assert_eq!(
-                (resource.as_str(), action.as_str()),
-                (note.as_str(), "open"),
-                "{title:?} opens that note"
-            );
-        }
-    }
-
-    /// A record kept as a file is brought here and opened: the row a person chose in search leaves
-    /// the workspace naming the record *and* shows them the document, in the app that takes its
-    /// type.
-    #[test]
-    fn a_file_record_chosen_in_search_is_brought_here_and_opened() {
-        let home = tilo_test_env::TestHome::new().expect("a home");
-        let file = home.home().join("Budget.note");
-        std::fs::write(&file, "what the record holds").expect("the record's file");
-        let record = ui::record::RecordId::for_file(&file);
-        // The workspace that holds it names it in its index.
-        let directory =
-            app_state::workspace_index_directory(home.data(), "so.tilo.notes", "elsewhere")
-                .expect("an index directory");
-        std::fs::create_dir_all(&directory).expect("the index's directory");
-        let mut index = automerge::AutoCommit::new();
-        assert!(ui::record::index::reference(
-            &mut index,
-            &record,
-            &ui::record::RecordKind::new("document")
-        ));
-        std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
-
-        let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
-        let search = SessionSearch::new(
-            SearchOptions {
-                records: Some(crate::records::Records::of(home.data().to_path_buf())),
-                ..SearchOptions::default()
-            },
-            None,
-            "",
-            Some(Rc::new(Opening(Rc::clone(&opened)))),
-            None,
-            None,
-        );
-        let row = Target::Invoke(Box::new(
-            InvokeTarget::action(
-                DESKTOP_APP,
-                "here",
-                record_rows::RECORDS_RESOURCE,
-                record_rows::BRING_HERE,
-            )
-            .with_argument(record_rows::RECORD_PARAM, record.as_str())
-            .with_argument(record_rows::KIND_PARAM, "document")
-            .with_argument(record_rows::PACKAGE_PARAM, "so.tilo.notes"),
-        ));
-        search
-            .perform_checked("here", row, &mut |_| Ok(()))
-            .expect("the record is brought here and opened");
-        assert_eq!(
-            opened.borrow().as_slice(),
-            [("here".to_owned(), tilo_desktop_search::file_uri(&file))],
-            "the document is opened by its path, not by the record id's `file:/…`"
-        );
-
-        // The file going away leaves the record held and says what is gone.
-        std::fs::remove_file(&file).expect("the file goes");
-        let row = Target::Invoke(Box::new(
-            InvokeTarget::action(
-                DESKTOP_APP,
-                "here",
-                record_rows::RECORDS_RESOURCE,
-                record_rows::BRING_HERE,
-            )
-            .with_argument(record_rows::RECORD_PARAM, record.as_str())
-            .with_argument(record_rows::KIND_PARAM, "document")
-            .with_argument(record_rows::PACKAGE_PARAM, "so.tilo.notes"),
-        ));
-        assert!(
-            matches!(
-                search.perform_checked("here", row, &mut |_| Ok(())),
-                Err(DoorError::Failed(ref reason)) if reason.contains("is gone")
-            ),
-            "a record whose file is gone is still held, and the launch says why it does not open"
-        );
-    }
-
     /// The places the search over `scope` lists, each with the facts it shows about it.
     fn places_listed(
         search: &SessionSearch,
@@ -2360,115 +2477,6 @@ mod tests {
             at: 1,
             device: None,
         }
-    }
-
-    /// The shell's own rows (a window, by the title of what it shows) span every workspace: the
-    /// person's search finds them, and an agent's, confined to one workspace, never does.
-    #[test]
-    fn an_agents_search_finds_nothing_of_the_shells_own_rows() {
-        let search = SessionSearch::new(SearchOptions::default(), None, "", None, None, None);
-        let window =
-            tilo_actions::ResourceSpec::new("window:7", "desktop.window", "Quarterly plan — Notes")
-                .with_action(tilo_actions::ActionSpec::immediate_encoded(
-                    "focus",
-                    "Quarterly plan — Notes",
-                    tilo_actions::ExecutionLocus::ClientLocal,
-                    tilo_actions::EncodedAction {
-                        type_id: "desktop.window".into(),
-                        payload: Vec::new(),
-                    },
-                ));
-        search.observe(&[window], Vec::new(), None, Vec::new());
-        let titles = |hits: Vec<tilo_desktop_search::Hit>| -> Vec<String> {
-            hits.into_iter().map(|hit| hit.title).collect()
-        };
-        let person = titles(search.find("Quarterly plan"));
-        assert!(
-            person.iter().any(|title| title.contains("Quarterly plan")),
-            "the person's search finds the window: {person:?}"
-        );
-        let agent = titles(search.find_in("Quarterly plan", Some("garden")));
-        assert!(
-            !agent.iter().any(|title| title.contains("Quarterly plan")),
-            "an agent in one workspace finds no window of the shell: {agent:?}"
-        );
-    }
-
-    #[test]
-    fn widening_search_lists_other_workspaces_places_by_name() {
-        let mut recent = RecentPlaces::default();
-        recent.record(place("Groceries", "here"));
-        recent.record(place("Quarterly plan", "elsewhere"));
-        let search = SessionSearch::new(
-            SearchOptions {
-                places: recent,
-                ..SearchOptions::default()
-            },
-            None,
-            "",
-            None,
-            None,
-            None,
-        );
-        search.set_workspaces(vec![
-            ("here".into(), "Main".into()),
-            ("elsewhere".into(), "Lounge".into()),
-        ]);
-
-        // Narrowed to the workspace in front, its own places only.
-        assert_eq!(
-            places_listed(&search, "here", &Scope::Workspace)
-                .into_iter()
-                .map(|(title, _)| title)
-                .collect::<Vec<_>>(),
-            ["Groceries"]
-        );
-
-        // Widened, another workspace's place is found beside its own, saying where it is.
-        let wide = places_listed(&search, "here", &Scope::Everywhere);
-        let elsewhere = wide
-            .iter()
-            .find(|(title, _)| title == "Quarterly plan")
-            .expect("another workspace's place is found");
-        assert!(
-            elsewhere.1.iter().any(|fact| fact.contains("Lounge")),
-            "the row says which workspace holds it: {:?}",
-            elsewhere.1
-        );
-        assert!(
-            wide.iter().any(|(title, _)| title == "Groceries"),
-            "the workspace in front keeps its places: {wide:?}"
-        );
-    }
-
-    #[test]
-    fn fixed_lists_keep_what_search_built_from_them() {
-        let lists = crate::lists::Lists::fixed(crate::lists::AppLists::default());
-        let search = SessionSearch::new(
-            SearchOptions::default(),
-            Some(Arc::new(lists)),
-            "",
-            None,
-            None,
-            None,
-        );
-        let before = search
-            .kept
-            .borrow()
-            .reading
-            .clone()
-            .expect("the reading the sources were built from")
-            .generation();
-        let _ = search.feed("workspace", &Scope::Workspace);
-        let kept = search.kept.borrow();
-        assert_eq!(
-            before,
-            kept.reading
-                .clone()
-                .expect("still the same reading")
-                .generation(),
-            "a list that did not change is not read again"
-        );
     }
 
     /// A window's search reads what its app published into this session's index, and none of

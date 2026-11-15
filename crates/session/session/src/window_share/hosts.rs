@@ -200,34 +200,38 @@ mod tests {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()
     }
 
-    /// A device heard in the workspace is there, whatever the governance was last read to say; a
-    /// device nothing is heard of is away while the workspace admits it or cannot be read, and
-    /// has left once the workspace admits other devices and not it.
-    #[test]
-    fn a_device_is_heard_away_or_no_longer_admitted() {
-        let (host, other) = (device(0x21), device(0x22));
-        let heard = vec![(host, "Laptop".to_owned())];
-        let admits = |device: EndpointId| vec![*device.as_bytes()];
-        assert_eq!(Host::of(host, &heard, &[]), Host::Heard);
-        assert_eq!(Host::of(host, &heard, &admits(other)), Host::Heard);
-        assert_eq!(Host::of(host, &[], &[]), Host::Unheard);
-        assert_eq!(Host::of(host, &[], &admits(host)), Host::Unheard);
-        assert_eq!(Host::of(host, &[], &admits(other)), Host::Unadmitted);
-    }
+    tilo_test_env::scenario! {
+        fn a_hosts_standing_is_heard_and_has_a_word_of_its_own;
 
-    /// Every standing goes by a word of its own in the reading.
-    #[test]
-    fn every_standing_has_a_word_of_its_own() {
-        let words = [
-            Elsewhere::Unread,
-            Elsewhere::NotShared,
-            Elsewhere::Awaited {
-                waiting_for: String::new(),
-            },
-            Elsewhere::Away,
-            Elsewhere::Left,
-        ]
-        .map(|standing| word(&standing));
-        assert_eq!(words, ["unread", "not-shared", "awaited", "away", "left"]);
+        phase a_device_is_heard_away_or_no_longer_admitted;
+        // A device heard in the workspace is there, whatever the governance was last read to say; a
+        // device nothing is heard of is away while the workspace admits it or cannot be read, and
+        // has left once the workspace admits other devices and not it.
+        {
+            let (host, other) = (device(0x21), device(0x22));
+            let heard = vec![(host, "Laptop".to_owned())];
+            let admits = |device: EndpointId| vec![*device.as_bytes()];
+            assert_eq!(Host::of(host, &heard, &[]), Host::Heard);
+            assert_eq!(Host::of(host, &heard, &admits(other)), Host::Heard);
+            assert_eq!(Host::of(host, &[], &[]), Host::Unheard);
+            assert_eq!(Host::of(host, &[], &admits(host)), Host::Unheard);
+            assert_eq!(Host::of(host, &[], &admits(other)), Host::Unadmitted);
+        }
+
+        phase every_standing_has_a_word_of_its_own;
+        // Every standing goes by a word of its own in the reading.
+        {
+            let words = [
+                Elsewhere::Unread,
+                Elsewhere::NotShared,
+                Elsewhere::Awaited {
+                    waiting_for: String::new(),
+                },
+                Elsewhere::Away,
+                Elsewhere::Left,
+            ]
+            .map(|standing| word(&standing));
+            assert_eq!(words, ["unread", "not-shared", "awaited", "away", "left"]);
+        }
     }
 }

@@ -1461,139 +1461,143 @@ mod tests {
             .count()
     }
 
-    #[test]
-    fn a_held_button_keeps_the_pointer_here_unless_it_carries_a_window() {
-        let (shared, recorded, phone) = laptop_beside_phone();
-        assert!(!press(&shared, true), "the press is this desktop's");
-        assert!(!push_right(&shared), "a press that carries nothing stays");
-        assert!(shared.state.lock_recover().active.is_none());
+    tilo_test_env::scenario! {
+        fn shared_input_crosses_an_edge_only_with_what_may_cross;
 
-        // The shell lifts a window by its bar: its record crosses with the pointer.
-        shared.state.lock_recover().carrying = Some(Carrying::Resource {
-            kind: "resource".to_owned(),
-            address: "notes.page:one".to_owned(),
-            label: "Notes".to_owned(),
-        });
-        assert!(push_right(&shared), "the window carried the pointer across");
-        let sent = recorded.actions.lock_recover().clone();
-        let told = sent
-            .iter()
-            .position(|(to, action)| {
-                to == &phone
-                    && matches!(
-                        action,
-                        PersonalFabricAction::DragCarried {
-                            drag: CarriedDrag::Resource { address, .. },
-                            ..
-                        } if address == "notes.page:one"
-                    )
-            })
-            .expect("the phone is told what the drag carries");
-        assert!(
-            sent[..told].iter().any(|(_, action)| matches!(
-                action,
-                PersonalFabricAction::Input {
-                    event: FabricInputEvent::PointerMotion { .. },
-                    ..
-                }
-            )),
-            "the pointer arrives there before the window: {sent:?}"
-        );
+        phase a_held_button_keeps_the_pointer_here_unless_it_carries_a_window;
+        {
+            let (shared, recorded, phone) = laptop_beside_phone();
+            assert!(!press(&shared, true), "the press is this desktop's");
+            assert!(!push_right(&shared), "a press that carries nothing stays");
+            assert!(shared.state.lock_recover().active.is_none());
 
-        // Let go before the shell here let go of it: the release waits here, and drops it there.
-        assert!(
-            press(&shared, false),
-            "the release here waits for the drag to end here"
-        );
-        assert_eq!(
-            shared
+            // The shell lifts a window by its bar: its record crosses with the pointer.
+            shared.state.lock_recover().carrying = Some(Carrying::Resource {
+                kind: "resource".to_owned(),
+                address: "notes.page:one".to_owned(),
+                label: "Notes".to_owned(),
+            });
+            assert!(push_right(&shared), "the window carried the pointer across");
+            let sent = recorded.actions.lock_recover().clone();
+            let told = sent
+                .iter()
+                .position(|(to, action)| {
+                    to == &phone
+                        && matches!(
+                            action,
+                            PersonalFabricAction::DragCarried {
+                                drag: CarriedDrag::Resource { address, .. },
+                                ..
+                            } if address == "notes.page:one"
+                        )
+                })
+                .expect("the phone is told what the drag carries");
+            assert!(
+                sent[..told].iter().any(|(_, action)| matches!(
+                    action,
+                    PersonalFabricAction::Input {
+                        event: FabricInputEvent::PointerMotion { .. },
+                        ..
+                    }
+                )),
+                "the pointer arrives there before the window: {sent:?}"
+            );
+
+            // Let go before the shell here let go of it: the release waits here, and drops it there.
+            assert!(
+                press(&shared, false),
+                "the release here waits for the drag to end here"
+            );
+            assert_eq!(
+                shared
+                    .state
+                    .lock_recover()
+                    .carried
+                    .as_ref()
+                    .map(|carried| carried.released_here.clone()),
+                Some(vec![0x110])
+            );
+            assert_eq!(releases(&recorded), 1, "the release drops it on the phone");
+        }
+
+        phase a_drag_of_content_drops_there_only_once_the_phone_was_told_what_it_carries;
+        {
+            let (shared, recorded, _) = laptop_beside_phone();
+            assert!(!press(&shared, true));
+            shared.state.lock_recover().carrying =
+                Some(Carrying::Content(vec!["text/plain".to_owned()]));
+            assert!(push_right(&shared));
+            // The pass has not read the drag yet: its release waits there as here.
+            assert!(press(&shared, false));
+            assert_eq!(releases(&recorded), 0);
+            let (released_there, told) = shared
                 .state
                 .lock_recover()
                 .carried
                 .as_ref()
-                .map(|carried| carried.released_here.clone()),
-            Some(vec![0x110])
-        );
-        assert_eq!(releases(&recorded), 1, "the release drops it on the phone");
-    }
+                .map(|carried| (carried.released_there.clone(), carried.told))
+                .expect("the drag is being handed over");
+            assert_eq!(released_there, vec![0x110]);
+            assert!(!told);
+        }
 
-    #[test]
-    fn a_drag_of_content_drops_there_only_once_the_phone_was_told_what_it_carries() {
-        let (shared, recorded, _) = laptop_beside_phone();
-        assert!(!press(&shared, true));
-        shared.state.lock_recover().carrying =
-            Some(Carrying::Content(vec!["text/plain".to_owned()]));
-        assert!(push_right(&shared));
-        // The pass has not read the drag yet: its release waits there as here.
-        assert!(press(&shared, false));
-        assert_eq!(releases(&recorded), 0);
-        let (released_there, told) = shared
-            .state
-            .lock_recover()
-            .carried
-            .as_ref()
-            .map(|carried| (carried.released_there.clone(), carried.told))
-            .expect("the drag is being handed over");
-        assert_eq!(released_there, vec![0x110]);
-        assert!(!told);
-    }
-
-    #[test]
-    fn what_names_a_path_here_stays_here() {
-        let formats = [
-            "text/uri-list",
-            "x-special/gnome-copied-files",
-            "text/plain;charset=utf-8",
-            "image/png",
-        ]
-        .map(str::to_owned);
-        assert_eq!(
-            carried_formats(&formats),
-            vec![
-                "text/plain;charset=utf-8".to_owned(),
-                "image/png".to_owned()
+        phase what_names_a_path_here_stays_here;
+        {
+            let formats = [
+                "text/uri-list",
+                "x-special/gnome-copied-files",
+                "text/plain;charset=utf-8",
+                "image/png",
             ]
-        );
-    }
+            .map(str::to_owned);
+            assert_eq!(
+                carried_formats(&formats),
+                vec![
+                    "text/plain;charset=utf-8".to_owned(),
+                    "image/png".to_owned()
+                ]
+            );
+        }
 
-    #[test]
-    fn only_a_push_past_an_edge_counts_toward_crossing() {
-        let here = display("laptop", true, 0);
-        assert!(outward(&here, (1279.0, 400.0), (6.0, 1.0)) > 0.0);
-        assert!(outward(&here, (-0.0, 400.0), (-3.0, 0.0)) > 0.0);
-        assert!(
-            outward(&here, (600.0, 400.0), (6.0, 1.0)) <= 0.0,
-            "motion inside the screen pushes nowhere"
-        );
-    }
+        phase only_a_push_past_an_edge_counts_toward_crossing;
+        {
+            let here = display("laptop", true, 0);
+            assert!(outward(&here, (1279.0, 400.0), (6.0, 1.0)) > 0.0);
+            assert!(outward(&here, (-0.0, 400.0), (-3.0, 0.0)) > 0.0);
+            assert!(
+                outward(&here, (600.0, 400.0), (6.0, 1.0)) <= 0.0,
+                "motion inside the screen pushes nowhere"
+            );
+        }
 
-    #[test]
-    fn every_event_reaches_the_compositor_as_the_same_input() {
-        assert_eq!(
-            injected(point_event((12.4, 799.6))),
-            InputEvent::PointerMotion { x: 12.0, y: 800.0 }
-        );
-        assert_eq!(
-            injected(FabricInputEvent::Scroll {
-                horizontal: steps(0.0),
-                vertical: steps(-3.5),
-                unit: ScrollUnit::Pixels,
-            }),
-            InputEvent::PointerAxis {
-                horizontal: 0.0,
-                vertical: -3.5,
-            }
-        );
-        assert_eq!(
-            injected(FabricInputEvent::Key {
-                keycode: 125,
-                pressed: true,
-                modifiers: 0,
-            }),
-            InputEvent::Key {
-                keycode: 125,
-                pressed: true,
-            }
-        );
+        phase every_event_reaches_the_compositor_as_the_same_input;
+        {
+            assert_eq!(
+                injected(point_event((12.4, 799.6))),
+                InputEvent::PointerMotion { x: 12.0, y: 800.0 }
+            );
+            assert_eq!(
+                injected(FabricInputEvent::Scroll {
+                    horizontal: steps(0.0),
+                    vertical: steps(-3.5),
+                    unit: ScrollUnit::Pixels,
+                }),
+                InputEvent::PointerAxis {
+                    horizontal: 0.0,
+                    vertical: -3.5,
+                }
+            );
+            assert_eq!(
+                injected(FabricInputEvent::Key {
+                    keycode: 125,
+                    pressed: true,
+                    modifiers: 0,
+                }),
+                InputEvent::Key {
+                    keycode: 125,
+                    pressed: true,
+                }
+            );
+        }
     }
 }

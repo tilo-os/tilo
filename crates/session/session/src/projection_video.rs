@@ -315,102 +315,106 @@ mod tests {
         media::realtime::local_capabilities().can_encode(media::StreamCodec::H264)
     }
 
-    #[test]
-    fn a_live_projection_sends_the_desktop_at_the_profile_the_person_chose() {
-        if !has_h264_encoder() {
-            eprintln!("no H.264 encoder on this machine: nothing could encode the frames");
-            return;
-        }
-        let dir = tempfile::tempdir().expect("a directory for the projector's socket");
-        let socket = dir.path().join("video.sock");
-        let listener =
-            tilo_files::native::socket::bind(&socket).expect("the projector's video socket");
-        listener
-            .set_nonblocking(true)
-            .expect("a non-blocking accept");
+    tilo_test_env::scenario! {
+        fn a_projections_video_follows_what_is_live_and_what_the_encoder_keeps_up_with;
 
-        let mut compositor = desktop();
-        let stream = VideoStream {
-            socket,
-            policy: television(),
-            asked: None,
-        };
-        let mut video = ProjectionVideo::new();
-        // One pass of the session's loop, as `Session::step` makes it.
-        video.follow(&mut compositor, Some(&stream));
+        phase a_live_projection_sends_the_desktop_at_the_profile_the_person_chose;
+        {
+            if !has_h264_encoder() {
+                eprintln!("no H.264 encoder on this machine: nothing could encode the frames");
+                return;
+            }
+            let dir = tempfile::tempdir().expect("a directory for the projector's socket");
+            let socket = dir.path().join("video.sock");
+            let listener =
+                tilo_files::native::socket::bind(&socket).expect("the projector's video socket");
+            listener
+                .set_nonblocking(true)
+                .expect("a non-blocking accept");
 
-        let mut connection = tilo_test_env::wait_for(
-            "the desktop to connect to the projector's video socket",
-            || listener.accept().ok().map(|(connection, _)| connection),
-        );
-        connection
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .expect("a read timeout");
-        let packet = VideoPacket::read_from(&mut connection).expect("an encoded frame");
-        assert_eq!(
-            (packet.width, packet.height),
-            (1280, 720),
-            "the television is sent the 720p the person chose, not the screen's 1080p"
-        );
-        assert!(
-            packet.keyframe,
-            "the first frame a receiver gets stands on its own"
-        );
-        assert!(
-            packet.annex_b.starts_with(&[0, 0, 0, 1]),
-            "the frame is one Annex B access unit"
-        );
-    }
+            let mut compositor = desktop();
+            let stream = VideoStream {
+                socket,
+                policy: television(),
+                asked: None,
+            };
+            let mut video = ProjectionVideo::new();
+            // One pass of the session's loop, as `Session::step` makes it.
+            video.follow(&mut compositor, Some(&stream));
 
-    #[test]
-    fn nothing_is_captured_while_no_projection_is_live() {
-        let dir = tempfile::tempdir().expect("a directory for the projector's socket");
-        let socket = dir.path().join("video.sock");
-        let listener =
-            tilo_files::native::socket::bind(&socket).expect("the projector's video socket");
-        listener
-            .set_nonblocking(true)
-            .expect("a non-blocking accept");
-
-        let mut compositor = desktop();
-        let mut video = ProjectionVideo::new();
-        for _ in 0..4 {
-            video.follow(&mut compositor, None);
+            let mut connection = tilo_test_env::wait_for(
+                "the desktop to connect to the projector's video socket",
+                || listener.accept().ok().map(|(connection, _)| connection),
+            );
+            connection
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .expect("a read timeout");
+            let packet = VideoPacket::read_from(&mut connection).expect("an encoded frame");
+            assert_eq!(
+                (packet.width, packet.height),
+                (1280, 720),
+                "the television is sent the 720p the person chose, not the screen's 1080p"
+            );
+            assert!(
+                packet.keyframe,
+                "the first frame a receiver gets stands on its own"
+            );
+            assert!(
+                packet.annex_b.starts_with(&[0, 0, 0, 1]),
+                "the frame is one Annex B access unit"
+            );
         }
 
-        assert!(
-            video.worker.is_none(),
-            "no encoder is started, so the desktop is neither copied nor encoded"
-        );
-        assert!(
-            video.last_frame.is_none(),
-            "no frame of the desktop is drawn for a receiver"
-        );
-        assert!(
-            listener.accept().is_err(),
-            "nothing connects to the projector's video socket"
-        );
-    }
+        phase nothing_is_captured_while_no_projection_is_live;
+        {
+            let dir = tempfile::tempdir().expect("a directory for the projector's socket");
+            let socket = dir.path().join("video.sock");
+            let listener =
+                tilo_files::native::socket::bind(&socket).expect("the projector's video socket");
+            listener
+                .set_nonblocking(true)
+                .expect("a non-blocking accept");
 
-    #[test]
-    fn an_encoder_that_falls_behind_lowers_the_profile_and_climbs_back() {
-        let ceiling = CaptureProfile::new(2560, 1440, 60, 15_000);
-        let lowered = lower_profile(ceiling);
-        assert_eq!((lowered.max_width, lowered.max_height), (1920, 1080));
-        assert_eq!(lowered.fps, ceiling.fps, "the rate is the person's");
-        assert!(lowered.bitrate_kbps < ceiling.bitrate_kbps);
-        assert_eq!(raise_profile(lowered, ceiling), ceiling);
+            let mut compositor = desktop();
+            let mut video = ProjectionVideo::new();
+            for _ in 0..4 {
+                video.follow(&mut compositor, None);
+            }
 
-        // The person's own limit always wins, whatever the link allows.
-        let limit = CaptureProfile::new(1280, 720, 30, 5_000);
-        assert_eq!(clamp_profile(ceiling, limit), limit);
+            assert!(
+                video.worker.is_none(),
+                "no encoder is started, so the desktop is neither copied nor encoded"
+            );
+            assert!(
+                video.last_frame.is_none(),
+                "no frame of the desktop is drawn for a receiver"
+            );
+            assert!(
+                listener.accept().is_err(),
+                "nothing connects to the projector's video socket"
+            );
+        }
 
-        // A link that never recovers settles on a picture that still reads,
-        // instead of shrinking to nothing.
-        let settled = (0..10).fold(ceiling, |value, _| lower_profile(value));
-        assert_eq!(
-            (settled.max_width, settled.max_height, settled.bitrate_kbps),
-            (640, 360, 2_500)
-        );
+        phase an_encoder_that_falls_behind_lowers_the_profile_and_climbs_back;
+        {
+            let ceiling = CaptureProfile::new(2560, 1440, 60, 15_000);
+            let lowered = lower_profile(ceiling);
+            assert_eq!((lowered.max_width, lowered.max_height), (1920, 1080));
+            assert_eq!(lowered.fps, ceiling.fps, "the rate is the person's");
+            assert!(lowered.bitrate_kbps < ceiling.bitrate_kbps);
+            assert_eq!(raise_profile(lowered, ceiling), ceiling);
+
+            // The person's own limit always wins, whatever the link allows.
+            let limit = CaptureProfile::new(1280, 720, 30, 5_000);
+            assert_eq!(clamp_profile(ceiling, limit), limit);
+
+            // A link that never recovers settles on a picture that still reads,
+            // instead of shrinking to nothing.
+            let settled = (0..10).fold(ceiling, |value, _| lower_profile(value));
+            assert_eq!(
+                (settled.max_width, settled.max_height, settled.bitrate_kbps),
+                (640, 360, 2_500)
+            );
+        }
     }
 }

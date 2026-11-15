@@ -85,135 +85,232 @@ fn settle(frame: &mut ui::headless::FrameHarness) {
     }
 }
 
-/// Keep on screen and Put back in the bar, each pressed by the pointer where the panel says it
-/// stands: a press read in physical pixels missed the first, and the panel moving to where its
-/// drawn size centres it only on the press's own frame moved the second from under the pointer.
-#[test]
-fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
-    let _settled = ui::motion::testing::settled();
-    // The pin is kept in the person's settings: this test's own, never the machine's.
-    let home = tempfile::tempdir().expect("a directory for the settings");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", home.path().join("config"))
-        .set("XDG_STATE_HOME", home.path().join("state"));
+tilo_test_env::scenario! {
+    fn the_roster_takes_presses_where_it_stands_on_a_wide_shell_and_a_phone;
 
-    // Someone else is here: kept on screen with nobody to show, the roster waits away from the
-    // shell, and there is no panel of it whose Put back in the bar a pointer could press.
-    let here = WorkspaceId::new();
-    let mut session = Workspace::new(here, "Session");
-    session.member_here(Member::keyed("ada", "Ada"));
-    let (_shell, handle) = DesktopSurface::new(
-        Layout {
-            active: session.id(),
-            workspaces: vec![session],
-            ..Layout::default()
-        },
-        7,
-        Box::new(Blank),
-    );
-    let mut placed = Placed::default();
-    let people = mount(
-        &mut placed,
-        Given {
-            scale: 2.0,
-            seated: "Quinten".into(),
-            notes: Rc::new(Vec::new),
-            apps: None,
-            handle,
-            sync: None,
-            here: Rc::new(|_: &mut Layout| {}),
-            intents: Rc::default(),
-            invitable: Rc::new(Cell::new(false)),
-        },
-    );
-    let panel = placed.0.take().expect("the roster places its layer");
-    let mut frame = ui::headless::FrameHarness::new(ui::State::new(), panel, (1280, 800));
-    frame.set_input_scale(2.0).expect("a scale");
-    people.borrow().toggle();
-    settle(&mut frame);
+    phase keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale;
+    // Keep on screen and Put back in the bar, each pressed by the pointer where the panel says it
+    // stands: a press read in physical pixels missed the first, and the panel moving to where its
+    // drawn size centres it only on the press's own frame moved the second from under the pointer.
+    {
+        let _settled = ui::motion::testing::settled();
+        // The pin is kept in the person's settings: this test's own, never the machine's.
+        let home = tempfile::tempdir().expect("a directory for the settings");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", home.path().join("config"))
+            .set("XDG_STATE_HOME", home.path().join("state"));
 
-    let keep = holding(&frame, "Keep on screen").expect("the open roster offers to stay");
-    frame.click_at(keep.x, keep.y);
-    settle(&mut frame);
-    let put = holding(&frame, "Put back in the bar")
-        .expect("the press on Keep on screen kept the roster on screen");
+        // Someone else is here: kept on screen with nobody to show, the roster waits away from the
+        // shell, and there is no panel of it whose Put back in the bar a pointer could press.
+        let here = WorkspaceId::new();
+        let mut session = Workspace::new(here, "Session");
+        session.member_here(Member::keyed("ada", "Ada"));
+        let (_shell, handle) = DesktopSurface::new(
+            Layout {
+                active: session.id(),
+                workspaces: vec![session],
+                ..Layout::default()
+            },
+            7,
+            Box::new(Blank),
+        );
+        let mut placed = Placed::default();
+        let people = mount(
+            &mut placed,
+            Given {
+                scale: 2.0,
+                seated: "Quinten".into(),
+                notes: Rc::new(Vec::new),
+                apps: None,
+                handle,
+                sync: None,
+                here: Rc::new(|_: &mut Layout| {}),
+                intents: Rc::default(),
+                invitable: Rc::new(Cell::new(false)),
+            },
+        );
+        let panel = placed.0.take().expect("the roster places its layer");
+        let mut frame = ui::headless::FrameHarness::new(ui::State::new(), panel, (1280, 800));
+        frame.set_input_scale(2.0).expect("a scale");
+        people.borrow().toggle();
+        settle(&mut frame);
 
-    frame.click_at(put.x, put.y);
-    settle(&mut frame);
-    assert!(
-        people.borrow().shown.borrow().pinned.is_none(),
-        "the press on Put back in the bar, where it is said to stand, took it off the session"
-    );
-}
+        let keep = holding(&frame, "Keep on screen").expect("the open roster offers to stay");
+        frame.click_at(keep.x, keep.y);
+        settle(&mut frame);
+        let put = holding(&frame, "Put back in the bar")
+            .expect("the press on Keep on screen kept the roster on screen");
 
-/// The roster lists whoever the bar's faces are drawn from: on a page, an agent's run the
-/// workspace's host speaks for is heard on a track of its own and is in the shell's member rows
-/// only as the page writes them in, and the roster lists it with its Follow.
-#[test]
-fn the_roster_lists_who_the_bar_shows() {
-    let _settled = ui::motion::testing::settled();
-    let (people, mut frame) = agent_here().expect("the roster places its layer");
-    people.borrow().toggle();
-    settle(&mut frame);
-    let listed = labels(&frame);
-    assert!(
-        listed.iter().any(|label| label == "Follow Claude Code"),
-        "the roster lists the agent the bar shows: {listed:?}"
-    );
-}
-
-/// A press on someone's face opens their card where the roster stands; a second press on the same
-/// face, their card standing, brings everyone here in its place. The bar has no people button while
-/// it shows a face, so this is how a pointer reaches the roster.
-#[test]
-fn a_face_pressed_again_brings_everyone_here() {
-    let _settled = ui::motion::testing::settled();
-    let (people, mut frame) = agent_here().expect("the roster places its layer");
-    let card = |labels: &[String]| labels.iter().any(|label| label == "Claude Code’s profile");
-    people.borrow().show_person("run");
-    settle(&mut frame);
-    let shown = labels(&frame);
-    assert!(
-        card(&shown),
-        "the first press opens the agent's card: {shown:?}"
-    );
-
-    people.borrow().show_person("run");
-    settle(&mut frame);
-    let shown = labels(&frame);
-    assert!(!card(&shown), "the second press closes the card: {shown:?}");
-    assert!(
-        shown.iter().any(|label| label == "Follow Claude Code"),
-        "and everyone here stands in its place: {shown:?}"
-    );
-    assert!(people.borrow().is_open());
-}
-
-/// Kept on screen on a phone, the roster stands centred across the shell with equal gutters, inside
-/// it, whichever side edge it was kept at; on a wide shell it keeps to its edge.
-#[test]
-fn the_pinned_roster_is_centred_on_a_phone() {
-    let theme = Theme::light();
-    let now = ui::time::Instant::now();
-    for edge in [DockEdge::Right, DockEdge::Left, DockEdge::BottomRight] {
-        let mut pin = Pinned::new(edge, true);
-        pin.panel = Rect::from_origin_size(Point::ZERO, Size::new(319.0, 300.0));
-        Panel::place_pinned(&mut pin, Rect::new(0.0, 0.0, 390.0, 844.0), &theme, now);
-        let (left, right) = (pin.panel.x0, 390.0 - pin.panel.x1);
+        frame.click_at(put.x, put.y);
+        settle(&mut frame);
         assert!(
-            (left - right).abs() < 1.0 && left >= 0.0,
-            "kept at {edge:?} on a phone, the roster stands centred inside the session: {:?}",
+            people.borrow().shown.borrow().pinned.is_none(),
+            "the press on Put back in the bar, where it is said to stand, took it off the session"
+        );
+    }
+
+    phase the_roster_lists_who_the_bar_shows;
+    // The roster lists whoever the bar's faces are drawn from: on a page, an agent's run the
+    // workspace's host speaks for is heard on a track of its own and is in the shell's member rows
+    // only as the page writes them in, and the roster lists it with its Follow.
+    {
+        let _settled = ui::motion::testing::settled();
+        let (people, mut frame) = agent_here().expect("the roster places its layer");
+        people.borrow().toggle();
+        settle(&mut frame);
+        let listed = labels(&frame);
+        assert!(
+            listed.iter().any(|label| label == "Follow Claude Code"),
+            "the roster lists the agent the bar shows: {listed:?}"
+        );
+    }
+
+    phase a_face_pressed_again_brings_everyone_here;
+    // A press on someone's face opens their card where the roster stands; a second press on the same
+    // face, their card standing, brings everyone here in its place. The bar has no people button while
+    // it shows a face, so this is how a pointer reaches the roster.
+    {
+        let _settled = ui::motion::testing::settled();
+        let (people, mut frame) = agent_here().expect("the roster places its layer");
+        let card = |labels: &[String]| labels.iter().any(|label| label == "Claude Code’s profile");
+        people.borrow().show_person("run");
+        settle(&mut frame);
+        let shown = labels(&frame);
+        assert!(
+            card(&shown),
+            "the first press opens the agent's card: {shown:?}"
+        );
+
+        people.borrow().show_person("run");
+        settle(&mut frame);
+        let shown = labels(&frame);
+        assert!(!card(&shown), "the second press closes the card: {shown:?}");
+        assert!(
+            shown.iter().any(|label| label == "Follow Claude Code"),
+            "and everyone here stands in its place: {shown:?}"
+        );
+        assert!(people.borrow().is_open());
+    }
+
+    phase the_pinned_roster_is_centred_on_a_phone;
+    // Kept on screen on a phone, the roster stands centred across the shell with equal gutters, inside
+    // it, whichever side edge it was kept at; on a wide shell it keeps to its edge.
+    {
+        let theme = Theme::light();
+        let now = ui::time::Instant::now();
+        for edge in [DockEdge::Right, DockEdge::Left, DockEdge::BottomRight] {
+            let mut pin = Pinned::new(edge, true);
+            pin.panel = Rect::from_origin_size(Point::ZERO, Size::new(319.0, 300.0));
+            Panel::place_pinned(&mut pin, Rect::new(0.0, 0.0, 390.0, 844.0), &theme, now);
+            let (left, right) = (pin.panel.x0, 390.0 - pin.panel.x1);
+            assert!(
+                (left - right).abs() < 1.0 && left >= 0.0,
+                "kept at {edge:?} on a phone, the roster stands centred inside the session: {:?}",
+                pin.panel
+            );
+        }
+        let mut pin = Pinned::new(DockEdge::Right, true);
+        pin.panel = Rect::from_origin_size(Point::ZERO, Size::new(319.0, 300.0));
+        Panel::place_pinned(&mut pin, Rect::new(0.0, 0.0, 1280.0, 800.0), &theme, now);
+        assert!(
+            pin.panel.x1 > 1200.0,
+            "on a wide session it keeps to its edge: {:?}",
             pin.panel
         );
     }
-    let mut pin = Pinned::new(DockEdge::Right, true);
-    pin.panel = Rect::from_origin_size(Point::ZERO, Size::new(319.0, 300.0));
-    Panel::place_pinned(&mut pin, Rect::new(0.0, 0.0, 1280.0, 800.0), &theme, now);
-    assert!(
-        pin.panel.x1 > 1200.0,
-        "on a wide session it keeps to its edge: {:?}",
-        pin.panel
-    );
+
+    phase the_kept_roster_leaves_the_shell_its_presses;
+    // Kept on screen, the roster answers only where it stands: a press or a move away from it is the
+    // shell's. A page draws the roster's layer over its whole shell, so a roster that claimed every
+    // press there took the window's own controls under it (its Maximize did nothing).
+    {
+        let _settled = ui::motion::testing::settled();
+        let home = tempfile::tempdir().expect("a directory for the settings");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", home.path().join("config"))
+            .set("XDG_STATE_HOME", home.path().join("state"));
+        let (people, mut frame) = agent_here().expect("the roster places its layer");
+        people.borrow().toggle();
+        settle(&mut frame);
+        let keep = holding(&frame, "Keep on screen").expect("the open roster offers to stay");
+        frame.click_at(keep.x, keep.y);
+        settle(&mut frame);
+        assert!(
+            people.borrow().shown.borrow().standing(),
+            "the roster is kept on screen"
+        );
+        let panel = people
+            .borrow()
+            .shown
+            .borrow()
+            .pinned
+            .as_ref()
+            .map(|pin| pin.panel);
+        let panel = panel.expect("a kept roster stands somewhere");
+        let away = Point::new(40.0, 400.0);
+        assert!(!panel.contains(away), "the press is away from {panel:?}");
+
+        assert!(
+            !frame.dispatch_to_root(&ui::synthetic_input::cursor_moved(away.x, away.y)),
+            "the pointer moving over the session is the session's"
+        );
+        assert!(
+            !frame.dispatch_to_root(&ui::synthetic_input::mouse_press()),
+            "a press on the session is the session's"
+        );
+        assert!(!frame.dispatch_to_root(&ui::synthetic_input::mouse_release()));
+        settle(&mut frame);
+        assert!(
+            people.borrow().shown.borrow().standing(),
+            "and the roster stays kept"
+        );
+
+        let put = holding(&frame, "Put back in the bar").expect("its own control is still there");
+        assert!(
+            frame.dispatch_to_root(&ui::synthetic_input::cursor_moved(put.x, put.y)),
+            "the pointer over the roster is the roster's"
+        );
+    }
+
+    phase a_phones_roster_is_a_sheet_that_a_press_above_puts_away;
+    // On a phone the roster is a sheet at the shell's foot, between equal gutters, that a press above
+    // it puts away: it is never kept on screen, where it would cover the note or a card's runs.
+    {
+        let _settled = ui::motion::testing::settled();
+        let home = tempfile::tempdir().expect("a directory for the settings");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", home.path().join("config"))
+            .set("XDG_STATE_HOME", home.path().join("state"));
+        let (people, mut frame) = agent_here_at((390, 844)).expect("the roster places its layer");
+        people.borrow().toggle();
+        settle(&mut frame);
+        let shown = labels(&frame);
+        assert!(
+            shown.iter().any(|label| label == "Follow Claude Code"),
+            "the sheet lists the agent: {shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|label| label == "Keep on screen"),
+            "a phone's roster offers no keeping on screen: {shown:?}"
+        );
+        let panel = people.borrow().shown.borrow().overlay.panel_rect();
+        let (left, right) = (panel.x0, 390.0 - panel.x1);
+        assert!(
+            (left - right).abs() < 1.0 && left > 0.0,
+            "the sheet stands between equal gutters: {panel:?}"
+        );
+        assert!(
+            panel.y1 > 844.0 - 40.0 && panel.y0 > 400.0,
+            "the sheet stands at the session's foot: {panel:?}"
+        );
+
+        frame.click_at(195.0, panel.y0 - 80.0);
+        settle(&mut frame);
+        assert!(
+            !people.borrow().is_open(),
+            "a press above the sheet puts it away"
+        );
+    }
 }
 
 /// A shell whose page writes an agent in as here, as it does for the bar, and its roster's layer.
@@ -277,97 +374,4 @@ fn labels(frame: &ui::headless::FrameHarness) -> Vec<String> {
         .iter()
         .filter_map(|(_, node)| node.label().map(str::to_owned))
         .collect()
-}
-
-/// Kept on screen, the roster answers only where it stands: a press or a move away from it is the
-/// shell's. A page draws the roster's layer over its whole shell, so a roster that claimed every
-/// press there took the window's own controls under it (its Maximize did nothing).
-#[test]
-fn the_kept_roster_leaves_the_shell_its_presses() {
-    let _settled = ui::motion::testing::settled();
-    let home = tempfile::tempdir().expect("a directory for the settings");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", home.path().join("config"))
-        .set("XDG_STATE_HOME", home.path().join("state"));
-    let (people, mut frame) = agent_here().expect("the roster places its layer");
-    people.borrow().toggle();
-    settle(&mut frame);
-    let keep = holding(&frame, "Keep on screen").expect("the open roster offers to stay");
-    frame.click_at(keep.x, keep.y);
-    settle(&mut frame);
-    assert!(
-        people.borrow().shown.borrow().standing(),
-        "the roster is kept on screen"
-    );
-    let panel = people
-        .borrow()
-        .shown
-        .borrow()
-        .pinned
-        .as_ref()
-        .map(|pin| pin.panel);
-    let panel = panel.expect("a kept roster stands somewhere");
-    let away = Point::new(40.0, 400.0);
-    assert!(!panel.contains(away), "the press is away from {panel:?}");
-
-    assert!(
-        !frame.dispatch_to_root(&ui::synthetic_input::cursor_moved(away.x, away.y)),
-        "the pointer moving over the session is the session's"
-    );
-    assert!(
-        !frame.dispatch_to_root(&ui::synthetic_input::mouse_press()),
-        "a press on the session is the session's"
-    );
-    assert!(!frame.dispatch_to_root(&ui::synthetic_input::mouse_release()));
-    settle(&mut frame);
-    assert!(
-        people.borrow().shown.borrow().standing(),
-        "and the roster stays kept"
-    );
-
-    let put = holding(&frame, "Put back in the bar").expect("its own control is still there");
-    assert!(
-        frame.dispatch_to_root(&ui::synthetic_input::cursor_moved(put.x, put.y)),
-        "the pointer over the roster is the roster's"
-    );
-}
-
-/// On a phone the roster is a sheet at the shell's foot, between equal gutters, that a press above
-/// it puts away: it is never kept on screen, where it would cover the note or a card's runs.
-#[test]
-fn a_phones_roster_is_a_sheet_that_a_press_above_puts_away() {
-    let _settled = ui::motion::testing::settled();
-    let home = tempfile::tempdir().expect("a directory for the settings");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", home.path().join("config"))
-        .set("XDG_STATE_HOME", home.path().join("state"));
-    let (people, mut frame) = agent_here_at((390, 844)).expect("the roster places its layer");
-    people.borrow().toggle();
-    settle(&mut frame);
-    let shown = labels(&frame);
-    assert!(
-        shown.iter().any(|label| label == "Follow Claude Code"),
-        "the sheet lists the agent: {shown:?}"
-    );
-    assert!(
-        !shown.iter().any(|label| label == "Keep on screen"),
-        "a phone's roster offers no keeping on screen: {shown:?}"
-    );
-    let panel = people.borrow().shown.borrow().overlay.panel_rect();
-    let (left, right) = (panel.x0, 390.0 - panel.x1);
-    assert!(
-        (left - right).abs() < 1.0 && left > 0.0,
-        "the sheet stands between equal gutters: {panel:?}"
-    );
-    assert!(
-        panel.y1 > 844.0 - 40.0 && panel.y0 > 400.0,
-        "the sheet stands at the session's foot: {panel:?}"
-    );
-
-    frame.click_at(195.0, panel.y0 - 80.0);
-    settle(&mut frame);
-    assert!(
-        !people.borrow().is_open(),
-        "a press above the sheet puts it away"
-    );
 }

@@ -95,45 +95,49 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_persons_own_other_device_goes_by_its_device_name() {
-        assert_eq!(
-            called(&heard(Some(OWN), "Framework", "Xaver"), Some(OWN)),
-            "Framework",
-            "their own name would say nothing of which device watches"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_viewer_goes_by_the_name_its_device_or_person_gives_it;
 
-    #[test]
-    fn another_persons_device_goes_by_the_persons_name() {
-        assert_eq!(
-            called(&heard(Some(OTHER), "Studio", "Ada"), Some(OWN)),
-            "Ada"
-        );
-        assert_eq!(
-            called(&heard(None, "", "Ada"), Some(OWN)),
-            "Ada",
-            "a person no certificate named yet goes by the name their presence says"
-        );
-        assert_eq!(
-            called(&heard(Some(OTHER), "Studio", "Ada"), None),
-            "Ada",
-            "a session with no person of its own has no other device"
-        );
-    }
-
-    #[test]
-    fn a_viewer_nothing_names_goes_by_no_name() {
-        // A device its person never named carries the stand-in it was set up with, which is no
-        // name of theirs.
-        for unnamed in ["", " ", tilo_user_identity::UNNAMED_PRIMARY_DEVICE] {
-            assert_eq!(called(&heard(Some(OWN), unnamed, "Xaver"), Some(OWN)), "");
+        phase the_persons_own_other_device_goes_by_its_device_name;
+        {
+            assert_eq!(
+                called(&heard(Some(OWN), "Framework", "Xaver"), Some(OWN)),
+                "Framework",
+                "their own name would say nothing of which device watches"
+            );
         }
-        assert_eq!(
-            called(&heard(Some(OTHER), "Studio", OTHER), Some(OWN)),
-            "",
-            "a key is no name"
-        );
-        assert_eq!(called(&Shown::default(), Some(OWN)), "");
+
+        phase another_persons_device_goes_by_the_persons_name;
+        {
+            assert_eq!(
+                called(&heard(Some(OTHER), "Studio", "Ada"), Some(OWN)),
+                "Ada"
+            );
+            assert_eq!(
+                called(&heard(None, "", "Ada"), Some(OWN)),
+                "Ada",
+                "a person no certificate named yet goes by the name their presence says"
+            );
+            assert_eq!(
+                called(&heard(Some(OTHER), "Studio", "Ada"), None),
+                "Ada",
+                "a session with no person of its own has no other device"
+            );
+        }
+
+        phase a_viewer_nothing_names_goes_by_no_name;
+        {
+            // A device its person never named carries the stand-in it was set up with, which is no
+            // name of theirs.
+            for unnamed in ["", " ", tilo_user_identity::UNNAMED_PRIMARY_DEVICE] {
+                assert_eq!(called(&heard(Some(OWN), unnamed, "Xaver"), Some(OWN)), "");
+            }
+            assert_eq!(
+                called(&heard(Some(OTHER), "Studio", OTHER), Some(OWN)),
+                "",
+                "a key is no name"
+            );
+            assert_eq!(called(&Shown::default(), Some(OWN)), "");
+        }
     }
 }

@@ -152,73 +152,77 @@ mod tests {
         std::fs::read_to_string(file).ok()
     }
 
-    #[test]
-    fn the_workspace_in_front_is_published_for_the_session_the_login_reaches() {
-        let outside = runtime(Some("wayland-1"));
-        let mut published =
-            Published::for_display_in(Some(outside.path().as_os_str().to_owned()), "wayland-1");
-        assert_eq!(held(&published), None, "nothing before the first switch");
-        published.follow(Some(id(1)));
-        assert_eq!(
-            held(&published).as_deref(),
-            Some(id(1).to_string().as_str())
-        );
-        let file = published.file.clone().expect("a published file");
-        assert_eq!(
-            std::fs::metadata(&file)
-                .expect("metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600,
-            "the workspace is the session's alone"
-        );
-        // A switch replaces it in place, and no workspace removes it.
-        published.follow(Some(id(2)));
-        assert_eq!(
-            held(&published).as_deref(),
-            Some(id(2).to_string().as_str())
-        );
-        published.follow(None);
-        assert!(!file.exists(), "no workspace in front, no file");
-        // The session's end removes what it wrote.
-        published.follow(Some(id(3)));
-        drop(published);
-        assert!(!file.exists(), "the session's end removes the file");
-    }
+    tilo_test_env::scenario! {
+        fn a_sessions_workspace_is_published_only_where_the_login_reaches_it;
 
-    #[test]
-    fn a_session_whose_display_the_login_does_not_reach_publishes_nothing() {
-        let outside = runtime(Some("wayland-1"));
-        // A nested session beside a live one: the login's programs reach that one's display.
-        let mut beside =
-            Published::for_display_in(Some(outside.path().as_os_str().to_owned()), "wayland-2");
-        beside.follow(Some(id(1)));
-        assert_eq!(beside.file, None);
-        assert_eq!(held(&beside), None);
-        // A session whose display nobody published yet names no workspace either.
-        let fresh = runtime(None);
-        let mut unpublished =
-            Published::for_display_in(Some(fresh.path().as_os_str().to_owned()), "wayland-1");
-        unpublished.follow(Some(id(1)));
-        assert_eq!(unpublished.file, None);
-        assert_eq!(held(&unpublished), None);
-    }
+        phase the_workspace_in_front_is_published_for_the_session_the_login_reaches;
+        {
+            let outside = runtime(Some("wayland-1"));
+            let mut published =
+                Published::for_display_in(Some(outside.path().as_os_str().to_owned()), "wayland-1");
+            assert_eq!(held(&published), None, "nothing before the first switch");
+            published.follow(Some(id(1)));
+            assert_eq!(
+                held(&published).as_deref(),
+                Some(id(1).to_string().as_str())
+            );
+            let file = published.file.clone().expect("a published file");
+            assert_eq!(
+                std::fs::metadata(&file)
+                    .expect("metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600,
+                "the workspace is the session's alone"
+            );
+            // A switch replaces it in place, and no workspace removes it.
+            published.follow(Some(id(2)));
+            assert_eq!(
+                held(&published).as_deref(),
+                Some(id(2).to_string().as_str())
+            );
+            published.follow(None);
+            assert!(!file.exists(), "no workspace in front, no file");
+            // The session's end removes what it wrote.
+            published.follow(Some(id(3)));
+            drop(published);
+            assert!(!file.exists(), "the session's end removes the file");
+        }
 
-    #[test]
-    fn a_sessions_end_keeps_a_workspace_another_session_published() {
-        let outside = runtime(Some("wayland-1"));
-        let mut published =
-            Published::for_display_in(Some(outside.path().as_os_str().to_owned()), "wayland-1");
-        published.follow(Some(id(1)));
-        let file = published.file.clone().expect("a published file");
-        // A session after it takes the file over for its own desktop.
-        std::fs::write(&file, id(9).to_string()).expect("the later session's workspace");
-        drop(published);
-        assert_eq!(
-            std::fs::read_to_string(&file).expect("read"),
-            id(9).to_string(),
-            "the session that took it over keeps it"
-        );
+        phase a_session_whose_display_the_login_does_not_reach_publishes_nothing;
+        {
+            let outside = runtime(Some("wayland-1"));
+            // A nested session beside a live one: the login's programs reach that one's display.
+            let mut beside =
+                Published::for_display_in(Some(outside.path().as_os_str().to_owned()), "wayland-2");
+            beside.follow(Some(id(1)));
+            assert_eq!(beside.file, None);
+            assert_eq!(held(&beside), None);
+            // A session whose display nobody published yet names no workspace either.
+            let fresh = runtime(None);
+            let mut unpublished =
+                Published::for_display_in(Some(fresh.path().as_os_str().to_owned()), "wayland-1");
+            unpublished.follow(Some(id(1)));
+            assert_eq!(unpublished.file, None);
+            assert_eq!(held(&unpublished), None);
+        }
+
+        phase a_sessions_end_keeps_a_workspace_another_session_published;
+        {
+            let outside = runtime(Some("wayland-1"));
+            let mut published =
+                Published::for_display_in(Some(outside.path().as_os_str().to_owned()), "wayland-1");
+            published.follow(Some(id(1)));
+            let file = published.file.clone().expect("a published file");
+            // A session after it takes the file over for its own desktop.
+            std::fs::write(&file, id(9).to_string()).expect("the later session's workspace");
+            drop(published);
+            assert_eq!(
+                std::fs::read_to_string(&file).expect("read"),
+                id(9).to_string(),
+                "the session that took it over keeps it"
+            );
+        }
     }
 }

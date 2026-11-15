@@ -925,27 +925,583 @@ mod tests {
         )
     }
 
-    #[test]
-    fn chat_and_what_names_other_people_stay_behind_and_the_rest_comes_along() {
-        let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
-        let agents = collab_types::workspace_record_id("chat.agent");
-        assert!(stays(CHAT, "messages"), "every conversation");
-        assert!(stays(
-            CHAT,
-            &collab_types::workspace_record_id("chat.workspace")
-        ));
-        assert!(!stays(CHAT, &emoji), "the workspace's own emoji");
-        assert!(!stays(CHAT, &agents), "the workspace's agents");
-        assert!(
-            stays(TERMINAL, "env-1"),
-            "the runtime branches its environments"
-        );
-        assert!(stays(tilo_desktop_model::ownership::DESKTOP_APP, "desktop"));
-        assert!(stays(
-            "tilo.host",
-            &collab_types::workspace_record_id("tilolang.personal")
-        ));
-        assert!(!stays("so.tilo.notes", "uuid:plan"));
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_branch_takes_the_workspaces_records_and_leaves_its_chat;
+
+        phase chat_and_what_names_other_people_stay_behind_and_the_rest_comes_along;
+        {
+            let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
+            let agents = collab_types::workspace_record_id("chat.agent");
+            assert!(stays(CHAT, "messages"), "every conversation");
+            assert!(stays(
+                CHAT,
+                &collab_types::workspace_record_id("chat.workspace")
+            ));
+            assert!(!stays(CHAT, &emoji), "the workspace's own emoji");
+            assert!(!stays(CHAT, &agents), "the workspace's agents");
+            assert!(
+                stays(TERMINAL, "env-1"),
+                "the runtime branches its environments"
+            );
+            assert!(stays(tilo_desktop_model::ownership::DESKTOP_APP, "desktop"));
+            assert!(stays(
+                "tilo.host",
+                &collab_types::workspace_record_id("tilolang.personal")
+            ));
+            assert!(!stays("so.tilo.notes", "uuid:plan"));
+        }
+
+        phase the_apps_data_and_the_files_of_the_workspace_come_along_and_chat_stays;
+        // What the apps keep for a workspace comes along with every document forked into the branch,
+        // without the source's writer or locks, and Chat's and the environments' stay behind; the
+        // workspace's own files come along; the source keeps all of it as it was.
+        {
+            let (from, to) = ids();
+            let home = tempfile::tempdir().unwrap();
+            let data = home.path().join("data");
+            let files = home.path().join("files");
+            let rooms = data.join("tilo-workspaces");
+            let notes = rooms
+                .join(FROM)
+                .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
+                .join(FROM)
+                .join("documents/uuid-plan");
+            std::fs::create_dir_all(&notes).unwrap();
+            std::fs::write(notes.join("state.automerge"), record(FROM, "plan").save()).unwrap();
+            std::fs::write(notes.join("actor"), b"source writer").unwrap();
+            std::fs::write(notes.join("writer.lock"), b"").unwrap();
+            let settings = rooms.join(FROM).join("so.tilo.notes/.config/notes.toml");
+            std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+            std::fs::write(&settings, b"theme = 'dark'").unwrap();
+            let chat = rooms
+                .join(FROM)
+                .join("so.tilo.chat/.local/share/so.tilo.chat/workspaces")
+                .join(FROM);
+            std::fs::create_dir_all(chat.join("documents/messages")).unwrap();
+            std::fs::write(
+                chat.join("documents/messages/state.automerge"),
+                record(FROM, "hi").save(),
+            )
+            .unwrap();
+            let environment = rooms
+                .join(FROM)
+                .join("so.tilo.terminal/.local/share/so.tilo.terminal/workspaces")
+                .join(FROM)
+                .join("documents/env-1");
+            std::fs::create_dir_all(&environment).unwrap();
+            std::fs::write(environment.join("state.automerge"), b"an environment").unwrap();
+            let tree = files.join(".workspaces").join(FROM);
+            std::fs::create_dir_all(tree.join("src")).unwrap();
+            std::fs::write(tree.join("src/main.rs"), b"fn main() {}").unwrap();
+
+            let places = Places {
+                data_home: Some(data),
+                files: Some(files.clone()),
+                // A workspace with environments asks the runtime, and there is none here.
+                runtime: None,
+            };
+            let branched = branch(None, places, from, to);
+            assert_eq!(
+                branched.missing,
+                vec!["the Terminal environments: no runtime here".to_owned()],
+                "only the environments, which the runtime branches, did not come"
+            );
+
+            let copied = rooms
+                .join(TO)
+                .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
+                .join(TO)
+                .join("documents/uuid-plan");
+            let doc = load(&copied.join("state.automerge"));
+            assert_eq!(body(&doc), "plan");
+            assert_eq!(ui::record::workspace_scope(&doc).as_deref(), Some(TO));
+            assert!(
+                !copied.join("actor").exists(),
+                "the branch writes as a writer of its own"
+            );
+            assert!(!copied.join("writer.lock").exists());
+            assert_eq!(
+                std::fs::read(rooms.join(TO).join("so.tilo.notes/.config/notes.toml")).unwrap(),
+                b"theme = 'dark'"
+            );
+            assert!(
+                !rooms.join(TO).join("so.tilo.chat").exists(),
+                "chat stays behind"
+            );
+            assert!(
+                !rooms
+                    .join(TO)
+                    .join("so.tilo.terminal/.local/share/so.tilo.terminal/workspaces")
+                    .join(TO)
+                    .join("documents")
+                    .exists(),
+                "the runtime branches the environments, not a copy of their files"
+            );
+            assert_eq!(
+                std::fs::read(files.join(".workspaces").join(TO).join("src/main.rs")).unwrap(),
+                b"fn main() {}"
+            );
+
+            // The source is as it was, and an edit in either stays there.
+            let source = load(&notes.join("state.automerge"));
+            assert_eq!(ui::record::workspace_scope(&source).as_deref(), Some(FROM));
+            let mut edited = doc;
+            automerge::transaction::Transactable::put(&mut edited, automerge::ROOT, "body", "branch")
+                .unwrap();
+            edited.commit();
+            std::fs::write(copied.join("state.automerge"), edited.save()).unwrap();
+            assert_eq!(body(&load(&notes.join("state.automerge"))), "plan");
+            std::fs::write(
+                files.join(".workspaces").join(TO).join("src/main.rs"),
+                b"changed",
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(tree.join("src/main.rs")).unwrap(),
+                b"fn main() {}"
+            );
+        }
+
+        phase the_branchs_shell_has_the_sources_strips_and_this_devices_windows;
+        // The branch's session has the source's strips and a window for each of this device's, made
+        // again by their apps; another person's window stays theirs.
+        {
+            let (from, to) = ids();
+            let mut source = Workspace::new(from, "Research");
+            let tab = |id, tile| Tab {
+                id,
+                title: format!("window {id}"),
+                tile,
+                app_title: None,
+                view: String::new(),
+                pinned: false,
+            };
+            let mut strip = Strip::new(StripId(2), "Reading");
+            strip.window_groups.push(WindowGroup {
+                id: 3,
+                tabs: vec![
+                    tab(
+                        4,
+                        TileContent::Foreign {
+                            app_id: "so.tilo.notes".into(),
+                            surface_id: 9,
+                        },
+                    ),
+                    tab(
+                        5,
+                        TileContent::HostedWindow {
+                            app_id: "org.gnome.TextEditor".into(),
+                            label: "theirs".into(),
+                            host: "ab".repeat(32),
+                            host_label: "Laptop".into(),
+                        },
+                    ),
+                ],
+                active_tab: 4,
+                width: tilo_desktop_model::WindowWidth::Wide,
+                maximized: true,
+                focus_history: Vec::new(),
+            });
+            source.strips.push(strip);
+            source.strips.push(Strip::new(StripId(6), "Writing"));
+            let mut next = 100;
+            let branch = shell_of(&source, to, "Research branch", None, &mut || {
+                next += 1;
+                next
+            });
+            assert_eq!(branch.id(), to);
+            assert_eq!(branch.name, "Research branch");
+            let names: Vec<&str> = branch
+                .strips
+                .iter()
+                .map(|strip| strip.name.as_str())
+                .collect();
+            assert_eq!(names, ["Reading", "Writing"]);
+            let tabs: Vec<&Tab> = branch.tabs().collect();
+            assert_eq!(
+                tabs.len(),
+                1,
+                "a window that runs on another device stays there"
+            );
+            assert!(matches!(
+                &tabs[0].tile,
+                TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.notes"
+            ));
+            assert!(tabs[0].id > 100, "ids of its own");
+            assert!(branch.strips[0].id.0 > 100);
+        }
+
+        phase every_copy_of_a_record_that_comes_along_is_the_branchs_one_document;
+        // A record that comes along is one document wherever this device keeps it: the engine's copy,
+        // Chat's own copy of the workspace's emoji and the copy another app keeps beside its own records
+        // are the branch's same document, so no app of the branch makes the record again as a genesis
+        // the branch's record does not share (which left Chat's committed history blocked on a
+        // restart); the conversation Chat keeps stays behind.
+        {
+            let state = tempfile::tempdir().unwrap();
+            let identity = identity();
+            let engine = reopened(&state, &identity);
+            let (from, to) = ids();
+            pollster::block_on(engine.found(from, "Research", None));
+            pollster::block_on(engine.found(to, "Research branch", None));
+            let keys = key_group::KeyGroup::create(
+                collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
+                key_group::MemberKey::generate("owner").unwrap(),
+            )
+            .unwrap()
+            .content_keys()
+            .unwrap();
+            let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
+            let mut party = record(FROM, "party-parrot");
+            write(&engine, &keys, from, (CHAT, &emoji), &mut party);
+            let home = tempfile::tempdir().unwrap();
+            let rooms = home.path().join("data/tilo-workspaces");
+            // Where an app directory `app` keeps `owner`'s record `record` of `workspace`.
+            let kept = |workspace: &str, app: &str, owner: &str, record: &str| {
+                rooms
+                    .join(workspace)
+                    .join(app)
+                    .join(".local/share")
+                    .join(owner)
+                    .join("workspaces")
+                    .join(workspace)
+                    .join("documents")
+                    .join(record)
+                    .join("state.automerge")
+            };
+            for app in [CHAT, TERMINAL] {
+                let path = kept(FROM, app, CHAT, &emoji);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, party.save()).unwrap();
+            }
+            let conversation = kept(FROM, CHAT, CHAT, "messages");
+            std::fs::create_dir_all(conversation.parent().unwrap()).unwrap();
+            std::fs::write(&conversation, record(FROM, "see you at nine").save()).unwrap();
+
+            let places = Places {
+                data_home: Some(home.path().join("data")),
+                files: None,
+                runtime: None,
+            };
+            let branched = branch(Some(&engine), places, from, to);
+            assert!(branched.missing.is_empty(), "{:?}", branched.missing);
+
+            let mut engines = AutoCommit::load(
+                &engine
+                    .record(TO, CHAT, &emoji)
+                    .unwrap()
+                    .expect("the branch holds the emoji"),
+            )
+            .unwrap();
+            for app in [CHAT, TERMINAL] {
+                let path = kept(TO, app, CHAT, &emoji);
+                assert!(path.exists(), "{app}'s copy of the emoji came along");
+                let mut copy = load(&path);
+                assert_eq!(body(&copy), "party-parrot");
+                assert_eq!(ui::record::workspace_scope(&copy).as_deref(), Some(TO));
+                assert_eq!(
+                    copy.get_heads(),
+                    engines.get_heads(),
+                    "{app}'s copy is the branch's document, not a fork of its own"
+                );
+            }
+            assert!(
+                !kept(TO, CHAT, CHAT, "messages").exists(),
+                "the conversation stays behind"
+            );
+        }
+
+        phase an_app_that_first_opens_the_workspaces_emoji_in_the_branch_makes_the_branchs_record;
+        // The workspace's emoji as an app makes it, from its kind alone, branched: an app of the
+        // branch that opens the emoji before any copy of it reached its own store makes the very
+        // record the branch holds, so the two meet as one record holding the source's emoji. Before,
+        // the branch's copy kept the source's genesis, the app's was the branch's, and the two met as
+        // a record of no identity: Chat's history in the branch stayed blocked after a restart
+        // ("record identity does not match its binding").
+        {
+            use automerge::ReadDoc as _;
+            use automerge::transaction::Transactable as _;
+            use tilo_automerge::ApplyIncoming as _;
+            const EMOJI: &str = "tilo.workspace.emoji";
+            let state = tempfile::tempdir().unwrap();
+            let identity = identity();
+            let engine = reopened(&state, &identity);
+            let (from, to) = ids();
+            pollster::block_on(engine.found(from, "Research", None));
+            pollster::block_on(engine.found(to, "Research branch", None));
+            let keys = key_group::KeyGroup::create(
+                collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
+                key_group::MemberKey::generate("owner").unwrap(),
+            )
+            .unwrap()
+            .content_keys()
+            .unwrap();
+            // An app's window of `workspace` opening the emoji, in a store of its own.
+            let opened = |workspace: &str| {
+                ui::record::workspace::WorkspaceRecords::in_workspace(
+                    ui::record::RecordOwners::with_store(std::rc::Rc::new(
+                        durable_store::MemoryStore::new(),
+                    )),
+                    workspace.to_owned(),
+                    ui::permissions::MemberId::person("ada"),
+                )
+                .open_record(CHAT, EMOJI, &|doc| {
+                    doc.put(automerge::ROOT, "body", "")
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap()
+            };
+            let source = opened(FROM);
+            source
+                .edit(true, |doc| {
+                    doc.put(automerge::ROOT, "body", "party-parrot")
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap();
+            let emoji = collab_types::workspace_record_id(EMOJI);
+            let mut held = source.read(AutoCommit::clone).unwrap();
+            write(&engine, &keys, from, (CHAT, &emoji), &mut held);
+
+            let branched = branch(Some(&engine), Places::default(), from, to);
+            assert!(branched.missing.is_empty(), "{:?}", branched.missing);
+
+            let mut engines = AutoCommit::load(
+                &engine
+                    .record(TO, CHAT, &emoji)
+                    .unwrap()
+                    .expect("the branch holds the emoji"),
+            )
+            .unwrap();
+            let mut met = opened(TO).read(AutoCommit::clone).unwrap();
+            met.merge_incoming(&mut engines).unwrap();
+            assert_eq!(
+                ui::record::identity(&met).map(|checkout| checkout.id.as_str().to_owned()),
+                Some(emoji),
+                "one record of the branch"
+            );
+            assert_eq!(ui::record::workspace_scope(&met).as_deref(), Some(TO));
+            assert!(matches!(
+                met.get(automerge::ROOT, "body").unwrap(),
+                Some((automerge::Value::Scalar(body), _)) if body.as_str() == Some("party-parrot")
+            ));
+        }
+
+        phase a_branch_that_misses_a_record_names_it_in_its_notice;
+        // A branch that could not take a record along says which, and why, in the notice the person
+        // gets: never only that it is not complete.
+        {
+            let branched = Branched {
+                missing: vec![
+                    "uuid-plan of so.tilo.notes did not reach this device".to_owned(),
+                    "the Terminal environments: no runtime here".to_owned(),
+                ],
+                ..Branched::default()
+            };
+            let (title, body) = told(&branched, "Question B", "Research");
+            assert!(
+                title.contains("Question B") && title.contains("not complete"),
+                "{title}"
+            );
+            assert!(
+                body.contains("uuid-plan of so.tilo.notes did not reach this device"),
+                "{body}"
+            );
+            assert!(
+                body.contains("the Terminal environments: no runtime here"),
+                "{body}"
+            );
+            let (title, _) = told(&Branched::default(), "Question A", "Research");
+            assert!(title.contains("is ready"), "{title}");
+        }
+
+        phase a_workspace_branched_three_times_in_a_row_gives_each_branch_all_of_it;
+        // One workspace branched three times back to back, as the e2e box does (two through the
+        // session's action, the third through the CLI): each branch holds all the source holds, its
+        // records, what its apps keep and its tree of files with a large file and many small ones,
+        // and none is reported not complete. The first branch leaves nothing in the source that the
+        // next ones cannot read.
+        {
+            let state = tempfile::tempdir().unwrap();
+            let identity = identity();
+            let engine = reopened(&state, &identity);
+            let from = ids().0;
+            let targets = [
+                "7a6b5c4d-0000-4000-8000-000000000003",
+                "7a6b5c4d-0000-4000-8000-000000000004",
+                "7a6b5c4d-0000-4000-8000-000000000005",
+            ]
+            .map(|id| WorkspaceId::parse(id).unwrap());
+            pollster::block_on(engine.found(from, "Research", None));
+            let channel = collab_types::WorkspaceId::parse(FROM).unwrap();
+            let keys =
+                key_group::KeyGroup::create(channel, key_group::MemberKey::generate("owner").unwrap())
+                    .unwrap()
+                    .content_keys()
+                    .unwrap();
+            for held in targets {
+                engine.hand_keys(held, keys.clone());
+            }
+            let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
+            write(
+                &engine,
+                &keys,
+                from,
+                ("so.tilo.notes", "uuid-plan"),
+                &mut record(FROM, "plan"),
+            );
+            write(
+                &engine,
+                &keys,
+                from,
+                (CHAT, &emoji),
+                &mut record(FROM, "party-parrot"),
+            );
+
+            let home = tempfile::tempdir().unwrap();
+            let data = home.path().join("data");
+            let files = home.path().join("files");
+            let notes = data
+                .join("tilo-workspaces")
+                .join(FROM)
+                .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
+                .join(FROM)
+                .join("documents/uuid-plan");
+            std::fs::create_dir_all(&notes).unwrap();
+            std::fs::write(notes.join("state.automerge"), record(FROM, "plan").save()).unwrap();
+            let tree = files.join(".workspaces").join(FROM);
+            std::fs::create_dir_all(tree.join("small")).unwrap();
+            std::fs::write(tree.join("bulk.bin"), vec![7_u8; 8 << 20]).unwrap();
+            for n in 0..400 {
+                std::fs::write(tree.join(format!("small/{n}.txt")), format!("file {n}")).unwrap();
+            }
+            let places = Places {
+                data_home: Some(data),
+                files: Some(files.clone()),
+                runtime: None,
+            };
+
+            for (n, to) in targets.into_iter().enumerate() {
+                pollster::block_on(engine.found(to, &format!("Question {n}"), None));
+                let branched = branch(Some(&engine), places.clone(), from, to);
+                assert!(
+                    branched.missing.is_empty(),
+                    "branch {n} is not complete: {:?}",
+                    branched.missing
+                );
+                assert_eq!(branched.records, 2, "branch {n}");
+                assert_eq!(branched.files.files, 401, "branch {n}");
+                let copied = files.join(".workspaces").join(to.to_string());
+                assert_eq!(
+                    std::fs::metadata(copied.join("bulk.bin")).unwrap().len(),
+                    8 << 20
+                );
+            }
+        }
+
+        phase a_branch_holds_the_sources_records_but_its_chat_and_only_the_person;
+        // A workspace with notes, the workspace's emoji and a conversation, branched: the branch
+        // holds the notes and the emoji with their history, sealed under its own channel and naming
+        // it, and not the conversation; its only member is the person, as its owner; the source holds
+        // what it held. All of it is as it was after the engine opens again.
+        {
+            let state = tempfile::tempdir().unwrap();
+            let identity = identity();
+            let person = hex::encode(identity.device_cert.user_public_key);
+            let engine = reopened(&state, &identity);
+            let (from, to) = ids();
+            pollster::block_on(engine.found(from, "Research", None));
+            pollster::block_on(engine.found(to, "Research branch", None));
+            assert!(engine.holds(from) && engine.holds(to));
+            let channel = collab_types::WorkspaceId::parse(&to.to_string()).unwrap();
+            let keys =
+                key_group::KeyGroup::create(channel, key_group::MemberKey::generate("owner").unwrap())
+                    .unwrap()
+                    .content_keys()
+                    .unwrap();
+            let notes = ("so.tilo.notes", "uuid-plan");
+            let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
+            let mut plan = record(FROM, "plan");
+            write(&engine, &keys, from, notes, &mut plan);
+            write(
+                &engine,
+                &keys,
+                from,
+                (CHAT, &emoji),
+                &mut record(FROM, "party-parrot"),
+            );
+            write(
+                &engine,
+                &keys,
+                from,
+                (CHAT, "messages"),
+                &mut record(FROM, "see you at nine"),
+            );
+
+            let branched = branch(Some(&engine), Places::default(), from, to);
+            assert!(branched.missing.is_empty(), "{:?}", branched.missing);
+            assert_eq!((branched.records, branched.left), (2, 1));
+
+            let read = |workspace: &str, route| {
+                AutoCommit::load(
+                    &engine
+                        .record(workspace, notes.0, route)
+                        .unwrap()
+                        .expect("the record is held"),
+                )
+                .unwrap()
+            };
+            let mut copied = read(TO, notes.1);
+            assert_eq!(body(&copied), "plan");
+            assert_eq!(ui::record::workspace_scope(&copied).as_deref(), Some(TO));
+            for change in plan.get_heads() {
+                assert!(
+                    copied.get_change_by_hash(&change).is_some(),
+                    "the branch holds the record's history"
+                );
+            }
+            let routes = engine.records(TO).unwrap();
+            assert!(routes.contains(&(CHAT.to_owned(), emoji)), "{routes:?}");
+            assert!(
+                !routes
+                    .iter()
+                    .any(|(app, record)| app == CHAT && record == "messages"),
+                "the conversation stays behind: {routes:?}"
+            );
+            // Its owner is the person who branched it, and nobody else is in it.
+            assert_eq!(engine.owner_of(TO), Ok(person.clone()));
+            let people = engine.people(TO).unwrap();
+            assert!(
+                people
+                    .iter()
+                    .all(|member| member.id.person_id() == Some(person.as_str())),
+                "nobody but the person: {people:?}"
+            );
+            assert!(
+                engine.reads_whole(to),
+                "the person reads all of their branch"
+            );
+
+            // The source holds what it held, and the two are documents of their own.
+            let mut source = read(FROM, notes.1);
+            assert_eq!(ui::record::workspace_scope(&source).as_deref(), Some(FROM));
+            assert_ne!(source.get_heads(), copied.get_heads());
+            assert!(
+                engine
+                    .records(FROM)
+                    .unwrap()
+                    .contains(&(CHAT.to_owned(), "messages".to_owned()))
+            );
+
+            drop(engine);
+            let engine = reopened(&state, &identity);
+            assert!(
+                engine.holds(to),
+                "the branch is this device's after a restart"
+            );
+            assert_eq!(engine.owner_of(TO), Ok(person));
+            assert_eq!(engine.records(TO).unwrap().len(), 2);
+        }
     }
 
     /// A record document as an app keeps it on this device.
@@ -973,186 +1529,6 @@ mod tests {
 
     fn load(path: &Path) -> AutoCommit {
         AutoCommit::load(&std::fs::read(path).unwrap()).unwrap()
-    }
-
-    /// What the apps keep for a workspace comes along with every document forked into the branch,
-    /// without the source's writer or locks, and Chat's and the environments' stay behind; the
-    /// workspace's own files come along; the source keeps all of it as it was.
-    #[test]
-    fn the_apps_data_and_the_files_of_the_workspace_come_along_and_chat_stays() {
-        let (from, to) = ids();
-        let home = tempfile::tempdir().unwrap();
-        let data = home.path().join("data");
-        let files = home.path().join("files");
-        let rooms = data.join("tilo-workspaces");
-        let notes = rooms
-            .join(FROM)
-            .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
-            .join(FROM)
-            .join("documents/uuid-plan");
-        std::fs::create_dir_all(&notes).unwrap();
-        std::fs::write(notes.join("state.automerge"), record(FROM, "plan").save()).unwrap();
-        std::fs::write(notes.join("actor"), b"source writer").unwrap();
-        std::fs::write(notes.join("writer.lock"), b"").unwrap();
-        let settings = rooms.join(FROM).join("so.tilo.notes/.config/notes.toml");
-        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
-        std::fs::write(&settings, b"theme = 'dark'").unwrap();
-        let chat = rooms
-            .join(FROM)
-            .join("so.tilo.chat/.local/share/so.tilo.chat/workspaces")
-            .join(FROM);
-        std::fs::create_dir_all(chat.join("documents/messages")).unwrap();
-        std::fs::write(
-            chat.join("documents/messages/state.automerge"),
-            record(FROM, "hi").save(),
-        )
-        .unwrap();
-        let environment = rooms
-            .join(FROM)
-            .join("so.tilo.terminal/.local/share/so.tilo.terminal/workspaces")
-            .join(FROM)
-            .join("documents/env-1");
-        std::fs::create_dir_all(&environment).unwrap();
-        std::fs::write(environment.join("state.automerge"), b"an environment").unwrap();
-        let tree = files.join(".workspaces").join(FROM);
-        std::fs::create_dir_all(tree.join("src")).unwrap();
-        std::fs::write(tree.join("src/main.rs"), b"fn main() {}").unwrap();
-
-        let places = Places {
-            data_home: Some(data),
-            files: Some(files.clone()),
-            // A workspace with environments asks the runtime, and there is none here.
-            runtime: None,
-        };
-        let branched = branch(None, places, from, to);
-        assert_eq!(
-            branched.missing,
-            vec!["the Terminal environments: no runtime here".to_owned()],
-            "only the environments, which the runtime branches, did not come"
-        );
-
-        let copied = rooms
-            .join(TO)
-            .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
-            .join(TO)
-            .join("documents/uuid-plan");
-        let doc = load(&copied.join("state.automerge"));
-        assert_eq!(body(&doc), "plan");
-        assert_eq!(ui::record::workspace_scope(&doc).as_deref(), Some(TO));
-        assert!(
-            !copied.join("actor").exists(),
-            "the branch writes as a writer of its own"
-        );
-        assert!(!copied.join("writer.lock").exists());
-        assert_eq!(
-            std::fs::read(rooms.join(TO).join("so.tilo.notes/.config/notes.toml")).unwrap(),
-            b"theme = 'dark'"
-        );
-        assert!(
-            !rooms.join(TO).join("so.tilo.chat").exists(),
-            "chat stays behind"
-        );
-        assert!(
-            !rooms
-                .join(TO)
-                .join("so.tilo.terminal/.local/share/so.tilo.terminal/workspaces")
-                .join(TO)
-                .join("documents")
-                .exists(),
-            "the runtime branches the environments, not a copy of their files"
-        );
-        assert_eq!(
-            std::fs::read(files.join(".workspaces").join(TO).join("src/main.rs")).unwrap(),
-            b"fn main() {}"
-        );
-
-        // The source is as it was, and an edit in either stays there.
-        let source = load(&notes.join("state.automerge"));
-        assert_eq!(ui::record::workspace_scope(&source).as_deref(), Some(FROM));
-        let mut edited = doc;
-        automerge::transaction::Transactable::put(&mut edited, automerge::ROOT, "body", "branch")
-            .unwrap();
-        edited.commit();
-        std::fs::write(copied.join("state.automerge"), edited.save()).unwrap();
-        assert_eq!(body(&load(&notes.join("state.automerge"))), "plan");
-        std::fs::write(
-            files.join(".workspaces").join(TO).join("src/main.rs"),
-            b"changed",
-        )
-        .unwrap();
-        assert_eq!(
-            std::fs::read(tree.join("src/main.rs")).unwrap(),
-            b"fn main() {}"
-        );
-    }
-
-    /// The branch's session has the source's strips and a window for each of this device's, made
-    /// again by their apps; another person's window stays theirs.
-    #[test]
-    fn the_branchs_shell_has_the_sources_strips_and_this_devices_windows() {
-        let (from, to) = ids();
-        let mut source = Workspace::new(from, "Research");
-        let tab = |id, tile| Tab {
-            id,
-            title: format!("window {id}"),
-            tile,
-            app_title: None,
-            view: String::new(),
-            pinned: false,
-        };
-        let mut strip = Strip::new(StripId(2), "Reading");
-        strip.window_groups.push(WindowGroup {
-            id: 3,
-            tabs: vec![
-                tab(
-                    4,
-                    TileContent::Foreign {
-                        app_id: "so.tilo.notes".into(),
-                        surface_id: 9,
-                    },
-                ),
-                tab(
-                    5,
-                    TileContent::HostedWindow {
-                        app_id: "org.gnome.TextEditor".into(),
-                        label: "theirs".into(),
-                        host: "ab".repeat(32),
-                        host_label: "Laptop".into(),
-                    },
-                ),
-            ],
-            active_tab: 4,
-            width: tilo_desktop_model::WindowWidth::Wide,
-            maximized: true,
-            focus_history: Vec::new(),
-        });
-        source.strips.push(strip);
-        source.strips.push(Strip::new(StripId(6), "Writing"));
-        let mut next = 100;
-        let branch = shell_of(&source, to, "Research branch", None, &mut || {
-            next += 1;
-            next
-        });
-        assert_eq!(branch.id(), to);
-        assert_eq!(branch.name, "Research branch");
-        let names: Vec<&str> = branch
-            .strips
-            .iter()
-            .map(|strip| strip.name.as_str())
-            .collect();
-        assert_eq!(names, ["Reading", "Writing"]);
-        let tabs: Vec<&Tab> = branch.tabs().collect();
-        assert_eq!(
-            tabs.len(),
-            1,
-            "a window that runs on another device stays there"
-        );
-        assert!(matches!(
-            &tabs[0].tile,
-            TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.notes"
-        ));
-        assert!(tabs[0].id > 100, "ids of its own");
-        assert!(branch.strips[0].id.0 > 100);
     }
 
     /// `from` branched into `to` , with everything this device holds here.
@@ -1217,377 +1593,6 @@ mod tests {
             Some(keys),
         ))
         .expect("the workspace takes the record");
-    }
-
-    /// A record that comes along is one document wherever this device keeps it: the engine's copy,
-    /// Chat's own copy of the workspace's emoji and the copy another app keeps beside its own records
-    /// are the branch's same document, so no app of the branch makes the record again as a genesis
-    /// the branch's record does not share (which left Chat's committed history blocked on a
-    /// restart); the conversation Chat keeps stays behind.
-    #[test]
-    fn every_copy_of_a_record_that_comes_along_is_the_branchs_one_document() {
-        let state = tempfile::tempdir().unwrap();
-        let identity = identity();
-        let engine = reopened(&state, &identity);
-        let (from, to) = ids();
-        pollster::block_on(engine.found(from, "Research", None));
-        pollster::block_on(engine.found(to, "Research branch", None));
-        let keys = key_group::KeyGroup::create(
-            collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
-            key_group::MemberKey::generate("owner").unwrap(),
-        )
-        .unwrap()
-        .content_keys()
-        .unwrap();
-        let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
-        let mut party = record(FROM, "party-parrot");
-        write(&engine, &keys, from, (CHAT, &emoji), &mut party);
-        let home = tempfile::tempdir().unwrap();
-        let rooms = home.path().join("data/tilo-workspaces");
-        // Where an app directory `app` keeps `owner`'s record `record` of `workspace`.
-        let kept = |workspace: &str, app: &str, owner: &str, record: &str| {
-            rooms
-                .join(workspace)
-                .join(app)
-                .join(".local/share")
-                .join(owner)
-                .join("workspaces")
-                .join(workspace)
-                .join("documents")
-                .join(record)
-                .join("state.automerge")
-        };
-        for app in [CHAT, TERMINAL] {
-            let path = kept(FROM, app, CHAT, &emoji);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, party.save()).unwrap();
-        }
-        let conversation = kept(FROM, CHAT, CHAT, "messages");
-        std::fs::create_dir_all(conversation.parent().unwrap()).unwrap();
-        std::fs::write(&conversation, record(FROM, "see you at nine").save()).unwrap();
-
-        let places = Places {
-            data_home: Some(home.path().join("data")),
-            files: None,
-            runtime: None,
-        };
-        let branched = branch(Some(&engine), places, from, to);
-        assert!(branched.missing.is_empty(), "{:?}", branched.missing);
-
-        let mut engines = AutoCommit::load(
-            &engine
-                .record(TO, CHAT, &emoji)
-                .unwrap()
-                .expect("the branch holds the emoji"),
-        )
-        .unwrap();
-        for app in [CHAT, TERMINAL] {
-            let path = kept(TO, app, CHAT, &emoji);
-            assert!(path.exists(), "{app}'s copy of the emoji came along");
-            let mut copy = load(&path);
-            assert_eq!(body(&copy), "party-parrot");
-            assert_eq!(ui::record::workspace_scope(&copy).as_deref(), Some(TO));
-            assert_eq!(
-                copy.get_heads(),
-                engines.get_heads(),
-                "{app}'s copy is the branch's document, not a fork of its own"
-            );
-        }
-        assert!(
-            !kept(TO, CHAT, CHAT, "messages").exists(),
-            "the conversation stays behind"
-        );
-    }
-
-    /// The workspace's emoji as an app makes it, from its kind alone, branched: an app of the
-    /// branch that opens the emoji before any copy of it reached its own store makes the very
-    /// record the branch holds, so the two meet as one record holding the source's emoji. Before,
-    /// the branch's copy kept the source's genesis, the app's was the branch's, and the two met as
-    /// a record of no identity: Chat's history in the branch stayed blocked after a restart
-    /// ("record identity does not match its binding").
-    #[test]
-    fn an_app_that_first_opens_the_workspaces_emoji_in_the_branch_makes_the_branchs_record() {
-        use automerge::ReadDoc as _;
-        use automerge::transaction::Transactable as _;
-        use tilo_automerge::ApplyIncoming as _;
-        const EMOJI: &str = "tilo.workspace.emoji";
-        let state = tempfile::tempdir().unwrap();
-        let identity = identity();
-        let engine = reopened(&state, &identity);
-        let (from, to) = ids();
-        pollster::block_on(engine.found(from, "Research", None));
-        pollster::block_on(engine.found(to, "Research branch", None));
-        let keys = key_group::KeyGroup::create(
-            collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
-            key_group::MemberKey::generate("owner").unwrap(),
-        )
-        .unwrap()
-        .content_keys()
-        .unwrap();
-        // An app's window of `workspace` opening the emoji, in a store of its own.
-        let opened = |workspace: &str| {
-            ui::record::workspace::WorkspaceRecords::in_workspace(
-                ui::record::RecordOwners::with_store(std::rc::Rc::new(
-                    durable_store::MemoryStore::new(),
-                )),
-                workspace.to_owned(),
-                ui::permissions::MemberId::person("ada"),
-            )
-            .open_record(CHAT, EMOJI, &|doc| {
-                doc.put(automerge::ROOT, "body", "")
-                    .map_err(|error| error.to_string())
-            })
-            .unwrap()
-        };
-        let source = opened(FROM);
-        source
-            .edit(true, |doc| {
-                doc.put(automerge::ROOT, "body", "party-parrot")
-                    .map_err(|error| error.to_string())
-            })
-            .unwrap();
-        let emoji = collab_types::workspace_record_id(EMOJI);
-        let mut held = source.read(AutoCommit::clone).unwrap();
-        write(&engine, &keys, from, (CHAT, &emoji), &mut held);
-
-        let branched = branch(Some(&engine), Places::default(), from, to);
-        assert!(branched.missing.is_empty(), "{:?}", branched.missing);
-
-        let mut engines = AutoCommit::load(
-            &engine
-                .record(TO, CHAT, &emoji)
-                .unwrap()
-                .expect("the branch holds the emoji"),
-        )
-        .unwrap();
-        let mut met = opened(TO).read(AutoCommit::clone).unwrap();
-        met.merge_incoming(&mut engines).unwrap();
-        assert_eq!(
-            ui::record::identity(&met).map(|checkout| checkout.id.as_str().to_owned()),
-            Some(emoji),
-            "one record of the branch"
-        );
-        assert_eq!(ui::record::workspace_scope(&met).as_deref(), Some(TO));
-        assert!(matches!(
-            met.get(automerge::ROOT, "body").unwrap(),
-            Some((automerge::Value::Scalar(body), _)) if body.as_str() == Some("party-parrot")
-        ));
-    }
-
-    /// A branch that could not take a record along says which, and why, in the notice the person
-    /// gets: never only that it is not complete.
-    #[test]
-    fn a_branch_that_misses_a_record_names_it_in_its_notice() {
-        let branched = Branched {
-            missing: vec![
-                "uuid-plan of so.tilo.notes did not reach this device".to_owned(),
-                "the Terminal environments: no runtime here".to_owned(),
-            ],
-            ..Branched::default()
-        };
-        let (title, body) = told(&branched, "Question B", "Research");
-        assert!(
-            title.contains("Question B") && title.contains("not complete"),
-            "{title}"
-        );
-        assert!(
-            body.contains("uuid-plan of so.tilo.notes did not reach this device"),
-            "{body}"
-        );
-        assert!(
-            body.contains("the Terminal environments: no runtime here"),
-            "{body}"
-        );
-        let (title, _) = told(&Branched::default(), "Question A", "Research");
-        assert!(title.contains("is ready"), "{title}");
-    }
-
-    /// One workspace branched three times back to back, as the e2e box does (two through the
-    /// session's action, the third through the CLI): each branch holds all the source holds, its
-    /// records, what its apps keep and its tree of files with a large file and many small ones,
-    /// and none is reported not complete. The first branch leaves nothing in the source that the
-    /// next ones cannot read.
-    #[test]
-    fn a_workspace_branched_three_times_in_a_row_gives_each_branch_all_of_it() {
-        let state = tempfile::tempdir().unwrap();
-        let identity = identity();
-        let engine = reopened(&state, &identity);
-        let from = ids().0;
-        let targets = [
-            "7a6b5c4d-0000-4000-8000-000000000003",
-            "7a6b5c4d-0000-4000-8000-000000000004",
-            "7a6b5c4d-0000-4000-8000-000000000005",
-        ]
-        .map(|id| WorkspaceId::parse(id).unwrap());
-        pollster::block_on(engine.found(from, "Research", None));
-        let channel = collab_types::WorkspaceId::parse(FROM).unwrap();
-        let keys =
-            key_group::KeyGroup::create(channel, key_group::MemberKey::generate("owner").unwrap())
-                .unwrap()
-                .content_keys()
-                .unwrap();
-        for held in targets {
-            engine.hand_keys(held, keys.clone());
-        }
-        let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
-        write(
-            &engine,
-            &keys,
-            from,
-            ("so.tilo.notes", "uuid-plan"),
-            &mut record(FROM, "plan"),
-        );
-        write(
-            &engine,
-            &keys,
-            from,
-            (CHAT, &emoji),
-            &mut record(FROM, "party-parrot"),
-        );
-
-        let home = tempfile::tempdir().unwrap();
-        let data = home.path().join("data");
-        let files = home.path().join("files");
-        let notes = data
-            .join("tilo-workspaces")
-            .join(FROM)
-            .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
-            .join(FROM)
-            .join("documents/uuid-plan");
-        std::fs::create_dir_all(&notes).unwrap();
-        std::fs::write(notes.join("state.automerge"), record(FROM, "plan").save()).unwrap();
-        let tree = files.join(".workspaces").join(FROM);
-        std::fs::create_dir_all(tree.join("small")).unwrap();
-        std::fs::write(tree.join("bulk.bin"), vec![7_u8; 8 << 20]).unwrap();
-        for n in 0..400 {
-            std::fs::write(tree.join(format!("small/{n}.txt")), format!("file {n}")).unwrap();
-        }
-        let places = Places {
-            data_home: Some(data),
-            files: Some(files.clone()),
-            runtime: None,
-        };
-
-        for (n, to) in targets.into_iter().enumerate() {
-            pollster::block_on(engine.found(to, &format!("Question {n}"), None));
-            let branched = branch(Some(&engine), places.clone(), from, to);
-            assert!(
-                branched.missing.is_empty(),
-                "branch {n} is not complete: {:?}",
-                branched.missing
-            );
-            assert_eq!(branched.records, 2, "branch {n}");
-            assert_eq!(branched.files.files, 401, "branch {n}");
-            let copied = files.join(".workspaces").join(to.to_string());
-            assert_eq!(
-                std::fs::metadata(copied.join("bulk.bin")).unwrap().len(),
-                8 << 20
-            );
-        }
-    }
-
-    /// A workspace with notes, the workspace's emoji and a conversation, branched: the branch
-    /// holds the notes and the emoji with their history, sealed under its own channel and naming
-    /// it, and not the conversation; its only member is the person, as its owner; the source holds
-    /// what it held. All of it is as it was after the engine opens again.
-    #[test]
-    fn a_branch_holds_the_sources_records_but_its_chat_and_only_the_person() {
-        let state = tempfile::tempdir().unwrap();
-        let identity = identity();
-        let person = hex::encode(identity.device_cert.user_public_key);
-        let engine = reopened(&state, &identity);
-        let (from, to) = ids();
-        pollster::block_on(engine.found(from, "Research", None));
-        pollster::block_on(engine.found(to, "Research branch", None));
-        assert!(engine.holds(from) && engine.holds(to));
-        let channel = collab_types::WorkspaceId::parse(&to.to_string()).unwrap();
-        let keys =
-            key_group::KeyGroup::create(channel, key_group::MemberKey::generate("owner").unwrap())
-                .unwrap()
-                .content_keys()
-                .unwrap();
-        let notes = ("so.tilo.notes", "uuid-plan");
-        let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
-        let mut plan = record(FROM, "plan");
-        write(&engine, &keys, from, notes, &mut plan);
-        write(
-            &engine,
-            &keys,
-            from,
-            (CHAT, &emoji),
-            &mut record(FROM, "party-parrot"),
-        );
-        write(
-            &engine,
-            &keys,
-            from,
-            (CHAT, "messages"),
-            &mut record(FROM, "see you at nine"),
-        );
-
-        let branched = branch(Some(&engine), Places::default(), from, to);
-        assert!(branched.missing.is_empty(), "{:?}", branched.missing);
-        assert_eq!((branched.records, branched.left), (2, 1));
-
-        let read = |workspace: &str, route| {
-            AutoCommit::load(
-                &engine
-                    .record(workspace, notes.0, route)
-                    .unwrap()
-                    .expect("the record is held"),
-            )
-            .unwrap()
-        };
-        let mut copied = read(TO, notes.1);
-        assert_eq!(body(&copied), "plan");
-        assert_eq!(ui::record::workspace_scope(&copied).as_deref(), Some(TO));
-        for change in plan.get_heads() {
-            assert!(
-                copied.get_change_by_hash(&change).is_some(),
-                "the branch holds the record's history"
-            );
-        }
-        let routes = engine.records(TO).unwrap();
-        assert!(routes.contains(&(CHAT.to_owned(), emoji)), "{routes:?}");
-        assert!(
-            !routes
-                .iter()
-                .any(|(app, record)| app == CHAT && record == "messages"),
-            "the conversation stays behind: {routes:?}"
-        );
-        // Its owner is the person who branched it, and nobody else is in it.
-        assert_eq!(engine.owner_of(TO), Ok(person.clone()));
-        let people = engine.people(TO).unwrap();
-        assert!(
-            people
-                .iter()
-                .all(|member| member.id.person_id() == Some(person.as_str())),
-            "nobody but the person: {people:?}"
-        );
-        assert!(
-            engine.reads_whole(to),
-            "the person reads all of their branch"
-        );
-
-        // The source holds what it held, and the two are documents of their own.
-        let mut source = read(FROM, notes.1);
-        assert_eq!(ui::record::workspace_scope(&source).as_deref(), Some(FROM));
-        assert_ne!(source.get_heads(), copied.get_heads());
-        assert!(
-            engine
-                .records(FROM)
-                .unwrap()
-                .contains(&(CHAT.to_owned(), "messages".to_owned()))
-        );
-
-        drop(engine);
-        let engine = reopened(&state, &identity);
-        assert!(
-            engine.holds(to),
-            "the branch is this device's after a restart"
-        );
-        assert_eq!(engine.owner_of(TO), Ok(person));
-        assert_eq!(engine.records(TO).unwrap().len(), 2);
     }
     /// An agent branches the workspace it works in, by any name the session knows it by, and no
     /// other: what it would copy of another is not its to read.

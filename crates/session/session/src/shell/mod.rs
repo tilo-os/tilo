@@ -1853,62 +1853,92 @@ impl crate::Session {
 
 #[cfg(test)]
 mod tests {
-    /// What the shell runs — its views and the session's and the platform's descriptions, with no
-    /// scenarios, which are fixtures for its shots and tests — compiles, and every id it declares
-    /// is in the lock. What it shows.
-    #[test]
-    fn the_shell_the_session_runs_compiles() {
-        super::compile().unwrap_or_else(|why| panic!("{why}"));
-    }
+    tilo_test_env::scenario! {
+        fn the_shell_package_compiles_and_is_what_the_session_keeps_of_it;
 
-    /// `apps/tl/shell/app.ids` is the lock of the *whole* shell package, scenarios included:
-    /// `tilolang check` (which layout-check and the shots compile the package with) holds, and a
-    /// declaration the session's compile leaves out — a scenario's, its helpers' — keeps its id in
-    /// the lock, because a lock names every declaration the package has ever had.
-    #[test]
-    fn the_shells_ids_lock_holds_every_declaration_the_whole_package_has() {
-        use tilolang_tilo::tilolang::ids::IdsLock;
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
-        // The packages the shell's scenarios reach (`use so.tilo.lang.notes as notes`), each
-        // compiled before the shell as `tilolang check` compiles it.
-        let published = tilolang_tilo::catalogue::published_packages(&[dir
-            .parent()
-            .expect("apps/tl")
-            .to_path_buf()])
-        .unwrap_or_else(|why| panic!("{why}"));
-        let built = tilolang_tilo::tilolang::source::compile_package(
-            &dir,
-            &[],
-            &published,
-            &mut tilolang_tilo::tilolang::ids::SeededEntropy(0),
-        )
-        .unwrap_or_else(|why| panic!("{why}"));
-        let compiled = built.last().expect("the shell package compiles last");
-        let lock = compiled.compiled.ids.to_text();
-        let on_disk = std::fs::read_to_string(dir.join("app.ids")).expect("app.ids reads");
-        assert_eq!(
-            on_disk, lock,
-            "apps/tl/shell/app.ids is not the lock the whole package (scenarios included) \
+        phase the_shell_the_session_runs_compiles;
+        // What the shell runs — its views and the session's and the platform's descriptions, with no
+        // scenarios, which are fixtures for its shots and tests — compiles, and every id it declares
+        // is in the lock. What it shows.
+        {
+            super::compile().unwrap_or_else(|why| panic!("{why}"));
+        }
+
+        phase the_shells_ids_lock_holds_every_declaration_the_whole_package_has;
+        // `apps/tl/shell/app.ids` is the lock of the *whole* shell package, scenarios included:
+        // `tilolang check` (which layout-check and the shots compile the package with) holds, and a
+        // declaration the session's compile leaves out — a scenario's, its helpers' — keeps its id in
+        // the lock, because a lock names every declaration the package has ever had.
+        {
+            use tilolang_tilo::tilolang::ids::IdsLock;
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
+            // The packages the shell's scenarios reach (`use so.tilo.lang.notes as notes`), each
+            // compiled before the shell as `tilolang check` compiles it.
+            let published = tilolang_tilo::catalogue::published_packages(&[dir
+                .parent()
+                .expect("apps/tl")
+                .to_path_buf()])
+            .unwrap_or_else(|why| panic!("{why}"));
+            let built = tilolang_tilo::tilolang::source::compile_package(
+                &dir,
+                &[],
+                &published,
+                &mut tilolang_tilo::tilolang::ids::SeededEntropy(0),
+            )
+            .unwrap_or_else(|why| panic!("{why}"));
+            let compiled = built.last().expect("the shell package compiles last");
+            let lock = compiled.compiled.ids.to_text();
+            let on_disk = std::fs::read_to_string(dir.join("app.ids")).expect("app.ids reads");
+            assert_eq!(
+                on_disk, lock,
+                "apps/tl/shell/app.ids is not the lock the whole package (scenarios included) \
              compiles to; write:\n{lock}"
-        );
-        // Every scenario the package declares keeps the id the lock gives it, in the lock's live
-        // entries and never among the retired: a scenario's id is as real as a type's.
-        let parsed = IdsLock::parse(&on_disk).expect("the lock parses");
-        let retired: std::collections::BTreeSet<(&str, &str)> = parsed.retired().collect();
-        let scenarios = &compiled.compiled.meta.scenarios;
-        assert!(
-            scenarios.len() > 20,
-            "the whole package's scenarios are compiled, as `tilolang check` compiles them: {}",
-            scenarios.len()
-        );
-        for scenario in scenarios {
-            let name = tilolang_tilo::tilolang::ids::scenario_key(&scenario.name);
-            let held = parsed
-                .get(&name)
-                .unwrap_or_else(|| panic!("scenario {name:?} has no id in app.ids"));
+            );
+            // Every scenario the package declares keeps the id the lock gives it, in the lock's live
+            // entries and never among the retired: a scenario's id is as real as a type's.
+            let parsed = IdsLock::parse(&on_disk).expect("the lock parses");
+            let retired: std::collections::BTreeSet<(&str, &str)> = parsed.retired().collect();
+            let scenarios = &compiled.compiled.meta.scenarios;
             assert!(
-                !retired.contains(&(name.as_str(), held)),
-                "{name} is retired"
+                scenarios.len() > 20,
+                "the whole package's scenarios are compiled, as `tilolang check` compiles them: {}",
+                scenarios.len()
+            );
+            for scenario in scenarios {
+                let name = tilolang_tilo::tilolang::ids::scenario_key(&scenario.name);
+                let held = parsed
+                    .get(&name)
+                    .unwrap_or_else(|| panic!("scenario {name:?} has no id in app.ids"));
+                assert!(
+                    !retired.contains(&(name.as_str(), held)),
+                    "{name} is retired"
+                );
+            }
+        }
+
+        phase the_device_surface_file_is_what_the_session_publishes;
+        // The device's surface the shell compiles against is the one the session publishes.
+        {
+            let published = super::device_surfaces();
+            let committed = tilolang_tilo::platform_apps::device_surfaces()
+                .unwrap_or_else(|why| panic!("device-surface.json does not read: {why}"));
+            if committed == published {
+                return;
+            }
+            let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
+                .expect("a surface writes as JSON");
+            // `UPDATE_SNAPSHOTS=1` writes the file the session publishes, as the session package's
+            // own snapshot test does: a resource whose verbs changed is regenerated in place rather
+            // than pasted from a failing run.
+            if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("device-surface.json");
+                std::fs::write(&path, &text).expect("device-surface.json is written");
+                return;
+            }
+            panic!(
+                "crates/session/session/device-surface.json is not what the session publishes; \
+             regenerate it with UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --lib \
+             device_surface, or write what it publishes:\n{text}"
             );
         }
     }
@@ -1990,31 +2020,5 @@ mod tests {
             scale: 1.0,
         }]);
         assert_eq!(aside.0.outputs, 1, "it follows the displays");
-    }
-
-    /// The device's surface the shell compiles against is the one the session publishes.
-    #[test]
-    fn the_device_surface_file_is_what_the_session_publishes() {
-        let published = super::device_surfaces();
-        let committed = tilolang_tilo::platform_apps::device_surfaces()
-            .unwrap_or_else(|why| panic!("device-surface.json does not read: {why}"));
-        if committed == published {
-            return;
-        }
-        let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
-            .expect("a surface writes as JSON");
-        // `UPDATE_SNAPSHOTS=1` writes the file the session publishes, as the session package's
-        // own snapshot test does: a resource whose verbs changed is regenerated in place rather
-        // than pasted from a failing run.
-        if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("device-surface.json");
-            std::fs::write(&path, &text).expect("device-surface.json is written");
-            return;
-        }
-        panic!(
-            "crates/session/session/device-surface.json is not what the session publishes; \
-             regenerate it with UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --lib \
-             device_surface, or write what it publishes:\n{text}"
-        );
     }
 }

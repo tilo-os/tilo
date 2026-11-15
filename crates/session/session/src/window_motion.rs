@@ -107,21 +107,25 @@ impl WindowMotions {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_window_opens_from_faint_and_small_to_whole() {
-        let motions = WindowMotions::new(EffectiveMotion::default());
-        let start = motions.effect(0.0);
-        assert!(start.opacity < 0.01 && start.scale < 1.0, "{start:?}");
-        assert_eq!(motions.effect(1.0), WindowEffect::default());
-        let half = motions.effect(0.5);
-        assert!(half.scale > start.scale && half.scale < 1.0, "{half:?}");
-    }
+    tilo_test_env::scenario! {
+        fn a_window_opens_into_place_and_only_fades_under_reduced_motion;
 
-    #[test]
-    fn reduced_motion_only_fades() {
-        let motions = WindowMotions::new(EffectiveMotion::new(ui::tokens::Motion::default(), true));
-        let half = motions.effect(0.5);
-        assert!((half.scale - 1.0).abs() < f64::EPSILON, "{half:?}");
-        assert!(half.opacity > 0.0 && half.opacity < 1.0, "{half:?}");
+        phase a_window_opens_from_faint_and_small_to_whole;
+        {
+            let motions = WindowMotions::new(EffectiveMotion::default());
+            let start = motions.effect(0.0);
+            assert!(start.opacity < 0.01 && start.scale < 1.0, "{start:?}");
+            assert_eq!(motions.effect(1.0), WindowEffect::default());
+            let half = motions.effect(0.5);
+            assert!(half.scale > start.scale && half.scale < 1.0, "{half:?}");
+        }
+
+        phase reduced_motion_only_fades;
+        {
+            let motions = WindowMotions::new(EffectiveMotion::new(ui::tokens::Motion::default(), true));
+            let half = motions.effect(0.5);
+            assert!((half.scale - 1.0).abs() < f64::EPSILON, "{half:?}");
+            assert!(half.opacity > 0.0 && half.opacity < 1.0, "{half:?}");
+        }
     }
 }

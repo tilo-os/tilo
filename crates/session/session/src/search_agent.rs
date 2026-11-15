@@ -97,49 +97,53 @@ mod tests {
         rows.remove(0)
     }
 
-    /// The row says who takes what was typed, and sends it through the session's one send, in the
-    /// workspace the search was opened in: the agent the person keeps there, or the new one the
-    /// send makes where they keep none.
-    #[test]
-    fn the_row_sends_what_was_typed_to_the_agent_it_names() {
-        let kept = Recipient::found(RecipientKind::Agent, "tide", "Tide");
-        let hit = row(kept.clone(), "book a table for two");
-        assert_eq!(hit.title, "Send to Tide: book a table for two");
-        assert_eq!(hit.kind, ask_agent::kind());
-        assert!(ask_agent::is_row(&hit), "the session's own row");
-        // The row says what was typed back, so nothing in it is drawn as a match.
-        assert!(
-            matches!(&hit.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query),
-            "the row declares it echoes the query: {:?}",
-            hit.row
-        );
-        let Target::Invoke(target) = &hit.target else {
-            panic!("the row runs the send");
-        };
-        assert_eq!(target.app, DESKTOP_APP);
-        assert_eq!(target.address.resource.as_str(), send_to::RESOURCE);
-        assert_eq!(target.address.action.as_str(), send_to::SEND);
-        assert_eq!(target.arguments["text"], "book a table for two");
-        assert_eq!(target.arguments["workspace"], "workspace");
-        assert_eq!(target.arguments["to"], serde_json::json!([kept]));
+    tilo_test_env::scenario! {
+        fn the_agent_row_sends_what_was_typed_and_an_empty_query_offers_none;
 
-        let fresh = row(Recipient::new_agent("Assistant"), "what is left?");
-        assert_eq!(fresh.title, "Send to Assistant: what is left?");
-        let Target::Invoke(target) = &fresh.target else {
-            panic!("the row runs the send");
-        };
-        assert_eq!(
-            target.arguments["to"],
-            serde_json::json!([{"kind": "new-agent", "name": "Assistant"}])
-        );
-    }
+        phase the_row_sends_what_was_typed_to_the_agent_it_names;
+        // The row says who takes what was typed, and sends it through the session's one send, in the
+        // workspace the search was opened in: the agent the person keeps there, or the new one the
+        // send makes where they keep none.
+        {
+            let kept = Recipient::found(RecipientKind::Agent, "tide", "Tide");
+            let hit = row(kept.clone(), "book a table for two");
+            assert_eq!(hit.title, "Send to Tide: book a table for two");
+            assert_eq!(hit.kind, ask_agent::kind());
+            assert!(ask_agent::is_row(&hit), "the session's own row");
+            // The row says what was typed back, so nothing in it is drawn as a match.
+            assert!(
+                matches!(&hit.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query),
+                "the row declares it echoes the query: {:?}",
+                hit.row
+            );
+            let Target::Invoke(target) = &hit.target else {
+                panic!("the row runs the send");
+            };
+            assert_eq!(target.app, DESKTOP_APP);
+            assert_eq!(target.address.resource.as_str(), send_to::RESOURCE);
+            assert_eq!(target.address.action.as_str(), send_to::SEND);
+            assert_eq!(target.arguments["text"], "book a table for two");
+            assert_eq!(target.arguments["workspace"], "workspace");
+            assert_eq!(target.arguments["to"], serde_json::json!([kept]));
 
-    /// Nothing typed is no request to hand over.
-    #[test]
-    fn an_empty_query_offers_nothing() {
-        let source = AskAgent::new("workspace", Recipient::new_agent("Assistant"));
-        for typed in ["", "   "] {
-            assert!(source.query(typed).is_empty(), "{typed:?} sends nothing");
+            let fresh = row(Recipient::new_agent("Assistant"), "what is left?");
+            assert_eq!(fresh.title, "Send to Assistant: what is left?");
+            let Target::Invoke(target) = &fresh.target else {
+                panic!("the row runs the send");
+            };
+            assert_eq!(
+                target.arguments["to"],
+                serde_json::json!([{"kind": "new-agent", "name": "Assistant"}])
+            );
+        }
+
+        phase an_empty_query_offers_nothing;
+        // Nothing typed is no request to hand over.
+        {
+            let source = AskAgent::new("workspace", Recipient::new_agent("Assistant"));
+            for typed in ["", "   "] {
+                assert!(source.query(typed).is_empty(), "{typed:?} sends nothing");
+            }
         }
     }
 }

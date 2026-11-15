@@ -159,89 +159,94 @@ mod tests {
             .to_owned()
     }
 
-    #[test]
-    fn the_code_carries_the_person_and_the_invite_it_was_made_with() {
-        let mut invites = Invites::default();
-        let shown = invites.at(SITE, ORIGIN, ROOM, &PERSON, START).unwrap();
-        assert_eq!(
-            pair_of(&shown.link),
-            format!("{}{}", hex::encode(PERSON), hex::encode(shown.invite))
-        );
-        assert_eq!(shown.expires_at_ms, START + 600_000);
-        assert!(
-            shown.link.contains("/#/@eu1.tilo.coffee/w/"),
-            "{}",
-            shown.link
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_pairing_code_carries_a_link_a_scanner_reads;
 
-    #[test]
-    fn a_code_that_ran_out_is_replaced_by_one_that_works() {
-        let mut invites = Invites::default();
-        let first = invites.at(SITE, ORIGIN, ROOM, &PERSON, START).unwrap();
-        // While it works the sheet shows the same code: a screen that redrew it every pass would
-        // hand out a new invite each time.
-        let again = invites
-            .at(SITE, ORIGIN, ROOM, &PERSON, START + 599_999)
-            .unwrap();
-        assert_eq!(again, first);
-        let renewed = invites
-            .at(SITE, ORIGIN, ROOM, &PERSON, first.expires_at_ms)
-            .unwrap();
-        assert_ne!(renewed.invite, first.invite);
-        assert_ne!(renewed.link, first.link);
-        assert_eq!(renewed.expires_at_ms, first.expires_at_ms + 600_000);
-        assert_eq!(
-            pair_of(&renewed.link),
-            format!("{}{}", hex::encode(PERSON), hex::encode(renewed.invite))
-        );
-    }
+        phase the_code_carries_the_person_and_the_invite_it_was_made_with;
+        {
+            let mut invites = Invites::default();
+            let shown = invites.at(SITE, ORIGIN, ROOM, &PERSON, START).unwrap();
+            assert_eq!(
+                pair_of(&shown.link),
+                format!("{}{}", hex::encode(PERSON), hex::encode(shown.invite))
+            );
+            assert_eq!(shown.expires_at_ms, START + 600_000);
+            assert!(
+                shown.link.contains("/#/@eu1.tilo.coffee/w/"),
+                "{}",
+                shown.link
+            );
+        }
 
-    /// What a camera reads from the code the sheet draws: the link, byte for byte, read by a
-    /// decoder that knows nothing of the widget.
-    #[test]
-    fn a_scanner_reads_the_link_from_the_code_the_sheet_draws() {
-        use ui::widget::QrWidget;
-        let mut invites = Invites::default();
-        let shown = invites.at(SITE, ORIGIN, ROOM, &PERSON, START).unwrap();
-        let code = QrWidget::new(shown.link.clone().into_bytes())
-            .with_width_at_most(tilo_sheets::CODE_MAX_PX);
-        let px = code.module_px().unwrap();
-        assert!(code.error().is_none(), "the link fits a code");
-        let quiet = code.quiet_modules();
-        let modules = code.total_modules().saturating_sub(quiet.saturating_mul(2));
-        let scale = usize::try_from(px).unwrap();
-        let side = u32::try_from(code.total_modules() * scale).unwrap();
-        let mut luma = image::GrayImage::from_pixel(side, side, image::Luma([255]));
-        for y in 0..modules {
-            for x in 0..modules {
-                if !code.module(x, y) {
-                    continue;
-                }
-                let left = u32::try_from((x + quiet) * scale).unwrap();
-                let top = u32::try_from((y + quiet) * scale).unwrap();
-                for dy in 0..u32::try_from(scale).unwrap() {
-                    for dx in 0..u32::try_from(scale).unwrap() {
-                        luma.put_pixel(left + dx, top + dy, image::Luma([0]));
+        phase a_code_that_ran_out_is_replaced_by_one_that_works;
+        {
+            let mut invites = Invites::default();
+            let first = invites.at(SITE, ORIGIN, ROOM, &PERSON, START).unwrap();
+            // While it works the sheet shows the same code: a screen that redrew it every pass would
+            // hand out a new invite each time.
+            let again = invites
+                .at(SITE, ORIGIN, ROOM, &PERSON, START + 599_999)
+                .unwrap();
+            assert_eq!(again, first);
+            let renewed = invites
+                .at(SITE, ORIGIN, ROOM, &PERSON, first.expires_at_ms)
+                .unwrap();
+            assert_ne!(renewed.invite, first.invite);
+            assert_ne!(renewed.link, first.link);
+            assert_eq!(renewed.expires_at_ms, first.expires_at_ms + 600_000);
+            assert_eq!(
+                pair_of(&renewed.link),
+                format!("{}{}", hex::encode(PERSON), hex::encode(renewed.invite))
+            );
+        }
+
+        phase a_scanner_reads_the_link_from_the_code_the_sheet_draws;
+        // What a camera reads from the code the sheet draws: the link, byte for byte, read by a
+        // decoder that knows nothing of the widget.
+        {
+            use ui::widget::QrWidget;
+            let mut invites = Invites::default();
+            let shown = invites.at(SITE, ORIGIN, ROOM, &PERSON, START).unwrap();
+            let code = QrWidget::new(shown.link.clone().into_bytes())
+                .with_width_at_most(tilo_sheets::CODE_MAX_PX);
+            let px = code.module_px().unwrap();
+            assert!(code.error().is_none(), "the link fits a code");
+            let quiet = code.quiet_modules();
+            let modules = code.total_modules().saturating_sub(quiet.saturating_mul(2));
+            let scale = usize::try_from(px).unwrap();
+            let side = u32::try_from(code.total_modules() * scale).unwrap();
+            let mut luma = image::GrayImage::from_pixel(side, side, image::Luma([255]));
+            for y in 0..modules {
+                for x in 0..modules {
+                    if !code.module(x, y) {
+                        continue;
+                    }
+                    let left = u32::try_from((x + quiet) * scale).unwrap();
+                    let top = u32::try_from((y + quiet) * scale).unwrap();
+                    for dy in 0..u32::try_from(scale).unwrap() {
+                        for dx in 0..u32::try_from(scale).unwrap() {
+                            luma.put_pixel(left + dx, top + dy, image::Luma([0]));
+                        }
                     }
                 }
             }
+            let mut prepared = rqrr::PreparedImage::prepare(luma);
+            let grids = prepared.detect_grids();
+            let grid = grids.first().expect("a scanner finds the code");
+            let mut read = Vec::new();
+            grid.decode_to(&mut read).expect("a scanner reads the code");
+            assert_eq!(String::from_utf8(read).unwrap(), shown.link);
         }
-        let mut prepared = rqrr::PreparedImage::prepare(luma);
-        let grids = prepared.detect_grids();
-        let grid = grids.first().expect("a scanner finds the code");
-        let mut read = Vec::new();
-        grid.decode_to(&mut read).expect("a scanner reads the code");
-        assert_eq!(String::from_utf8(read).unwrap(), shown.link);
-    }
 
-    #[test]
-    fn a_workspace_no_link_can_name_says_so() {
-        let mut invites = Invites::default();
-        assert!(
-            invites
-                .at(SITE, ORIGIN, "not a workspace", &PERSON, START)
-                .is_err()
-        );
+        phase a_workspace_no_link_can_name_says_so;
+        {
+            let mut invites = Invites::default();
+            assert!(
+                invites
+                    .at(SITE, ORIGIN, "not a workspace", &PERSON, START)
+                    .is_err()
+            );
+        }
     }
 }

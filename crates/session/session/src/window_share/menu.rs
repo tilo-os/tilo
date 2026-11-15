@@ -95,99 +95,103 @@ mod tests {
 
     const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
-    /// A session with no collaboration plane takes part in no workspace: it reads no share for a
-    /// window's menu, so no window offers one.
-    #[test]
-    fn a_session_in_no_workspace_reads_no_share_for_a_menu() {
-        let shares = Rc::new(RefCell::new(WindowShares::default()));
-        let reading = reading_for_menus(&shares, None);
-        assert_eq!(reading(7, WORKSPACE), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_windows_menu_reads_its_share_as_it_stands;
 
-    /// A window whose share is still starting reads as shared, with nobody watching yet: its menu
-    /// offers the stop, which takes the wait back. A window the reading does not name is not
-    /// shared.
-    #[test]
-    fn a_window_whose_share_is_starting_reads_as_shared() {
-        let mut shares = WindowShares::default();
-        assert_eq!(shares.share_of(7), WorkspaceShare::default());
-        shares.starting.push(Starting {
-            window: "window".to_owned(),
-            tab: 7,
-            app_id: "so.tilo.notes".to_owned(),
-            workspace: WORKSPACE.to_owned(),
-            waiting_for: String::new(),
-            controlled: BTreeSet::new(),
-            page: false,
-        });
-        assert_eq!(
-            shares.share_of(7),
-            WorkspaceShare {
-                shared: true,
-                viewers: 0,
-                streaming: false,
-            }
-        );
-        assert_eq!(shares.share_of(8), WorkspaceShare::default());
-    }
+        phase a_session_in_no_workspace_reads_no_share_for_a_menu;
+        // A session with no collaboration plane takes part in no workspace: it reads no share for a
+        // window's menu, so no window offers one.
+        {
+            let shares = Rc::new(RefCell::new(WindowShares::default()));
+            let reading = reading_for_menus(&shares, None);
+            assert_eq!(reading(7, WORKSPACE), None);
+        }
 
-    /// A device that asked to see a window is not one that sees it. While nothing of the window
-    /// goes out, the bar is told the device waits and the menu counts it as waiting; once the
-    /// shares note that the window goes out, both say so. The reading, the menu and the bar give
-    /// one answer, the reading's.
-    #[test]
-    fn a_device_that_asked_for_a_window_nothing_went_out_of_is_not_said_to_see_it() {
-        const TAB: TabId = 7;
-        const VIEWER: u64 = 0x9ab6;
-        let mut shares = WindowShares::default();
-        shares.pages.insert(
-            TAB,
-            Paged {
-                tab: TAB,
+        phase a_window_whose_share_is_starting_reads_as_shared;
+        // A window whose share is still starting reads as shared, with nobody watching yet: its menu
+        // offers the stop, which takes the wait back. A window the reading does not name is not
+        // shared.
+        {
+            let mut shares = WindowShares::default();
+            assert_eq!(shares.share_of(7), WorkspaceShare::default());
+            shares.starting.push(Starting {
                 window: "window".to_owned(),
-                app_id: "so.tilo.browser".to_owned(),
+                tab: 7,
+                app_id: "so.tilo.notes".to_owned(),
                 workspace: WORKSPACE.to_owned(),
-                ws: tilo_desktop_model::WorkspaceId::parse(WORKSPACE).expect("a workspace id"),
-                width: 800,
-                height: 600,
-                announced: std::collections::BTreeMap::new(),
-            },
-        );
-        shares.asked.insert(
-            (TAB, VIEWER),
-            Asked {
-                device: iroh::SecretKey::from_bytes(&[5; 32]).public(),
-                at: std::time::Instant::now(),
-                decode: Vec::new(),
-                name: "Ada".to_owned(),
-            },
-        );
-        // What the reading, the menu and the bar each say of whether the window goes out.
-        let said = |shares: &WindowShares| {
-            let reading = shares.reading()["sharing"][0]["streaming"].as_bool();
-            let told: Vec<(u64, bool)> = shares
-                .exposures()
-                .iter()
-                .map(|viewer| (viewer.peer, viewer.streaming))
-                .collect();
-            (reading, shares.share_of(TAB), told)
-        };
-        let asked = |streaming| WorkspaceShare {
-            shared: true,
-            viewers: 1,
-            streaming,
-        };
+                waiting_for: String::new(),
+                controlled: BTreeSet::new(),
+                page: false,
+            });
+            assert_eq!(
+                shares.share_of(7),
+                WorkspaceShare {
+                    shared: true,
+                    viewers: 0,
+                    streaming: false,
+                }
+            );
+            assert_eq!(shares.share_of(8), WorkspaceShare::default());
+        }
 
-        assert_eq!(
-            said(&shares),
-            (Some(false), asked(false), vec![(VIEWER, false)]),
-            "nothing of the window went out: the device that asked for it waits"
-        );
-        shares.streaming.insert(TAB);
-        assert_eq!(
-            said(&shares),
-            (Some(true), asked(true), vec![(VIEWER, true)]),
-            "the window goes out: the device watches it"
-        );
+        phase a_device_that_asked_for_a_window_nothing_went_out_of_is_not_said_to_see_it;
+        // A device that asked to see a window is not one that sees it. While nothing of the window
+        // goes out, the bar is told the device waits and the menu counts it as waiting; once the
+        // shares note that the window goes out, both say so. The reading, the menu and the bar give
+        // one answer, the reading's.
+        {
+            const TAB: TabId = 7;
+            const VIEWER: u64 = 0x9ab6;
+            let mut shares = WindowShares::default();
+            shares.pages.insert(
+                TAB,
+                Paged {
+                    tab: TAB,
+                    window: "window".to_owned(),
+                    app_id: "so.tilo.browser".to_owned(),
+                    workspace: WORKSPACE.to_owned(),
+                    ws: tilo_desktop_model::WorkspaceId::parse(WORKSPACE).expect("a workspace id"),
+                    width: 800,
+                    height: 600,
+                    announced: std::collections::BTreeMap::new(),
+                },
+            );
+            shares.asked.insert(
+                (TAB, VIEWER),
+                Asked {
+                    device: iroh::SecretKey::from_bytes(&[5; 32]).public(),
+                    at: std::time::Instant::now(),
+                    decode: Vec::new(),
+                    name: "Ada".to_owned(),
+                },
+            );
+            // What the reading, the menu and the bar each say of whether the window goes out.
+            let said = |shares: &WindowShares| {
+                let reading = shares.reading()["sharing"][0]["streaming"].as_bool();
+                let told: Vec<(u64, bool)> = shares
+                    .exposures()
+                    .iter()
+                    .map(|viewer| (viewer.peer, viewer.streaming))
+                    .collect();
+                (reading, shares.share_of(TAB), told)
+            };
+            let asked = |streaming| WorkspaceShare {
+                shared: true,
+                viewers: 1,
+                streaming,
+            };
+
+            assert_eq!(
+                said(&shares),
+                (Some(false), asked(false), vec![(VIEWER, false)]),
+                "nothing of the window went out: the device that asked for it waits"
+            );
+            shares.streaming.insert(TAB);
+            assert_eq!(
+                said(&shares),
+                (Some(true), asked(true), vec![(VIEWER, true)]),
+                "the window goes out: the device watches it"
+            );
+        }
     }
 }

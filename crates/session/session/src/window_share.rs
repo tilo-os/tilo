@@ -2846,45 +2846,49 @@ mod window_tracks {
         watching
     }
 
-    #[test]
-    fn a_pages_tab_is_asked_for_while_the_shell_holds_it_and_watched() {
-        let mut streams = BTreeMap::new();
-        streams.insert(
-            (neighbour_wire::peer_handle(&[9; 32]), TAB),
-            received(TAB, ui::webview::paint::stream::wire::CODEC, host(5)),
-        );
-        let wanted = tracks_to_show(&streams, &watching(), |tab| tab == TAB);
-        assert_eq!(
-            wanted.get(WORKSPACE).and_then(|hosts| hosts.get(&host(5))),
-            Some(&BTreeSet::from([Track::Page(TAB)])),
-            "the plane is asked for that window's page"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_windows_track_is_asked_for_only_while_it_is_shown_or_watched;
 
-    #[test]
-    fn a_window_the_shell_stops_showing_or_watching_is_no_longer_asked_for() {
-        let mut streams = BTreeMap::new();
-        streams.insert(
-            (neighbour_wire::peer_handle(&[9; 32]), TAB),
-            received(TAB, ui::webview::paint::stream::wire::CODEC, host(5)),
-        );
-        assert!(
-            tracks_to_show(&streams, &watching(), |_| false).is_empty(),
-            "the tab left the session"
-        );
-        assert!(
-            tracks_to_show(&streams, &BTreeMap::new(), |tab| tab == TAB).is_empty(),
-            "nothing watches that window here"
-        );
-    }
+        phase a_pages_tab_is_asked_for_while_the_shell_holds_it_and_watched;
+        {
+            let mut streams = BTreeMap::new();
+            streams.insert(
+                (neighbour_wire::peer_handle(&[9; 32]), TAB),
+                received(TAB, ui::webview::paint::stream::wire::CODEC, host(5)),
+            );
+            let wanted = tracks_to_show(&streams, &watching(), |tab| tab == TAB);
+            assert_eq!(
+                wanted.get(WORKSPACE).and_then(|hosts| hosts.get(&host(5))),
+                Some(&BTreeSet::from([Track::Page(TAB)])),
+                "the plane is asked for that window's page"
+            );
+        }
 
-    #[test]
-    fn a_watched_window_without_a_page_is_asked_for_by_its_pictures() {
-        let wanted = tracks_to_show(&BTreeMap::new(), &watching(), |tab| tab == TAB);
-        assert_eq!(
-            wanted.get(WORKSPACE).and_then(|hosts| hosts.get(&host(5))),
-            Some(&BTreeSet::from([Track::Window(TAB, Layer::High)])),
-            "the plane is asked for that window's pictures"
-        );
+        phase a_window_the_shell_stops_showing_or_watching_is_no_longer_asked_for;
+        {
+            let mut streams = BTreeMap::new();
+            streams.insert(
+                (neighbour_wire::peer_handle(&[9; 32]), TAB),
+                received(TAB, ui::webview::paint::stream::wire::CODEC, host(5)),
+            );
+            assert!(
+                tracks_to_show(&streams, &watching(), |_| false).is_empty(),
+                "the tab left the session"
+            );
+            assert!(
+                tracks_to_show(&streams, &BTreeMap::new(), |tab| tab == TAB).is_empty(),
+                "nothing watches that window here"
+            );
+        }
+
+        phase a_watched_window_without_a_page_is_asked_for_by_its_pictures;
+        {
+            let wanted = tracks_to_show(&BTreeMap::new(), &watching(), |tab| tab == TAB);
+            assert_eq!(
+                wanted.get(WORKSPACE).and_then(|hosts| hosts.get(&host(5))),
+                Some(&BTreeSet::from([Track::Window(TAB, Layer::High)])),
+                "the plane is asked for that window's pictures"
+            );
+        }
     }
 }

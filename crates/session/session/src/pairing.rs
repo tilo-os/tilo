@@ -810,75 +810,133 @@ mod tests {
         (pairing, commands)
     }
 
-    #[test]
-    fn a_discovered_device_is_approved_through_the_privileged_helper_and_forgotten_after() {
-        let device = "AA".repeat(32);
-        let service = "bb".repeat(32);
-        let (pairing, commands) = recording((device, service.clone()));
-        let paths = PersonPaths {
-            root: PathBuf::from("/var/lib/tilo"),
-            dir: PathBuf::from("/home/person/.config/tilo/identity"),
-        };
+    tilo_test_env::scenario! {
+        fn pairing_approves_adds_and_signs_only_with_what_the_person_holds;
 
-        let found = answered(pairing.discover(DeviceKind::Personal).expect("discovery"));
-        assert_eq!(
-            found,
-            serde_json::json!({
-                "role": "personal-device",
-                "device": "aa".repeat(32),
-                "service": service,
-                "label": "Phone",
-                "verification_code": "123456",
-            })
-        );
+        phase a_discovered_device_is_approved_through_the_privileged_helper_and_forgotten_after;
+        {
+            let device = "AA".repeat(32);
+            let service = "bb".repeat(32);
+            let (pairing, commands) = recording((device, service.clone()));
+            let paths = PersonPaths {
+                root: PathBuf::from("/var/lib/tilo"),
+                dir: PathBuf::from("/home/person/.config/tilo/identity"),
+            };
 
-        // Only a device discovery found here can be approved.
-        let unknown = Approval {
-            role: DeviceKind::Personal,
-            device: "cc".repeat(32),
-            service: service.clone(),
-            workspace_ids: None,
-        };
-        let refused = pairing
-            .approve(&unknown, &paths, None)
-            .err()
-            .expect("an undiscovered device is not approved");
-        assert!(refused.contains("discover it first"), "{refused}");
+            let found = answered(pairing.discover(DeviceKind::Personal).expect("discovery"));
+            assert_eq!(
+                found,
+                serde_json::json!({
+                    "role": "personal-device",
+                    "device": "aa".repeat(32),
+                    "service": service,
+                    "label": "Phone",
+                    "verification_code": "123456",
+                })
+            );
 
-        let approval = Approval {
-            role: DeviceKind::Personal,
-            device: "aa".repeat(32),
-            service,
-            workspace_ids: None,
-        };
-        let approved = answered(pairing.approve(&approval, &paths, None).expect("approval"));
-        assert_eq!(
-            approved,
-            serde_json::json!({
-                "role": "personal-device",
-                "device": "aa".repeat(32),
-                "label": "Phone",
-            })
-        );
+            // Only a device discovery found here can be approved.
+            let unknown = Approval {
+                role: DeviceKind::Personal,
+                device: "cc".repeat(32),
+                service: service.clone(),
+                workspace_ids: None,
+            };
+            let refused = pairing
+                .approve(&unknown, &paths, None)
+                .err()
+                .expect("an undiscovered device is not approved");
+            assert!(refused.contains("discover it first"), "{refused}");
 
-        let recorded = commands.lock().expect("commands").clone();
-        assert_eq!(
-            recorded[0],
-            HostCommand {
-                program: PathBuf::from(ENROLL),
-                args: ["discover-device", "--timeout", LISTEN_SECONDS]
-                    .map(OsString::from)
-                    .to_vec(),
-                timeout: DISCOVERY_TIMEOUT,
-            }
-        );
-        assert_eq!(recorded[1].program, PathBuf::from(PKEXEC), "{recorded:?}");
-        let ask = tilo_identity_host::device_admin::approval_args(&approval, &paths, &[]);
-        assert_eq!(recorded[1].args, ask);
-        assert_eq!(recorded[1].timeout, APPROVAL_TIMEOUT);
+            let approval = Approval {
+                role: DeviceKind::Personal,
+                device: "aa".repeat(32),
+                service,
+                workspace_ids: None,
+            };
+            let approved = answered(pairing.approve(&approval, &paths, None).expect("approval"));
+            assert_eq!(
+                approved,
+                serde_json::json!({
+                    "role": "personal-device",
+                    "device": "aa".repeat(32),
+                    "label": "Phone",
+                })
+            );
 
-        // The device joined: nothing is left to reject.
-        assert!(pairing.reject(&approval.device).is_err());
+            let recorded = commands.lock().expect("commands").clone();
+            assert_eq!(
+                recorded[0],
+                HostCommand {
+                    program: PathBuf::from(ENROLL),
+                    args: ["discover-device", "--timeout", LISTEN_SECONDS]
+                        .map(OsString::from)
+                        .to_vec(),
+                    timeout: DISCOVERY_TIMEOUT,
+                }
+            );
+            assert_eq!(recorded[1].program, PathBuf::from(PKEXEC), "{recorded:?}");
+            let ask = tilo_identity_host::device_admin::approval_args(&approval, &paths, &[]);
+            assert_eq!(recorded[1].args, ask);
+            assert_eq!(recorded[1].timeout, APPROVAL_TIMEOUT);
+
+            // The device joined: nothing is left to reject.
+            assert!(pairing.reject(&approval.device).is_err());
+        }
+
+        phase a_home_server_is_only_added_from_the_device_the_person_set_up_first;
+        {
+            let (pairing, commands) = sharing(("aa".repeat(32), "bb".repeat(32)));
+            let paths = PersonPaths {
+                root: PathBuf::from("/var/lib/tilo"),
+                dir: PathBuf::from("/home/person/.config/tilo/identity"),
+            };
+            let _ = answered(pairing.discover(DeviceKind::HomePeer).expect("discovery"));
+            let approval = Approval {
+                role: DeviceKind::HomePeer,
+                device: "aa".repeat(32),
+                service: "bb".repeat(32),
+                workspace_ids: Some(vec![7]),
+            };
+            let refused = pairing
+                .approve(&approval, &paths, None)
+                .err()
+                .expect("a home server needs the whole key");
+            assert!(refused.contains("the device you set up first"), "{refused}");
+            assert_eq!(
+                commands.lock().expect("commands").len(),
+                1,
+                "nothing ran for the home server"
+            );
+        }
+
+        phase a_device_holding_a_share_signs_nothing_without_the_other_devices;
+        {
+            let (pairing, commands) = sharing(("aa".repeat(32), "bb".repeat(32)));
+            let paths = PersonPaths {
+                root: PathBuf::from("/var/lib/tilo"),
+                dir: PathBuf::from("/home/person/.config/tilo/identity"),
+            };
+            let _ = answered(pairing.discover(DeviceKind::Personal).expect("discovery"));
+            let approval = Approval {
+                role: DeviceKind::Personal,
+                device: "aa".repeat(32),
+                service: "bb".repeat(32),
+                workspace_ids: None,
+            };
+            let refused = answering(
+                pairing
+                    .approve(&approval, &paths, None)
+                    .expect("the approval starts"),
+            )
+            .expect_err("this session runs no device fabric");
+            assert!(refused.contains("runs no device fabric"), "{refused}");
+            assert_eq!(
+                commands.lock().expect("commands").len(),
+                1,
+                "no helper signed for a device this session cannot certify"
+            );
+        }
     }
 
     /// Pairing on a device holding only a share of the person's key.
@@ -892,59 +950,5 @@ mod tests {
             })
         }));
         (pairing, commands)
-    }
-
-    #[test]
-    fn a_home_server_is_only_added_from_the_device_the_person_set_up_first() {
-        let (pairing, commands) = sharing(("aa".repeat(32), "bb".repeat(32)));
-        let paths = PersonPaths {
-            root: PathBuf::from("/var/lib/tilo"),
-            dir: PathBuf::from("/home/person/.config/tilo/identity"),
-        };
-        let _ = answered(pairing.discover(DeviceKind::HomePeer).expect("discovery"));
-        let approval = Approval {
-            role: DeviceKind::HomePeer,
-            device: "aa".repeat(32),
-            service: "bb".repeat(32),
-            workspace_ids: Some(vec![7]),
-        };
-        let refused = pairing
-            .approve(&approval, &paths, None)
-            .err()
-            .expect("a home server needs the whole key");
-        assert!(refused.contains("the device you set up first"), "{refused}");
-        assert_eq!(
-            commands.lock().expect("commands").len(),
-            1,
-            "nothing ran for the home server"
-        );
-    }
-
-    #[test]
-    fn a_device_holding_a_share_signs_nothing_without_the_other_devices() {
-        let (pairing, commands) = sharing(("aa".repeat(32), "bb".repeat(32)));
-        let paths = PersonPaths {
-            root: PathBuf::from("/var/lib/tilo"),
-            dir: PathBuf::from("/home/person/.config/tilo/identity"),
-        };
-        let _ = answered(pairing.discover(DeviceKind::Personal).expect("discovery"));
-        let approval = Approval {
-            role: DeviceKind::Personal,
-            device: "aa".repeat(32),
-            service: "bb".repeat(32),
-            workspace_ids: None,
-        };
-        let refused = answering(
-            pairing
-                .approve(&approval, &paths, None)
-                .expect("the approval starts"),
-        )
-        .expect_err("this session runs no device fabric");
-        assert!(refused.contains("runs no device fabric"), "{refused}");
-        assert_eq!(
-            commands.lock().expect("commands").len(),
-            1,
-            "no helper signed for a device this session cannot certify"
-        );
     }
 }

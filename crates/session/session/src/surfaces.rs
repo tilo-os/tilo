@@ -1241,105 +1241,109 @@ pub(crate) fn refusal(error: &tilo_actions::DoorError) -> ActionHostError {
 mod tests {
     use super::*;
 
-    /// A surface app the session starts while the compositor names no GPU (at the session's start,
-    /// or on a machine it renders on without one) runs without Mesa's device-select layer, which
-    /// asks the compositor for its device, finds none, and segfaulted in three surface apps'
-    /// `native-render-prepare` at every start of the e2e-ws-branch box. With a GPU named the layer
-    /// is left to pick.
-    #[test]
-    fn a_surface_started_before_the_compositor_names_a_gpu_runs_without_device_select() {
-        assert_eq!(
-            device_select_environment(None),
-            [(
-                launcher::gpu::NO_DEVICE_SELECT_ENV.to_owned(),
-                "1".to_owned()
-            )]
-        );
-        assert!(
-            device_select_environment(Some(Path::new("/dev/dri/renderD128"))).is_empty(),
-            "a named GPU leaves the layer to pick"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_surface_app_is_started_and_told_where_it_stands;
 
-    #[test]
-    fn a_bar_tells_the_app_where_its_window_goes() {
-        let bar = Surface::new("topbar", "/usr/bin/tilo-quick-settings")
-            .layer(Layer::Top)
-            .namespace("tilo-bar")
-            .anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT)
-            .size((0, 32))
-            .exclusive(32)
-            .keyboard(Keyboard::None);
-        let environment: std::collections::BTreeMap<String, String> =
-            bar.environment().into_iter().collect();
-        let expected = [
-            ("TILO_SURFACE_LAYER", "top"),
-            ("TILO_SURFACE_NAMESPACE", "tilo-bar"),
-            ("TILO_SURFACE_ANCHOR", "top,left,right"),
-            ("TILO_SURFACE_SIZE", "0x32"),
-            ("TILO_SURFACE_MARGIN", "0,0,0,0"),
-            ("TILO_SURFACE_EXCLUSIVE", "32"),
-            ("TILO_SURFACE_KEYBOARD", "none"),
-        ];
-        for (name, value) in expected {
+        phase a_surface_started_before_the_compositor_names_a_gpu_runs_without_device_select;
+        // A surface app the session starts while the compositor names no GPU (at the session's start,
+        // or on a machine it renders on without one) runs without Mesa's device-select layer, which
+        // asks the compositor for its device, finds none, and segfaulted in three surface apps'
+        // `native-render-prepare` at every start of the e2e-ws-branch box. With a GPU named the layer
+        // is left to pick.
+        {
             assert_eq!(
-                environment.get(name).map(String::as_str),
-                Some(value),
-                "{name}"
+                device_select_environment(None),
+                [(
+                    launcher::gpu::NO_DEVICE_SELECT_ENV.to_owned(),
+                    "1".to_owned()
+                )]
+            );
+            assert!(
+                device_select_environment(Some(Path::new("/dev/dri/renderD128"))).is_empty(),
+                "a named GPU leaves the layer to pick"
             );
         }
-        assert!(
-            !environment.contains_key("TILO_SURFACE_LOCK"),
-            "the bar is no lock screen"
-        );
-    }
 
-    #[test]
-    fn a_surface_app_starts_as_an_app_of_this_desktop() {
-        // A surface reads its appearance and its menu entries from the session's settings: told
-        // nothing of the desktop, it would take them from a host desktop the session happens to run
-        // inside.
-        let environment: std::collections::BTreeMap<String, String> =
-            Surface::new("quick-settings", "/usr/bin/tilo-quick-settings")
-                .environment()
-                .into_iter()
-                .collect();
-        for (name, value) in tilo_app_launch::env::desktop_variables() {
-            assert_eq!(
-                environment.get(name).map(String::as_str),
-                Some(value),
-                "{name}"
+        phase a_bar_tells_the_app_where_its_window_goes;
+        {
+            let bar = Surface::new("topbar", "/usr/bin/tilo-quick-settings")
+                .layer(Layer::Top)
+                .namespace("tilo-bar")
+                .anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT)
+                .size((0, 32))
+                .exclusive(32)
+                .keyboard(Keyboard::None);
+            let environment: std::collections::BTreeMap<String, String> =
+                bar.environment().into_iter().collect();
+            let expected = [
+                ("TILO_SURFACE_LAYER", "top"),
+                ("TILO_SURFACE_NAMESPACE", "tilo-bar"),
+                ("TILO_SURFACE_ANCHOR", "top,left,right"),
+                ("TILO_SURFACE_SIZE", "0x32"),
+                ("TILO_SURFACE_MARGIN", "0,0,0,0"),
+                ("TILO_SURFACE_EXCLUSIVE", "32"),
+                ("TILO_SURFACE_KEYBOARD", "none"),
+            ];
+            for (name, value) in expected {
+                assert_eq!(
+                    environment.get(name).map(String::as_str),
+                    Some(value),
+                    "{name}"
+                );
+            }
+            assert!(
+                !environment.contains_key("TILO_SURFACE_LOCK"),
+                "the bar is no lock screen"
             );
         }
-    }
 
-    #[test]
-    fn a_lock_screen_asks_for_the_session_lock() {
-        let lock = Surface::new("lock", "/usr/bin/tilo-lock-screen")
-            .lock()
-            .keyboard(Keyboard::Exclusive)
-            .anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-        let environment: std::collections::BTreeMap<String, String> =
-            lock.environment().into_iter().collect();
-        assert_eq!(
-            environment.get("TILO_SURFACE_LOCK").map(String::as_str),
-            Some("1")
-        );
-        assert_eq!(
-            environment.get("TILO_SURFACE_KEYBOARD").map(String::as_str),
-            Some("exclusive")
-        );
-        assert_eq!(
-            environment.get("TILO_SURFACE_ANCHOR").map(String::as_str),
-            Some("top,bottom,left,right")
-        );
-    }
+        phase a_surface_app_starts_as_an_app_of_this_desktop;
+        {
+            // A surface reads its appearance and its menu entries from the session's settings: told
+            // nothing of the desktop, it would take them from a host desktop the session happens to run
+            // inside.
+            let environment: std::collections::BTreeMap<String, String> =
+                Surface::new("quick-settings", "/usr/bin/tilo-quick-settings")
+                    .environment()
+                    .into_iter()
+                    .collect();
+            for (name, value) in tilo_app_launch::env::desktop_variables() {
+                assert_eq!(
+                    environment.get(name).map(String::as_str),
+                    Some(value),
+                    "{name}"
+                );
+            }
+        }
 
-    #[test]
-    fn no_anchor_is_said_as_none() {
-        assert_eq!(Anchor::default().names(), "none");
-        assert!(Anchor::default().is_empty());
-        assert!(!(Anchor::TOP | Anchor::BOTTOM).is_empty());
+        phase a_lock_screen_asks_for_the_session_lock;
+        {
+            let lock = Surface::new("lock", "/usr/bin/tilo-lock-screen")
+                .lock()
+                .keyboard(Keyboard::Exclusive)
+                .anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+            let environment: std::collections::BTreeMap<String, String> =
+                lock.environment().into_iter().collect();
+            assert_eq!(
+                environment.get("TILO_SURFACE_LOCK").map(String::as_str),
+                Some("1")
+            );
+            assert_eq!(
+                environment.get("TILO_SURFACE_KEYBOARD").map(String::as_str),
+                Some("exclusive")
+            );
+            assert_eq!(
+                environment.get("TILO_SURFACE_ANCHOR").map(String::as_str),
+                Some("top,bottom,left,right")
+            );
+        }
+
+        phase no_anchor_is_said_as_none;
+        {
+            assert_eq!(Anchor::default().names(), "none");
+            assert!(Anchor::default().is_empty());
+            assert!(!(Anchor::TOP | Anchor::BOTTOM).is_empty());
+        }
     }
 
     /// One row of a surface's listing, offering `action` : enough for a page without a surface app
@@ -1376,126 +1380,130 @@ mod tests {
         RemoteActionFrame::decode(&body).expect("a frame").message
     }
 
-    #[test]
-    fn a_listing_is_read_to_its_last_page_before_it_is_the_offer() {
-        let (app, mut session) = UnixStream::pair().expect("a socket");
-        let mut connection = Connection::of(app, None);
-        connection.list();
-        let RemoteActionMessage::CatalogueRequest { correlation, query } = told(&mut session)
-        else {
-            panic!("the first page is asked for");
-        };
-        assert!(query.cursor.is_empty(), "from the start");
-        connection.listed(
-            correlation,
-            CataloguePage {
-                revision: "v1:so.tilo.quick-settings".into(),
-                rows: vec![row("toggle-wifi"), row("set-volume")],
-                next_cursor: vec![2],
-                ..CataloguePage::default()
-            },
-        );
-        assert!(
-            connection.published.is_empty(),
-            "half a listing is not what the surface offers"
-        );
-        let RemoteActionMessage::CatalogueRequest { correlation, query } = told(&mut session)
-        else {
-            panic!("the next page is asked for");
-        };
-        assert_eq!(query.cursor, vec![2]);
-        assert_eq!(query.revision.as_deref(), Some("v1:so.tilo.quick-settings"));
-        connection.listed(
-            correlation,
-            CataloguePage {
-                revision: "v1:so.tilo.quick-settings".into(),
-                rows: vec![row("play-pause")],
-                exhausted: true,
-                ..CataloguePage::default()
-            },
-        );
-        assert_eq!(connection.published.len(), 3, "every page, once");
-        assert!(connection.reading.is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn a_listing_is_the_offer_only_once_it_is_read_whole;
 
-    /// A listing the session asked for again supersedes the one it was part
-    /// way through: the pages of the old one arrive beside the new one's,
-    /// and reading them would repeat rows for ever.
-    #[test]
-    fn a_page_of_a_listing_the_session_gave_up_on_is_ignored() {
-        let (app, mut session) = UnixStream::pair().expect("a socket");
-        let mut connection = Connection::of(app, None);
-        connection.list();
-        let RemoteActionMessage::CatalogueRequest {
-            correlation: given_up,
-            ..
-        } = told(&mut session)
-        else {
-            panic!("the first page is asked for");
-        };
-        connection.list();
-        let RemoteActionMessage::CatalogueRequest { correlation, .. } = told(&mut session) else {
-            panic!("the listing is asked for again");
-        };
-        connection.listed(
-            given_up,
-            CataloguePage {
-                revision: "v1:so.tilo.quick-settings".into(),
-                rows: vec![row("toggle-wifi")],
-                exhausted: true,
-                ..CataloguePage::default()
-            },
-        );
-        assert!(
-            connection.published.is_empty(),
-            "the page of a listing given up on is not what the surface offers"
-        );
-        assert!(connection.reading.is_empty(), "and it continues nothing");
-        connection.listed(
-            correlation,
-            CataloguePage {
-                revision: "v1:so.tilo.quick-settings".into(),
-                rows: vec![row("set-volume")],
-                exhausted: true,
-                ..CataloguePage::default()
-            },
-        );
-        assert_eq!(
-            connection.published.len(),
-            1,
-            "the listing it waits for is what it reads"
-        );
-    }
+        phase a_listing_is_read_to_its_last_page_before_it_is_the_offer;
+        {
+            let (app, mut session) = UnixStream::pair().expect("a socket");
+            let mut connection = Connection::of(app, None);
+            connection.list();
+            let RemoteActionMessage::CatalogueRequest { correlation, query } = told(&mut session)
+            else {
+                panic!("the first page is asked for");
+            };
+            assert!(query.cursor.is_empty(), "from the start");
+            connection.listed(
+                correlation,
+                CataloguePage {
+                    revision: "v1:so.tilo.quick-settings".into(),
+                    rows: vec![row("toggle-wifi"), row("set-volume")],
+                    next_cursor: vec![2],
+                    ..CataloguePage::default()
+                },
+            );
+            assert!(
+                connection.published.is_empty(),
+                "half a listing is not what the surface offers"
+            );
+            let RemoteActionMessage::CatalogueRequest { correlation, query } = told(&mut session)
+            else {
+                panic!("the next page is asked for");
+            };
+            assert_eq!(query.cursor, vec![2]);
+            assert_eq!(query.revision.as_deref(), Some("v1:so.tilo.quick-settings"));
+            connection.listed(
+                correlation,
+                CataloguePage {
+                    revision: "v1:so.tilo.quick-settings".into(),
+                    rows: vec![row("play-pause")],
+                    exhausted: true,
+                    ..CataloguePage::default()
+                },
+            );
+            assert_eq!(connection.published.len(), 3, "every page, once");
+            assert!(connection.reading.is_empty());
+        }
 
-    #[test]
-    fn a_page_from_another_revision_is_read_from_the_start_again() {
-        let (app, mut session) = UnixStream::pair().expect("a socket");
-        let mut connection = Connection::of(app, None);
-        connection.published = vec![ExportedAction::from(
-            &row("toggle-wifi").action.expect("an action"),
-        )];
-        connection.list();
-        let RemoteActionMessage::CatalogueRequest { correlation, .. } = told(&mut session) else {
-            panic!("the first page is asked for");
-        };
-        connection.listed(
-            correlation,
-            CataloguePage {
-                revision: "v2:so.tilo.quick-settings".into(),
-                stale_cursor: true,
-                ..CataloguePage::default()
-            },
-        );
-        assert!(connection.reading.is_empty(), "the old pages are dropped");
-        assert_eq!(
-            connection.published.len(),
-            1,
-            "what it offered before stays until the new listing is whole"
-        );
-        let RemoteActionMessage::CatalogueRequest { query, .. } = told(&mut session) else {
-            panic!("the listing is asked for again");
-        };
-        assert!(query.cursor.is_empty());
-        assert!(query.revision.is_none());
+        phase a_page_of_a_listing_the_session_gave_up_on_is_ignored;
+        // A listing the session asked for again supersedes the one it was part
+        // way through: the pages of the old one arrive beside the new one's,
+        // and reading them would repeat rows for ever.
+        {
+            let (app, mut session) = UnixStream::pair().expect("a socket");
+            let mut connection = Connection::of(app, None);
+            connection.list();
+            let RemoteActionMessage::CatalogueRequest {
+                correlation: given_up,
+                ..
+            } = told(&mut session)
+            else {
+                panic!("the first page is asked for");
+            };
+            connection.list();
+            let RemoteActionMessage::CatalogueRequest { correlation, .. } = told(&mut session) else {
+                panic!("the listing is asked for again");
+            };
+            connection.listed(
+                given_up,
+                CataloguePage {
+                    revision: "v1:so.tilo.quick-settings".into(),
+                    rows: vec![row("toggle-wifi")],
+                    exhausted: true,
+                    ..CataloguePage::default()
+                },
+            );
+            assert!(
+                connection.published.is_empty(),
+                "the page of a listing given up on is not what the surface offers"
+            );
+            assert!(connection.reading.is_empty(), "and it continues nothing");
+            connection.listed(
+                correlation,
+                CataloguePage {
+                    revision: "v1:so.tilo.quick-settings".into(),
+                    rows: vec![row("set-volume")],
+                    exhausted: true,
+                    ..CataloguePage::default()
+                },
+            );
+            assert_eq!(
+                connection.published.len(),
+                1,
+                "the listing it waits for is what it reads"
+            );
+        }
+
+        phase a_page_from_another_revision_is_read_from_the_start_again;
+        {
+            let (app, mut session) = UnixStream::pair().expect("a socket");
+            let mut connection = Connection::of(app, None);
+            connection.published = vec![ExportedAction::from(
+                &row("toggle-wifi").action.expect("an action"),
+            )];
+            connection.list();
+            let RemoteActionMessage::CatalogueRequest { correlation, .. } = told(&mut session) else {
+                panic!("the first page is asked for");
+            };
+            connection.listed(
+                correlation,
+                CataloguePage {
+                    revision: "v2:so.tilo.quick-settings".into(),
+                    stale_cursor: true,
+                    ..CataloguePage::default()
+                },
+            );
+            assert!(connection.reading.is_empty(), "the old pages are dropped");
+            assert_eq!(
+                connection.published.len(),
+                1,
+                "what it offered before stays until the new listing is whole"
+            );
+            let RemoteActionMessage::CatalogueRequest { query, .. } = told(&mut session) else {
+                panic!("the listing is asked for again");
+            };
+            assert!(query.cursor.is_empty());
+            assert!(query.revision.is_none());
+        }
     }
 }

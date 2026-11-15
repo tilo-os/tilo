@@ -718,122 +718,127 @@ mod tests {
             .to_string()
     }
 
-    /// The arrangement is the person's own setting, so it is read, changed and kept whether the
-    /// panel is drawn or not, and a control moves in front of the one it was dropped on.
-    #[test]
-    fn the_arrangement_is_published_by_the_session_and_kept() {
-        let _home = tilo_test_env::TestHome::new().expect("a home");
-        let mut service = QuickSettingsService::new();
-        assert!(shown(&service).contains("bluetooth"), "{}", shown(&service));
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn the_quick_settings_panel_keeps_its_arrangement_and_comes_from_its_corner;
 
-        asked(
-            &mut service,
-            "hide-control",
-            &serde_json::json!({ "control": "bluetooth" }),
-        );
-        assert!(
-            !shown(&service).contains("bluetooth"),
-            "{}",
-            shown(&service)
-        );
-        asked(
-            &mut service,
-            "hide-control",
-            &serde_json::json!({ "control": "wifi" }),
-        );
-        assert!(
-            shown(&service).contains("wifi"),
-            "Wi-Fi stays: {}",
-            shown(&service)
-        );
-        asked(
-            &mut service,
-            "move-control",
-            &serde_json::json!({ "control": "vpn", "before": "wifi" }),
-        );
-        assert!(
-            shown(&service).starts_with(r#"["vpn","wifi""#),
-            "the control stands in front of the one it was dropped on: {}",
-            shown(&service)
-        );
-        asked(&mut service, "reset-controls", &serde_json::json!({}));
-        assert!(shown(&service).contains("bluetooth"), "{}", shown(&service));
+        phase the_arrangement_is_published_by_the_session_and_kept;
+        // The arrangement is the person's own setting, so it is read, changed and kept whether the
+        // panel is drawn or not, and a control moves in front of the one it was dropped on.
+        {
+            let _home = tilo_test_env::TestHome::new().expect("a home");
+            let mut service = QuickSettingsService::new();
+            assert!(shown(&service).contains("bluetooth"), "{}", shown(&service));
 
-        // Kept: the session reads it back from the person's settings document, as a panel that
-        // starts later does.
-        let kept = QuickSettingsService::new();
-        assert_eq!(shown(&kept), shown(&service));
-    }
+            asked(
+                &mut service,
+                "hide-control",
+                &serde_json::json!({ "control": "bluetooth" }),
+            );
+            assert!(
+                !shown(&service).contains("bluetooth"),
+                "{}",
+                shown(&service)
+            );
+            asked(
+                &mut service,
+                "hide-control",
+                &serde_json::json!({ "control": "wifi" }),
+            );
+            assert!(
+                shown(&service).contains("wifi"),
+                "Wi-Fi stays: {}",
+                shown(&service)
+            );
+            asked(
+                &mut service,
+                "move-control",
+                &serde_json::json!({ "control": "vpn", "before": "wifi" }),
+            );
+            assert!(
+                shown(&service).starts_with(r#"["vpn","wifi""#),
+                "the control stands in front of the one it was dropped on: {}",
+                shown(&service)
+            );
+            asked(&mut service, "reset-controls", &serde_json::json!({}));
+            assert!(shown(&service).contains("bluetooth"), "{}", shown(&service));
 
-    /// The panel grows from its corner when its first frame is drawn, stands as it stands, and
-    /// shrinks back into the corner while it leaves, until it asks for nothing at all.
-    #[test]
-    fn the_panel_arrives_from_its_corner_and_leaves_back_into_it() {
-        use ui::time::testing::with_monotonic_time;
-        use ui::tokens::MotionSource;
-        let t0 = ui::time::now();
-        let at = |ms: u64| t0 + ui::time::Duration::from_millis(ms);
-        let mut panel = PanelMotion::new(EffectiveMotion::default());
-        // The place the stack gives it: 380 x 640 at the display's right, under the bar's status
-        // area it was opened from.
-        let place = Some((
-            Rect::new(892.0, 32.0, 1272.0, 672.0),
-            Point::new(1272.0, 0.0),
-        ));
-        // Every read of the motion is pinned at the instant it is read at.
-        let look = |panel: &PanelMotion, ms: u64| {
-            with_monotonic_time(at(ms), || (panel.is_drawn(), panel.pose()))
-        };
-        let asks = |panel: &PanelMotion, ms: u64| {
-            with_monotonic_time(at(ms), || panel.next_pass(at(ms)).is_some())
-        };
+            // Kept: the session reads it back from the person's settings document, as a panel that
+            // starts later does.
+            let kept = QuickSettingsService::new();
+            assert_eq!(shown(&kept), shown(&service));
+        }
 
-        // Up while the person does not see its app's frame yet: out of sight, not moving.
-        with_monotonic_time(t0, || panel.follow(true, false, place));
-        let (drawn, waiting) = look(&panel, 0);
-        assert!(!drawn, "nothing to animate before its first frame");
-        let waiting = waiting.expect("it waits invisible");
-        assert!(waiting.opacity < 0.01 && waiting.scale < 1.0, "{waiting:?}");
-        assert!(!asks(&panel, 0), "nothing moves, so no pass is due");
+        phase the_panel_arrives_from_its_corner_and_leaves_back_into_it;
+        // The panel grows from its corner when its first frame is drawn, stands as it stands, and
+        // shrinks back into the corner while it leaves, until it asks for nothing at all.
+        {
+            use ui::time::testing::with_monotonic_time;
+            use ui::tokens::MotionSource;
+            let t0 = ui::time::now();
+            let at = |ms: u64| t0 + ui::time::Duration::from_millis(ms);
+            let mut panel = PanelMotion::new(EffectiveMotion::default());
+            // The place the stack gives it: 380 x 640 at the display's right, under the bar's status
+            // area it was opened from.
+            let place = Some((
+                Rect::new(892.0, 32.0, 1272.0, 672.0),
+                Point::new(1272.0, 0.0),
+            ));
+            // Every read of the motion is pinned at the instant it is read at.
+            let look = |panel: &PanelMotion, ms: u64| {
+                with_monotonic_time(at(ms), || (panel.is_drawn(), panel.pose()))
+            };
+            let asks = |panel: &PanelMotion, ms: u64| {
+                with_monotonic_time(at(ms), || panel.next_pass(at(ms)).is_some())
+            };
 
-        ui::motion::note_source(MotionSource::Pointer);
-        with_monotonic_time(t0, || panel.follow(true, true, place));
-        let (drawn, coming) = look(&panel, 0);
-        assert!(drawn);
-        let coming = coming.expect("it arrives");
-        assert!(
-            coming.opacity < 0.05 && coming.scale < 1.0,
-            "from faint and small: {coming:?}"
-        );
-        assert!(
-            coming.offset.0 > 0.0 && coming.offset.1 < 0.0 && coming.anchor == (1.0, 0.0),
-            "and from the corner the status area is in, up and to the right: {coming:?}"
-        );
-        assert!(
-            asks(&panel, 0),
-            "an arriving panel asks for the pass that moves it"
-        );
+            // Up while the person does not see its app's frame yet: out of sight, not moving.
+            with_monotonic_time(t0, || panel.follow(true, false, place));
+            let (drawn, waiting) = look(&panel, 0);
+            assert!(!drawn, "nothing to animate before its first frame");
+            let waiting = waiting.expect("it waits invisible");
+            assert!(waiting.opacity < 0.01 && waiting.scale < 1.0, "{waiting:?}");
+            assert!(!asks(&panel, 0), "nothing moves, so no pass is due");
 
-        assert_eq!(
-            look(&panel, 600).1,
-            None,
-            "at rest it is drawn as it stands"
-        );
-        assert!(!asks(&panel, 600), "and asks for no pass of its own");
+            ui::motion::note_source(MotionSource::Pointer);
+            with_monotonic_time(t0, || panel.follow(true, true, place));
+            let (drawn, coming) = look(&panel, 0);
+            assert!(drawn);
+            let coming = coming.expect("it arrives");
+            assert!(
+                coming.opacity < 0.05 && coming.scale < 1.0,
+                "from faint and small: {coming:?}"
+            );
+            assert!(
+                coming.offset.0 > 0.0 && coming.offset.1 < 0.0 && coming.anchor == (1.0, 0.0),
+                "and from the corner the status area is in, up and to the right: {coming:?}"
+            );
+            assert!(
+                asks(&panel, 0),
+                "an arriving panel asks for the pass that moves it"
+            );
 
-        with_monotonic_time(at(700), || panel.follow(false, true, place));
-        assert!(look(&panel, 700).0, "it leaves rather than vanishing");
-        // Its leave is a spring settling within `fast` : most of the way out inside the first tenth
-        // of a second, so it is read where it is part way rather than near the end of that.
-        let leaving = look(&panel, 740).1.expect("its leave is drawn");
-        assert!(
-            leaving.opacity > 0.05 && leaving.opacity < 0.95 && leaving.scale < 1.0,
-            "partway back into its corner: {leaving:?}"
-        );
-        assert!(
-            asks(&panel, 740),
-            "a leaving panel asks for the pass that moves it"
-        );
-        assert!(!look(&panel, 900).0, "and then it has gone");
+            assert_eq!(
+                look(&panel, 600).1,
+                None,
+                "at rest it is drawn as it stands"
+            );
+            assert!(!asks(&panel, 600), "and asks for no pass of its own");
+
+            with_monotonic_time(at(700), || panel.follow(false, true, place));
+            assert!(look(&panel, 700).0, "it leaves rather than vanishing");
+            // Its leave is a spring settling within `fast` : most of the way out inside the first tenth
+            // of a second, so it is read where it is part way rather than near the end of that.
+            let leaving = look(&panel, 740).1.expect("its leave is drawn");
+            assert!(
+                leaving.opacity > 0.05 && leaving.opacity < 0.95 && leaving.scale < 1.0,
+                "partway back into its corner: {leaving:?}"
+            );
+            assert!(
+                asks(&panel, 740),
+                "a leaving panel asks for the pass that moves it"
+            );
+            assert!(!look(&panel, 900).0, "and then it has gone");
+        }
     }
 }

@@ -360,95 +360,99 @@ mod tests {
         Map::from_iter([("appearance".to_owned(), section)])
     }
 
-    #[test]
-    fn a_workspace_keeps_the_picture_the_person_gave_it() {
-        let mut records = Records::default();
-        assert!(records.apply(Some("meadow"), "workspace", "background", Some("1")));
-        assert!(records.apply(Some("dunes"), "workspace", "background", Some("2")));
-        assert_eq!(records.value_for("1"), Some("meadow"));
-        assert_eq!(records.value_for("2"), Some("dunes"));
-        // One the person never chose shows the picture the image ships.
-        assert_eq!(records.value_for("3"), None);
-        assert!(records.apply(None, "workspace", "background", Some("2")));
-        assert_eq!(records.value_for("2"), None);
-        assert_eq!(records.value_for("1"), Some("meadow"));
-    }
+    tilo_test_env::scenario! {
+        fn a_workspaces_wallpaper_is_kept_changed_and_brought_back;
 
-    #[test]
-    fn every_workspace_takes_the_change_and_its_own_pictures_are_forgotten() {
-        let mut records = Records::default();
-        assert!(records.apply(Some("meadow"), "workspace", "background", Some("1")));
-        assert!(records.apply(Some("dunes"), "all", "background", Some("1")));
-        assert_eq!(records.value_for("1"), Some("dunes"));
-        assert_eq!(records.value_for("2"), Some("dunes"));
-        // The same choice again changes nothing.
-        assert!(!records.apply(Some("dunes"), "all", "background", None));
-    }
+        phase a_workspace_keeps_the_picture_the_person_gave_it;
+        {
+            let mut records = Records::default();
+            assert!(records.apply(Some("meadow"), "workspace", "background", Some("1")));
+            assert!(records.apply(Some("dunes"), "workspace", "background", Some("2")));
+            assert_eq!(records.value_for("1"), Some("meadow"));
+            assert_eq!(records.value_for("2"), Some("dunes"));
+            // One the person never chose shows the picture the image ships.
+            assert_eq!(records.value_for("3"), None);
+            assert!(records.apply(None, "workspace", "background", Some("2")));
+            assert_eq!(records.value_for("2"), None);
+            assert_eq!(records.value_for("1"), Some("meadow"));
+        }
 
-    #[test]
-    fn a_picture_for_the_lock_screen_leaves_the_shell_as_it_is() {
-        let mut records = Records::default();
-        assert!(records.apply(Some("meadow"), "workspace", "background", Some("1")));
-        assert!(!records.apply(Some("dunes"), "all", "lockscreen", Some("1")));
-        assert_eq!(records.value_for("1"), Some("meadow"));
-        // Both places shows it on the shell too.
-        assert!(records.apply(Some("dunes"), "all", "both", Some("1")));
-        assert_eq!(records.value_for("2"), Some("dunes"));
-    }
+        phase every_workspace_takes_the_change_and_its_own_pictures_are_forgotten;
+        {
+            let mut records = Records::default();
+            assert!(records.apply(Some("meadow"), "workspace", "background", Some("1")));
+            assert!(records.apply(Some("dunes"), "all", "background", Some("1")));
+            assert_eq!(records.value_for("1"), Some("dunes"));
+            assert_eq!(records.value_for("2"), Some("dunes"));
+            // The same choice again changes nothing.
+            assert!(!records.apply(Some("dunes"), "all", "background", None));
+        }
 
-    #[test]
-    fn a_change_lands_on_the_workspace_in_front_after_the_first_read_notes_it() {
-        let wallpapers = Wallpapers::new(None, Arc::new(|| {}));
-        wallpapers.set_active(Some("2".into()));
-        // The session's own start read applies nothing: the workspaces keep the pictures this
-        // device kept for them.
-        wallpapers.follow(&appearance(json!({ "wallpaper": "meadow" })));
-        assert_eq!(wallpapers.state.lock_recover().records.value_for("2"), None);
-        wallpapers.follow(&appearance(json!({ "wallpaper": "dunes" })));
-        let state = wallpapers.state.lock_recover();
-        assert_eq!(state.records.value_for("2"), Some("dunes"));
-        assert_eq!(state.records.value_for("1"), None);
-        drop(state);
-    }
+        phase a_picture_for_the_lock_screen_leaves_the_shell_as_it_is;
+        {
+            let mut records = Records::default();
+            assert!(records.apply(Some("meadow"), "workspace", "background", Some("1")));
+            assert!(!records.apply(Some("dunes"), "all", "lockscreen", Some("1")));
+            assert_eq!(records.value_for("1"), Some("meadow"));
+            // Both places shows it on the shell too.
+            assert!(records.apply(Some("dunes"), "all", "both", Some("1")));
+            assert_eq!(records.value_for("2"), Some("dunes"));
+        }
 
-    #[test]
-    fn a_pictures_temperature_is_found_once_and_kept_while_a_workspace_shows_it() {
-        let wallpapers = Wallpapers::new(None, Arc::new(|| {}));
-        let shown = |rgb: [u8; 3]| {
-            let mut state = wallpapers.state.lock_recover();
-            state.images.insert(None, picture(rgb));
-        };
-        // No picture decoded yet: the workspace is neutral until one arrives.
-        assert_eq!(wallpapers.hue("1"), None);
-        shown([20, 40, 220]);
-        let blue = wallpapers.hue("1").expect("a blue picture has a hue");
-        assert!((blue - 264.0).abs() < 30.0, "blue reads as {blue}");
-        // The picture under the same value is not looked at again: the hue it gave once is the one
-        // it keeps.
-        shown([220, 40, 20]);
-        assert_eq!(wallpapers.hue("1"), Some(blue));
-        // A workspace showing another picture, not decoded, has no hue yet.
-        wallpapers.state.lock_recover().records.workspaces =
-            BTreeMap::from([("2".to_owned(), "meadow".to_owned())]);
-        assert_eq!(wallpapers.hue("2"), None);
-        assert_eq!(wallpapers.hue("1"), Some(blue));
+        phase a_change_lands_on_the_workspace_in_front_after_the_first_read_notes_it;
+        {
+            let wallpapers = Wallpapers::new(None, Arc::new(|| {}));
+            wallpapers.set_active(Some("2".into()));
+            // The session's own start read applies nothing: the workspaces keep the pictures this
+            // device kept for them.
+            wallpapers.follow(&appearance(json!({ "wallpaper": "meadow" })));
+            assert_eq!(wallpapers.state.lock_recover().records.value_for("2"), None);
+            wallpapers.follow(&appearance(json!({ "wallpaper": "dunes" })));
+            let state = wallpapers.state.lock_recover();
+            assert_eq!(state.records.value_for("2"), Some("dunes"));
+            assert_eq!(state.records.value_for("1"), None);
+            drop(state);
+        }
+
+        phase a_pictures_temperature_is_found_once_and_kept_while_a_workspace_shows_it;
+        {
+            let wallpapers = Wallpapers::new(None, Arc::new(|| {}));
+            let shown = |rgb: [u8; 3]| {
+                let mut state = wallpapers.state.lock_recover();
+                state.images.insert(None, picture(rgb));
+            };
+            // No picture decoded yet: the workspace is neutral until one arrives.
+            assert_eq!(wallpapers.hue("1"), None);
+            shown([20, 40, 220]);
+            let blue = wallpapers.hue("1").expect("a blue picture has a hue");
+            assert!((blue - 264.0).abs() < 30.0, "blue reads as {blue}");
+            // The picture under the same value is not looked at again: the hue it gave once is the one
+            // it keeps.
+            shown([220, 40, 20]);
+            assert_eq!(wallpapers.hue("1"), Some(blue));
+            // A workspace showing another picture, not decoded, has no hue yet.
+            wallpapers.state.lock_recover().records.workspaces =
+                BTreeMap::from([("2".to_owned(), "meadow".to_owned())]);
+            assert_eq!(wallpapers.hue("2"), None);
+            assert_eq!(wallpapers.hue("1"), Some(blue));
+        }
+
+        phase the_wallpapers_this_device_kept_come_back_with_the_next_session;
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let kept = Records {
+                default: Some("dunes".into()),
+                workspaces: BTreeMap::from([("1".to_owned(), "meadow".to_owned())]),
+            };
+            let wallpapers = Wallpapers::new(Some(state.path().to_path_buf()), Arc::new(|| {}));
+            wallpapers.save(&kept);
+            let again = Wallpapers::new(Some(state.path().to_path_buf()), Arc::new(|| {}));
+            assert_eq!(again.state.lock_recover().records, kept);
+        }
     }
 
     fn picture(rgb: [u8; 3]) -> ImageData {
         let pixel = [rgb[0], rgb[1], rgb[2], 255];
         ui::raster::rgba8(pixel.repeat(64), 8, 8)
-    }
-
-    #[test]
-    fn the_wallpapers_this_device_kept_come_back_with_the_next_session() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let kept = Records {
-            default: Some("dunes".into()),
-            workspaces: BTreeMap::from([("1".to_owned(), "meadow".to_owned())]),
-        };
-        let wallpapers = Wallpapers::new(Some(state.path().to_path_buf()), Arc::new(|| {}));
-        wallpapers.save(&kept);
-        let again = Wallpapers::new(Some(state.path().to_path_buf()), Arc::new(|| {}));
-        assert_eq!(again.state.lock_recover().records, kept);
     }
 }

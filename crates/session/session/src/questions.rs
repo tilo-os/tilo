@@ -1727,51 +1727,236 @@ mod tests {
         .expect("the session composes this question")
     }
 
-    /// An app asking to take another app's action names both apps, the step and what it would
-    /// run with, and answers on three buttons: deny, always and once; a step confirmed each time
-    /// offers no "always".
-    #[test]
-    fn an_apps_change_of_another_app_names_both_apps() {
-        let asked = |may_allow_agent| {
-            sheet(
-                crate::step_questions::KIND,
-                serde_json::to_value(crate::step_questions::StepQuestion {
-                    agent: "so.tilo.files".into(),
-                    target: Some("so.tilo.notes".into()),
-                    action: "Delete finished tasks…".into(),
-                    resource: "Tasks".into(),
-                    fields: vec![("Title".to_owned(), "Morning: 1 done".to_owned())],
-                    risk: "low".into(),
-                    may_allow_agent,
+    tilo_test_env::scenario! {
+        fn a_question_on_the_sheet_says_who_asks_for_what_and_at_what_risk;
+
+        phase an_apps_change_of_another_app_names_both_apps;
+        // An app asking to take another app's action names both apps, the step and what it would
+        // run with, and answers on three buttons: deny, always and once; a step confirmed each time
+        // offers no "always".
+        {
+            let asked = |may_allow_agent| {
+                sheet(
+                    crate::step_questions::KIND,
+                    serde_json::to_value(crate::step_questions::StepQuestion {
+                        agent: "so.tilo.files".into(),
+                        target: Some("so.tilo.notes".into()),
+                        action: "Delete finished tasks…".into(),
+                        resource: "Tasks".into(),
+                        fields: vec![("Title".to_owned(), "Morning: 1 done".to_owned())],
+                        risk: "low".into(),
+                        may_allow_agent,
+                    })
+                    .unwrap(),
+                )
+            };
+            let shown = asked(true);
+            let files = crate::app_names::app_name("so.tilo.files");
+            let notes = crate::app_names::app_name("so.tilo.notes");
+            assert_eq!(
+                shown.dialog.title,
+                words("app-question-title", &[("app", &files), ("target", &notes)])
+            );
+            assert!(shown.dialog.heading.is_empty(), "the title names the app");
+            assert_eq!(shown.dialog.detail, "Delete finished tasks");
+            assert_eq!(
+                shown.dialog.facts,
+                vec![("Title".to_owned(), "Morning: 1 done".to_owned())]
+            );
+            assert!(
+                matches!(shown.dialog.body, Body::Review),
+                "no list beside the buttons"
+            );
+            assert_eq!(shown.dialog.confirm_label, word("portal-allow-once"));
+            assert_eq!(shown.dialog.cancel_label, word("portal-deny"));
+            assert_eq!(
+                shown.dialog.alternate_label,
+                Some(word("portal-allow-always"))
+            );
+            assert!(matches!(&shown.plan, Plan::Choose(choices) if choices.len() == 2));
+            assert_eq!(asked(false).dialog.alternate_label, None);
+        }
+
+        phase an_agents_question_shows_its_agent_action_and_risk;
+        {
+            let shown = agent_question();
+            assert!(shown.dialog.title.contains("notes-agent"));
+            assert!(shown.dialog.title.contains("delete three notes"));
+            assert!(shown.dialog.detail.contains("the recipes notebook"));
+            assert!(shown.dialog.detail.contains("Home"));
+            assert!(!shown.dialog.detail.contains("network-agent"));
+            assert!(shown.dialog.code.is_none());
+            assert!(matches!(shown.plan, Plan::Confirm));
+        }
+
+        phase a_question_whose_risk_the_host_does_not_name_shows_no_risk;
+        {
+            let shown = sheet(
+                crate::network::AGENT_QUESTION,
+                serde_json::to_value(tilo_sheets::portal::AgentQuestion {
+                    agent: "notes-agent".into(),
+                    action: "Read a note".into(),
+                    resource: "the recipes notebook".into(),
+                    risk: String::new(),
+                    kind: "read".into(),
+                    workspace: "Home".into(),
+                    ..tilo_sheets::portal::AgentQuestion::default()
                 })
                 .unwrap(),
-            )
-        };
-        let shown = asked(true);
-        let files = crate::app_names::app_name("so.tilo.files");
-        let notes = crate::app_names::app_name("so.tilo.notes");
-        assert_eq!(
-            shown.dialog.title,
-            words("app-question-title", &[("app", &files), ("target", &notes)])
-        );
-        assert!(shown.dialog.heading.is_empty(), "the title names the app");
-        assert_eq!(shown.dialog.detail, "Delete finished tasks");
-        assert_eq!(
-            shown.dialog.facts,
-            vec![("Title".to_owned(), "Morning: 1 done".to_owned())]
-        );
-        assert!(
-            matches!(shown.dialog.body, Body::Review),
-            "no list beside the buttons"
-        );
-        assert_eq!(shown.dialog.confirm_label, word("portal-allow-once"));
-        assert_eq!(shown.dialog.cancel_label, word("portal-deny"));
-        assert_eq!(
-            shown.dialog.alternate_label,
-            Some(word("portal-allow-always"))
-        );
-        assert!(matches!(&shown.plan, Plan::Choose(choices) if choices.len() == 2));
-        assert_eq!(asked(false).dialog.alternate_label, None);
+            );
+            assert!(!shown.dialog.detail.contains("network-agent"));
+            assert_eq!(shown.dialog.detail.lines().count(), 1);
+        }
+
+        phase a_boot_screens_code_is_shown_beside_the_one_the_person_compares;
+        {
+            let shown = sheet(
+                crate::network::DEVICE_UNLOCK,
+                serde_json::to_value(crate::network::UnlockQuestion {
+                    approval_code: "417 208".into(),
+                    device: "The phone".into(),
+                    slot: "abcd:0".into(),
+                })
+                .unwrap(),
+            );
+            assert_eq!(shown.dialog.code.as_deref(), Some("417 208"));
+            assert!(shown.dialog.title.contains("The phone"));
+            assert!(shown.dialog.detail.contains("abcd:0"));
+            assert!(!shown.dialog.detail.contains("network-device"));
+            assert!(matches!(shown.plan, Plan::Confirm));
+        }
+
+        phase an_agents_step_in_a_conversation_asks_on_the_system_sheet;
+        // A step an agent takes inside a conversation asks on the system's
+        // sheet: the draft the person reviews, row by row, and one confirm that
+        // answers it (`shell.md` §1, "Trust stays system-drawn"; §8.1).
+        {
+            let draft = tilo_actions::Draft {
+                action_label: "Retitle".into(),
+                resource_label: "Groceries".into(),
+                fields: vec![tilo_actions::draft::DraftField {
+                    path: vec!["title".into()],
+                    label: "Title".into(),
+                    value: tilo_actions::draft::DraftValue::Text {
+                        text: "Groceries".into(),
+                    },
+                    editable: true,
+                    multiline: false,
+                    shows: None,
+                    role: None,
+                }],
+                ..tilo_actions::Draft::default()
+            };
+            let shown = sheet(
+                crate::turn_questions::KIND,
+                serde_json::to_value(crate::turn_questions::TurnDetails {
+                    resource_label: "Groceries".into(),
+                    action_label: "Retitle".into(),
+                    draft,
+                })
+                .unwrap(),
+            );
+            // The words are the session's own catalogue's (`turn-question-*`);
+            // a unit test has none loaded, so it reads the key standing for them,
+            // and the data that fills them: what the step acts on, by its name.
+            assert!(
+                shown.dialog.title.contains("turn-question-title")
+                    || shown.dialog.title.contains("Retitle"),
+                "{:?}",
+                shown.dialog
+            );
+            assert!(
+                shown.dialog.detail.contains("turn-question-detail")
+                    || shown.dialog.detail.contains("Groceries"),
+                "{:?}",
+                shown.dialog
+            );
+            assert_eq!(shown.dialog.heading, "Groceries", "{:?}", shown.dialog);
+            assert!(matches!(shown.plan, Plan::Confirm));
+            let Body::Draft { rows, choices } = &shown.dialog.body else {
+                panic!("the sheet shows the step's draft: {:?}", shown.dialog.body);
+            };
+            assert_eq!(rows.len(), 1, "one row per field: {rows:?}");
+            assert_eq!(rows[0].label, "Title");
+            assert!(rows[0].editable, "the person may change it");
+            assert!(choices.is_empty(), "one confirmation answers it");
+        }
+
+        phase a_control_path_step_names_its_resource_by_title_not_by_its_id;
+        // A step whose resource label is a control path rather than a title — an
+        // editor's "Go to" on a sidebar row, as a live run showed — names what it
+        // acts on by a person's words, never the hundred-character id: the sheet
+        // must not print the address of a control.
+        {
+            let draft = tilo_actions::Draft {
+                action_label: "Go to".into(),
+                resource_label: "Inbox".into(),
+                fields: vec![tilo_actions::draft::DraftField {
+                    path: vec!["entry".into()],
+                    label: "Entry".into(),
+                    value: tilo_actions::draft::DraftValue::Text {
+                        text: "is:inbox".into(),
+                    },
+                    editable: false,
+                    multiline: false,
+                    shows: None,
+                    role: None,
+                }],
+                ..tilo_actions::Draft::default()
+            };
+            let shown = sheet(
+                crate::turn_questions::KIND,
+                serde_json::to_value(crate::turn_questions::TurnDetails {
+                    // The title the broker resolved for the control's resource.
+                    resource_label: "Inbox".into(),
+                    action_label: "Go to".into(),
+                    draft: draft.clone(),
+                })
+                .unwrap(),
+            );
+            for text in [
+                &shown.dialog.title,
+                &shown.dialog.detail,
+                &shown.dialog.heading,
+            ] {
+                assert!(
+                    !text.contains('~') && !text.contains("i6ll2n4j"),
+                    "the sheet shows an internal control path: {text:?}"
+                );
+            }
+            assert_eq!(shown.dialog.heading, "Inbox", "{:?}", shown.dialog);
+
+            // An unresolved label is an address: the sheet drops it and names the
+            // step by what it does, rather than printing a path a person cannot
+            // read.
+            let path = "i6ll2n4j~i6ll2n4j.108~tj4z2obq.513~s7yqm7cb.for0/root-qhf2pyze/if2201f91-35~s7yqm7cb~row0~s7yqm7cb~row0.for0/root-qhf2pyze/if2201f91-35#select";
+            let raw = sheet(
+                crate::turn_questions::KIND,
+                serde_json::to_value(crate::turn_questions::TurnDetails {
+                    resource_label: path.into(),
+                    action_label: "Go to".into(),
+                    draft,
+                })
+                .unwrap(),
+            );
+            for text in [&raw.dialog.title, &raw.dialog.detail, &raw.dialog.heading] {
+                assert!(
+                    !text.contains('~') && !text.contains("i6ll2n4j"),
+                    "the sheet prints the control's own path: {text:?}"
+                );
+            }
+            assert_eq!(
+                raw.dialog.heading, "",
+                "an address is no heading: {:?}",
+                raw.dialog
+            );
+            assert!(
+                raw.dialog.detail.contains("turn-question-detail-here")
+                    || raw.dialog.detail.contains("Go to"),
+                "the step is still named by what it does: {:?}",
+                raw.dialog
+            );
+        }
     }
 
     fn agent_question() -> Composed {
@@ -1787,186 +1972,5 @@ mod tests {
             })
             .unwrap(),
         )
-    }
-
-    #[test]
-    fn an_agents_question_shows_its_agent_action_and_risk() {
-        let shown = agent_question();
-        assert!(shown.dialog.title.contains("notes-agent"));
-        assert!(shown.dialog.title.contains("delete three notes"));
-        assert!(shown.dialog.detail.contains("the recipes notebook"));
-        assert!(shown.dialog.detail.contains("Home"));
-        assert!(!shown.dialog.detail.contains("network-agent"));
-        assert!(shown.dialog.code.is_none());
-        assert!(matches!(shown.plan, Plan::Confirm));
-    }
-
-    #[test]
-    fn a_question_whose_risk_the_host_does_not_name_shows_no_risk() {
-        let shown = sheet(
-            crate::network::AGENT_QUESTION,
-            serde_json::to_value(tilo_sheets::portal::AgentQuestion {
-                agent: "notes-agent".into(),
-                action: "Read a note".into(),
-                resource: "the recipes notebook".into(),
-                risk: String::new(),
-                kind: "read".into(),
-                workspace: "Home".into(),
-                ..tilo_sheets::portal::AgentQuestion::default()
-            })
-            .unwrap(),
-        );
-        assert!(!shown.dialog.detail.contains("network-agent"));
-        assert_eq!(shown.dialog.detail.lines().count(), 1);
-    }
-
-    #[test]
-    fn a_boot_screens_code_is_shown_beside_the_one_the_person_compares() {
-        let shown = sheet(
-            crate::network::DEVICE_UNLOCK,
-            serde_json::to_value(crate::network::UnlockQuestion {
-                approval_code: "417 208".into(),
-                device: "The phone".into(),
-                slot: "abcd:0".into(),
-            })
-            .unwrap(),
-        );
-        assert_eq!(shown.dialog.code.as_deref(), Some("417 208"));
-        assert!(shown.dialog.title.contains("The phone"));
-        assert!(shown.dialog.detail.contains("abcd:0"));
-        assert!(!shown.dialog.detail.contains("network-device"));
-        assert!(matches!(shown.plan, Plan::Confirm));
-    }
-
-    /// A step an agent takes inside a conversation asks on the system's
-    /// sheet: the draft the person reviews, row by row, and one confirm that
-    /// answers it (`shell.md` §1, "Trust stays system-drawn"; §8.1).
-    #[test]
-    fn an_agents_step_in_a_conversation_asks_on_the_system_sheet() {
-        let draft = tilo_actions::Draft {
-            action_label: "Retitle".into(),
-            resource_label: "Groceries".into(),
-            fields: vec![tilo_actions::draft::DraftField {
-                path: vec!["title".into()],
-                label: "Title".into(),
-                value: tilo_actions::draft::DraftValue::Text {
-                    text: "Groceries".into(),
-                },
-                editable: true,
-                multiline: false,
-                shows: None,
-                role: None,
-            }],
-            ..tilo_actions::Draft::default()
-        };
-        let shown = sheet(
-            crate::turn_questions::KIND,
-            serde_json::to_value(crate::turn_questions::TurnDetails {
-                resource_label: "Groceries".into(),
-                action_label: "Retitle".into(),
-                draft,
-            })
-            .unwrap(),
-        );
-        // The words are the session's own catalogue's (`turn-question-*`);
-        // a unit test has none loaded, so it reads the key standing for them,
-        // and the data that fills them: what the step acts on, by its name.
-        assert!(
-            shown.dialog.title.contains("turn-question-title")
-                || shown.dialog.title.contains("Retitle"),
-            "{:?}",
-            shown.dialog
-        );
-        assert!(
-            shown.dialog.detail.contains("turn-question-detail")
-                || shown.dialog.detail.contains("Groceries"),
-            "{:?}",
-            shown.dialog
-        );
-        assert_eq!(shown.dialog.heading, "Groceries", "{:?}", shown.dialog);
-        assert!(matches!(shown.plan, Plan::Confirm));
-        let Body::Draft { rows, choices } = &shown.dialog.body else {
-            panic!("the sheet shows the step's draft: {:?}", shown.dialog.body);
-        };
-        assert_eq!(rows.len(), 1, "one row per field: {rows:?}");
-        assert_eq!(rows[0].label, "Title");
-        assert!(rows[0].editable, "the person may change it");
-        assert!(choices.is_empty(), "one confirmation answers it");
-    }
-
-    /// A step whose resource label is a control path rather than a title — an
-    /// editor's "Go to" on a sidebar row, as a live run showed — names what it
-    /// acts on by a person's words, never the hundred-character id: the sheet
-    /// must not print the address of a control.
-    #[test]
-    fn a_control_path_step_names_its_resource_by_title_not_by_its_id() {
-        let draft = tilo_actions::Draft {
-            action_label: "Go to".into(),
-            resource_label: "Inbox".into(),
-            fields: vec![tilo_actions::draft::DraftField {
-                path: vec!["entry".into()],
-                label: "Entry".into(),
-                value: tilo_actions::draft::DraftValue::Text {
-                    text: "is:inbox".into(),
-                },
-                editable: false,
-                multiline: false,
-                shows: None,
-                role: None,
-            }],
-            ..tilo_actions::Draft::default()
-        };
-        let shown = sheet(
-            crate::turn_questions::KIND,
-            serde_json::to_value(crate::turn_questions::TurnDetails {
-                // The title the broker resolved for the control's resource.
-                resource_label: "Inbox".into(),
-                action_label: "Go to".into(),
-                draft: draft.clone(),
-            })
-            .unwrap(),
-        );
-        for text in [
-            &shown.dialog.title,
-            &shown.dialog.detail,
-            &shown.dialog.heading,
-        ] {
-            assert!(
-                !text.contains('~') && !text.contains("i6ll2n4j"),
-                "the sheet shows an internal control path: {text:?}"
-            );
-        }
-        assert_eq!(shown.dialog.heading, "Inbox", "{:?}", shown.dialog);
-
-        // An unresolved label is an address: the sheet drops it and names the
-        // step by what it does, rather than printing a path a person cannot
-        // read.
-        let path = "i6ll2n4j~i6ll2n4j.108~tj4z2obq.513~s7yqm7cb.for0/root-qhf2pyze/if2201f91-35~s7yqm7cb~row0~s7yqm7cb~row0.for0/root-qhf2pyze/if2201f91-35#select";
-        let raw = sheet(
-            crate::turn_questions::KIND,
-            serde_json::to_value(crate::turn_questions::TurnDetails {
-                resource_label: path.into(),
-                action_label: "Go to".into(),
-                draft,
-            })
-            .unwrap(),
-        );
-        for text in [&raw.dialog.title, &raw.dialog.detail, &raw.dialog.heading] {
-            assert!(
-                !text.contains('~') && !text.contains("i6ll2n4j"),
-                "the sheet prints the control's own path: {text:?}"
-            );
-        }
-        assert_eq!(
-            raw.dialog.heading, "",
-            "an address is no heading: {:?}",
-            raw.dialog
-        );
-        assert!(
-            raw.dialog.detail.contains("turn-question-detail-here")
-                || raw.dialog.detail.contains("Go to"),
-            "the step is still named by what it does: {:?}",
-            raw.dialog
-        );
     }
 }

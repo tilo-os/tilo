@@ -94,54 +94,58 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_nested_session_serves_no_bus_of_the_desktop_it_is_in() {
-        let reach = Reach::new(Backend::Nested, default_buses());
-        assert_eq!(
-            reach.buses,
-            Buses {
-                session: Bus::None,
-                system: Bus::None
-            }
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_sessions_flags_and_seat_decide_its_bus_its_displays_and_its_backends;
 
-    #[test]
-    fn a_nested_session_never_exports_its_displays() {
-        let reach = Reach::new(Backend::Nested, default_buses());
-        assert!(!reach.export_displays);
-    }
-
-    #[test]
-    fn a_nested_session_serves_the_bus_a_flag_names() {
-        let buses = Buses {
-            session: Bus::Address("unix:path=/run/user/1000/tilo-nested/bus".into()),
-            system: Bus::None,
-        };
-        let reach = Reach::new(Backend::Nested, buses.clone());
-        assert_eq!(reach.buses, buses);
-        assert_eq!(
-            reach.session_bus(),
-            Some("unix:path=/run/user/1000/tilo-nested/bus")
-        );
-        assert!(!reach.export_displays);
-    }
-
-    #[test]
-    fn a_session_on_a_tty_or_without_a_display_exports_its_displays() {
-        for backend in [Backend::Drm, Backend::Headless] {
-            let reach = Reach::new(backend, default_buses());
-            assert_eq!(reach.buses, default_buses());
-            assert_eq!(reach.session_bus(), None);
-            assert!(reach.export_displays);
+        phase a_nested_session_serves_no_bus_of_the_desktop_it_is_in;
+        {
+            let reach = Reach::new(Backend::Nested, default_buses());
+            assert_eq!(
+                reach.buses,
+                Buses {
+                    session: Bus::None,
+                    system: Bus::None
+                }
+            );
         }
-    }
 
-    #[test]
-    fn the_backends_are_the_ones_the_flag_names() {
-        assert_eq!(Backend::named("drm"), Some(Backend::Drm));
-        assert_eq!(Backend::named("headless"), Some(Backend::Headless));
-        assert_eq!(Backend::named("nested"), Some(Backend::Nested));
-        assert_eq!(Backend::named("winit"), None);
+        phase a_nested_session_never_exports_its_displays;
+        {
+            let reach = Reach::new(Backend::Nested, default_buses());
+            assert!(!reach.export_displays);
+        }
+
+        phase a_nested_session_serves_the_bus_a_flag_names;
+        {
+            let buses = Buses {
+                session: Bus::Address("unix:path=/run/user/1000/tilo-nested/bus".into()),
+                system: Bus::None,
+            };
+            let reach = Reach::new(Backend::Nested, buses.clone());
+            assert_eq!(reach.buses, buses);
+            assert_eq!(
+                reach.session_bus(),
+                Some("unix:path=/run/user/1000/tilo-nested/bus")
+            );
+            assert!(!reach.export_displays);
+        }
+
+        phase a_session_on_a_tty_or_without_a_display_exports_its_displays;
+        {
+            for backend in [Backend::Drm, Backend::Headless] {
+                let reach = Reach::new(backend, default_buses());
+                assert_eq!(reach.buses, default_buses());
+                assert_eq!(reach.session_bus(), None);
+                assert!(reach.export_displays);
+            }
+        }
+
+        phase the_backends_are_the_ones_the_flag_names;
+        {
+            assert_eq!(Backend::named("drm"), Some(Backend::Drm));
+            assert_eq!(Backend::named("headless"), Some(Backend::Headless));
+            assert_eq!(Backend::named("nested"), Some(Backend::Nested));
+            assert_eq!(Backend::named("winit"), None);
+        }
     }
 }

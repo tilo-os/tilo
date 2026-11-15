@@ -768,117 +768,133 @@ mod tests {
         }
     }
 
-    #[test]
-    fn levels_follow_the_room_left() {
-        assert_eq!(level(room(500, 100 * 1024), Level::Plenty), Level::Plenty);
-        // 5 % of 500 GB is capped at 10 GB.
-        assert_eq!(level(room(500, 9 * 1024), Level::Plenty), Level::Low);
-        // A small disk still warns with 2 GB left.
-        assert_eq!(level(room(20, 1500), Level::Plenty), Level::Low);
-        assert_eq!(level(room(44, 20), Level::Plenty), Level::Full);
-    }
+    tilo_test_env::scenario! {
+        fn storage_and_a_battery_running_out_are_announced_only_as_they_get_worse;
 
-    #[test]
-    fn hovering_at_a_limit_does_not_flap() {
-        let at_limit = room(44, 2300);
-        assert_eq!(level(at_limit, Level::Plenty), Level::Plenty);
-        assert_eq!(
-            level(at_limit, Level::Low),
-            Level::Low,
-            "recovery needs more room than falling"
-        );
-        assert_eq!(level(room(44, 4 * 1024), Level::Low), Level::Plenty);
-    }
+        phase levels_follow_the_room_left;
+        {
+            assert_eq!(level(room(500, 100 * 1024), Level::Plenty), Level::Plenty);
+            // 5 % of 500 GB is capped at 10 GB.
+            assert_eq!(level(room(500, 9 * 1024), Level::Plenty), Level::Low);
+            // A small disk still warns with 2 GB left.
+            assert_eq!(level(room(20, 1500), Level::Plenty), Level::Low);
+            assert_eq!(level(room(44, 20), Level::Plenty), Level::Full);
+        }
 
-    #[test]
-    fn only_getting_worse_is_announced() {
-        let full = room(44, 20);
-        assert!(storage_notice(Volume::System, Level::Plenty, Level::Low, full).is_some());
-        assert!(storage_notice(Volume::System, Level::Low, Level::Full, full).is_some());
-        assert!(storage_notice(Volume::System, Level::Full, Level::Full, full).is_none());
-        assert!(storage_notice(Volume::System, Level::Full, Level::Plenty, full).is_none());
-        assert!(storage_notice(Volume::Home, Level::Low, Level::Low, full).is_none());
-    }
+        phase hovering_at_a_limit_does_not_flap;
+        {
+            let at_limit = room(44, 2300);
+            assert_eq!(level(at_limit, Level::Plenty), Level::Plenty);
+            assert_eq!(
+                level(at_limit, Level::Low),
+                Level::Low,
+                "recovery needs more room than falling"
+            );
+            assert_eq!(level(room(44, 4 * 1024), Level::Low), Level::Plenty);
+        }
 
-    /// The battery running out reaches the person as an ordinary notification: an early heads-up,
-    /// then one that names what happens if the machine sleeps for it and stays until they act.
-    #[test]
-    fn a_battery_running_out_reaches_the_person_as_a_notification() {
-        let notifications = Notifications::new();
-        tell_daemon(&battery_notice(15, false, false), &notifications);
-        tell_daemon(&battery_notice(5, true, true), &notifications);
-        let live = notifications.live();
-        assert_eq!(live.len(), 2);
-        let low = live
-            .iter()
-            .find(|notification| notification.summary == "Battery low")
-            .expect("the heads-up");
-        assert!(low.body.starts_with("15%"), "{}", low.body);
-        assert_eq!(low.urgency, 1);
-        assert_eq!(
-            low.expire_timeout, -1,
-            "the heads-up leaves with the person's own notification timing"
-        );
-        assert!(
-            low.suppress_sound,
-            "the session plays the low-battery sound itself"
-        );
-        assert!(!low.machine_wide, "the heads-up is for the display in use");
-        assert_eq!(low.app_name, "Power");
+        phase only_getting_worse_is_announced;
+        {
+            let full = room(44, 20);
+            assert!(storage_notice(Volume::System, Level::Plenty, Level::Low, full).is_some());
+            assert!(storage_notice(Volume::System, Level::Low, Level::Full, full).is_some());
+            assert!(storage_notice(Volume::System, Level::Full, Level::Full, full).is_none());
+            assert!(storage_notice(Volume::System, Level::Full, Level::Plenty, full).is_none());
+            assert!(storage_notice(Volume::Home, Level::Low, Level::Low, full).is_none());
+        }
 
-        let critical = live
-            .iter()
-            .find(|notification| notification.summary == "Battery critically low")
-            .expect("the critical warning");
-        assert!(critical.body.contains("Suspending"), "{}", critical.body);
-        assert_eq!(critical.urgency, 2);
-        assert_eq!(
-            critical.expire_timeout, 0,
-            "the critical warning stays until the person acts"
-        );
-        assert!(critical.machine_wide, "the whole machine's news");
+        phase a_battery_running_out_reaches_the_person_as_a_notification;
+        // The battery running out reaches the person as an ordinary notification: an early heads-up,
+        // then one that names what happens if the machine sleeps for it and stays until they act.
+        {
+            let notifications = Notifications::new();
+            tell_daemon(&battery_notice(15, false, false), &notifications);
+            tell_daemon(&battery_notice(5, true, true), &notifications);
+            let live = notifications.live();
+            assert_eq!(live.len(), 2);
+            let low = live
+                .iter()
+                .find(|notification| notification.summary == "Battery low")
+                .expect("the heads-up");
+            assert!(low.body.starts_with("15%"), "{}", low.body);
+            assert_eq!(low.urgency, 1);
+            assert_eq!(
+                low.expire_timeout, -1,
+                "the heads-up leaves with the person's own notification timing"
+            );
+            assert!(
+                low.suppress_sound,
+                "the session plays the low-battery sound itself"
+            );
+            assert!(!low.machine_wide, "the heads-up is for the display in use");
+            assert_eq!(low.app_name, "Power");
 
-        let plug_in = battery_notice(3, true, false);
-        assert!(
-            plug_in.body.contains("plug in"),
-            "a policy that does not sleep says so instead: {}",
-            plug_in.body
-        );
-    }
+            let critical = live
+                .iter()
+                .find(|notification| notification.summary == "Battery critically low")
+                .expect("the critical warning");
+            assert!(critical.body.contains("Suspending"), "{}", critical.body);
+            assert_eq!(critical.urgency, 2);
+            assert_eq!(
+                critical.expire_timeout, 0,
+                "the critical warning stays until the person acts"
+            );
+            assert!(critical.machine_wide, "the whole machine's news");
 
-    /// A full filesystem reaches the person as an ordinary notification: it is published as a
-    /// resource like any app's, reads as its copy, and the person closes it through the resource's
-    /// own action.
-    #[test]
-    fn a_filesystem_running_out_reaches_the_person_as_a_notification() {
-        let notifications = Notifications::new();
-        let mut levels = [Level::Plenty];
-        let watched = [(Volume::Home, Some(room(44, 300)))];
-        let low = sweep_rooms(&watched, &mut levels, |notice| {
-            tell_daemon(&notice, &notifications);
-        });
-        assert!(low);
-        assert_eq!(levels, [Level::Full]);
+            let plug_in = battery_notice(3, true, false);
+            assert!(
+                plug_in.body.contains("plug in"),
+                "a policy that does not sleep says so instead: {}",
+                plug_in.body
+            );
+        }
 
-        let live = notifications.live();
-        assert_eq!(live.len(), 1);
-        assert_eq!(live[0].summary, "Storage is full");
-        assert!(live[0].body.starts_with("Only "), "{}", live[0].body);
-        assert!(live[0].machine_wide, "the whole machine's news");
-        assert_eq!(live[0].app_name, "Storage");
+        phase a_filesystem_running_out_reaches_the_person_as_a_notification;
+        // A full filesystem reaches the person as an ordinary notification: it is published as a
+        // resource like any app's, reads as its copy, and the person closes it through the resource's
+        // own action.
+        {
+            let notifications = Notifications::new();
+            let mut levels = [Level::Plenty];
+            let watched = [(Volume::Home, Some(room(44, 300)))];
+            let low = sweep_rooms(&watched, &mut levels, |notice| {
+                tell_daemon(&notice, &notifications);
+            });
+            assert!(low);
+            assert_eq!(levels, [Level::Full]);
 
-        sweep_rooms(&watched, &mut levels, |_| {
-            panic!("the same room twice says nothing");
-        });
+            let live = notifications.live();
+            assert_eq!(live.len(), 1);
+            assert_eq!(live[0].summary, "Storage is full");
+            assert!(live[0].body.starts_with("Only "), "{}", live[0].body);
+            assert!(live[0].machine_wide, "the whole machine's news");
+            assert_eq!(live[0].app_name, "Storage");
 
-        let resource = tilo_notifications_service::notification_resource(live[0].id);
-        let mut published = notifications.clone();
-        let read = published.read(&resource).expect("the notice is published");
-        assert_eq!(read["summary"], "Storage is full");
-        published
-            .invoke(&resource, "close", &serde_json::Map::new())
-            .expect("the person closes it");
-        assert!(notifications.live().is_empty());
+            sweep_rooms(&watched, &mut levels, |_| {
+                panic!("the same room twice says nothing");
+            });
+
+            let resource = tilo_notifications_service::notification_resource(live[0].id);
+            let mut published = notifications.clone();
+            let read = published.read(&resource).expect("the notice is published");
+            assert_eq!(read["summary"], "Storage is full");
+            published
+                .invoke(&resource, "close", &serde_json::Map::new())
+                .expect("the person closes it");
+            assert!(notifications.live().is_empty());
+        }
+
+        phase an_unreadable_filesystem_is_quiet;
+        // A filesystem that cannot be read says nothing, and keeps the level it had for when it is
+        // back.
+        {
+            let mut levels = [Level::Low];
+            let low = sweep_rooms(&[(Volume::System, None)], &mut levels, |_| {
+                panic!("nothing to say")
+            });
+            assert!(!low);
+            assert_eq!(levels, [Level::Low]);
+        }
     }
 
     /// A medium a person plugs in is announced by what it is called and how much it holds, and
@@ -948,93 +964,85 @@ mod tests {
         assert_eq!(*udisks.ejected.borrow(), [photos]);
     }
 
-    /// A filesystem that cannot be read says nothing, and keeps the level it had for when it is
-    /// back.
-    #[test]
-    fn an_unreadable_filesystem_is_quiet() {
-        let mut levels = [Level::Low];
-        let low = sweep_rooms(&[(Volume::System, None)], &mut levels, |_| {
-            panic!("nothing to say")
-        });
-        assert!(!low);
-        assert_eq!(levels, [Level::Low]);
-    }
-
     fn status(json: &str) -> CodecPackStatus {
         CodecPackStatus::parse(json)
     }
 
-    #[test]
-    fn a_deferred_install_that_finishes_online_is_announced() {
-        let notice = codec_notice(
-            &status(r#"{"state":"waiting-for-network","desired":true}"#),
-            &status(
-                r#"{"state":"installed","parts":{"tilo-codecs-mesa":"enabled"},"desired":true}"#,
-            ),
-        )
-        .expect("the install finished");
-        assert_eq!(notice.title, "More video and audio formats are on");
-        assert!(
-            notice.body.contains("Sign out and back in"),
-            "{}",
-            notice.body
-        );
-        assert_eq!(notice.urgency, 0);
-    }
+    tilo_test_env::scenario! {
+        fn a_codec_install_is_announced_by_how_it_ended;
 
-    #[test]
-    fn a_software_only_install_says_no_restart_and_that_hardware_follows() {
-        let notice = codec_notice(
-            &status(r#"{"state":"installing"}"#),
-            &status(r#"{"state":"installed","parts":{"tilo-codecs-mesa":"waiting"}}"#),
-        )
-        .expect("the install finished");
-        assert!(notice.body.contains("No restart is needed"));
-        assert!(notice.body.contains("Hardware H.264/HEVC follows"));
-    }
+        phase a_deferred_install_that_finishes_online_is_announced;
+        {
+            let notice = codec_notice(
+                &status(r#"{"state":"waiting-for-network","desired":true}"#),
+                &status(
+                    r#"{"state":"installed","parts":{"tilo-codecs-mesa":"enabled"},"desired":true}"#,
+                ),
+            )
+            .expect("the install finished");
+            assert_eq!(notice.title, "More video and audio formats are on");
+            assert!(
+                notice.body.contains("Sign out and back in"),
+                "{}",
+                notice.body
+            );
+            assert_eq!(notice.urgency, 0);
+        }
 
-    #[test]
-    fn a_later_matching_mesa_build_is_announced_once() {
-        let before = status(r#"{"state":"installed","parts":{"tilo-codecs-mesa":"waiting"}}"#);
-        let after = status(r#"{"state":"installed","parts":{"tilo-codecs-mesa":"enabled"}}"#);
-        assert_eq!(
-            codec_notice(&before, &after)
-                .expect("the hardware part arrived")
-                .title,
-            "Hardware H.264/HEVC is ready"
-        );
-        assert_eq!(
-            codec_notice(&after, &after),
-            None,
-            "routine refreshes are quiet"
-        );
-    }
+        phase a_software_only_install_says_no_restart_and_that_hardware_follows;
+        {
+            let notice = codec_notice(
+                &status(r#"{"state":"installing"}"#),
+                &status(r#"{"state":"installed","parts":{"tilo-codecs-mesa":"waiting"}}"#),
+            )
+            .expect("the install finished");
+            assert!(notice.body.contains("No restart is needed"));
+            assert!(notice.body.contains("Hardware H.264/HEVC follows"));
+        }
 
-    #[test]
-    fn failures_point_to_settings_and_progress_is_quiet() {
-        let failed = codec_notice(
-            &status(r#"{"state":"installing"}"#),
-            &status(r#"{"state":"failed","last_error":"signature check failed"}"#),
-        )
-        .expect("the install failed");
-        assert_eq!(failed.urgency, 2);
-        assert!(failed.body.starts_with("signature check failed"));
-        assert!(failed.body.contains("Settings, Updates"));
-        assert_eq!(
-            codec_notice(
-                &status(r#"{"state":"not-installed"}"#),
-                &status(r#"{"state":"installing"}"#)
-            ),
-            None
-        );
-        assert_eq!(
-            codec_notice(
-                &status(r#"{"state":"installed"}"#),
-                &status(r#"{"state":"not-installed"}"#)
-            ),
-            None,
-            "removing is the owner's own action"
-        );
+        phase a_later_matching_mesa_build_is_announced_once;
+        {
+            let before = status(r#"{"state":"installed","parts":{"tilo-codecs-mesa":"waiting"}}"#);
+            let after = status(r#"{"state":"installed","parts":{"tilo-codecs-mesa":"enabled"}}"#);
+            assert_eq!(
+                codec_notice(&before, &after)
+                    .expect("the hardware part arrived")
+                    .title,
+                "Hardware H.264/HEVC is ready"
+            );
+            assert_eq!(
+                codec_notice(&after, &after),
+                None,
+                "routine refreshes are quiet"
+            );
+        }
+
+        phase failures_point_to_settings_and_progress_is_quiet;
+        {
+            let failed = codec_notice(
+                &status(r#"{"state":"installing"}"#),
+                &status(r#"{"state":"failed","last_error":"signature check failed"}"#),
+            )
+            .expect("the install failed");
+            assert_eq!(failed.urgency, 2);
+            assert!(failed.body.starts_with("signature check failed"));
+            assert!(failed.body.contains("Settings, Updates"));
+            assert_eq!(
+                codec_notice(
+                    &status(r#"{"state":"not-installed"}"#),
+                    &status(r#"{"state":"installing"}"#)
+                ),
+                None
+            );
+            assert_eq!(
+                codec_notice(
+                    &status(r#"{"state":"installed"}"#),
+                    &status(r#"{"state":"not-installed"}"#)
+                ),
+                None,
+                "removing is the owner's own action"
+            );
+        }
     }
 
     #[test]
@@ -1138,154 +1146,213 @@ mod tests {
         ui::gpu::reset_software_fallback_for_test();
     }
 
-    #[test]
-    fn a_computer_that_stopped_is_its_own_notice() {
-        let news = tilo_crash_records::News {
-            ended: tilo_crash_records::Ended::Stopped,
-            at: ui::format::NaiveDateTime::parse_from_str(
-                "2026-10-24 22:52:01",
-                "%Y-%m-%d %H:%M:%S",
-            )
-            .unwrap(),
-        };
-        let notice = news_notice(&news, news.at.date().succ_opt().unwrap());
-        assert_eq!(notice.title, "The computer restarted");
-        assert!(notice.body.contains("stays on this computer"));
+    tilo_test_env::scenario! {
+        fn what_happened_to_this_computer_is_a_notice_of_its_own;
+
+        phase a_computer_that_stopped_is_its_own_notice;
+        {
+            let news = tilo_crash_records::News {
+                ended: tilo_crash_records::Ended::Stopped,
+                at: ui::format::NaiveDateTime::parse_from_str(
+                    "2026-10-24 22:52:01",
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                .unwrap(),
+            };
+            let notice = news_notice(&news, news.at.date().succ_opt().unwrap());
+            assert_eq!(notice.title, "The computer restarted");
+            assert!(notice.body.contains("stays on this computer"));
+        }
+
+        phase what_this_computer_could_not_read_reaches_the_person;
+        // What this computer could not read of the person's workspaces and of its
+        // own update reaches them as ordinary notifications: what did not read,
+        // and what is still true for them.
+        {
+            let notifications = Notifications::new();
+            tell_daemon(&workspaces_notice(), &notifications);
+            tell_daemon(&update_state_notice(), &notifications);
+
+            let live = notifications.live();
+            assert_eq!(live.len(), 2, "each failure is its own notice");
+
+            let workspaces = live
+                .iter()
+                .find(|notification| notification.summary == "Your workspaces could not be read")
+                .expect("the workspaces notice");
+            assert_eq!(workspaces.app_name, "Workspaces");
+            assert!(
+                workspaces.body.contains("Nothing was removed"),
+                "an empty list is not lost workspaces: {}",
+                workspaces.body
+            );
+            assert!(
+                workspaces.machine_wide,
+                "the person's list is their news on every display"
+            );
+
+            let update = live
+                .iter()
+                .find(|notification| notification.summary == "The update state could not be read")
+                .expect("the update notice");
+            assert_eq!(update.app_name, "Updates");
+            assert!(
+                update.body.contains("did not act on it"),
+                "the person learns nothing was done on a state it could not read: {}",
+                update.body
+            );
+        }
     }
 
-    /// What this computer could not read of the person's workspaces and of its
-    /// own update reaches them as ordinary notifications: what did not read,
-    /// and what is still true for them.
-    #[test]
-    fn what_this_computer_could_not_read_reaches_the_person() {
-        let notifications = Notifications::new();
-        tell_daemon(&workspaces_notice(), &notifications);
-        tell_daemon(&update_state_notice(), &notifications);
+    tilo_test_env::scenario! {
+        fn the_update_notice_offers_and_carries_the_restart;
 
-        let live = notifications.live();
-        assert_eq!(live.len(), 2, "each failure is its own notice");
+        phase the_update_notice_offers_the_restart_of_the_machine;
+        {
+            let notice = update_notice();
+            assert_eq!(notice.title, "Restart to finish updating");
+            assert_eq!(
+                notice.actions,
+                [(RESTART_ACTION.to_owned(), "Restart".to_owned())]
+            );
+        }
 
-        let workspaces = live
-            .iter()
-            .find(|notification| notification.summary == "Your workspaces could not be read")
-            .expect("the workspaces notice");
-        assert_eq!(workspaces.app_name, "Workspaces");
-        assert!(
-            workspaces.body.contains("Nothing was removed"),
-            "an empty list is not lost workspaces: {}",
-            workspaces.body
-        );
-        assert!(
-            workspaces.machine_wide,
-            "the person's list is their news on every display"
-        );
-
-        let update = live
-            .iter()
-            .find(|notification| notification.summary == "The update state could not be read")
-            .expect("the update notice");
-        assert_eq!(update.app_name, "Updates");
-        assert!(
-            update.body.contains("did not act on it"),
-            "the person learns nothing was done on a state it could not read: {}",
-            update.body
-        );
+        phase the_update_notice_carries_the_restart_action;
+        // Acting on the update notice reaches the tap the session installed,
+        // through the notification's own published action.
+        {
+            let notifications = Notifications::new();
+            let tapped = std::sync::Arc::new(Mutex::new(Vec::new()));
+            let seen = tapped.clone();
+            notifications.on_taken(move |id, taken| {
+                if let Taken::Action { key, .. } = taken
+                    && let Ok(mut seen) = seen.lock()
+                {
+                    seen.push((id, key.to_owned()));
+                }
+            });
+            let notice = update_notice();
+            assert_eq!(notice.title, "Restart to finish updating");
+            assert_eq!(
+                notice.actions,
+                [(RESTART_ACTION.to_owned(), "Restart".to_owned())]
+            );
+            let resource =
+                tilo_notifications_service::notification_resource(tell_daemon(&notice, &notifications));
+            let id = notifications.live()[0].id;
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("action".into(), RESTART_ACTION.into());
+            let mut published = notifications;
+            published
+                .invoke(&resource, "invoke", &arguments)
+                .expect("the action is offered");
+            assert_eq!(*tapped.lock().unwrap(), [(id, RESTART_ACTION.to_owned())]);
+        }
     }
 
-    #[test]
-    fn the_update_notice_offers_the_restart_of_the_machine() {
-        let notice = update_notice();
-        assert_eq!(notice.title, "Restart to finish updating");
-        assert_eq!(
-            notice.actions,
-            [(RESTART_ACTION.to_owned(), "Restart".to_owned())]
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn what_a_workspace_did_not_take_is_said_in_whole_words;
 
-    /// Acting on the update notice reaches the tap the session installed,
-    /// through the notification's own published action.
-    #[test]
-    fn the_update_notice_carries_the_restart_action() {
-        let notifications = Notifications::new();
-        let tapped = std::sync::Arc::new(Mutex::new(Vec::new()));
-        let seen = tapped.clone();
-        notifications.on_taken(move |id, taken| {
-            if let Taken::Action { key, .. } = taken
-                && let Ok(mut seen) = seen.lock()
-            {
-                seen.push((id, key.to_owned()));
+        phase a_device_on_another_version_is_named_and_told_what_to_do;
+        // A collaborator's device at another protocol version reaches the person as a calm notice
+        // naming the device and what to do about it; one this device only knows by its endpoint is
+        // said plainly rather than spelled out. It waits until it is read.
+        {
+            let ours: u32 = 30;
+            let newer = crate::network::VersionMismatch {
+                endpoint: "zpeerexample".into(),
+                theirs: ours.wrapping_add(1),
+                ours,
+            };
+            let notice = version_mismatch_notice(&newer, Some("Framework 16"));
+            assert!(
+                notice.title.contains("Framework 16") && notice.title.contains("newer Tilo"),
+                "the device names the title: {}",
+                notice.title
+            );
+            assert!(
+                notice.body.contains("restarts"),
+                "the body says what happens here: {}",
+                notice.body
+            );
+            assert!(notice.machine_wide, "the whole machine's news");
+            assert!(notice.expires_after.is_none(), "it waits until it is read");
+
+            let older = crate::network::VersionMismatch {
+                theirs: ours.wrapping_sub(1),
+                ..newer.clone()
+            };
+            let notice = version_mismatch_notice(&older, Some("Framework 16"));
+            assert!(
+                notice.title.contains("Framework 16") && notice.title.contains("needs to update"),
+                "the device names the title: {}",
+                notice.title
+            );
+            assert!(
+                notice.body.contains("Update Tilo there"),
+                "the one behind is the one that updates: {}",
+                notice.body
+            );
+
+            for mismatch in [&newer, &older] {
+                let unknown = version_mismatch_notice(mismatch, None);
+                assert!(
+                    unknown.title.to_lowercase().contains("another device"),
+                    "a device the fabric cannot name is still named plainly: {}",
+                    unknown.title
+                );
+                assert!(
+                    !unknown.title.contains("zpeerexample") && !unknown.body.contains("zpeerexample"),
+                    "its endpoint is not the person's language"
+                );
             }
-        });
-        let notice = update_notice();
-        assert_eq!(notice.title, "Restart to finish updating");
-        assert_eq!(
-            notice.actions,
-            [(RESTART_ACTION.to_owned(), "Restart".to_owned())]
-        );
-        let resource =
-            tilo_notifications_service::notification_resource(tell_daemon(&notice, &notifications));
-        let id = notifications.live()[0].id;
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("action".into(), RESTART_ACTION.into());
-        let mut published = notifications;
-        published
-            .invoke(&resource, "invoke", &arguments)
-            .expect("the action is offered");
-        assert_eq!(*tapped.lock().unwrap(), [(id, RESTART_ACTION.to_owned())]);
-    }
+        }
 
-    /// A collaborator's device at another protocol version reaches the person as a calm notice
-    /// naming the device and what to do about it; one this device only knows by its endpoint is
-    /// said plainly rather than spelled out. It waits until it is read.
-    #[test]
-    fn a_device_on_another_version_is_named_and_told_what_to_do() {
-        let ours: u32 = 30;
-        let newer = crate::network::VersionMismatch {
-            endpoint: "zpeerexample".into(),
-            theirs: ours.wrapping_add(1),
-            ours,
-        };
-        let notice = version_mismatch_notice(&newer, Some("Framework 16"));
-        assert!(
-            notice.title.contains("Framework 16") && notice.title.contains("newer Tilo"),
-            "the device names the title: {}",
-            notice.title
-        );
-        assert!(
-            notice.body.contains("restarts"),
-            "the body says what happens here: {}",
-            notice.body
-        );
-        assert!(notice.machine_wide, "the whole machine's news");
-        assert!(notice.expires_after.is_none(), "it waits until it is read");
-
-        let older = crate::network::VersionMismatch {
-            theirs: ours.wrapping_sub(1),
-            ..newer.clone()
-        };
-        let notice = version_mismatch_notice(&older, Some("Framework 16"));
-        assert!(
-            notice.title.contains("Framework 16") && notice.title.contains("needs to update"),
-            "the device names the title: {}",
-            notice.title
-        );
-        assert!(
-            notice.body.contains("Update Tilo there"),
-            "the one behind is the one that updates: {}",
-            notice.body
-        );
-
-        for mismatch in [&newer, &older] {
-            let unknown = version_mismatch_notice(mismatch, None);
-            assert!(
-                unknown.title.to_lowercase().contains("another device"),
-                "a device the fabric cannot name is still named plainly: {}",
-                unknown.title
-            );
-            assert!(
-                !unknown.title.contains("zpeerexample") && !unknown.body.contains("zpeerexample"),
-                "its endpoint is not the person's language"
-            );
+        phase a_version_mismatch_notice_reads_whole_on_its_banner;
+        // The banner a person reads: the title names the device on one line and the body says what
+        // happens here in one sentence. Both are painted whole at the banner's own width, never cut
+        // with an ellipsis.
+        {
+            let ours: u32 = 30;
+            let newer = crate::network::VersionMismatch {
+                endpoint: "zpeerexample".into(),
+                theirs: ours.wrapping_add(1),
+                ours,
+            };
+            let older = crate::network::VersionMismatch {
+                theirs: ours.wrapping_sub(1),
+                ..newer.clone()
+            };
+            for mismatch in [&newer, &older] {
+                for device in [Some("Framework 16"), None] {
+                    let notice = version_mismatch_notice(mismatch, device);
+                    let mut text = ui::text_render::TextRenderer::new();
+                    let theme = ui::theme::Theme::dark();
+                    let words = |text: &mut ui::text_render::TextRenderer, width| {
+                        ui::widget::toast::painted_words(
+                            text,
+                            &theme,
+                            &notice.title,
+                            &notice.body,
+                            &notice.app,
+                            width,
+                        )
+                    };
+                    // A banner card is 360 points wide; at 2000 points nothing needs eliding or
+                    // clamping. A line break may drop the space that ended it, so the banner may paint
+                    // exactly one glyph fewer per extra line and not one more.
+                    let (banner_glyphs, banner_lines) = words(&mut text, 360.0);
+                    let (whole_glyphs, whole_lines) = words(&mut text, 2000.0);
+                    assert_eq!(
+                        banner_glyphs + (banner_lines - whole_lines),
+                        whole_glyphs,
+                        "the banner cut the notice: {} / {}",
+                        notice.title,
+                        notice.body
+                    );
+                }
+            }
         }
     }
 
@@ -1328,52 +1395,6 @@ mod tests {
                     && !title.starts_with("Arbeitsbereich "),
                 "{title:?} names no workspace"
             );
-        }
-    }
-
-    /// The banner a person reads: the title names the device on one line and the body says what
-    /// happens here in one sentence. Both are painted whole at the banner's own width, never cut
-    /// with an ellipsis.
-    #[test]
-    fn a_version_mismatch_notice_reads_whole_on_its_banner() {
-        let ours: u32 = 30;
-        let newer = crate::network::VersionMismatch {
-            endpoint: "zpeerexample".into(),
-            theirs: ours.wrapping_add(1),
-            ours,
-        };
-        let older = crate::network::VersionMismatch {
-            theirs: ours.wrapping_sub(1),
-            ..newer.clone()
-        };
-        for mismatch in [&newer, &older] {
-            for device in [Some("Framework 16"), None] {
-                let notice = version_mismatch_notice(mismatch, device);
-                let mut text = ui::text_render::TextRenderer::new();
-                let theme = ui::theme::Theme::dark();
-                let words = |text: &mut ui::text_render::TextRenderer, width| {
-                    ui::widget::toast::painted_words(
-                        text,
-                        &theme,
-                        &notice.title,
-                        &notice.body,
-                        &notice.app,
-                        width,
-                    )
-                };
-                // A banner card is 360 points wide; at 2000 points nothing needs eliding or
-                // clamping. A line break may drop the space that ended it, so the banner may paint
-                // exactly one glyph fewer per extra line and not one more.
-                let (banner_glyphs, banner_lines) = words(&mut text, 360.0);
-                let (whole_glyphs, whole_lines) = words(&mut text, 2000.0);
-                assert_eq!(
-                    banner_glyphs + (banner_lines - whole_lines),
-                    whole_glyphs,
-                    "the banner cut the notice: {} / {}",
-                    notice.title,
-                    notice.body
-                );
-            }
         }
     }
 }

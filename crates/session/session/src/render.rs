@@ -514,56 +514,60 @@ fn backoff(record: Crashes) -> Duration {
 mod tests {
     use super::*;
 
-    /// The person's own workspace renders in the private service; a
-    /// workspace anyone else may read, or one this session does not know,
-    /// renders in a service of its own.
-    #[test]
-    fn workspaces_render_in_the_private_service_only_while_nobody_else_is_in_them() {
-        let person = "person-at-this-device";
-        let mut tree = tilo_desktop_model::Layout::default();
-        let mut workspace =
-            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Notes");
-        workspace.set_owner(person.to_owned());
-        let workspace_id = workspace.id().to_string();
-        tree.workspaces.push(workspace);
+    tilo_test_env::scenario! {
+        fn the_render_service_is_private_to_a_workspace_and_restarted_with_patience;
 
-        assert_eq!(
-            render_key(&tree, person, Some(&workspace_id)),
-            PRIVATE,
-            "the person's own workspace"
-        );
-        assert_eq!(
-            render_key(&tree, person, None),
-            PRIVATE,
-            "a launch outside any workspace"
-        );
-        assert_eq!(
-            render_key(&tree, person, Some("elsewhere")),
-            "workspace:elsewhere"
-        );
+        phase workspaces_render_in_the_private_service_only_while_nobody_else_is_in_them;
+        // The person's own workspace renders in the private service; a
+        // workspace anyone else may read, or one this session does not know,
+        // renders in a service of its own.
+        {
+            let person = "person-at-this-device";
+            let mut tree = tilo_desktop_model::Layout::default();
+            let mut workspace =
+                tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Notes");
+            workspace.set_owner(person.to_owned());
+            let workspace_id = workspace.id().to_string();
+            tree.workspaces.push(workspace);
 
-        for workspace in &mut tree.workspaces {
-            workspace.admit("ada", tilo_action_policy::Role::Editor);
+            assert_eq!(
+                render_key(&tree, person, Some(&workspace_id)),
+                PRIVATE,
+                "the person's own workspace"
+            );
+            assert_eq!(
+                render_key(&tree, person, None),
+                PRIVATE,
+                "a launch outside any workspace"
+            );
+            assert_eq!(
+                render_key(&tree, person, Some("elsewhere")),
+                "workspace:elsewhere"
+            );
+
+            for workspace in &mut tree.workspaces {
+                workspace.admit("ada", tilo_action_policy::Role::Editor);
+            }
+            assert_eq!(
+                render_key(&tree, person, Some(&workspace_id)),
+                format!("workspace:{workspace_id}"),
+                "a workspace someone else is in"
+            );
         }
-        assert_eq!(
-            render_key(&tree, person, Some(&workspace_id)),
-            format!("workspace:{workspace_id}"),
-            "a workspace someone else is in"
-        );
-    }
 
-    #[test]
-    fn a_service_that_keeps_dying_young_waits_longer_each_time() {
-        let young = |count| Crashes {
-            count,
-            last_start: Some(Instant::now()),
-        };
-        assert_eq!(
-            backoff(Crashes::default()),
-            Duration::ZERO,
-            "the first start"
-        );
-        assert!(backoff(young(1)) < backoff(young(3)));
-        assert_eq!(backoff(young(30)), Duration::from_secs(5), "bounded");
+        phase a_service_that_keeps_dying_young_waits_longer_each_time;
+        {
+            let young = |count| Crashes {
+                count,
+                last_start: Some(Instant::now()),
+            };
+            assert_eq!(
+                backoff(Crashes::default()),
+                Duration::ZERO,
+                "the first start"
+            );
+            assert!(backoff(young(1)) < backoff(young(3)));
+            assert_eq!(backoff(young(30)), Duration::from_secs(5), "bounded");
+        }
     }
 }

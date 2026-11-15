@@ -199,60 +199,65 @@ mod tests {
         })
     }
 
-    /// The page's stand-in for Super holds the walk's Alt off a Mac: Alt+Shift+Tab walks on, and
-    /// letting Alt go settles it. A Mac's Option+Tab walks as Alt+Tab does, Shift walking back.
-    #[test]
-    fn alt_shift_tab_walks_the_pages_windows() {
-        let alt_shift = ModifiersState::ALT | ModifiersState::SHIFT;
-        let tab = Key::Named(NamedKey::Tab);
-        for (mac, held, back) in [
-            (false, alt_shift, false),
-            (true, ModifiersState::ALT, false),
-            (true, alt_shift, true),
-        ] {
-            let (walk, _surface) = walk();
-            assert!(
-                !walk.take(&tab, true, false, ModifiersState::SHIFT, mac),
-                "Tab alone types"
-            );
-            assert!(
-                walk.take(&tab, true, false, held, mac),
-                "mac {mac}: the chord walks"
-            );
-            let (titles, front, reached) = walked(&walk);
-            let front = front.unwrap_or_default();
-            let count = titles.len();
-            let expected = if back {
-                (front + count - 1) % count
-            } else {
-                (front + 1) % count
-            };
-            assert_eq!(
-                reached,
-                Some(expected),
-                "mac {mac}: back {back} in {titles:?}"
-            );
-            assert!(
-                walk.take(&Key::Named(NamedKey::Alt), false, false, held, mac),
-                "mac {mac}: letting Alt go is the walk's"
-            );
-            assert!(
-                !walk.walk.switcher_up(),
-                "mac {mac}: the walk went to the window"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn the_pages_switcher_walks_by_chord_and_by_card;
 
-    /// The panel's cards are pressed as the native panel's are: the card under the pointer is the
-    /// one reached, and the card chosen is gone to.
-    #[test]
-    fn a_card_on_the_panel_is_reached_and_chosen() {
-        let (walk, _surface) = walk();
-        let alt_shift = ModifiersState::ALT | ModifiersState::SHIFT;
-        assert!(walk.take(&Key::Named(NamedKey::Tab), true, false, alt_shift, false));
-        walk.ask(tilo_desktop::window_switcher::SwitcherAsk::Hover(2));
-        assert_eq!(walked(&walk).2, Some(2));
-        walk.ask(tilo_desktop::window_switcher::SwitcherAsk::Choose(0));
-        assert!(!walk.walk.switcher_up());
+        phase alt_shift_tab_walks_the_pages_windows;
+        // The page's stand-in for Super holds the walk's Alt off a Mac: Alt+Shift+Tab walks on, and
+        // letting Alt go settles it. A Mac's Option+Tab walks as Alt+Tab does, Shift walking back.
+        {
+            let alt_shift = ModifiersState::ALT | ModifiersState::SHIFT;
+            let tab = Key::Named(NamedKey::Tab);
+            for (mac, held, back) in [
+                (false, alt_shift, false),
+                (true, ModifiersState::ALT, false),
+                (true, alt_shift, true),
+            ] {
+                let (walk, _surface) = walk();
+                assert!(
+                    !walk.take(&tab, true, false, ModifiersState::SHIFT, mac),
+                    "Tab alone types"
+                );
+                assert!(
+                    walk.take(&tab, true, false, held, mac),
+                    "mac {mac}: the chord walks"
+                );
+                let (titles, front, reached) = walked(&walk);
+                let front = front.unwrap_or_default();
+                let count = titles.len();
+                let expected = if back {
+                    (front + count - 1) % count
+                } else {
+                    (front + 1) % count
+                };
+                assert_eq!(
+                    reached,
+                    Some(expected),
+                    "mac {mac}: back {back} in {titles:?}"
+                );
+                assert!(
+                    walk.take(&Key::Named(NamedKey::Alt), false, false, held, mac),
+                    "mac {mac}: letting Alt go is the walk's"
+                );
+                assert!(
+                    !walk.walk.switcher_up(),
+                    "mac {mac}: the walk went to the window"
+                );
+            }
+        }
+
+        phase a_card_on_the_panel_is_reached_and_chosen;
+        // The panel's cards are pressed as the native panel's are: the card under the pointer is the
+        // one reached, and the card chosen is gone to.
+        {
+            let (walk, _surface) = walk();
+            let alt_shift = ModifiersState::ALT | ModifiersState::SHIFT;
+            assert!(walk.take(&Key::Named(NamedKey::Tab), true, false, alt_shift, false));
+            walk.ask(tilo_desktop::window_switcher::SwitcherAsk::Hover(2));
+            assert_eq!(walked(&walk).2, Some(2));
+            walk.ask(tilo_desktop::window_switcher::SwitcherAsk::Choose(0));
+            assert!(!walk.walk.switcher_up());
+        }
     }
 }

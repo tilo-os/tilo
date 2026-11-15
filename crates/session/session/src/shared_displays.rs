@@ -260,42 +260,89 @@ mod tests {
         }
     }
 
-    #[test]
-    fn this_device_s_outputs_stand_where_the_compositor_put_them() {
-        let hardware = snapshot(vec![
-            output("eDP-1", "BOE", 0, 1.5, true),
-            output("DP-2", "", 1920, 1.0, false),
-        ]);
-        let (plane, scale_milli, connectors, outputs) =
-            observation(Some(&hardware)).expect("two outputs are offered");
-        assert_eq!(
-            (plane.x, plane.y, plane.width, plane.height),
-            (0, 0, 3840, 1200),
-            "the plane holds both outputs"
-        );
-        assert_eq!(
-            scale_milli, 1000,
-            "the plane is in logical coordinates; each output says its own scale"
-        );
-        assert_eq!(connectors[0].scale_milli, 1500, "the panel runs at 1.5x");
-        assert_eq!(
-            connectors
-                .iter()
-                .map(|connector| (connector.connector.as_str(), connector.rect.x))
-                .collect::<Vec<_>>(),
-            [("eDP-1", 0), ("DP-2", 1920)],
-            "each output keeps the place it holds: {connectors:?}"
-        );
-        assert_eq!(
-            outputs
-                .iter()
-                .map(|fact| (fact.connector.as_str(), fact.output.name.as_str()))
-                .collect::<Vec<_>>(),
-            [("eDP-1", "BOE Panel"), ("DP-2", "DP-2")],
-            "each says the monitor behind it, or the connector when it names none: {outputs:?}"
-        );
-        assert!(outputs[0].output.builtin && !outputs[1].output.builtin);
-        assert!(outputs.iter().all(|fact| fact.output.enabled));
+    tilo_test_env::scenario! {
+        fn this_devices_displays_are_published_where_they_stand;
+
+        phase this_device_s_outputs_stand_where_the_compositor_put_them;
+        {
+            let hardware = snapshot(vec![
+                output("eDP-1", "BOE", 0, 1.5, true),
+                output("DP-2", "", 1920, 1.0, false),
+            ]);
+            let (plane, scale_milli, connectors, outputs) =
+                observation(Some(&hardware)).expect("two outputs are offered");
+            assert_eq!(
+                (plane.x, plane.y, plane.width, plane.height),
+                (0, 0, 3840, 1200),
+                "the plane holds both outputs"
+            );
+            assert_eq!(
+                scale_milli, 1000,
+                "the plane is in logical coordinates; each output says its own scale"
+            );
+            assert_eq!(connectors[0].scale_milli, 1500, "the panel runs at 1.5x");
+            assert_eq!(
+                connectors
+                    .iter()
+                    .map(|connector| (connector.connector.as_str(), connector.rect.x))
+                    .collect::<Vec<_>>(),
+                [("eDP-1", 0), ("DP-2", 1920)],
+                "each output keeps the place it holds: {connectors:?}"
+            );
+            assert_eq!(
+                outputs
+                    .iter()
+                    .map(|fact| (fact.connector.as_str(), fact.output.name.as_str()))
+                    .collect::<Vec<_>>(),
+                [("eDP-1", "BOE Panel"), ("DP-2", "DP-2")],
+                "each says the monitor behind it, or the connector when it names none: {outputs:?}"
+            );
+            assert!(outputs[0].output.builtin && !outputs[1].output.builtin);
+            assert!(outputs.iter().all(|fact| fact.output.enabled));
+        }
+
+        phase this_device_s_screens_are_published_for_the_arrangement;
+        // What this device shows is published for the shared arrangement: its own device, with the
+        // screens it shows, once per change.
+        {
+            let _home = tilo_test_env::TestHome::new().expect("a home");
+            let fabric = fabric();
+            let link: crate::platform::fabric::SharedLink = fabric;
+            let hardware = snapshot(vec![output("eDP-1", "BOE", 0, 1.5, true)]);
+            let mut publisher = Publisher::default();
+            assert!(
+                publisher.follow(&link, Some(&hardware)),
+                "the screen is news for the person's other devices"
+            );
+            let view = PersonDisplays::published().expect("the person's displays are published");
+            assert_eq!(view.local_device, "this-laptop");
+            assert_eq!(view.devices.len(), 1);
+            assert!(view.devices[0].local && view.devices[0].online);
+            assert_eq!(
+                view.devices[0]
+                    .outputs
+                    .iter()
+                    .map(|output| output.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["BOE Panel"]
+            );
+            let generation = PersonDisplays::published_generation();
+            assert!(
+                !publisher.follow(&link, Some(&hardware)),
+                "an unchanged screen is not offered again"
+            );
+            assert_eq!(
+                PersonDisplays::published_generation(),
+                generation,
+                "and the arrangement is not written again"
+            );
+        }
+
+        phase a_device_that_published_no_display_offers_nothing;
+        {
+            assert!(observation(None).is_none());
+            assert!(observation(Some(&snapshot(Vec::new()))).is_none());
+        }
     }
 
     /// This session's fabric, as a device of the person's with one screen.
@@ -318,48 +365,5 @@ mod tests {
             None,
             tilo_endpoint_reachability::Nearby::new(std::sync::Arc::new(|| {})),
         )
-    }
-
-    /// What this device shows is published for the shared arrangement: its own device, with the
-    /// screens it shows, once per change.
-    #[test]
-    fn this_device_s_screens_are_published_for_the_arrangement() {
-        let _home = tilo_test_env::TestHome::new().expect("a home");
-        let fabric = fabric();
-        let link: crate::platform::fabric::SharedLink = fabric;
-        let hardware = snapshot(vec![output("eDP-1", "BOE", 0, 1.5, true)]);
-        let mut publisher = Publisher::default();
-        assert!(
-            publisher.follow(&link, Some(&hardware)),
-            "the screen is news for the person's other devices"
-        );
-        let view = PersonDisplays::published().expect("the person's displays are published");
-        assert_eq!(view.local_device, "this-laptop");
-        assert_eq!(view.devices.len(), 1);
-        assert!(view.devices[0].local && view.devices[0].online);
-        assert_eq!(
-            view.devices[0]
-                .outputs
-                .iter()
-                .map(|output| output.name.as_str())
-                .collect::<Vec<_>>(),
-            ["BOE Panel"]
-        );
-        let generation = PersonDisplays::published_generation();
-        assert!(
-            !publisher.follow(&link, Some(&hardware)),
-            "an unchanged screen is not offered again"
-        );
-        assert_eq!(
-            PersonDisplays::published_generation(),
-            generation,
-            "and the arrangement is not written again"
-        );
-    }
-
-    #[test]
-    fn a_device_that_published_no_display_offers_nothing() {
-        assert!(observation(None).is_none());
-        assert!(observation(Some(&snapshot(Vec::new()))).is_none());
     }
 }

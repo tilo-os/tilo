@@ -299,105 +299,110 @@ mod tests {
         (adding, clipboard)
     }
 
-    /// The sheet shows the link the session made, and the same one on every pass until it runs
-    /// out: a sheet that redrew a fresh invite each pass would hand out a code that never works.
-    #[test]
-    fn the_sheet_shows_one_link_until_it_runs_out() {
-        let (adding, _) = adding();
-        let first = adding.device(Ok(place()), START);
-        assert!(
-            first
-                .link
-                .starts_with("https://tilo.coffee/#/@eu1.tilo.coffee/w/")
-        );
-        assert!(first.link.contains("?pair=abab"), "{}", first.link);
-        let again = adding.device(Ok(place()), START + 60_000);
-        assert_eq!(again.link, first.link);
-        let renewed = adding.device(Ok(place()), START + 600_000);
-        assert_ne!(renewed.link, first.link);
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn the_pairing_sheet_shows_one_link_and_counts_it_down;
 
-    /// A workspace no host on the web keeps: no link, and the sheet says to add the device nearby
-    /// rather than showing a code that admits nobody.
-    #[test]
-    fn without_a_host_on_the_web_the_sheet_offers_nearby() {
-        let (adding, _) = adding();
-        let device = adding.device(Err(NoLink::Nearby), START);
-        assert_eq!(device.link, "");
-        assert_eq!(device.refusal, AddDevice::nearby().refusal);
-        assert!(adding.waiting().is_none(), "nothing to wait for");
-    }
-
-    /// The host that keeps the workspace is the one the link names; the community this computer
-    /// is set up for only when none is known.
-    #[test]
-    fn the_link_names_the_host_that_keeps_the_workspace() {
-        let community = url::Url::parse(SITE).ok();
-        assert_eq!(
-            place_of(community.clone(), Some("https://door.example".to_owned())),
-            Some((SITE.to_owned(), "https://door.example".to_owned()))
-        );
-        assert_eq!(
-            place_of(community, None),
-            Some((SITE.to_owned(), "https://tilo.coffee".to_owned()))
-        );
-        assert_eq!(
-            place_of(None, Some("https://door.example".to_owned())),
-            Some((
-                "https://door.example/".to_owned(),
-                "https://door.example".to_owned()
-            ))
-        );
-        assert_eq!(place_of(None, None), None);
-    }
-
-    /// A link shown is one this device waits at its host for, until it runs out.
-    #[test]
-    fn a_shown_link_is_waited_for_until_it_runs_out() {
-        let (adding, _) = adding();
-        let shown = adding.device(Ok(place()), START);
-        assert!(shown.refusal.is_none());
-        assert_eq!(
-            adding.waiting(),
-            Some(Waiting {
-                origin: ORIGIN.to_owned(),
-                person: [0xab; 32],
-                until_ms: START + 600_000,
-            })
-        );
-    }
-
-    /// The minutes on the sheet count down while it is up: a pass is due the instant the count
-    /// drops, and the last minute ends when the link does, where a new one takes its place.
-    #[test]
-    fn the_sheet_counts_down_to_a_new_link() {
-        let until = START + 600_000;
-        for (now, minutes, next) in [(0, 10, 60), (30, 10, 30), (60, 9, 60), (590, 1, 10)] {
-            assert_eq!(
-                minutes_left(until, START + now * 1_000),
-                minutes,
-                "at {now} s"
+        phase the_sheet_shows_one_link_until_it_runs_out;
+        // The sheet shows the link the session made, and the same one on every pass until it runs
+        // out: a sheet that redrew a fresh invite each pass would hand out a code that never works.
+        {
+            let (adding, _) = adding();
+            let first = adding.device(Ok(place()), START);
+            assert!(
+                first
+                    .link
+                    .starts_with("https://tilo.coffee/#/@eu1.tilo.coffee/w/")
             );
-            let next_in = next_count_in(until, START + now * 1_000);
-            assert_eq!(next_in, Duration::from_secs(next), "at {now} s");
+            assert!(first.link.contains("?pair=abab"), "{}", first.link);
+            let again = adding.device(Ok(place()), START + 60_000);
+            assert_eq!(again.link, first.link);
+            let renewed = adding.device(Ok(place()), START + 600_000);
+            assert_ne!(renewed.link, first.link);
         }
-        let (adding, _) = adding();
-        let first = adding.device(Ok(place()), START);
-        assert_eq!(first.lasting, AddDevice::of(&first.link, 10).lasting);
-        let later = adding.device(Ok(place()), START + 60_000);
-        assert_eq!(later.lasting, AddDevice::of(&first.link, 9).lasting);
-    }
 
-    /// The sheet the session hands the seat is the one it shows: a press copies exactly the link
-    /// on screen, never one that was replaced under it.
-    #[test]
-    fn the_seat_shows_the_link_the_session_made() {
-        let (adding, _) = adding();
-        let seat = AddDeviceSeat::default();
-        seat.presentation().open(false);
-        follow(Some(&seat), &adding, || Ok(place()), START);
-        let shown = seat.device();
-        assert_eq!(shown, adding.device(Ok(place()), START));
-        assert!(shown.link.contains("?pair="));
+        phase without_a_host_on_the_web_the_sheet_offers_nearby;
+        // A workspace no host on the web keeps: no link, and the sheet says to add the device nearby
+        // rather than showing a code that admits nobody.
+        {
+            let (adding, _) = adding();
+            let device = adding.device(Err(NoLink::Nearby), START);
+            assert_eq!(device.link, "");
+            assert_eq!(device.refusal, AddDevice::nearby().refusal);
+            assert!(adding.waiting().is_none(), "nothing to wait for");
+        }
+
+        phase the_link_names_the_host_that_keeps_the_workspace;
+        // The host that keeps the workspace is the one the link names; the community this computer
+        // is set up for only when none is known.
+        {
+            let community = url::Url::parse(SITE).ok();
+            assert_eq!(
+                place_of(community.clone(), Some("https://door.example".to_owned())),
+                Some((SITE.to_owned(), "https://door.example".to_owned()))
+            );
+            assert_eq!(
+                place_of(community, None),
+                Some((SITE.to_owned(), "https://tilo.coffee".to_owned()))
+            );
+            assert_eq!(
+                place_of(None, Some("https://door.example".to_owned())),
+                Some((
+                    "https://door.example/".to_owned(),
+                    "https://door.example".to_owned()
+                ))
+            );
+            assert_eq!(place_of(None, None), None);
+        }
+
+        phase a_shown_link_is_waited_for_until_it_runs_out;
+        // A link shown is one this device waits at its host for, until it runs out.
+        {
+            let (adding, _) = adding();
+            let shown = adding.device(Ok(place()), START);
+            assert!(shown.refusal.is_none());
+            assert_eq!(
+                adding.waiting(),
+                Some(Waiting {
+                    origin: ORIGIN.to_owned(),
+                    person: [0xab; 32],
+                    until_ms: START + 600_000,
+                })
+            );
+        }
+
+        phase the_sheet_counts_down_to_a_new_link;
+        // The minutes on the sheet count down while it is up: a pass is due the instant the count
+        // drops, and the last minute ends when the link does, where a new one takes its place.
+        {
+            let until = START + 600_000;
+            for (now, minutes, next) in [(0, 10, 60), (30, 10, 30), (60, 9, 60), (590, 1, 10)] {
+                assert_eq!(
+                    minutes_left(until, START + now * 1_000),
+                    minutes,
+                    "at {now} s"
+                );
+                let next_in = next_count_in(until, START + now * 1_000);
+                assert_eq!(next_in, Duration::from_secs(next), "at {now} s");
+            }
+            let (adding, _) = adding();
+            let first = adding.device(Ok(place()), START);
+            assert_eq!(first.lasting, AddDevice::of(&first.link, 10).lasting);
+            let later = adding.device(Ok(place()), START + 60_000);
+            assert_eq!(later.lasting, AddDevice::of(&first.link, 9).lasting);
+        }
+
+        phase the_seat_shows_the_link_the_session_made;
+        // The sheet the session hands the seat is the one it shows: a press copies exactly the link
+        // on screen, never one that was replaced under it.
+        {
+            let (adding, _) = adding();
+            let seat = AddDeviceSeat::default();
+            seat.presentation().open(false);
+            follow(Some(&seat), &adding, || Ok(place()), START);
+            let shown = seat.device();
+            assert_eq!(shown, adding.device(Ok(place()), START));
+            assert!(shown.link.contains("?pair="));
+        }
     }
 }

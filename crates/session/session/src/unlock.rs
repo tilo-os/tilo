@@ -277,140 +277,144 @@ mod tests {
         ])
     }
 
-    #[test]
-    fn the_helpers_exit_status_is_the_verdict_and_the_password_goes_on_stdin_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let argv = dir.path().join("argv");
-        let helper = fake_helper(
-            dir.path(),
-            &format!(
-                "printf '%s' \"$*\" > {}\nread -r pw\n[ \"$pw\" = \"s3cr3t\" ] && exit 0\nexit 1\n",
-                argv.display()
-            ),
-        );
-        assert_eq!(helper.verify("bob", "s3cr3t"), Verdict::Unlocks);
-        assert_eq!(helper.verify("bob", "wrong"), Verdict::Wrong);
-        let recorded = std::fs::read_to_string(&argv).unwrap();
-        assert!(
-            recorded.contains("bob"),
-            "the user is on argv: {recorded:?}"
-        );
-        assert!(!recorded.contains("wrong") && !recorded.contains("s3cr3t"));
+    tilo_test_env::scenario! {
+        fn a_password_is_checked_by_the_verifier_this_build_allows;
 
-        let failing = fake_helper(dir.path(), "read -r pw\nexit 2\n");
-        assert_eq!(failing.verify("bob", "s3cr3t"), Verdict::Unavailable);
-        let missing = HelperVerifier::new(vec!["/nonexistent/tilo-unlock-helper".to_owned()]);
-        assert_eq!(missing.verify("bob", "s3cr3t"), Verdict::Unavailable);
-        let silent = fake_helper(dir.path(), "exec sleep 1000000\n")
-            .with_timeout(Duration::from_millis(150));
-        assert_eq!(silent.verify("bob", "s3cr3t"), Verdict::Unavailable);
-    }
-
-    /// A session started outside a login shell knows who is at the shell from the login database, so
-    /// its lock still checks that person's password.
-    #[test]
-    fn the_login_the_session_runs_as_is_always_named() {
-        assert!(!login_user().is_empty(), "the lock knows whose it is");
-        #[cfg(target_os = "linux")]
+        phase the_helpers_exit_status_is_the_verdict_and_the_password_goes_on_stdin_only;
         {
-            let uid = rustix::process::geteuid().as_raw();
-            let named = user_name(uid).expect("this login is in the login database");
-            assert!(!named.is_empty() && !named.contains(':'), "{named:?}");
-            assert_eq!(user_name(u32::MAX), None, "a uid no login has");
-        }
-    }
-
-    /// A session that cannot check a password says so before it locks,
-    /// rather than locking a screen nobody can leave.
-    #[test]
-    fn a_verifier_says_whether_it_can_check_a_password_at_all() {
-        assert!(!Unavailable.available());
-        let dir = tempfile::tempdir().unwrap();
-        let helper = fake_helper(dir.path(), "read -r pw\nexit 1\n");
-        assert!(helper.available());
-        assert!(
-            !HelperVerifier::new(vec!["/nonexistent/tilo-unlock-helper".to_owned()]).available()
-        );
-        let expected = !matches!(
-            select(
-                helper_program(
-                    OVERRIDABLE,
-                    std::env::var_os(UNLOCK_HELPER_ENV),
-                    Path::new(UNLOCK_HELPER).is_file()
+            let dir = tempfile::tempdir().unwrap();
+            let argv = dir.path().join("argv");
+            let helper = fake_helper(
+                dir.path(),
+                &format!(
+                    "printf '%s' \"$*\" > {}\nread -r pw\n[ \"$pw\" = \"s3cr3t\" ] && exit 0\nexit 1\n",
+                    argv.display()
                 ),
-                std::env::var("GREETD_SOCK").ok()
-            ),
-            Choice::Unavailable
-        );
-        assert_eq!(
-            installed().available(),
-            expected,
-            "the helper, or the login's greetd, is what checks a password"
-        );
-    }
+            );
+            assert_eq!(helper.verify("bob", "s3cr3t"), Verdict::Unlocks);
+            assert_eq!(helper.verify("bob", "wrong"), Verdict::Wrong);
+            let recorded = std::fs::read_to_string(&argv).unwrap();
+            assert!(
+                recorded.contains("bob"),
+                "the user is on argv: {recorded:?}"
+            );
+            assert!(!recorded.contains("wrong") && !recorded.contains("s3cr3t"));
 
-    /// The helper checks against the machine's accounts; where it is not installed, the login's own
-    /// greetd conversation is the fallback, and with neither the lock can never be lifted.
-    #[test]
-    fn the_helper_else_the_logins_greetd_else_nothing() {
-        assert_eq!(
-            select(
+            let failing = fake_helper(dir.path(), "read -r pw\nexit 2\n");
+            assert_eq!(failing.verify("bob", "s3cr3t"), Verdict::Unavailable);
+            let missing = HelperVerifier::new(vec!["/nonexistent/tilo-unlock-helper".to_owned()]);
+            assert_eq!(missing.verify("bob", "s3cr3t"), Verdict::Unavailable);
+            let silent = fake_helper(dir.path(), "exec sleep 1000000\n")
+                .with_timeout(Duration::from_millis(150));
+            assert_eq!(silent.verify("bob", "s3cr3t"), Verdict::Unavailable);
+        }
+
+        phase the_login_the_session_runs_as_is_always_named;
+        // A session started outside a login shell knows who is at the shell from the login database, so
+        // its lock still checks that person's password.
+        {
+            assert!(!login_user().is_empty(), "the lock knows whose it is");
+            #[cfg(target_os = "linux")]
+            {
+                let uid = rustix::process::geteuid().as_raw();
+                let named = user_name(uid).expect("this login is in the login database");
+                assert!(!named.is_empty() && !named.contains(':'), "{named:?}");
+                assert_eq!(user_name(u32::MAX), None, "a uid no login has");
+            }
+        }
+
+        phase a_verifier_says_whether_it_can_check_a_password_at_all;
+        // A session that cannot check a password says so before it locks,
+        // rather than locking a screen nobody can leave.
+        {
+            assert!(!Unavailable.available());
+            let dir = tempfile::tempdir().unwrap();
+            let helper = fake_helper(dir.path(), "read -r pw\nexit 1\n");
+            assert!(helper.available());
+            assert!(
+                !HelperVerifier::new(vec!["/nonexistent/tilo-unlock-helper".to_owned()]).available()
+            );
+            let expected = !matches!(
+                select(
+                    helper_program(
+                        OVERRIDABLE,
+                        std::env::var_os(UNLOCK_HELPER_ENV),
+                        Path::new(UNLOCK_HELPER).is_file()
+                    ),
+                    std::env::var("GREETD_SOCK").ok()
+                ),
+                Choice::Unavailable
+            );
+            assert_eq!(
+                installed().available(),
+                expected,
+                "the helper, or the login's greetd, is what checks a password"
+            );
+        }
+
+        phase the_helper_else_the_logins_greetd_else_nothing;
+        // The helper checks against the machine's accounts; where it is not installed, the login's own
+        // greetd conversation is the fallback, and with neither the lock can never be lifted.
+        {
+            assert_eq!(
+                select(
+                    Some(vec![UNLOCK_HELPER.to_owned()]),
+                    Some("/run/greetd.sock".to_owned())
+                ),
+                Choice::Helper(vec![UNLOCK_HELPER.to_owned()]),
+                "the installed helper is what checks a password on this machine"
+            );
+            assert_eq!(
+                select(None, Some("/run/greetd.sock".to_owned())),
+                Choice::Greetd("/run/greetd.sock".to_owned()),
+                "a login's greetd conversation is the fallback"
+            );
+            assert_eq!(select(None, None), Choice::Unavailable);
+            assert_eq!(
+                select(None, Some("  ".to_owned())),
+                Choice::Unavailable,
+                "an empty name is no socket"
+            );
+        }
+
+        phase a_greetd_conversation_that_cannot_be_reached_locks_out;
+        // A greetd socket that is not there checks nothing: the lock stays, and says the check could
+        // not be made.
+        {
+            let verifier = GreetdVerifier::new("/nonexistent/greetd.sock");
+            assert_eq!(verifier.verify("ada", "sesame"), Verdict::Unavailable);
+        }
+
+        phase a_development_build_may_name_the_helper_and_a_production_one_never_does;
+        // A development build may name the helper that checks a password, and a production build never
+        // hears of it: the variable is no way into a shipped desktop.
+        {
+            let named = || Some(std::ffi::OsString::from("/scratch/helper"));
+            assert_eq!(
+                helper_program(true, named(), true),
+                Some(vec!["/scratch/helper".to_owned()]),
+                "a development build checks with the helper it was given"
+            );
+            assert_eq!(
+                helper_program(true, named(), false),
+                Some(vec!["/scratch/helper".to_owned()]),
+                "and needs no installed helper to do it"
+            );
+            assert_eq!(
+                helper_program(false, named(), true),
                 Some(vec![UNLOCK_HELPER.to_owned()]),
-                Some("/run/greetd.sock".to_owned())
-            ),
-            Choice::Helper(vec![UNLOCK_HELPER.to_owned()]),
-            "the installed helper is what checks a password on this machine"
-        );
-        assert_eq!(
-            select(None, Some("/run/greetd.sock".to_owned())),
-            Choice::Greetd("/run/greetd.sock".to_owned()),
-            "a login's greetd conversation is the fallback"
-        );
-        assert_eq!(select(None, None), Choice::Unavailable);
-        assert_eq!(
-            select(None, Some("  ".to_owned())),
-            Choice::Unavailable,
-            "an empty name is no socket"
-        );
-    }
-
-    /// A greetd socket that is not there checks nothing: the lock stays, and says the check could
-    /// not be made.
-    #[test]
-    fn a_greetd_conversation_that_cannot_be_reached_locks_out() {
-        let verifier = GreetdVerifier::new("/nonexistent/greetd.sock");
-        assert_eq!(verifier.verify("ada", "sesame"), Verdict::Unavailable);
-    }
-
-    /// A development build may name the helper that checks a password, and a production build never
-    /// hears of it: the variable is no way into a shipped desktop.
-    #[test]
-    fn a_development_build_may_name_the_helper_and_a_production_one_never_does() {
-        let named = || Some(std::ffi::OsString::from("/scratch/helper"));
-        assert_eq!(
-            helper_program(true, named(), true),
-            Some(vec!["/scratch/helper".to_owned()]),
-            "a development build checks with the helper it was given"
-        );
-        assert_eq!(
-            helper_program(true, named(), false),
-            Some(vec!["/scratch/helper".to_owned()]),
-            "and needs no installed helper to do it"
-        );
-        assert_eq!(
-            helper_program(false, named(), true),
-            Some(vec![UNLOCK_HELPER.to_owned()]),
-            "a production build checks with the installed helper alone"
-        );
-        assert_eq!(
-            helper_program(false, named(), false),
-            None,
-            "and with none, nothing unlocks"
-        );
-        assert_eq!(
-            helper_program(true, Some(std::ffi::OsString::new()), true),
-            Some(vec![UNLOCK_HELPER.to_owned()]),
-            "an empty name is no name"
-        );
+                "a production build checks with the installed helper alone"
+            );
+            assert_eq!(
+                helper_program(false, named(), false),
+                None,
+                "and with none, nothing unlocks"
+            );
+            assert_eq!(
+                helper_program(true, Some(std::ffi::OsString::new()), true),
+                Some(vec![UNLOCK_HELPER.to_owned()]),
+                "an empty name is no name"
+            );
+        }
     }
 }

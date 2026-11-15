@@ -187,106 +187,110 @@ mod tests {
     use super::*;
     use crate::platform::person::person_name;
 
-    /// A site named is a community to join; an empty one is none, and a file that is not there or
-    /// does not parse leaves the next one to answer.
-    #[test]
-    fn an_empty_site_is_no_community() {
-        let dir = tempfile::tempdir().expect("a directory for the configurations");
-        let write = |name: &str, text: &str| {
-            let path = dir.path().join(name);
-            std::fs::write(&path, text).expect("a configuration");
-            path
-        };
-        let empty = write("empty.toml", "site = \"\"\n");
-        let blank = write("blank.toml", "site = \"   \"\n");
-        let broken = write("broken.toml", "site = \n");
-        let named = write("named.toml", "site = \"tilo.sh\"\n");
-        let missing = dir.path().join("missing.toml");
-        let site_of = |paths: &[&Path]| configured_from(paths.iter().copied()).site;
-        assert_eq!(
-            site_of(&[named.as_path()]).map(|site| site.to_string()),
-            Some("https://tilo.sh/".to_owned()),
-            "a named site is the community"
-        );
-        assert_eq!(
-            site_of(&[empty.as_path()]),
-            None,
-            "an administrator naming no site asks for no community"
-        );
-        assert_eq!(site_of(&[blank.as_path()]), None, "and a blank one is none");
-        assert_eq!(
-            site_of(&[empty.as_path(), named.as_path()]),
-            None,
-            "the first file that reads answers, empty or not"
-        );
-        assert_eq!(
-            site_of(&[missing.as_path(), broken.as_path(), named.as_path()])
-                .map(|site| site.to_string()),
-            Some("https://tilo.sh/".to_owned()),
-            "a file that is not there or does not parse leaves the next one to answer"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_sessions_directory_reads_its_site_its_reports_and_its_person;
 
-    /// A computer told where reports go names the workspace and the conversation, and one told
-    /// nothing offers no report: a report with nowhere to go is not a report.
-    #[test]
-    fn a_report_goes_where_the_config_names_or_nowhere() {
-        let dir = tempfile::tempdir().expect("a directory for the configurations");
-        let write = |name: &str, text: &str| {
-            let path = dir.path().join(name);
-            std::fs::write(&path, text).expect("a configuration");
-            path
-        };
-        let told = write(
-            "told.toml",
-            "site = \"tilo.sh\"\n[feedback]\nworkspace = \"w_tilo\"\nchannel = \"c_feedback\"\n",
-        );
-        let untold = write("untold.toml", "site = \"tilo.sh\"\n");
-        let only_a_channel = write("half.toml", "[feedback]\nchannel = \"c_feedback\"\n");
-        let configured = configured_from([told.as_path()]);
-        assert_eq!(
-            configured.feedback,
-            Some(crate::feedback::Destination {
-                workspace: "w_tilo".to_owned(),
-                channel: "c_feedback".to_owned(),
-            }),
-            "the report goes to the workspace's conversation the config names"
-        );
-        assert!(configured.site.is_some(), "and the site stands beside it");
-        assert_eq!(
-            configured_from([untold.as_path()]).feedback,
-            None,
-            "a computer told nothing offers no report"
-        );
-        assert_eq!(
-            configured_from([only_a_channel.as_path()]).feedback,
-            None,
-            "a destination with no workspace to keep it is no destination"
-        );
-    }
+        phase an_empty_site_is_no_community;
+        // A site named is a community to join; an empty one is none, and a file that is not there or
+        // does not parse leaves the next one to answer.
+        {
+            let dir = tempfile::tempdir().expect("a directory for the configurations");
+            let write = |name: &str, text: &str| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, text).expect("a configuration");
+                path
+            };
+            let empty = write("empty.toml", "site = \"\"\n");
+            let blank = write("blank.toml", "site = \"   \"\n");
+            let broken = write("broken.toml", "site = \n");
+            let named = write("named.toml", "site = \"tilo.sh\"\n");
+            let missing = dir.path().join("missing.toml");
+            let site_of = |paths: &[&Path]| configured_from(paths.iter().copied()).site;
+            assert_eq!(
+                site_of(&[named.as_path()]).map(|site| site.to_string()),
+                Some("https://tilo.sh/".to_owned()),
+                "a named site is the community"
+            );
+            assert_eq!(
+                site_of(&[empty.as_path()]),
+                None,
+                "an administrator naming no site asks for no community"
+            );
+            assert_eq!(site_of(&[blank.as_path()]), None, "and a blank one is none");
+            assert_eq!(
+                site_of(&[empty.as_path(), named.as_path()]),
+                None,
+                "the first file that reads answers, empty or not"
+            );
+            assert_eq!(
+                site_of(&[missing.as_path(), broken.as_path(), named.as_path()])
+                    .map(|site| site.to_string()),
+                Some("https://tilo.sh/".to_owned()),
+                "a file that is not there or does not parse leaves the next one to answer"
+            );
+        }
 
-    #[test]
-    fn the_shell_names_the_person_as_it_knows_them() {
-        let key = "3f".repeat(32);
-        assert_eq!(
-            person_name(Some("Ada Lovelace".into()), &key),
-            "Ada Lovelace"
-        );
-        assert_eq!(
-            person_name(None, "Pat"),
-            "Pat",
-            "a computer with no identity goes by the name its session acts as"
-        );
-        assert_eq!(
-            person_name(Some(runtime_identity::UNNAMED_DISPLAY_NAME.into()), "Pat"),
-            "Pat",
-            "an unnamed identity leaves the session's name standing"
-        );
-        let account = tilo_identity_host::provisioning::login_account_display_name();
-        assert_eq!(
-            person_name(None, &key),
-            account,
-            "a key is never shown as the person's name"
-        );
+        phase a_report_goes_where_the_config_names_or_nowhere;
+        // A computer told where reports go names the workspace and the conversation, and one told
+        // nothing offers no report: a report with nowhere to go is not a report.
+        {
+            let dir = tempfile::tempdir().expect("a directory for the configurations");
+            let write = |name: &str, text: &str| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, text).expect("a configuration");
+                path
+            };
+            let told = write(
+                "told.toml",
+                "site = \"tilo.sh\"\n[feedback]\nworkspace = \"w_tilo\"\nchannel = \"c_feedback\"\n",
+            );
+            let untold = write("untold.toml", "site = \"tilo.sh\"\n");
+            let only_a_channel = write("half.toml", "[feedback]\nchannel = \"c_feedback\"\n");
+            let configured = configured_from([told.as_path()]);
+            assert_eq!(
+                configured.feedback,
+                Some(crate::feedback::Destination {
+                    workspace: "w_tilo".to_owned(),
+                    channel: "c_feedback".to_owned(),
+                }),
+                "the report goes to the workspace's conversation the config names"
+            );
+            assert!(configured.site.is_some(), "and the site stands beside it");
+            assert_eq!(
+                configured_from([untold.as_path()]).feedback,
+                None,
+                "a computer told nothing offers no report"
+            );
+            assert_eq!(
+                configured_from([only_a_channel.as_path()]).feedback,
+                None,
+                "a destination with no workspace to keep it is no destination"
+            );
+        }
+
+        phase the_shell_names_the_person_as_it_knows_them;
+        {
+            let key = "3f".repeat(32);
+            assert_eq!(
+                person_name(Some("Ada Lovelace".into()), &key),
+                "Ada Lovelace"
+            );
+            assert_eq!(
+                person_name(None, "Pat"),
+                "Pat",
+                "a computer with no identity goes by the name its session acts as"
+            );
+            assert_eq!(
+                person_name(Some(runtime_identity::UNNAMED_DISPLAY_NAME.into()), "Pat"),
+                "Pat",
+                "an unnamed identity leaves the session's name standing"
+            );
+            let account = tilo_identity_host::provisioning::login_account_display_name();
+            assert_eq!(
+                person_name(None, &key),
+                account,
+                "a key is never shown as the person's name"
+            );
+        }
     }
 }

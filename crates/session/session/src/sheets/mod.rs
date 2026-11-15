@@ -507,54 +507,58 @@ mod tests {
     const LEFT: (i32, i32, i32, i32) = (0, 0, 1000, 700);
     const RIGHT_RECT: (i32, i32, i32, i32) = (1000, 0, 1000, 700);
 
-    #[test]
-    fn a_sheet_covers_the_display_it_was_given() {
-        assert_eq!(
-            covering(Some(RIGHT), &[LEFT_SHOWN, RIGHT_SHOWN], false),
-            Some(RIGHT_RECT)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_sheet_covers_the_display_it_was_given_or_the_first_in_reading_order;
 
-    #[test]
-    fn a_sheet_covers_the_first_display_when_the_one_it_was_given_is_gone() {
-        // The focused display was unplugged, and the compositor lists the
-        // one still there second: the sheet goes to the one on the left,
-        // where the person's eye starts, not to whichever came first.
-        let unplugged: Place = (2000, 0, 1000, 700);
-        assert_eq!(
-            covering(Some(unplugged), &[RIGHT_SHOWN, LEFT_SHOWN], false),
-            Some(LEFT)
-        );
-    }
+        phase a_sheet_covers_the_display_it_was_given;
+        {
+            assert_eq!(
+                covering(Some(RIGHT), &[LEFT_SHOWN, RIGHT_SHOWN], false),
+                Some(RIGHT_RECT)
+            );
+        }
 
-    #[test]
-    fn a_sheet_covers_the_first_display_in_reading_order_when_none_was_given() {
-        assert_eq!(
-            covering(None, &[RIGHT_SHOWN, LEFT_SHOWN], false),
-            Some(LEFT)
-        );
-        assert_eq!(covering(None, &[], false), None);
-    }
+        phase a_sheet_covers_the_first_display_when_the_one_it_was_given_is_gone;
+        {
+            // The focused display was unplugged, and the compositor lists the
+            // one still there second: the sheet goes to the one on the left,
+            // where the person's eye starts, not to whichever came first.
+            let unplugged: Place = (2000, 0, 1000, 700);
+            assert_eq!(
+                covering(Some(unplugged), &[RIGHT_SHOWN, LEFT_SHOWN], false),
+                Some(LEFT)
+            );
+        }
 
-    #[test]
-    fn a_sheet_standing_on_every_display_covers_all_of_them() {
-        assert_eq!(
-            covering(None, &[RIGHT_SHOWN, LEFT_SHOWN], true),
-            Some((0, 0, 2000, 700))
-        );
-        // One display above the other, and one that shows nothing at all.
-        let above = tilo_session_core::surface::HostedOutput {
-            rect: (0, -800, 1000, 800),
-            scale: 2.0,
-        };
-        let blank = tilo_session_core::surface::HostedOutput {
-            rect: (0, 0, 0, 0),
-            scale: 1.0,
-        };
-        assert_eq!(
-            covering(None, &[LEFT_SHOWN, above, blank], true),
-            Some((0, -800, 1000, 1500))
-        );
-        assert_eq!(covering(None, &[], true), None);
+        phase a_sheet_covers_the_first_display_in_reading_order_when_none_was_given;
+        {
+            assert_eq!(
+                covering(None, &[RIGHT_SHOWN, LEFT_SHOWN], false),
+                Some(LEFT)
+            );
+            assert_eq!(covering(None, &[], false), None);
+        }
+
+        phase a_sheet_standing_on_every_display_covers_all_of_them;
+        {
+            assert_eq!(
+                covering(None, &[RIGHT_SHOWN, LEFT_SHOWN], true),
+                Some((0, 0, 2000, 700))
+            );
+            // One display above the other, and one that shows nothing at all.
+            let above = tilo_session_core::surface::HostedOutput {
+                rect: (0, -800, 1000, 800),
+                scale: 2.0,
+            };
+            let blank = tilo_session_core::surface::HostedOutput {
+                rect: (0, 0, 0, 0),
+                scale: 1.0,
+            };
+            assert_eq!(
+                covering(None, &[LEFT_SHOWN, above, blank], true),
+                Some((0, -800, 1000, 1500))
+            );
+            assert_eq!(covering(None, &[], true), None);
+        }
     }
 }

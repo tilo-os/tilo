@@ -123,233 +123,237 @@ fn index(held: &Arc<Held>, content: &Arc<AppContentIndex>) -> RecordIndex {
     }
 }
 
-#[test]
-fn what_a_record_holds_is_found_with_its_app_never_launched() {
-    let held = Arc::new(Held::default());
-    held.hold(
-        "chat",
-        "chat.workspace",
-        vec![entry("channels/c1", "Design review")],
-    );
-    held.hold(
-        "chat.messages",
-        "part-1",
-        vec![entry("messages/m1", "the wheel is loose again")],
-    );
-    held.hold("chat.agent", "agents", vec![entry("agents/a1", "Ada")]);
-    let content = Arc::new(AppContentIndex::in_memory());
+tilo_test_env::scenario! {
+    fn the_record_index_reads_what_changed_and_search_finds_it;
 
-    let index = index(&held, &content);
-    index.sweep();
-    index.pass();
+    phase what_a_record_holds_is_found_with_its_app_never_launched;
+    {
+        let held = Arc::new(Held::default());
+        held.hold(
+            "chat",
+            "chat.workspace",
+            vec![entry("channels/c1", "Design review")],
+        );
+        held.hold(
+            "chat.messages",
+            "part-1",
+            vec![entry("messages/m1", "the wheel is loose again")],
+        );
+        held.hold("chat.agent", "agents", vec![entry("agents/a1", "Ada")]);
+        let content = Arc::new(AppContentIndex::in_memory());
 
-    assert_eq!(
-        content.title("w", "channels/c1").as_deref(),
-        Some("Design review"),
-        "the conversation is found from its record, not a window"
-    );
-    assert_eq!(
-        content.title("w", "messages/m1").as_deref(),
-        Some("the wheel is loose again"),
-        "so is a message"
-    );
-    assert_eq!(
-        content.title("w", "agents/a1").as_deref(),
-        Some("Ada"),
-        "and an agent"
-    );
-}
+        let index = index(&held, &content);
+        index.sweep();
+        index.pass();
 
-/// An agent whose record's keys reach this device after the sweep read it is found once the
-/// channels settled, without any change to the record.
-#[test]
-fn a_record_sealed_at_the_sweep_is_found_once_its_keys_arrive() {
-    let held = Arc::new(Held::default());
-    held.hold("so.tilo.chat", "agents", vec![entry("agents/a1", "Ada")]);
-    held.sealed.lock_recover().insert("agents".to_owned());
-    let content = Arc::new(AppContentIndex::in_memory());
+        assert_eq!(
+            content.title("w", "channels/c1").as_deref(),
+            Some("Design review"),
+            "the conversation is found from its record, not a window"
+        );
+        assert_eq!(
+            content.title("w", "messages/m1").as_deref(),
+            Some("the wheel is loose again"),
+            "so is a message"
+        );
+        assert_eq!(
+            content.title("w", "agents/a1").as_deref(),
+            Some("Ada"),
+            "and an agent"
+        );
+    }
 
-    let index = index(&held, &content);
-    index.sweep();
-    index.pass();
-    assert_eq!(content.title("w", "agents/a1"), None);
+    phase a_record_sealed_at_the_sweep_is_found_once_its_keys_arrive;
+    // An agent whose record's keys reach this device after the sweep read it is found once the
+    // channels settled, without any change to the record.
+    {
+        let held = Arc::new(Held::default());
+        held.hold("so.tilo.chat", "agents", vec![entry("agents/a1", "Ada")]);
+        held.sealed.lock_recover().insert("agents".to_owned());
+        let content = Arc::new(AppContentIndex::in_memory());
 
-    index.settled();
-    index.pass();
-    assert_eq!(
-        content.title("w", "agents/a1"),
-        None,
-        "still sealed: still waiting"
-    );
-    assert_eq!(index.waiting(), 0);
+        let index = index(&held, &content);
+        index.sweep();
+        index.pass();
+        assert_eq!(content.title("w", "agents/a1"), None);
 
-    held.sealed.lock_recover().clear();
-    index.settled();
-    index.pass();
-    assert_eq!(content.title("w", "agents/a1").as_deref(), Some("Ada"));
-    index.settled();
-    assert_eq!(
-        index.waiting(),
-        0,
-        "read once its keys came, it waits for nothing"
-    );
-}
+        index.settled();
+        index.pass();
+        assert_eq!(
+            content.title("w", "agents/a1"),
+            None,
+            "still sealed: still waiting"
+        );
+        assert_eq!(index.waiting(), 0);
 
-#[test]
-fn a_deleted_message_is_gone_from_search() {
-    let held = Arc::new(Held::default());
-    held.hold(
-        "chat.messages",
-        "part-1",
-        vec![
-            entry("messages/m1", "the wheel is loose again"),
-            entry("messages/m2", "I will look at it"),
-        ],
-    );
-    let content = Arc::new(AppContentIndex::in_memory());
+        held.sealed.lock_recover().clear();
+        index.settled();
+        index.pass();
+        assert_eq!(content.title("w", "agents/a1").as_deref(), Some("Ada"));
+        index.settled();
+        assert_eq!(
+            index.waiting(),
+            0,
+            "read once its keys came, it waits for nothing"
+        );
+    }
 
-    let index = index(&held, &content);
-    index.sweep();
-    index.pass();
-    assert_eq!(
-        content.title("w", "messages/m1").as_deref(),
-        Some("the wheel is loose again")
-    );
+    phase a_deleted_message_is_gone_from_search;
+    {
+        let held = Arc::new(Held::default());
+        held.hold(
+            "chat.messages",
+            "part-1",
+            vec![
+                entry("messages/m1", "the wheel is loose again"),
+                entry("messages/m2", "I will look at it"),
+            ],
+        );
+        let content = Arc::new(AppContentIndex::in_memory());
 
-    held.hold(
-        "chat.messages",
-        "part-1",
-        vec![entry("messages/m2", "I will look at it")],
-    );
-    index.changed("w", "chat.messages", "part-1");
-    index.pass();
+        let index = index(&held, &content);
+        index.sweep();
+        index.pass();
+        assert_eq!(
+            content.title("w", "messages/m1").as_deref(),
+            Some("the wheel is loose again")
+        );
 
-    assert_eq!(
-        content.title("w", "messages/m1"),
-        None,
-        "what the record no longer holds is not found"
-    );
-    assert_eq!(
-        content.title("w", "messages/m2").as_deref(),
-        Some("I will look at it"),
-        "what it still holds is"
-    );
-}
+        held.hold(
+            "chat.messages",
+            "part-1",
+            vec![entry("messages/m2", "I will look at it")],
+        );
+        index.changed("w", "chat.messages", "part-1");
+        index.pass();
 
-#[test]
-fn a_change_reads_only_the_record_it_changed() {
-    let held = Arc::new(Held::default());
-    held.hold(
-        "chat",
-        "chat.workspace",
-        vec![entry("channels/c1", "Design review")],
-    );
-    held.hold(
-        "chat.messages",
-        "part-1",
-        vec![entry("messages/m1", "hello")],
-    );
-    let content = Arc::new(AppContentIndex::in_memory());
+        assert_eq!(
+            content.title("w", "messages/m1"),
+            None,
+            "what the record no longer holds is not found"
+        );
+        assert_eq!(
+            content.title("w", "messages/m2").as_deref(),
+            Some("I will look at it"),
+            "what it still holds is"
+        );
+    }
 
-    let index = index(&held, &content);
-    index.sweep();
-    index.pass();
-    assert_eq!(held.read("chat", "chat.workspace"), 1);
-    assert_eq!(held.read("chat.messages", "part-1"), 1);
+    phase a_change_reads_only_the_record_it_changed;
+    {
+        let held = Arc::new(Held::default());
+        held.hold(
+            "chat",
+            "chat.workspace",
+            vec![entry("channels/c1", "Design review")],
+        );
+        held.hold(
+            "chat.messages",
+            "part-1",
+            vec![entry("messages/m1", "hello")],
+        );
+        let content = Arc::new(AppContentIndex::in_memory());
 
-    held.hold(
-        "chat.messages",
-        "part-1",
-        vec![entry("messages/m1", "hello, again")],
-    );
-    index.changed("w", "chat.messages", "part-1");
-    index.pass();
+        let index = index(&held, &content);
+        index.sweep();
+        index.pass();
+        assert_eq!(held.read("chat", "chat.workspace"), 1);
+        assert_eq!(held.read("chat.messages", "part-1"), 1);
 
-    assert_eq!(
-        held.read("chat.messages", "part-1"),
-        2,
-        "the changed record is read again"
-    );
-    assert_eq!(
-        held.read("chat", "chat.workspace"),
-        1,
-        "and the workspace's record, unchanged, is not"
-    );
-    assert_eq!(
-        content.title("w", "messages/m1").as_deref(),
-        Some("hello, again")
-    );
-}
+        held.hold(
+            "chat.messages",
+            "part-1",
+            vec![entry("messages/m1", "hello, again")],
+        );
+        index.changed("w", "chat.messages", "part-1");
+        index.pass();
 
-#[test]
-fn a_change_that_is_batched_is_read_once() {
-    let held = Arc::new(Held::default());
-    held.hold(
-        "chat.messages",
-        "part-1",
-        vec![entry("messages/m1", "hello")],
-    );
-    let content = Arc::new(AppContentIndex::in_memory());
+        assert_eq!(
+            held.read("chat.messages", "part-1"),
+            2,
+            "the changed record is read again"
+        );
+        assert_eq!(
+            held.read("chat", "chat.workspace"),
+            1,
+            "and the workspace's record, unchanged, is not"
+        );
+        assert_eq!(
+            content.title("w", "messages/m1").as_deref(),
+            Some("hello, again")
+        );
+    }
 
-    let index = index(&held, &content);
-    index.changed("w", "chat.messages", "part-1");
-    index.changed("w", "chat.messages", "part-1");
-    assert_eq!(
-        index.waiting(),
-        1,
-        "a record waits once however often it changed"
-    );
-    index.pass();
-    assert_eq!(index.waiting(), 0);
-    assert_eq!(held.read("chat.messages", "part-1"), 1);
-}
+    phase a_change_that_is_batched_is_read_once;
+    {
+        let held = Arc::new(Held::default());
+        held.hold(
+            "chat.messages",
+            "part-1",
+            vec![entry("messages/m1", "hello")],
+        );
+        let content = Arc::new(AppContentIndex::in_memory());
 
-/// A reader stopped before it answered says nothing about what the record holds: the record waits
-/// for the next pass, and what search already held of it is not dropped for an answer nobody gave.
-#[test]
-fn a_stopped_reader_leaves_the_record_for_the_next_pass() {
-    let held = Arc::new(Held::default());
-    held.hold(
-        "chat.messages",
-        "part-1",
-        vec![entry("messages/m1", "hello")],
-    );
-    let content = Arc::new(AppContentIndex::in_memory());
-    let index = index(&held, &content);
-    index.sweep();
-    index.pass();
-    assert_eq!(content.title("w", "messages/m1").as_deref(), Some("hello"));
+        let index = index(&held, &content);
+        index.changed("w", "chat.messages", "part-1");
+        index.changed("w", "chat.messages", "part-1");
+        assert_eq!(
+            index.waiting(),
+            1,
+            "a record waits once however often it changed"
+        );
+        index.pass();
+        assert_eq!(index.waiting(), 0);
+        assert_eq!(held.read("chat.messages", "part-1"), 1);
+    }
 
-    *held.stopped.lock_recover() = true;
-    held.hold(
-        "chat.messages",
-        "part-1",
-        vec![entry("messages/m2", "I will look at it")],
-    );
-    index.changed("w", "chat.messages", "part-1");
-    index.pass();
-    assert_eq!(
-        index.waiting(),
-        1,
-        "a reading nobody finished waits to be read"
-    );
-    assert_eq!(
-        content.title("w", "messages/m2"),
-        None,
-        "a stopped reader found nothing, and nothing is published as if it had"
-    );
-    assert_eq!(
-        content.title("w", "messages/m1").as_deref(),
-        Some("hello"),
-        "what search held of the record is not what a stopped reader said"
-    );
+    phase a_stopped_reader_leaves_the_record_for_the_next_pass;
+    // A reader stopped before it answered says nothing about what the record holds: the record waits
+    // for the next pass, and what search already held of it is not dropped for an answer nobody gave.
+    {
+        let held = Arc::new(Held::default());
+        held.hold(
+            "chat.messages",
+            "part-1",
+            vec![entry("messages/m1", "hello")],
+        );
+        let content = Arc::new(AppContentIndex::in_memory());
+        let index = index(&held, &content);
+        index.sweep();
+        index.pass();
+        assert_eq!(content.title("w", "messages/m1").as_deref(), Some("hello"));
 
-    *held.stopped.lock_recover() = false;
-    index.pass();
-    assert_eq!(index.waiting(), 0);
-    assert_eq!(
-        content.title("w", "messages/m2").as_deref(),
-        Some("I will look at it"),
-        "read again, the record is found as it now stands"
-    );
+        *held.stopped.lock_recover() = true;
+        held.hold(
+            "chat.messages",
+            "part-1",
+            vec![entry("messages/m2", "I will look at it")],
+        );
+        index.changed("w", "chat.messages", "part-1");
+        index.pass();
+        assert_eq!(
+            index.waiting(),
+            1,
+            "a reading nobody finished waits to be read"
+        );
+        assert_eq!(
+            content.title("w", "messages/m2"),
+            None,
+            "a stopped reader found nothing, and nothing is published as if it had"
+        );
+        assert_eq!(
+            content.title("w", "messages/m1").as_deref(),
+            Some("hello"),
+            "what search held of the record is not what a stopped reader said"
+        );
+
+        *held.stopped.lock_recover() = false;
+        index.pass();
+        assert_eq!(index.waiting(), 0);
+        assert_eq!(
+            content.title("w", "messages/m2").as_deref(),
+            Some("I will look at it"),
+            "read again, the record is found as it now stands"
+        );
+    }
 }

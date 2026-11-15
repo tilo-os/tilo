@@ -693,221 +693,226 @@ mod tests {
     use super::*;
     use tilo_reference::Attached;
 
-    /// Saying something to the people here addresses the people the search names about, never the
-    /// agents and conversations it finds beside them.
-    #[test]
-    fn a_box_to_the_people_here_holds_the_people_only() {
-        let rows = vec![
-            Recipient::found(RecipientKind::Agent, "a_notes", "Notes agent"),
-            Recipient::found(RecipientKind::Conversation, "c_1", "Ada and Bo"),
-            Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada"),
-            Recipient::found(RecipientKind::Person, "bo".repeat(32), "Bo"),
-        ];
-        assert_eq!(
-            people_of(rows),
-            vec![
+    tilo_test_env::scenario! {
+        fn a_send_to_box_lists_who_it_reaches_and_sends_one_action;
+
+        phase a_box_to_the_people_here_holds_the_people_only;
+        // Saying something to the people here addresses the people the search names about, never the
+        // agents and conversations it finds beside them.
+        {
+            let rows = vec![
+                Recipient::found(RecipientKind::Agent, "a_notes", "Notes agent"),
+                Recipient::found(RecipientKind::Conversation, "c_1", "Ada and Bo"),
                 Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada"),
                 Recipient::found(RecipientKind::Person, "bo".repeat(32), "Bo"),
-            ]
-        );
-    }
+            ];
+            assert_eq!(
+                people_of(rows),
+                vec![
+                    Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada"),
+                    Recipient::found(RecipientKind::Person, "bo".repeat(32), "Bo"),
+                ]
+            );
+        }
 
-    /// Reporting a problem is a row of every box's list, found by what it is called.
-    #[test]
-    fn the_report_row_is_found_by_name() {
-        let report = Recipient::found(RecipientKind::Feedback, "c_feedback", "Tilo feedback");
-        let found = |query: &str| {
-            ui::floating_surface::recipients_matching(std::slice::from_ref(&report), query)
-        };
-        assert_eq!(
-            found("feed"),
-            std::slice::from_ref(&report),
-            "found by what it is called"
-        );
-        assert_eq!(
-            found("TILO"),
-            std::slice::from_ref(&report),
-            "whatever the case typed"
-        );
-        assert!(
-            found("ada").is_empty(),
-            "and absent from a search for someone"
-        );
-    }
+        phase the_report_row_is_found_by_name;
+        // Reporting a problem is a row of every box's list, found by what it is called.
+        {
+            let report = Recipient::found(RecipientKind::Feedback, "c_feedback", "Tilo feedback");
+            let found = |query: &str| {
+                ui::floating_surface::recipients_matching(std::slice::from_ref(&report), query)
+            };
+            assert_eq!(
+                found("feed"),
+                std::slice::from_ref(&report),
+                "found by what it is called"
+            );
+            assert_eq!(
+                found("TILO"),
+                std::slice::from_ref(&report),
+                "whatever the case typed"
+            );
+            assert!(
+                found("ada").is_empty(),
+                "and absent from a search for someone"
+            );
+        }
 
-    /// A box's send opens the conversation it lands in; the person's ask from the canvas does not,
-    /// since its turn stands on the canvas where they asked.
-    #[test]
-    fn an_ask_from_the_canvas_opens_no_conversation_and_a_boxs_send_does() {
-        let sends = Sends::default();
-        let arguments = serde_json::json!({
-            "to": [Recipient::found(RecipientKind::Agent, "a1".to_owned(), "Assistant")],
-            "text": "what is due?",
-        });
-        let serde_json::Value::Object(arguments) = arguments else {
-            panic!("an object");
-        };
-        let first = sends.ask(&arguments).expect("the ask is taken");
-        sends.send(None, &arguments).expect("the send is taken");
-        let second = sends.ask(&arguments).expect("another ask is taken");
-        let asked: Vec<Option<u64>> = sends
-            .waiting
-            .borrow()
-            .iter()
-            .map(|sending| sending.asked)
-            .collect();
-        assert_eq!(asked, [Some(first), None, Some(second)]);
-        assert_ne!(first, second, "each ask is one of its own");
-    }
+        phase an_ask_from_the_canvas_opens_no_conversation_and_a_boxs_send_does;
+        // A box's send opens the conversation it lands in; the person's ask from the canvas does not,
+        // since its turn stands on the canvas where they asked.
+        {
+            let sends = Sends::default();
+            let arguments = serde_json::json!({
+                "to": [Recipient::found(RecipientKind::Agent, "a1".to_owned(), "Assistant")],
+                "text": "what is due?",
+            });
+            let serde_json::Value::Object(arguments) = arguments else {
+                panic!("an object");
+            };
+            let first = sends.ask(&arguments).expect("the ask is taken");
+            sends.send(None, &arguments).expect("the send is taken");
+            let second = sends.ask(&arguments).expect("another ask is taken");
+            let asked: Vec<Option<u64>> = sends
+                .waiting
+                .borrow()
+                .iter()
+                .map(|sending| sending.asked)
+                .collect();
+            assert_eq!(asked, [Some(first), None, Some(second)]);
+            assert_ne!(first, second, "each ask is one of its own");
+        }
 
-    /// What a box holds reaches Chat as one action naming the recipients, what the message carries
-    /// and its words: the app opens the conversation and posts there from that one action, nothing
-    /// else.
-    #[test]
-    fn a_send_is_one_action_for_the_chat_naming_who_what_and_the_words() {
-        let ada =
-            Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada").with_detail("online");
-        let carried = Attached::Text {
-            text: "issue 42".into(),
-            from: None,
-        };
-        let Target::Invoke(target) = send_target(
-            "ws",
-            std::slice::from_ref(&ada),
-            std::slice::from_ref(&carried),
-            "look",
-            true,
-        )
-        .expect("a send builds") else {
-            panic!("a send invokes the chat");
-        };
-        assert_eq!(target.app, CHAT);
-        assert_eq!(target.workspace, "ws");
-        assert_eq!(target.address.resource, CHAT_WORKSPACE);
-        assert_eq!(target.address.action, SEND);
-        assert_eq!(
-            target.arguments.get("text"),
-            Some(&serde_json::Value::String("look".into()))
-        );
-        let to: Vec<Recipient> =
-            serde_json::from_value(target.arguments["to"].clone()).expect("the recipients");
-        assert_eq!(to, [ada]);
-        let attached: Vec<Attached> =
-            serde_json::from_value(target.arguments["attached"].clone()).expect("what it carries");
-        assert_eq!(attached, [carried]);
-        assert_eq!(
-            target.arguments.get("opens"),
-            Some(&serde_json::Value::Bool(true))
-        );
-        assert_eq!(
-            target.arguments.get("bounds"),
-            None,
-            "where the box stood is the shell's to place the conversation by, not the chat's"
-        );
-    }
-    /// A new agent nobody named is called by a short label of what it is sent, else the default
-    /// name: never the sentence it is asked.
-    #[test]
-    fn a_new_agent_is_named_by_what_it_is_sent_never_the_message() {
-        let chip = |label: &str| Attached::Text {
-            text: label.into(),
-            from: None,
-        };
-        assert_eq!(
-            agent_name(&[chip("#1 Book the room for Friday")]),
-            "Book the room for Friday",
-            "the subject chip names it, without its list number"
-        );
-        assert_eq!(agent_name(&[chip("#general")]), "#general");
-        let long = agent_name(&[chip("Summarise every review comment on the release notes")]);
-        assert_eq!(long, "Summarise every review…");
-        assert!(long.chars().count() <= AGENT_NAME_CHARS + 1);
-        assert_eq!(agent_name(&[]), "Agent", "nothing sent: the default name");
-        assert_eq!(agent_name(&[chip("  ")]), "Agent");
-    }
-
-    /// A report's chip is the one place this computer sends reports: one send
-    /// is one report, filed in the channel the destination names in the
-    /// workspace that keeps it, carrying what the window picked and the words,
-    /// and nothing opens over the window it is about.
-    #[test]
-    fn a_report_is_one_signed_report_filed_where_the_destination_names() {
-        let destination = crate::feedback::Destination {
-            workspace: "w_tilo".to_owned(),
-            channel: "c_feedback".to_owned(),
-        };
-        let report = destination.recipient();
-        let Addressed::Report(place) =
-            addressed(Some(&destination), "w_notes", std::slice::from_ref(&report))
-                .expect("a report is addressed")
-        else {
-            panic!("a report is not a message");
-        };
-        assert_eq!(place.workspace, "w_tilo", "in the workspace that keeps it");
-        assert_eq!(place.channel, "c_feedback");
-        let carried = Attached::Text {
-            text: "issue 42".into(),
-            from: None,
-        };
-        let filed = place
-            .report(
-                "so.tilo.notes",
+        phase a_send_is_one_action_for_the_chat_naming_who_what_and_the_words;
+        // What a box holds reaches Chat as one action naming the recipients, what the message carries
+        // and its words: the app opens the conversation and posts there from that one action, nothing
+        // else.
+        {
+            let ada =
+                Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada").with_detail("online");
+            let carried = Attached::Text {
+                text: "issue 42".into(),
+                from: None,
+            };
+            let Target::Invoke(target) = send_target(
+                "ws",
+                std::slice::from_ref(&ada),
                 std::slice::from_ref(&carried),
-                "the button does nothing",
+                "look",
+                true,
             )
-            .expect("a report builds");
-        let Target::Invoke(target) = report_target(&place, &filed).expect("a report targets")
-        else {
-            panic!("a report invokes the channel");
-        };
-        assert_eq!(target.app, CHAT);
-        assert_eq!(target.workspace, "w_tilo");
-        assert_eq!(
-            target.address.resource, "chat.workspace/channels/c_feedback",
-            "the channel's own item files reports"
-        );
-        assert_eq!(target.address.action, "submit-feedback");
-        let submission: tilo_feedback::Submission =
-            serde_json::from_value(target.arguments["submission"].clone())
-                .expect("the reviewed report");
-        assert_eq!(
-            submission.destination.workspace, "w_tilo",
-            "the report says where it is filed"
-        );
-        assert_eq!(submission.destination.channel, "c_feedback");
-        assert_eq!(submission.feedback.text, "the button does nothing");
-        let picked = &submission.feedback.selections[0];
-        assert_eq!(
-            picked.app, "so.tilo.notes",
-            "what the window picked came from the window reported"
-        );
-        assert_eq!(
-            picked.texts[0].parts[0].text, "issue 42",
-            "and its words go with the report"
-        );
+            .expect("a send builds") else {
+                panic!("a send invokes the chat");
+            };
+            assert_eq!(target.app, CHAT);
+            assert_eq!(target.workspace, "ws");
+            assert_eq!(target.address.resource, CHAT_WORKSPACE);
+            assert_eq!(target.address.action, SEND);
+            assert_eq!(
+                target.arguments.get("text"),
+                Some(&serde_json::Value::String("look".into()))
+            );
+            let to: Vec<Recipient> =
+                serde_json::from_value(target.arguments["to"].clone()).expect("the recipients");
+            assert_eq!(to, [ada]);
+            let attached: Vec<Attached> =
+                serde_json::from_value(target.arguments["attached"].clone()).expect("what it carries");
+            assert_eq!(attached, [carried]);
+            assert_eq!(
+                target.arguments.get("opens"),
+                Some(&serde_json::Value::Bool(true))
+            );
+            assert_eq!(
+                target.arguments.get("bounds"),
+                None,
+                "where the box stood is the shell's to place the conversation by, not the chat's"
+            );
+        }
 
-        // A report goes to the one place it goes, and a computer told nowhere sends none.
-        let ada = Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada");
-        assert!(
-            addressed(
-                Some(&destination),
-                "w_notes",
-                &[report.clone(), ada.clone()]
-            )
-            .is_err(),
-            "a report stands beside no other recipient"
-        );
-        assert!(
-            addressed(None, "w_notes", std::slice::from_ref(&report)).is_err(),
-            "a computer told nowhere to send a report sends none"
-        );
-        // Every other send is a message in the workspace its box was opened in, to whom it named.
-        let Addressed::Message { workspace, to } =
-            addressed(None, "w_notes", std::slice::from_ref(&ada)).expect("an ordinary send")
-        else {
-            panic!("an ordinary send is a message");
-        };
-        assert_eq!(workspace, "w_notes");
-        assert_eq!(to, [ada], "and goes to whom it named");
+        phase a_new_agent_is_named_by_what_it_is_sent_never_the_message;
+        // A new agent nobody named is called by a short label of what it is sent, else the default
+        // name: never the sentence it is asked.
+        {
+            let chip = |label: &str| Attached::Text {
+                text: label.into(),
+                from: None,
+            };
+            assert_eq!(
+                agent_name(&[chip("#1 Book the room for Friday")]),
+                "Book the room for Friday",
+                "the subject chip names it, without its list number"
+            );
+            assert_eq!(agent_name(&[chip("#general")]), "#general");
+            let long = agent_name(&[chip("Summarise every review comment on the release notes")]);
+            assert_eq!(long, "Summarise every review…");
+            assert!(long.chars().count() <= AGENT_NAME_CHARS + 1);
+            assert_eq!(agent_name(&[]), "Agent", "nothing sent: the default name");
+            assert_eq!(agent_name(&[chip("  ")]), "Agent");
+        }
+
+        phase a_report_is_one_signed_report_filed_where_the_destination_names;
+        // A report's chip is the one place this computer sends reports: one send
+        // is one report, filed in the channel the destination names in the
+        // workspace that keeps it, carrying what the window picked and the words,
+        // and nothing opens over the window it is about.
+        {
+            let destination = crate::feedback::Destination {
+                workspace: "w_tilo".to_owned(),
+                channel: "c_feedback".to_owned(),
+            };
+            let report = destination.recipient();
+            let Addressed::Report(place) =
+                addressed(Some(&destination), "w_notes", std::slice::from_ref(&report))
+                    .expect("a report is addressed")
+            else {
+                panic!("a report is not a message");
+            };
+            assert_eq!(place.workspace, "w_tilo", "in the workspace that keeps it");
+            assert_eq!(place.channel, "c_feedback");
+            let carried = Attached::Text {
+                text: "issue 42".into(),
+                from: None,
+            };
+            let filed = place
+                .report(
+                    "so.tilo.notes",
+                    std::slice::from_ref(&carried),
+                    "the button does nothing",
+                )
+                .expect("a report builds");
+            let Target::Invoke(target) = report_target(&place, &filed).expect("a report targets")
+            else {
+                panic!("a report invokes the channel");
+            };
+            assert_eq!(target.app, CHAT);
+            assert_eq!(target.workspace, "w_tilo");
+            assert_eq!(
+                target.address.resource, "chat.workspace/channels/c_feedback",
+                "the channel's own item files reports"
+            );
+            assert_eq!(target.address.action, "submit-feedback");
+            let submission: tilo_feedback::Submission =
+                serde_json::from_value(target.arguments["submission"].clone())
+                    .expect("the reviewed report");
+            assert_eq!(
+                submission.destination.workspace, "w_tilo",
+                "the report says where it is filed"
+            );
+            assert_eq!(submission.destination.channel, "c_feedback");
+            assert_eq!(submission.feedback.text, "the button does nothing");
+            let picked = &submission.feedback.selections[0];
+            assert_eq!(
+                picked.app, "so.tilo.notes",
+                "what the window picked came from the window reported"
+            );
+            assert_eq!(
+                picked.texts[0].parts[0].text, "issue 42",
+                "and its words go with the report"
+            );
+
+            // A report goes to the one place it goes, and a computer told nowhere sends none.
+            let ada = Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada");
+            assert!(
+                addressed(
+                    Some(&destination),
+                    "w_notes",
+                    &[report.clone(), ada.clone()]
+                )
+                .is_err(),
+                "a report stands beside no other recipient"
+            );
+            assert!(
+                addressed(None, "w_notes", std::slice::from_ref(&report)).is_err(),
+                "a computer told nowhere to send a report sends none"
+            );
+            // Every other send is a message in the workspace its box was opened in, to whom it named.
+            let Addressed::Message { workspace, to } =
+                addressed(None, "w_notes", std::slice::from_ref(&ada)).expect("an ordinary send")
+            else {
+                panic!("an ordinary send is a message");
+            };
+            assert_eq!(workspace, "w_notes");
+            assert_eq!(to, [ada], "and goes to whom it named");
+        }
     }
 }

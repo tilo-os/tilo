@@ -270,70 +270,74 @@ mod tests {
 
     use super::{Binding, Mount, Slots, View, bound_to};
 
-    #[test]
-    fn a_binding_for_this_kind_of_device_is_the_one_that_draws_it() {
-        let reading = json!({
-            "bindings": { "window-menu": { "app": "so.tilo.menu", "view": "wide" } },
-            "on_device": { "web": { "window-menu": { "app": "so.tilo.menu", "view": "narrow" } } },
-        });
-        assert_eq!(
-            bound_to(
-                &reading,
-                "window-menu",
-                settings_store::device_class::DeviceClass::Native
-            )
-            .map(|binding| binding.view),
-            Some("wide".to_owned())
-        );
-        assert_eq!(
-            bound_to(
-                &reading,
-                "window-menu",
-                settings_store::device_class::DeviceClass::Web
-            )
-            .map(|binding| binding.view),
-            Some("narrow".to_owned())
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_slot_draws_the_view_bound_for_this_device_or_the_shipped_one;
 
-    #[test]
-    fn a_bound_view_this_machine_does_not_have_leaves_the_slot_to_the_shipped_one() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        // The view the shell ships with is on this machine; the one the person bound, here, is not.
-        env.set("TILO_SURFACE_TILO_SHIPPED", "/bin/sh");
-        let shipped = ("so.tilo.shipped", "shipped");
-        let settings = json!({
-            "bindings": { "menu": { "app": "so.tilo.not-installed", "view": "menu" } },
-        });
-        let mut slots = Slots::default();
-        assert_eq!(
-            slots.follow("menu", shipped, Some(&settings)),
-            Mount::Start {
-                view: View::Program(PathBuf::from("/bin/sh")),
-                restart: false,
-            }
-        );
-        // And it stays that view's: the missing binding is not tried again,
-        // so the slot is not started over on every pass.
-        assert_eq!(
-            slots.follow("menu", shipped, Some(&settings)),
-            Mount::Nothing
-        );
-        assert_eq!(
-            slots.running("menu").map(|running| running.app.as_str()),
-            Some("so.tilo.shipped")
-        );
-    }
+        phase a_binding_for_this_kind_of_device_is_the_one_that_draws_it;
+        {
+            let reading = json!({
+                "bindings": { "window-menu": { "app": "so.tilo.menu", "view": "wide" } },
+                "on_device": { "web": { "window-menu": { "app": "so.tilo.menu", "view": "narrow" } } },
+            });
+            assert_eq!(
+                bound_to(
+                    &reading,
+                    "window-menu",
+                    settings_store::device_class::DeviceClass::Native
+                )
+                .map(|binding| binding.view),
+                Some("wide".to_owned())
+            );
+            assert_eq!(
+                bound_to(
+                    &reading,
+                    "window-menu",
+                    settings_store::device_class::DeviceClass::Web
+                )
+                .map(|binding| binding.view),
+                Some("narrow".to_owned())
+            );
+        }
 
-    #[test]
-    fn a_view_runs_as_its_apps_program() {
-        assert_eq!(
-            Binding {
-                app: "so.tilo.window-menu".into(),
-                view: "window-menu".into()
-            }
-            .program(),
-            "tilo-window-menu"
-        );
+        phase a_bound_view_this_machine_does_not_have_leaves_the_slot_to_the_shipped_one;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            // The view the shell ships with is on this machine; the one the person bound, here, is not.
+            env.set("TILO_SURFACE_TILO_SHIPPED", "/bin/sh");
+            let shipped = ("so.tilo.shipped", "shipped");
+            let settings = json!({
+                "bindings": { "menu": { "app": "so.tilo.not-installed", "view": "menu" } },
+            });
+            let mut slots = Slots::default();
+            assert_eq!(
+                slots.follow("menu", shipped, Some(&settings)),
+                Mount::Start {
+                    view: View::Program(PathBuf::from("/bin/sh")),
+                    restart: false,
+                }
+            );
+            // And it stays that view's: the missing binding is not tried again,
+            // so the slot is not started over on every pass.
+            assert_eq!(
+                slots.follow("menu", shipped, Some(&settings)),
+                Mount::Nothing
+            );
+            assert_eq!(
+                slots.running("menu").map(|running| running.app.as_str()),
+                Some("so.tilo.shipped")
+            );
+        }
+
+        phase a_view_runs_as_its_apps_program;
+        {
+            assert_eq!(
+                Binding {
+                    app: "so.tilo.window-menu".into(),
+                    view: "window-menu".into()
+                }
+                .program(),
+                "tilo-window-menu"
+            );
+        }
     }
 }

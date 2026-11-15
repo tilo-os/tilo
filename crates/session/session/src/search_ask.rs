@@ -368,74 +368,176 @@ mod tests {
         Ask::new(Shared::default(), workspace, None, None)
     }
 
-    /// A question with nothing set up leads to the place that sets it up: the row opens Settings at
-    /// its providers, in the workspace the search was opened in. A name typed asks nothing, so a
-    /// search that finds nothing for it shows that, not this row.
-    #[test]
-    fn without_a_provider_the_one_row_opens_the_setup() {
-        let ask = setup("workspace");
-        for typed in ["what is a CRDT?", "notes", "xqzv", ""] {
-            let rows = ask.query(typed);
-            if !question::asks(typed) {
-                assert!(rows.is_empty(), "{typed:?} asks nothing");
-                continue;
-            }
-            assert_eq!(rows.len(), 1);
-            assert_eq!(
-                rows[0].title,
-                tilo_desktop_search::i18n::t("search-ask-setup")
-            );
-            let Target::Invoke(open) = &rows[0].target else {
-                panic!("the setup row opens the page that sets one up");
-            };
-            assert_eq!(
-                open.app,
-                tilo_desktop_search::providers::settings::SETTINGS_APP
-            );
-            assert_eq!(open.workspace, "workspace");
-            assert_eq!(
-                open.arguments.get("anchor").and_then(|a| a.as_str()),
-                Some(PROVIDERS_ANCHOR)
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        fn an_ask_in_search_is_answered_in_its_own_row;
 
-    /// The text arrives a delta at a time, the row says what is known so far, and the same question
-    /// is not asked twice.
-    #[test]
-    fn an_answer_written_into_the_row_keeps_the_question_it_answers() {
-        let ask = setup("workspace");
+        phase without_a_provider_the_one_row_opens_the_setup;
+        // A question with nothing set up leads to the place that sets it up: the row opens Settings at
+        // its providers, in the workspace the search was opened in. A name typed asks nothing, so a
+        // search that finds nothing for it shows that, not this row.
         {
-            let mut state = ask.answered();
-            *state = Answering {
-                question: "what is a CRDT?".into(),
-                provider: "Anthropic".into(),
-                model: "Claude".into(),
-                text: "A conflict-free replicated data type.".into(),
-                failed: None,
-                streaming: false,
-                deltas: None,
-            };
+            let ask = setup("workspace");
+            for typed in ["what is a CRDT?", "notes", "xqzv", ""] {
+                let rows = ask.query(typed);
+                if !question::asks(typed) {
+                    assert!(rows.is_empty(), "{typed:?} asks nothing");
+                    continue;
+                }
+                assert_eq!(rows.len(), 1);
+                assert_eq!(
+                    rows[0].title,
+                    tilo_desktop_search::i18n::t("search-ask-setup")
+                );
+                let Target::Invoke(open) = &rows[0].target else {
+                    panic!("the setup row opens the page that sets one up");
+                };
+                assert_eq!(
+                    open.app,
+                    tilo_desktop_search::providers::settings::SETTINGS_APP
+                );
+                assert_eq!(open.workspace, "workspace");
+                assert_eq!(
+                    open.arguments.get("anchor").and_then(|a| a.as_str()),
+                    Some(PROVIDERS_ANCHOR)
+                );
+            }
         }
-        let row = ask.row("what is a CRDT?");
-        assert_eq!(row.title, "Ask Anthropic: what is a CRDT?");
-        // The row says the question back, so nothing in it is drawn as a match.
-        assert!(
-            matches!(&row.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query),
-            "the row declares it echoes the query: {:?}",
-            row.row
-        );
-        assert_eq!(row.subtitle.as_deref(), Some("Claude"));
-        assert_eq!(
-            row.preview
-                .as_ref()
-                .and_then(|preview| preview.body.as_deref()),
-            Some("A conflict-free replicated data type.")
-        );
-        let Target::Copy { text } = &row.target else {
-            panic!("choosing the row copies the answer");
-        };
-        assert_eq!(text, "A conflict-free replicated data type.");
+
+        phase an_answer_written_into_the_row_keeps_the_question_it_answers;
+        // The text arrives a delta at a time, the row says what is known so far, and the same question
+        // is not asked twice.
+        {
+            let ask = setup("workspace");
+            {
+                let mut state = ask.answered();
+                *state = Answering {
+                    question: "what is a CRDT?".into(),
+                    provider: "Anthropic".into(),
+                    model: "Claude".into(),
+                    text: "A conflict-free replicated data type.".into(),
+                    failed: None,
+                    streaming: false,
+                    deltas: None,
+                };
+            }
+            let row = ask.row("what is a CRDT?");
+            assert_eq!(row.title, "Ask Anthropic: what is a CRDT?");
+            // The row says the question back, so nothing in it is drawn as a match.
+            assert!(
+                matches!(&row.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query),
+                "the row declares it echoes the query: {:?}",
+                row.row
+            );
+            assert_eq!(row.subtitle.as_deref(), Some("Claude"));
+            assert_eq!(
+                row.preview
+                    .as_ref()
+                    .and_then(|preview| preview.body.as_deref()),
+                Some("A conflict-free replicated data type.")
+            );
+            let Target::Copy { text } = &row.target else {
+                panic!("choosing the row copies the answer");
+            };
+            assert_eq!(text, "A conflict-free replicated data type.");
+        }
+
+        phase a_streamed_answer_writes_itself_into_the_row;
+        // The answer arrives a piece at a time and the row shows it as it is written, then stops
+        // asking.
+        {
+            let ask = setup("workspace");
+            let (sender, receiver) = mpsc::channel();
+            {
+                let mut state = ask.answered();
+                *state = Answering {
+                    question: "what is a CRDT?".into(),
+                    provider: "Anthropic".into(),
+                    model: "Claude".into(),
+                    streaming: true,
+                    deltas: Some(receiver),
+                    ..Answering::default()
+                };
+            }
+            let models = ui::models::Models::new(std::rc::Rc::new(Writing(vec![
+                "A conflict-free ",
+                "replicated data type.",
+            ])));
+            tilo_rt::block_on(answer_with(
+                &models,
+                "what is a CRDT?".into(),
+                &sender,
+                None,
+            ))
+            .expect("the test's own thread waits for the answer");
+            // The gateway returns, so nothing more comes: the thread that would have written more is
+            // gone with its end of the channel.
+            drop(sender);
+            let changed = ask.poll();
+            assert!(changed, "what arrived is worth drawing");
+            let row = ask.row("what is a CRDT?");
+            assert_eq!(
+                row.preview
+                    .as_ref()
+                    .and_then(|preview| preview.body.as_deref()),
+                Some("A conflict-free replicated data type."),
+                "the row says what is written so far, and keeps it"
+            );
+            assert!(!ask.poll(), "a finished answer changes nothing more");
+            assert!(!ask.answered().streaming);
+        }
+
+        phase the_hosts_gateway_answers_a_started_ask;
+        // The ask started where this host starts it reaches the host's gateway, and what the answer
+        // writes arrives at the row.
+        {
+            let ask = Ask::new(
+                Shared::default(),
+                "workspace",
+                None,
+                Some(std::sync::Arc::new(Host) as Arc<dyn crate::platform::Models>),
+            );
+            {
+                let mut state = ask.answered();
+                *state = Answering {
+                    question: "what is a CRDT?".into(),
+                    provider: "Anthropic".into(),
+                    model: "Claude".into(),
+                    streaming: true,
+                    ..Answering::default()
+                };
+            }
+            let (sender, receiver) = mpsc::channel();
+            ask.start("what is a CRDT?".into(), sender);
+            // The answer's own thread closes its end when it is done, which ends this read.
+            let mut written = String::new();
+            for chunk in receiver {
+                match chunk {
+                    Chunk::Text(text) => written.push_str(&text),
+                    Chunk::Failed(reason) => panic!("the host's gateway answered: {reason}"),
+                }
+            }
+            assert_eq!(written, "A conflict-free replicated data type.");
+        }
+
+        phase a_failed_ask_says_so_in_its_own_row;
+        {
+            let ask = setup("workspace");
+            {
+                let mut state = ask.answered();
+                *state = Answering {
+                    question: "why?".into(),
+                    provider: "Anthropic".into(),
+                    model: "Claude".into(),
+                    failed: Some("the key was refused".into()),
+                    ..Answering::default()
+                };
+            }
+            let row = ask.row("why?");
+            assert_eq!(
+                row.subtitle.as_deref(),
+                Some("Anthropic could not answer: the key was refused")
+            );
+        }
     }
 
     /// A provider that writes its answer a piece at a time, as a streaming gateway does.
@@ -474,51 +576,6 @@ mod tests {
         }
     }
 
-    /// The answer arrives a piece at a time and the row shows it as it is written, then stops
-    /// asking.
-    #[test]
-    fn a_streamed_answer_writes_itself_into_the_row() {
-        let ask = setup("workspace");
-        let (sender, receiver) = mpsc::channel();
-        {
-            let mut state = ask.answered();
-            *state = Answering {
-                question: "what is a CRDT?".into(),
-                provider: "Anthropic".into(),
-                model: "Claude".into(),
-                streaming: true,
-                deltas: Some(receiver),
-                ..Answering::default()
-            };
-        }
-        let models = ui::models::Models::new(std::rc::Rc::new(Writing(vec![
-            "A conflict-free ",
-            "replicated data type.",
-        ])));
-        tilo_rt::block_on(answer_with(
-            &models,
-            "what is a CRDT?".into(),
-            &sender,
-            None,
-        ))
-        .expect("the test's own thread waits for the answer");
-        // The gateway returns, so nothing more comes: the thread that would have written more is
-        // gone with its end of the channel.
-        drop(sender);
-        let changed = ask.poll();
-        assert!(changed, "what arrived is worth drawing");
-        let row = ask.row("what is a CRDT?");
-        assert_eq!(
-            row.preview
-                .as_ref()
-                .and_then(|preview| preview.body.as_deref()),
-            Some("A conflict-free replicated data type."),
-            "the row says what is written so far, and keeps it"
-        );
-        assert!(!ask.poll(), "a finished answer changes nothing more");
-        assert!(!ask.answered().streaming);
-    }
-
     /// The gateway a host runs, as it answers here: the pieces below, on the provider it names.
     struct Host;
 
@@ -529,58 +586,5 @@ mod tests {
                 "replicated data type.",
             ]))))
         }
-    }
-
-    /// The ask started where this host starts it reaches the host's gateway, and what the answer
-    /// writes arrives at the row.
-    #[test]
-    fn the_hosts_gateway_answers_a_started_ask() {
-        let ask = Ask::new(
-            Shared::default(),
-            "workspace",
-            None,
-            Some(std::sync::Arc::new(Host) as Arc<dyn crate::platform::Models>),
-        );
-        {
-            let mut state = ask.answered();
-            *state = Answering {
-                question: "what is a CRDT?".into(),
-                provider: "Anthropic".into(),
-                model: "Claude".into(),
-                streaming: true,
-                ..Answering::default()
-            };
-        }
-        let (sender, receiver) = mpsc::channel();
-        ask.start("what is a CRDT?".into(), sender);
-        // The answer's own thread closes its end when it is done, which ends this read.
-        let mut written = String::new();
-        for chunk in receiver {
-            match chunk {
-                Chunk::Text(text) => written.push_str(&text),
-                Chunk::Failed(reason) => panic!("the host's gateway answered: {reason}"),
-            }
-        }
-        assert_eq!(written, "A conflict-free replicated data type.");
-    }
-
-    #[test]
-    fn a_failed_ask_says_so_in_its_own_row() {
-        let ask = setup("workspace");
-        {
-            let mut state = ask.answered();
-            *state = Answering {
-                question: "why?".into(),
-                provider: "Anthropic".into(),
-                model: "Claude".into(),
-                failed: Some("the key was refused".into()),
-                ..Answering::default()
-            };
-        }
-        let row = ask.row("why?");
-        assert_eq!(
-            row.subtitle.as_deref(),
-            Some("Anthropic could not answer: the key was refused")
-        );
     }
 }

@@ -236,57 +236,61 @@ pub(crate) const UNSERVED_BUT_CALLED: &[&str] = &[];
 mod tests {
     use super::*;
 
-    /// A seam serves what it holds, and says why when it holds nothing.
-    #[test]
-    fn a_seam_decides_what_it_serves_and_says_why_when_it_serves_nothing() {
-        assert_eq!(Seam::served(7u8).into_option(), Some(7));
-        assert_eq!(Seam::when(Some(7u8)).into_option(), Some(7));
-        assert_eq!(Seam::when(None::<u8>).into_option(), None);
-        assert_eq!(Seam::<u8>::unserved("no store here").into_option(), None);
+    tilo_test_env::scenario! {
+        fn a_seam_says_what_it_serves_and_what_an_app_declared;
 
-        assert_eq!(Seam::served(7u8).decision(), None);
-        assert_eq!(
-            Seam::when(None::<u8>).decision(),
-            None,
-            "a seam this run has nothing for is still served"
-        );
-        assert_eq!(
-            Seam::<u8>::unserved("no store here").decision(),
-            Some("no store here")
-        );
-    }
+        phase a_seam_decides_what_it_serves_and_says_why_when_it_serves_nothing;
+        // A seam serves what it holds, and says why when it holds nothing.
+        {
+            assert_eq!(Seam::served(7u8).into_option(), Some(7));
+            assert_eq!(Seam::when(Some(7u8)).into_option(), Some(7));
+            assert_eq!(Seam::when(None::<u8>).into_option(), None);
+            assert_eq!(Seam::<u8>::unserved("no store here").into_option(), None);
 
-    /// The action door's ceiling comes from the installed apps' signed manifests, read with the
-    /// lists search keeps: an app Tilo cannot find declared nothing, and never more than its
-    /// manifest says.
-    #[test]
-    fn an_apps_declared_access_is_what_its_manifest_says() {
-        use tilo_broker_core::access::AppActionAccess;
+            assert_eq!(Seam::served(7u8).decision(), None);
+            assert_eq!(
+                Seam::when(None::<u8>).decision(),
+                None,
+                "a seam this run has nothing for is still served"
+            );
+            assert_eq!(
+                Seam::<u8>::unserved("no store here").decision(),
+                Some("no store here")
+            );
+        }
 
-        let lists = crate::lists::Lists::fixed(crate::lists::AppLists {
-            declared: [(
-                "so.tilo.agent".to_owned(),
+        phase an_apps_declared_access_is_what_its_manifest_says;
+        // The action door's ceiling comes from the installed apps' signed manifests, read with the
+        // lists search keeps: an app Tilo cannot find declared nothing, and never more than its
+        // manifest says.
+        {
+            use tilo_broker_core::access::AppActionAccess;
+
+            let lists = crate::lists::Lists::fixed(crate::lists::AppLists {
+                declared: [(
+                    "so.tilo.agent".to_owned(),
+                    AppActionAccess {
+                        query: true,
+                        invoke: true,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..crate::lists::AppLists::default()
+            });
+            let access = declared_access(lists);
+            assert_eq!(
+                access("so.tilo.agent"),
                 AppActionAccess {
                     query: true,
-                    invoke: true,
-                },
-            )]
-            .into_iter()
-            .collect(),
-            ..crate::lists::AppLists::default()
-        });
-        let access = declared_access(lists);
-        assert_eq!(
-            access("so.tilo.agent"),
-            AppActionAccess {
-                query: true,
-                invoke: true
-            }
-        );
-        assert_eq!(
-            access("so.tilo.notes"),
-            AppActionAccess::default(),
-            "an app that declared nothing reaches nothing beyond its own actions"
-        );
+                    invoke: true
+                }
+            );
+            assert_eq!(
+                access("so.tilo.notes"),
+                AppActionAccess::default(),
+                "an app that declared nothing reaches nothing beyond its own actions"
+            );
+        }
     }
 }

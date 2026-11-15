@@ -424,338 +424,347 @@ mod tests {
         }
     }
 
-    /// An update state that does not read back is nothing the clock acts on,
-    /// so it is the person's to know: once, not on every look.
-    #[test]
-    fn an_unreadable_update_state_is_told_once() {
-        let mut finish = a_finish(Instant::now(), None);
-        assert!(finish.note_unreadable(), "the person is told");
-        assert!(!finish.note_unreadable(), "and only once");
-    }
+    tilo_test_env::scenario! {
+        fn what_went_wrong_with_an_update_is_told_once;
 
-    #[test]
-    fn the_desktop_restarts_onto_the_update_once_the_person_is_away() {
-        let now = Instant::now();
-        let dir = tempdir();
-        let path = dir.path().join("tilo/update-restart-asked");
-        let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let mut finish = a_finish(now, Some(path.clone()));
+        phase an_unreadable_update_state_is_told_once;
+        // An update state that does not read back is nothing the clock acts on,
+        // so it is the person's to know: once, not on every look.
+        {
+            let mut finish = a_finish(Instant::now(), None);
+            assert!(finish.note_unreadable(), "the person is told");
+            assert!(!finish.note_unreadable(), "and only once");
+        }
 
-        assert_eq!(
-            finish.step(now, clock, away(), &pending_desktop(), false, false),
-            None,
-            "the shell settles first"
-        );
-        let look = now + FIRST_LOOK_AFTER;
-        assert_eq!(
-            finish.step(look, clock, working(), &pending_desktop(), false, false),
-            None,
-            "never while the person works"
-        );
-        assert_eq!(
-            finish.step(
-                look + LOOK_EVERY,
-                clock,
-                away(),
-                &pending_desktop(),
-                false,
-                false
-            ),
-            Some(Due::RestartDesktop)
-        );
-        assert!(
-            path.exists(),
-            "when it restarted is recorded, so the session that comes back knows"
-        );
-        assert_eq!(
-            finish.step(
-                look + 2 * LOOK_EVERY,
-                clock,
-                away(),
-                &pending_desktop(),
-                false,
-                false
-            ),
-            None,
-            "one restart every two days at most"
-        );
-    }
-
-    #[test]
-    fn an_update_something_needed_now_is_finished_at_the_next_chance() {
-        let now = Instant::now();
-        let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let mut finish = a_finish(now, None);
-        // The person's app or a collaborator's device needs a newer system,
-        // so this session fetches it: the reading says it runs, and then
-        // that it ended waiting for the desktop.
-        assert_eq!(
-            finish.step(
-                now,
-                clock,
-                working(),
-                &Update {
-                    updating: true,
-                    ..Update::default()
-                },
-                false,
-                true
-            ),
-            Some(Due::UpdateNow)
-        );
-        assert_eq!(
-            finish.step(
-                now,
-                clock,
-                working(),
-                &Update {
-                    updating: true,
-                    ..Update::default()
-                },
-                false,
-                false
-            ),
-            None
-        );
-        // It ended, and the desktop is what waits: the next moment the person is away finishes it,
-        // whatever the last restart.
-        assert_eq!(
-            finish.step(now, clock, working(), &pending_desktop(), false, false),
-            None
-        );
-        assert_eq!(
-            finish.step(now, clock, away(), &pending_desktop(), false, false),
-            None,
-            "the shell still settles"
-        );
-        let look = now + FIRST_LOOK_AFTER;
-        assert_eq!(
-            finish.step(
-                look + LOOK_EVERY,
-                clock,
-                away(),
-                &pending_desktop(),
-                false,
-                false
-            ),
-            Some(Due::RestartDesktop)
-        );
-    }
-
-    #[test]
-    fn an_update_that_needs_a_restart_of_the_machine_asks_as_soon_as_it_ends() {
-        let now = Instant::now();
-        let dir = tempdir();
-        let path = dir.path().join("tilo/update-restart-asked");
-        let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let mut finish = a_finish(now, Some(path));
-        let running = Update {
-            updating: true,
-            ..Update::default()
-        };
-        assert_eq!(
-            finish.step(now, clock, working(), &running, false, true),
-            Some(Due::UpdateNow)
-        );
-        // It ended with part of it waiting for the machine: the person hears so at once, not at the
-        // next two-day turn of the clock.
-        let kernel = Update {
-            staged: Some("sha256:aa".into()),
-            restart_needed: true,
-            ..Update::default()
-        };
-        assert_eq!(
-            finish.step(now, clock, working(), &kernel, false, false),
-            Some(Due::Ask)
-        );
-        assert_eq!(
-            finish.step(now, clock, working(), &kernel, false, false),
-            None,
-            "and then at the usual pace"
-        );
-    }
-
-    #[test]
-    fn a_staged_update_asks_for_a_restart_of_the_machine_and_a_host_restarts_itself() {
-        let now = Instant::now();
-        let dir = tempdir();
-        let path = dir.path().join("tilo/update-restart-asked");
-        let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let staged = Update {
-            staged: Some("sha256:aa".into()),
-            restart_needed: true,
-            ..Update::default()
-        };
-        let mut finish = a_finish(now, Some(path));
-        let look = now + FIRST_LOOK_AFTER;
-        assert_eq!(
-            finish.step(look, clock, away(), &staged, false, false),
-            Some(Due::Ask),
-            "the person is told, once the shell has settled"
-        );
-        assert_eq!(
-            finish.step(
-                look + LOOK_EVERY,
-                clock + LOOK_EVERY,
-                away(),
-                &staged,
-                false,
-                false
-            ),
-            None,
-            "one request every two days"
-        );
-        // An always-on host has nobody to ask: it restarts into the update itself once nobody is at
-        // it.
-        let mut always_on = a_finish(now, None);
-        assert_eq!(
-            always_on.step(look, clock, working(), &staged, true, false),
-            None,
-            "never while someone works at it"
-        );
-        assert_eq!(
-            always_on.step(look + LOOK_EVERY, clock, away(), &staged, true, false),
-            Some(Due::RestartMachine)
-        );
-    }
-
-    #[test]
-    fn the_notice_s_restart_action_reaches_the_session_wherever_it_publishes() {
-        let now = Instant::now();
-        let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let notifications = Notifications::new();
-        let mut finish = Finish::new(now, None, None, Some(&notifications));
-        let id = notifications.alloc_id();
-        notifications.push(tilo_notifications_service::Notification {
-            actions: vec![(RESTART_ACTION.to_owned(), "Restart".to_owned())],
-            ..tilo_notifications_service::Notification::new(id)
-        });
-        notifications.action_invoked(id, RESTART_ACTION, None);
-        assert_eq!(
-            finish.step(now, clock, working(), &Update::default(), false, false),
-            Some(Due::RestartMachine),
-            "the person pressed it: nothing waits for a better moment"
-        );
-    }
-
-    #[test]
-    fn the_last_restart_survives_a_restart_of_the_session() {
-        let dir = tempdir();
-        let path = dir.path().join("tilo/update-restart-asked");
-        assert_eq!(last_asked_at(&path), None);
-        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        record_asked_at(&path, at);
-        assert_eq!(last_asked_at(&path), Some(at));
-    }
-
-    /// A deployment the machine went back from is what the person hears after the reboot: the
-    /// session tells them once, records that it did, and a session that starts later says nothing
-    /// of it.
-    #[test]
-    fn a_deployment_the_machine_went_back_from_is_told_once_and_recorded_once() {
-        let dir = tempdir();
-        let heard = dir.path().join("tilo/boot-fallback-seen");
-        let notifications = Notifications::new();
-        let id = "20261025T101010Z-0a1b2c3d4e5f6a7b";
-        let fallback = update::Fallback {
-            id: id.into(),
-            image: Some("registry.tilo.so/tilo/tilo-vm:main-1a2b3c4".into()),
-            version: Some("44.20261023.0".into()),
-            tries: Some(3),
-            running: Some("44.20261022.0".into()),
-            summary: "/var/lib/tilo/boot-fallback/20261025T101010Z-0a1b2c3d4e5f6a7b/summary.txt"
-                .into(),
-        };
-        let mut finish = Finish::new(Instant::now(), None, Some(heard.clone()), None);
-        assert!(
-            notifications.live().is_empty(),
-            "nothing fell back before the reading says so"
-        );
-        finish.tell_went_back(std::slice::from_ref(&fallback), |notice| {
-            crate::notifications::tell_daemon(notice, &notifications);
-        });
-
-        let live = notifications.live();
-        assert_eq!(live.len(), 1, "one fallback, one notice");
-        let notice = &live[0];
-        assert_eq!(notice.summary, "Went back to the version before");
-        assert_eq!(notice.app_name, "Updates");
-        assert_eq!(notice.urgency, 2, "an update that failed is not a shrug");
-        assert_eq!(
-            notice.expire_timeout, -1,
-            "it stays until the person dismisses it"
-        );
-        assert!(notice.machine_wide, "the whole machine went back");
-        assert!(notice.body.contains("44.20261023.0"), "{}", notice.body);
-        assert!(notice.body.contains("after 3 tries"), "{}", notice.body);
-        assert!(
-            notice.body.contains("back to 44.20261022.0"),
-            "{}",
-            notice.body
-        );
-        assert!(notice.body.contains("summary.txt"), "{}", notice.body);
-        assert_eq!(
-            heard_ids(&heard),
-            [id.to_owned()],
-            "told once is recorded once"
-        );
-
-        // The reading keeps carrying the report of every earlier fallback: this session says
-        // nothing more of it.
-        finish.tell_went_back(std::slice::from_ref(&fallback), |notice| {
-            crate::notifications::tell_daemon(notice, &notifications);
-        });
-        assert_eq!(notifications.live().len(), 1, "said once per session");
-
-        // A later session reads the record and says nothing at all: the person hears of one
-        // fallback once, however many sign-ins follow.
-        let mut later = Finish::new(Instant::now(), None, Some(heard.clone()), None);
-        later.tell_went_back(std::slice::from_ref(&fallback), |notice| {
-            crate::notifications::tell_daemon(notice, &notifications);
-        });
-        assert_eq!(notifications.live().len(), 1, "said once per person");
-        assert_eq!(heard_ids(&heard), [id.to_owned()], "and recorded once");
-    }
-
-    /// A second deployment that did not start is news of its own, and a machine with nowhere to
-    /// record what was told says nothing rather than saying it at every sign-in.
-    #[test]
-    fn a_later_fallback_is_told_and_nothing_is_told_that_cannot_be_recorded() {
-        let dir = tempdir();
-        let heard = dir.path().join("tilo/boot-fallback-seen");
-        let notifications = Notifications::new();
-        let fallback = |id: &str| update::Fallback {
-            id: id.into(),
-            summary: format!("/var/lib/tilo/boot-fallback/{id}/summary.txt"),
-            ..update::Fallback::default()
-        };
-        let mut finish = Finish::new(Instant::now(), None, Some(heard.clone()), None);
-        finish.tell_went_back(&[fallback("20261025T101010Z-aaaa")], |notice| {
-            crate::notifications::tell_daemon(notice, &notifications);
-        });
-        finish.tell_went_back(
-            &[
-                fallback("20261025T101010Z-aaaa"),
-                fallback("20261102T090000Z-bbbb"),
-            ],
-            |notice| {
+        phase a_deployment_the_machine_went_back_from_is_told_once_and_recorded_once;
+        // A deployment the machine went back from is what the person hears after the reboot: the
+        // session tells them once, records that it did, and a session that starts later says nothing
+        // of it.
+        {
+            let dir = tempdir();
+            let heard = dir.path().join("tilo/boot-fallback-seen");
+            let notifications = Notifications::new();
+            let id = "20261025T101010Z-0a1b2c3d4e5f6a7b";
+            let fallback = update::Fallback {
+                id: id.into(),
+                image: Some("registry.tilo.so/tilo/tilo-vm:main-1a2b3c4".into()),
+                version: Some("44.20261023.0".into()),
+                tries: Some(3),
+                running: Some("44.20261022.0".into()),
+                summary: "/var/lib/tilo/boot-fallback/20261025T101010Z-0a1b2c3d4e5f6a7b/summary.txt"
+                    .into(),
+            };
+            let mut finish = Finish::new(Instant::now(), None, Some(heard.clone()), None);
+            assert!(
+                notifications.live().is_empty(),
+                "nothing fell back before the reading says so"
+            );
+            finish.tell_went_back(std::slice::from_ref(&fallback), |notice| {
                 crate::notifications::tell_daemon(notice, &notifications);
-            },
-        );
-        assert_eq!(
-            notifications.live().len(),
-            2,
-            "each fallback is its own news"
-        );
-        assert_eq!(
-            heard_ids(&heard),
-            ["20261025T101010Z-aaaa", "20261102T090000Z-bbbb"]
-        );
+            });
 
-        let mut nowhere = Finish::new(Instant::now(), None, None, None);
-        nowhere.tell_went_back(&[fallback("20261103T090000Z-cccc")], |notice| {
-            crate::notifications::tell_daemon(notice, &notifications);
-        });
-        assert_eq!(notifications.live().len(), 2, "nothing repeats");
+            let live = notifications.live();
+            assert_eq!(live.len(), 1, "one fallback, one notice");
+            let notice = &live[0];
+            assert_eq!(notice.summary, "Went back to the version before");
+            assert_eq!(notice.app_name, "Updates");
+            assert_eq!(notice.urgency, 2, "an update that failed is not a shrug");
+            assert_eq!(
+                notice.expire_timeout, -1,
+                "it stays until the person dismisses it"
+            );
+            assert!(notice.machine_wide, "the whole machine went back");
+            assert!(notice.body.contains("44.20261023.0"), "{}", notice.body);
+            assert!(notice.body.contains("after 3 tries"), "{}", notice.body);
+            assert!(
+                notice.body.contains("back to 44.20261022.0"),
+                "{}",
+                notice.body
+            );
+            assert!(notice.body.contains("summary.txt"), "{}", notice.body);
+            assert_eq!(
+                heard_ids(&heard),
+                [id.to_owned()],
+                "told once is recorded once"
+            );
+
+            // The reading keeps carrying the report of every earlier fallback: this session says
+            // nothing more of it.
+            finish.tell_went_back(std::slice::from_ref(&fallback), |notice| {
+                crate::notifications::tell_daemon(notice, &notifications);
+            });
+            assert_eq!(notifications.live().len(), 1, "said once per session");
+
+            // A later session reads the record and says nothing at all: the person hears of one
+            // fallback once, however many sign-ins follow.
+            let mut later = Finish::new(Instant::now(), None, Some(heard.clone()), None);
+            later.tell_went_back(std::slice::from_ref(&fallback), |notice| {
+                crate::notifications::tell_daemon(notice, &notifications);
+            });
+            assert_eq!(notifications.live().len(), 1, "said once per person");
+            assert_eq!(heard_ids(&heard), [id.to_owned()], "and recorded once");
+        }
+
+        phase a_later_fallback_is_told_and_nothing_is_told_that_cannot_be_recorded;
+        // A second deployment that did not start is news of its own, and a machine with nowhere to
+        // record what was told says nothing rather than saying it at every sign-in.
+        {
+            let dir = tempdir();
+            let heard = dir.path().join("tilo/boot-fallback-seen");
+            let notifications = Notifications::new();
+            let fallback = |id: &str| update::Fallback {
+                id: id.into(),
+                summary: format!("/var/lib/tilo/boot-fallback/{id}/summary.txt"),
+                ..update::Fallback::default()
+            };
+            let mut finish = Finish::new(Instant::now(), None, Some(heard.clone()), None);
+            finish.tell_went_back(&[fallback("20261025T101010Z-aaaa")], |notice| {
+                crate::notifications::tell_daemon(notice, &notifications);
+            });
+            finish.tell_went_back(
+                &[
+                    fallback("20261025T101010Z-aaaa"),
+                    fallback("20261102T090000Z-bbbb"),
+                ],
+                |notice| {
+                    crate::notifications::tell_daemon(notice, &notifications);
+                },
+            );
+            assert_eq!(
+                notifications.live().len(),
+                2,
+                "each fallback is its own news"
+            );
+            assert_eq!(
+                heard_ids(&heard),
+                ["20261025T101010Z-aaaa", "20261102T090000Z-bbbb"]
+            );
+
+            let mut nowhere = Finish::new(Instant::now(), None, None, None);
+            nowhere.tell_went_back(&[fallback("20261103T090000Z-cccc")], |notice| {
+                crate::notifications::tell_daemon(notice, &notifications);
+            });
+            assert_eq!(notifications.live().len(), 2, "nothing repeats");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_staged_update_is_finished_when_the_person_or_the_machine_allows;
+
+        phase the_desktop_restarts_onto_the_update_once_the_person_is_away;
+        {
+            let now = Instant::now();
+            let dir = tempdir();
+            let path = dir.path().join("tilo/update-restart-asked");
+            let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+            let mut finish = a_finish(now, Some(path.clone()));
+
+            assert_eq!(
+                finish.step(now, clock, away(), &pending_desktop(), false, false),
+                None,
+                "the shell settles first"
+            );
+            let look = now + FIRST_LOOK_AFTER;
+            assert_eq!(
+                finish.step(look, clock, working(), &pending_desktop(), false, false),
+                None,
+                "never while the person works"
+            );
+            assert_eq!(
+                finish.step(
+                    look + LOOK_EVERY,
+                    clock,
+                    away(),
+                    &pending_desktop(),
+                    false,
+                    false
+                ),
+                Some(Due::RestartDesktop)
+            );
+            assert!(
+                path.exists(),
+                "when it restarted is recorded, so the session that comes back knows"
+            );
+            assert_eq!(
+                finish.step(
+                    look + 2 * LOOK_EVERY,
+                    clock,
+                    away(),
+                    &pending_desktop(),
+                    false,
+                    false
+                ),
+                None,
+                "one restart every two days at most"
+            );
+        }
+
+        phase an_update_something_needed_now_is_finished_at_the_next_chance;
+        {
+            let now = Instant::now();
+            let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+            let mut finish = a_finish(now, None);
+            // The person's app or a collaborator's device needs a newer system,
+            // so this session fetches it: the reading says it runs, and then
+            // that it ended waiting for the desktop.
+            assert_eq!(
+                finish.step(
+                    now,
+                    clock,
+                    working(),
+                    &Update {
+                        updating: true,
+                        ..Update::default()
+                    },
+                    false,
+                    true
+                ),
+                Some(Due::UpdateNow)
+            );
+            assert_eq!(
+                finish.step(
+                    now,
+                    clock,
+                    working(),
+                    &Update {
+                        updating: true,
+                        ..Update::default()
+                    },
+                    false,
+                    false
+                ),
+                None
+            );
+            // It ended, and the desktop is what waits: the next moment the person is away finishes it,
+            // whatever the last restart.
+            assert_eq!(
+                finish.step(now, clock, working(), &pending_desktop(), false, false),
+                None
+            );
+            assert_eq!(
+                finish.step(now, clock, away(), &pending_desktop(), false, false),
+                None,
+                "the shell still settles"
+            );
+            let look = now + FIRST_LOOK_AFTER;
+            assert_eq!(
+                finish.step(
+                    look + LOOK_EVERY,
+                    clock,
+                    away(),
+                    &pending_desktop(),
+                    false,
+                    false
+                ),
+                Some(Due::RestartDesktop)
+            );
+        }
+
+        phase an_update_that_needs_a_restart_of_the_machine_asks_as_soon_as_it_ends;
+        {
+            let now = Instant::now();
+            let dir = tempdir();
+            let path = dir.path().join("tilo/update-restart-asked");
+            let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+            let mut finish = a_finish(now, Some(path));
+            let running = Update {
+                updating: true,
+                ..Update::default()
+            };
+            assert_eq!(
+                finish.step(now, clock, working(), &running, false, true),
+                Some(Due::UpdateNow)
+            );
+            // It ended with part of it waiting for the machine: the person hears so at once, not at the
+            // next two-day turn of the clock.
+            let kernel = Update {
+                staged: Some("sha256:aa".into()),
+                restart_needed: true,
+                ..Update::default()
+            };
+            assert_eq!(
+                finish.step(now, clock, working(), &kernel, false, false),
+                Some(Due::Ask)
+            );
+            assert_eq!(
+                finish.step(now, clock, working(), &kernel, false, false),
+                None,
+                "and then at the usual pace"
+            );
+        }
+
+        phase a_staged_update_asks_for_a_restart_of_the_machine_and_a_host_restarts_itself;
+        {
+            let now = Instant::now();
+            let dir = tempdir();
+            let path = dir.path().join("tilo/update-restart-asked");
+            let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+            let staged = Update {
+                staged: Some("sha256:aa".into()),
+                restart_needed: true,
+                ..Update::default()
+            };
+            let mut finish = a_finish(now, Some(path));
+            let look = now + FIRST_LOOK_AFTER;
+            assert_eq!(
+                finish.step(look, clock, away(), &staged, false, false),
+                Some(Due::Ask),
+                "the person is told, once the shell has settled"
+            );
+            assert_eq!(
+                finish.step(
+                    look + LOOK_EVERY,
+                    clock + LOOK_EVERY,
+                    away(),
+                    &staged,
+                    false,
+                    false
+                ),
+                None,
+                "one request every two days"
+            );
+            // An always-on host has nobody to ask: it restarts into the update itself once nobody is at
+            // it.
+            let mut always_on = a_finish(now, None);
+            assert_eq!(
+                always_on.step(look, clock, working(), &staged, true, false),
+                None,
+                "never while someone works at it"
+            );
+            assert_eq!(
+                always_on.step(look + LOOK_EVERY, clock, away(), &staged, true, false),
+                Some(Due::RestartMachine)
+            );
+        }
+
+        phase the_notice_s_restart_action_reaches_the_session_wherever_it_publishes;
+        {
+            let now = Instant::now();
+            let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+            let notifications = Notifications::new();
+            let mut finish = Finish::new(now, None, None, Some(&notifications));
+            let id = notifications.alloc_id();
+            notifications.push(tilo_notifications_service::Notification {
+                actions: vec![(RESTART_ACTION.to_owned(), "Restart".to_owned())],
+                ..tilo_notifications_service::Notification::new(id)
+            });
+            notifications.action_invoked(id, RESTART_ACTION, None);
+            assert_eq!(
+                finish.step(now, clock, working(), &Update::default(), false, false),
+                Some(Due::RestartMachine),
+                "the person pressed it: nothing waits for a better moment"
+            );
+        }
+
+        phase the_last_restart_survives_a_restart_of_the_session;
+        {
+            let dir = tempdir();
+            let path = dir.path().join("tilo/update-restart-asked");
+            assert_eq!(last_asked_at(&path), None);
+            let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+            record_asked_at(&path, at);
+            assert_eq!(last_asked_at(&path), Some(at));
+        }
     }
 }

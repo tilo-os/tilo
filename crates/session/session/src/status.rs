@@ -249,184 +249,188 @@ mod tests {
         serde_json::from_value(serde_json::json!({ "players": players })).expect("a media reading")
     }
 
-    /// The bar's glyphs: the battery's charge, the network's name and strength, the volume's level,
-    /// and the stream being captured; the lock screen reads the same link and charge.
-    #[test]
-    fn the_bar_reads_the_machines_battery_network_and_volume() {
-        let readings = Read {
-            network: Some(wifi()),
-            sound: Some(sound()),
-            battery: Some(charging()),
-            ..Read::default()
+    tilo_test_env::scenario! {
+        fn the_bar_reads_what_the_machine_and_its_players_say;
+
+        phase the_bar_reads_the_machines_battery_network_and_volume;
+        // The bar's glyphs: the battery's charge, the network's name and strength, the volume's level,
+        // and the stream being captured; the lock screen reads the same link and charge.
+        {
+            let readings = Read {
+                network: Some(wifi()),
+                sound: Some(sound()),
+                battery: Some(charging()),
+                ..Read::default()
+            }
+            .readings();
+            assert_eq!(
+                readings.charge(),
+                Some((42, true)),
+                "the lock screen's charge"
+            );
+            let status = readings.status();
+            assert_eq!(status.battery_percent(), Some(42));
+            assert!(status.battery_is_charging());
+            assert!(!status.battery_is_low());
+            let link = status.link.clone().expect("a link");
+            assert_eq!(link.kind, BarLinkKind::Wifi);
+            assert_eq!(link.name.as_deref(), Some("Home"));
+            assert_eq!(link.signal, 3);
+            let volume = status.volume.expect("a level");
+            assert!((volume.level - 0.6).abs() < f32::EPSILON);
+            assert!(!volume.muted);
+            assert!(!status.audio_is_silent());
+            assert_eq!(status.media.len(), 1);
+            assert_eq!(status.media[0].client_id, 7);
+            assert_eq!(status.media[0].label, "Meet");
+            assert_eq!(status.media[0].kind, MediaKind::Microphone);
+            assert_eq!(
+                status.summary(),
+                "Wi-Fi: Home, Volume 60%, Battery 42%, charging"
+            );
         }
-        .readings();
-        assert_eq!(
-            readings.charge(),
-            Some((42, true)),
-            "the lock screen's charge"
-        );
-        let status = readings.status();
-        assert_eq!(status.battery_percent(), Some(42));
-        assert!(status.battery_is_charging());
-        assert!(!status.battery_is_low());
-        let link = status.link.clone().expect("a link");
-        assert_eq!(link.kind, BarLinkKind::Wifi);
-        assert_eq!(link.name.as_deref(), Some("Home"));
-        assert_eq!(link.signal, 3);
-        let volume = status.volume.expect("a level");
-        assert!((volume.level - 0.6).abs() < f32::EPSILON);
-        assert!(!volume.muted);
-        assert!(!status.audio_is_silent());
-        assert_eq!(status.media.len(), 1);
-        assert_eq!(status.media[0].client_id, 7);
-        assert_eq!(status.media[0].label, "Meet");
-        assert_eq!(status.media[0].kind, MediaKind::Microphone);
-        assert_eq!(
-            status.summary(),
-            "Wi-Fi: Home, Volume 60%, Battery 42%, charging"
-        );
-    }
 
-    /// A machine no service has read yet draws no glyph: absence, never a zero battery or a full
-    /// network.
-    #[test]
-    fn a_machine_with_no_readings_shows_no_glyph() {
-        let status = Readings::default().status();
-        assert_eq!(status.battery_percent(), None);
-        assert!(status.link.is_none());
-        assert!(status.volume.is_none());
-        assert!(status.media.is_empty());
-        assert!(
-            status.summary.is_empty(),
-            "the desktop says nothing was read"
-        );
-        assert_eq!(status.summary(), "System status");
-    }
+        phase a_machine_with_no_readings_shows_no_glyph;
+        // A machine no service has read yet draws no glyph: absence, never a zero battery or a full
+        // network.
+        {
+            let status = Readings::default().status();
+            assert_eq!(status.battery_percent(), None);
+            assert!(status.link.is_none());
+            assert!(status.volume.is_none());
+            assert!(status.media.is_empty());
+            assert!(
+                status.summary.is_empty(),
+                "the desktop says nothing was read"
+            );
+            assert_eq!(status.summary(), "System status");
+        }
 
-    /// A charge only warns while the pack drains, and a machine with no battery draws no gauge at
-    /// all.
-    #[test]
-    fn a_charge_warns_only_while_the_pack_drains() {
-        let draining = |percentage| {
-            Read {
+        phase a_charge_warns_only_while_the_pack_drains;
+        // A charge only warns while the pack drains, and a machine with no battery draws no gauge at
+        // all.
+        {
+            let draining = |percentage| {
+                Read {
+                    battery: Some(Battery {
+                        state: BatteryState::Discharging,
+                        percentage,
+                        ..charging()
+                    }),
+                    ..Read::default()
+                }
+                .readings()
+            };
+            let low = draining(12).status();
+            assert!(low.battery_is_low());
+            assert!(!low.battery_is_critical());
+            let critical = draining(3).status();
+            assert!(critical.battery_is_critical());
+            assert!(
+                critical.battery_is_low(),
+                "critical never skips the low styling"
+            );
+            let filling = Read {
+                battery: Some(charging()),
+                ..Read::default()
+            }
+            .readings();
+            assert!(filling.status().battery_is_charging());
+            let desktop = Read {
                 battery: Some(Battery {
-                    state: BatteryState::Discharging,
-                    percentage,
+                    present: false,
+                    percentage: 100,
                     ..charging()
                 }),
                 ..Read::default()
             }
-            .readings()
-        };
-        let low = draining(12).status();
-        assert!(low.battery_is_low());
-        assert!(!low.battery_is_critical());
-        let critical = draining(3).status();
-        assert!(critical.battery_is_critical());
-        assert!(
-            critical.battery_is_low(),
-            "critical never skips the low styling"
-        );
-        let filling = Read {
-            battery: Some(charging()),
-            ..Read::default()
+            .readings();
+            assert_eq!(
+                desktop.status().battery_percent(),
+                None,
+                "a machine without a pack shows no gauge"
+            );
+            assert_eq!(desktop.charge(), None);
         }
-        .readings();
-        assert!(filling.status().battery_is_charging());
-        let desktop = Read {
-            battery: Some(Battery {
-                present: false,
-                percentage: 100,
-                ..charging()
-            }),
-            ..Read::default()
-        }
-        .readings();
-        assert_eq!(
-            desktop.status().battery_percent(),
-            None,
-            "a machine without a pack shows no gauge"
-        );
-        assert_eq!(desktop.charge(), None);
-    }
 
-    /// The connection the traffic leaves on is the one the connectivity service read, and a reading
-    /// published before it said so draws no network glyph rather than claiming offline.
-    #[test]
-    fn the_network_glyph_is_the_connection_the_traffic_leaves_on() {
-        let offline = Read {
-            network: Some(Network {
-                link: Some(Link {
-                    kind: LinkKind::Offline,
-                    ..Link::default()
+        phase the_network_glyph_is_the_connection_the_traffic_leaves_on;
+        // The connection the traffic leaves on is the one the connectivity service read, and a reading
+        // published before it said so draws no network glyph rather than claiming offline.
+        {
+            let offline = Read {
+                network: Some(Network {
+                    link: Some(Link {
+                        kind: LinkKind::Offline,
+                        ..Link::default()
+                    }),
+                    ..Network::default()
                 }),
-                ..Network::default()
-            }),
-            ..Read::default()
-        }
-        .readings();
-        let link = offline.link().expect("a link");
-        assert_eq!(link.kind, BarLinkKind::Offline);
-        assert_eq!(link.name, None);
+                ..Read::default()
+            }
+            .readings();
+            let link = offline.link().expect("a link");
+            assert_eq!(link.kind, BarLinkKind::Offline);
+            assert_eq!(link.name, None);
 
-        let older = Read {
-            network: Some(Network::default()),
-            ..Read::default()
+            let older = Read {
+                network: Some(Network::default()),
+                ..Read::default()
+            }
+            .readings();
+            assert!(older.link().is_none());
         }
-        .readings();
-        assert!(older.link().is_none());
-    }
 
-    /// What plays is the player the panel's own controls reach: the one playing, else the one
-    /// paused, else the first — and only while one of them holds something.
-    #[test]
-    fn what_plays_is_the_player_the_panels_controls_reach() {
-        let stopped = Read {
-            media: Some(media(&serde_json::json!([
-                { "identity": "Music", "title": "Tea", "can-play": true }
-            ]))),
-            ..Read::default()
-        }
-        .readings();
-        assert!(
-            stopped.playing().is_none(),
-            "a player holding nothing is not what plays"
-        );
-        assert!(stopped.handover().is_none());
+        phase what_plays_is_the_player_the_panels_controls_reach;
+        // What plays is the player the panel's own controls reach: the one playing, else the one
+        // paused, else the first — and only while one of them holds something.
+        {
+            let stopped = Read {
+                media: Some(media(&serde_json::json!([
+                    { "identity": "Music", "title": "Tea", "can-play": true }
+                ]))),
+                ..Read::default()
+            }
+            .readings();
+            assert!(
+                stopped.playing().is_none(),
+                "a player holding nothing is not what plays"
+            );
+            assert!(stopped.handover().is_none());
 
-        let playing = Read {
-            media: Some(media(&serde_json::json!([
-                { "identity": "Firefox", "title": "A talk", "can-play": true },
-                {
-                    "identity": "Music",
-                    "title": "Tea",
-                    "artist": "Kettle",
-                    "playing": true,
-                    "can-pause": true,
-                    "can-next": true,
-                    "url": "https://music.example/tea",
-                    "app-id": "so.tilo.music",
-                    "session-id": "0123456789abcdef0123456789abcdef"
-                }
-            ]))),
-            ..Read::default()
+            let playing = Read {
+                media: Some(media(&serde_json::json!([
+                    { "identity": "Firefox", "title": "A talk", "can-play": true },
+                    {
+                        "identity": "Music",
+                        "title": "Tea",
+                        "artist": "Kettle",
+                        "playing": true,
+                        "can-pause": true,
+                        "can-next": true,
+                        "url": "https://music.example/tea",
+                        "app-id": "so.tilo.music",
+                        "session-id": "0123456789abcdef0123456789abcdef"
+                    }
+                ]))),
+                ..Read::default()
+            }
+            .readings();
+            let now = playing.playing().expect("what plays");
+            assert_eq!(now.title, "Tea");
+            assert_eq!(now.subtitle, "Kettle");
+            assert!(now.playing);
+            assert!(now.can_toggle, "the middle control pauses what plays");
+            assert!(now.can_next);
+            assert!(!now.can_previous);
+            // The shell's widget holds the same reading, so the song, who plays it and where it stands
+            // are the panel's, not a copy of them.
+            let widget = tilo_desktop::widgets::music::Music::default();
+            widget.set(playing.playing());
+            assert_eq!(widget.get(), Some(now));
+            let handover = playing.handover().expect("another device may continue it");
+            assert_eq!(handover.title, "Tea");
+            assert_eq!(handover.app_id, "so.tilo.music");
         }
-        .readings();
-        let now = playing.playing().expect("what plays");
-        assert_eq!(now.title, "Tea");
-        assert_eq!(now.subtitle, "Kettle");
-        assert!(now.playing);
-        assert!(now.can_toggle, "the middle control pauses what plays");
-        assert!(now.can_next);
-        assert!(!now.can_previous);
-        // The shell's widget holds the same reading, so the song, who plays it and where it stands
-        // are the panel's, not a copy of them.
-        let widget = tilo_desktop::widgets::music::Music::default();
-        widget.set(playing.playing());
-        assert_eq!(widget.get(), Some(now));
-        let handover = playing.handover().expect("another device may continue it");
-        assert_eq!(handover.title, "Tea");
-        assert_eq!(handover.app_id, "so.tilo.music");
     }
 
     /// A hand-over carries the playhead to where it stands now, not where the service last

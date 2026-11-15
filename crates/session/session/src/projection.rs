@@ -747,200 +747,204 @@ mod tests {
             .clone()
     }
 
-    #[test]
-    fn every_protocol_crosses_the_one_controller_and_unsupported_layouts_are_disabled() {
-        let backend = FakeBackend {
-            devices: ProjectionProtocol::ALL.into_iter().map(device).collect(),
-            calls: Arc::default(),
-        };
-        let (mut controller, log) = drive(backend);
-        controller.refresh();
-        settle(&mut controller);
-        assert_eq!(controller.devices.len(), 4);
+    tilo_test_env::scenario! {
+        fn a_projection_crosses_the_one_controller_to_the_projector;
 
-        for index in 0..controller.devices.len() {
-            controller.selected = index;
+        phase every_protocol_crosses_the_one_controller_and_unsupported_layouts_are_disabled;
+        {
+            let backend = FakeBackend {
+                devices: ProjectionProtocol::ALL.into_iter().map(device).collect(),
+                calls: Arc::default(),
+            };
+            let (mut controller, log) = drive(backend);
+            controller.refresh();
+            settle(&mut controller);
+            assert_eq!(controller.devices.len(), 4);
+
+            for index in 0..controller.devices.len() {
+                controller.selected = index;
+                controller.connect_selected();
+                settle(&mut controller);
+                assert!(matches!(
+                    controller.status,
+                    ProjectionStatus::Connected { .. }
+                ));
+                controller.disconnect();
+                settle(&mut controller);
+                assert_eq!(controller.status, ProjectionStatus::Idle);
+            }
+            let log = calls(&log);
+            for protocol in ProjectionProtocol::ALL {
+                assert!(
+                    log.iter().any(|line| line.contains(protocol.label())),
+                    "{protocol:?} crosses the same controller"
+                );
+            }
+
+            let only_mirror = FakeBackend {
+                devices: vec![ProjectionDevice {
+                    modes: vec![ProjectionMode::Mirror],
+                    ..device(ProjectionProtocol::Chromecast)
+                }],
+                calls: Arc::default(),
+            };
+            let (mut controller, _) = drive(only_mirror);
+            controller.refresh();
+            settle(&mut controller);
+            assert!(controller.selected_device_supports(ProjectionMode::Mirror));
+            assert!(!controller.selected_device_supports(ProjectionMode::Extend));
+            // A receiver that cannot spread the desktop is streamed to in duplicate, which every one of
+            // them can do.
+            controller.options.mode = ProjectionMode::Extend;
             controller.connect_selected();
             settle(&mut controller);
-            assert!(matches!(
-                controller.status,
-                ProjectionStatus::Connected { .. }
-            ));
-            controller.disconnect();
-            settle(&mut controller);
-            assert_eq!(controller.status, ProjectionStatus::Idle);
-        }
-        let log = calls(&log);
-        for protocol in ProjectionProtocol::ALL {
-            assert!(
-                log.iter().any(|line| line.contains(protocol.label())),
-                "{protocol:?} crosses the same controller"
-            );
+            assert_eq!(controller.options.mode, ProjectionMode::Mirror);
         }
 
-        let only_mirror = FakeBackend {
-            devices: vec![ProjectionDevice {
-                modes: vec![ProjectionMode::Mirror],
-                ..device(ProjectionProtocol::Chromecast)
-            }],
-            calls: Arc::default(),
-        };
-        let (mut controller, _) = drive(only_mirror);
-        controller.refresh();
-        settle(&mut controller);
-        assert!(controller.selected_device_supports(ProjectionMode::Mirror));
-        assert!(!controller.selected_device_supports(ProjectionMode::Extend));
-        // A receiver that cannot spread the desktop is streamed to in duplicate, which every one of
-        // them can do.
-        controller.options.mode = ProjectionMode::Extend;
-        controller.connect_selected();
-        settle(&mut controller);
-        assert_eq!(controller.options.mode, ProjectionMode::Mirror);
-    }
-
-    #[test]
-    fn a_pin_crosses_once_and_is_forgotten_and_a_session_that_ends_unasked_is_reported() {
-        let backend = FakeBackend {
-            devices: vec![device(ProjectionProtocol::AirPlay)],
-            calls: Arc::default(),
-        };
-        let (mut controller, log) = drive(backend);
-        controller.refresh();
-        settle(&mut controller);
-        controller.options.credential = Some("4821".to_owned());
-        controller.connect_selected();
-        assert_eq!(controller.options.credential, None);
-        settle(&mut controller);
-        assert!(
-            calls(&log)
-                .iter()
-                .any(|call| call.ends_with("credential=true")),
-            "the worker receives the secret without the sheet keeping it"
-        );
-
-        assert_eq!(
-            controller.status_after(ProjectionNotice::Ended {
-                device_id: "other".to_owned(),
-                error: None,
-            }),
-            None,
-            "another receiver's session is not this one"
-        );
-        controller.status = ProjectionStatus::Connected {
-            device_id: "AirPlay".to_owned(),
-        };
-        assert_eq!(
-            controller.status_after(ProjectionNotice::Ended {
-                device_id: "AirPlay".to_owned(),
-                error: Some("receiver went to sleep".to_owned()),
-            }),
-            Some(ProjectionStatus::Failed(ProjectionFailure::Lost)),
-            "the receiver's own words go to the log; the sheet says it disconnected"
-        );
-        controller.status = ProjectionStatus::Connecting {
-            device_id: "AirPlay".to_owned(),
-        };
-        assert_eq!(
-            controller.status_after(ProjectionNotice::ServiceLost),
-            None,
-            "a request in flight reports its own outcome"
-        );
-    }
-
-    /// The production backend against a stand-in broker on a real socket: one connection for every
-    /// request, the credential inside the connect request, and an unrequested end reported.
-    #[test]
-    fn the_backend_speaks_the_projector_control_socket() {
-        let dir = tempfile::tempdir().expect("runtime dir");
-        let socket = dir.path().join("control.sock");
-        let listener = tilo_files::native::socket::bind(&socket).expect("broker socket");
-        let receiver = device(ProjectionProtocol::AirPlay);
-        let broker_device = receiver.clone();
-        let broker = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("the session connects");
-            let Some(ProjectorRequest::Discover { .. }) =
-                control::read_request(&mut stream).expect("discover")
-            else {
-                panic!("expected a discovery request");
-            };
-            control::write_event(
-                &mut stream,
-                &ProjectorEvent::Devices(vec![broker_device.clone()]),
-            )
-            .expect("devices");
-            let Some(ProjectorRequest::Connect { credential, .. }) =
-                control::read_request(&mut stream).expect("connect")
-            else {
-                panic!("expected a connect request");
-            };
-            let credential = credential.map(|secret| secret.expose().to_owned());
-            for event in [
-                ProjectorEvent::Connecting {
-                    device_id: broker_device.id.clone(),
-                    stage: ConnectStage::Starting,
-                },
-                ProjectorEvent::Connected {
-                    device_id: broker_device.id.clone(),
-                },
-                ProjectorEvent::Ended {
-                    device_id: broker_device.id.clone(),
-                    error: Some("receiver went to sleep".to_owned()),
-                },
-            ] {
-                control::write_event(&mut stream, &event).expect("session event");
-            }
-            // Only one connection: a second accept would mean the backend reconnected per request.
-            listener.set_nonblocking(true).expect("nonblocking");
-            assert!(
-                listener.accept().is_err(),
-                "one connection serves every request"
-            );
-            credential
-        });
-
-        let notices = Arc::new(Mutex::new(Vec::new()));
-        let mut backend = SystemProjectionBackend::new(Some(socket));
-        let seen = Arc::clone(&notices);
-        backend.set_notice_sink(Arc::new(move |notice| {
-            seen.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(notice);
-        }));
-        assert_eq!(
-            backend.discover().expect("discover"),
-            std::slice::from_ref(&receiver)
-        );
-        let options = ProjectionOptions {
-            credential: Some("4821".to_owned()),
-            ..ProjectionOptions::default()
-        };
-        backend.connect(&receiver, options).expect("connect");
-        assert_eq!(
-            broker.join().expect("broker").as_deref(),
-            Some("4821"),
-            "the credential crossed inside the connect request"
-        );
-        let deadline = tilo_test_env::hang_deadline();
-        while notices
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
-            < 2
-            && Instant::now() < deadline
+        phase a_pin_crosses_once_and_is_forgotten_and_a_session_that_ends_unasked_is_reported;
         {
-            std::thread::yield_now();
-        }
-        assert_eq!(
-            *notices
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            [
-                ProjectionNotice::Ended {
-                    device_id: receiver.id.clone(),
+            let backend = FakeBackend {
+                devices: vec![device(ProjectionProtocol::AirPlay)],
+                calls: Arc::default(),
+            };
+            let (mut controller, log) = drive(backend);
+            controller.refresh();
+            settle(&mut controller);
+            controller.options.credential = Some("4821".to_owned());
+            controller.connect_selected();
+            assert_eq!(controller.options.credential, None);
+            settle(&mut controller);
+            assert!(
+                calls(&log)
+                    .iter()
+                    .any(|call| call.ends_with("credential=true")),
+                "the worker receives the secret without the sheet keeping it"
+            );
+
+            assert_eq!(
+                controller.status_after(ProjectionNotice::Ended {
+                    device_id: "other".to_owned(),
+                    error: None,
+                }),
+                None,
+                "another receiver's session is not this one"
+            );
+            controller.status = ProjectionStatus::Connected {
+                device_id: "AirPlay".to_owned(),
+            };
+            assert_eq!(
+                controller.status_after(ProjectionNotice::Ended {
+                    device_id: "AirPlay".to_owned(),
                     error: Some("receiver went to sleep".to_owned()),
-                },
-                ProjectionNotice::ServiceLost,
-            ]
-        );
+                }),
+                Some(ProjectionStatus::Failed(ProjectionFailure::Lost)),
+                "the receiver's own words go to the log; the sheet says it disconnected"
+            );
+            controller.status = ProjectionStatus::Connecting {
+                device_id: "AirPlay".to_owned(),
+            };
+            assert_eq!(
+                controller.status_after(ProjectionNotice::ServiceLost),
+                None,
+                "a request in flight reports its own outcome"
+            );
+        }
+
+        phase the_backend_speaks_the_projector_control_socket;
+        // The production backend against a stand-in broker on a real socket: one connection for every
+        // request, the credential inside the connect request, and an unrequested end reported.
+        {
+            let dir = tempfile::tempdir().expect("runtime dir");
+            let socket = dir.path().join("control.sock");
+            let listener = tilo_files::native::socket::bind(&socket).expect("broker socket");
+            let receiver = device(ProjectionProtocol::AirPlay);
+            let broker_device = receiver.clone();
+            let broker = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("the session connects");
+                let Some(ProjectorRequest::Discover { .. }) =
+                    control::read_request(&mut stream).expect("discover")
+                else {
+                    panic!("expected a discovery request");
+                };
+                control::write_event(
+                    &mut stream,
+                    &ProjectorEvent::Devices(vec![broker_device.clone()]),
+                )
+                .expect("devices");
+                let Some(ProjectorRequest::Connect { credential, .. }) =
+                    control::read_request(&mut stream).expect("connect")
+                else {
+                    panic!("expected a connect request");
+                };
+                let credential = credential.map(|secret| secret.expose().to_owned());
+                for event in [
+                    ProjectorEvent::Connecting {
+                        device_id: broker_device.id.clone(),
+                        stage: ConnectStage::Starting,
+                    },
+                    ProjectorEvent::Connected {
+                        device_id: broker_device.id.clone(),
+                    },
+                    ProjectorEvent::Ended {
+                        device_id: broker_device.id.clone(),
+                        error: Some("receiver went to sleep".to_owned()),
+                    },
+                ] {
+                    control::write_event(&mut stream, &event).expect("session event");
+                }
+                // Only one connection: a second accept would mean the backend reconnected per request.
+                listener.set_nonblocking(true).expect("nonblocking");
+                assert!(
+                    listener.accept().is_err(),
+                    "one connection serves every request"
+                );
+                credential
+            });
+
+            let notices = Arc::new(Mutex::new(Vec::new()));
+            let mut backend = SystemProjectionBackend::new(Some(socket));
+            let seen = Arc::clone(&notices);
+            backend.set_notice_sink(Arc::new(move |notice| {
+                seen.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(notice);
+            }));
+            assert_eq!(
+                backend.discover().expect("discover"),
+                std::slice::from_ref(&receiver)
+            );
+            let options = ProjectionOptions {
+                credential: Some("4821".to_owned()),
+                ..ProjectionOptions::default()
+            };
+            backend.connect(&receiver, options).expect("connect");
+            assert_eq!(
+                broker.join().expect("broker").as_deref(),
+                Some("4821"),
+                "the credential crossed inside the connect request"
+            );
+            let deadline = tilo_test_env::hang_deadline();
+            while notices
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
+                < 2
+                && Instant::now() < deadline
+            {
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                *notices
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                [
+                    ProjectionNotice::Ended {
+                        device_id: receiver.id.clone(),
+                        error: Some("receiver went to sleep".to_owned()),
+                    },
+                    ProjectionNotice::ServiceLost,
+                ]
+            );
+        }
     }
 }
