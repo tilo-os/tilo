@@ -45,7 +45,8 @@ impl Task {
     /// Commit the writes held for their route's keys, once they may: every held write of a route
     /// whose keys this device holds, in one owner turn per route; held, so read, until committed.
     /// Writes the record cannot take yet stay held, durably, for the next time this device
-    /// writes; only writes the workspace refuses for good are let go.
+    /// writes; only writes the workspace refuses for good are let go, and a barrier waiting on
+    /// them completes with the refusal: a write let go is never answered as saved.
     pub(super) async fn commit_held(&mut self) {
         if !std::mem::take(&mut self.outbound_due) {
             return;
@@ -58,13 +59,18 @@ impl Task {
             .filter(|route| self.keys_of(route).is_some())
             .cloned()
             .collect();
+        let mut refused = BTreeMap::new();
         for route in ready {
             let Some(frames) = self.engine.held_writes().lock().get(&route).cloned() else {
                 continue;
             };
             let taken = frames.len();
-            if !self.commit_frames(&route, frames).await {
-                continue;
+            match self.commit_frames(&route, frames).await {
+                None => continue,
+                Some(Ok(())) => {}
+                Some(Err(reason)) => {
+                    refused.insert(route.clone(), reason);
+                }
             }
             let mut held = self.engine.held_writes().lock();
             if let Some(frames) = held.get_mut(&route) {
@@ -83,30 +89,26 @@ impl Task {
             });
         }
         self.persist_keys(true);
-        self.release_barriers();
+        self.release_barriers(&refused);
     }
 
     /// Seal, sign and commit `frames` of `route` into this device's custody, in one owner turn.
-    /// Answers whether it is done with them: committed, or refused for good. Writes its record
-    /// cannot take yet (its keys went away, its history is full, or the signer did not sign) stay
-    /// held. What this device writes, its readers read at once, and custody keeps however long
+    /// Answers `None` while they stay held, and once it is done with them, whether they were
+    /// committed or refused for good, and why. Writes its record cannot take yet (its keys went
+    /// away, its history is full, or the signer did not sign) stay held. What this device writes, its readers read at once, and custody keeps however long
     /// its host is away.
     pub(super) async fn commit_frames(
         &mut self,
         route: &DocumentRoute,
         frames: Vec<Vec<u8>>,
-    ) -> bool {
+    ) -> Option<Result<(), String>> {
         let owner = self.replicas.owner();
         let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
-            self.fail(
-                "protocol-rejected",
-                "A document names an invalid workspace.",
-            );
-            return true;
+            const INVALID: &str = "A document names an invalid workspace.";
+            self.fail("protocol-rejected", INVALID);
+            return Some(Err(INVALID.to_owned()));
         };
-        let Some(keys) = self.keys_of(route) else {
-            return false;
-        };
+        let keys = self.keys_of(route)?;
         // A change needs the record it changes. The keys of a record this device opened can come
         // before the record does, and a change drafted then would be refused and let go, while the
         // next change, which builds on it, is taken once the record is here: the record would
@@ -121,7 +123,7 @@ impl Task {
                 Ok(view.peer().holds_document(&route.app_id, &route.record))
             }) == Ok(false)
         {
-            return false;
+            return None;
         }
         let artifact = route.artifact();
         let author = self.signer.device_public_key();
@@ -170,7 +172,7 @@ impl Task {
                     RECORD_FULL,
                     "This record is too large to share your latest changes. They are kept on this device.",
                 );
-                return false;
+                return None;
             }
             Err(WriteRefusal::Unsigned(error)) => {
                 tracing::warn!(%error, "writes wait for this device to sign them");
@@ -178,15 +180,17 @@ impl Task {
                     SIGNING_FAILED,
                     "This device could not sign your latest changes. They are kept on this device.",
                 );
-                return false;
+                return None;
             }
             Err(WriteRefusal::Refused(error)) => {
-                self.fail("write-refused", error);
-                return true;
+                tracing::warn!(app = %route.app_id, record = %route.record, %error,
+                    "the workspace refused a write of this device for good");
+                self.fail("write-refused", error.clone());
+                return Some(Err(error));
             }
         };
         if committed.is_empty() {
-            return true;
+            return Some(Ok(()));
         }
         self.landed(route, Some(self.config.cert.device_public_key));
         let ids: Vec<[u8; 32]> = committed
@@ -197,7 +201,7 @@ impl Task {
         // What this device publishes, its own replica holds.
         self.note_delivered(route, &ids);
         self.count_custody();
-        true
+        Some(Ok(()))
     }
 
     /// `workspace`'s writes in this device's custody: id, bytes, channel and retention.
@@ -279,12 +283,12 @@ impl Task {
 
     /// Complete `done` once every write now in this device's custody is answered by its host, or
     /// left it renewed ([`Self::release_renewed`]).
-    pub(super) fn await_custody(&mut self, done: Completion) {
+    pub(super) fn await_custody(&mut self, done: Completion, refused: Option<String>) {
         let owed = self.owed();
         if owed.is_empty() {
-            let _ = done.send(Ok(()));
+            let _ = done.send(refused.map_or(Ok(()), Err));
         } else {
-            self.barriers.push((owed, None, done));
+            self.barriers.push((owed, refused, done));
         }
     }
 
@@ -340,15 +344,17 @@ impl Task {
     }
 
     /// Move each held barrier whose routes hold nothing any more on to the
-    /// outbox, which now carries what those routes held.
-    pub(super) fn release_barriers(&mut self) {
+    /// outbox, which now carries what those routes held; one waiting on a
+    /// route whose writes were `refused` for good completes with why.
+    pub(super) fn release_barriers(&mut self, refused: &BTreeMap<DocumentRoute, String>) {
         let held = self.engine.held_writes().lock().clone();
         let (waiting, released): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_barriers)
             .into_iter()
             .partition(|(routes, _)| routes.iter().any(|route| held.contains_key(route)));
         self.held_barriers = waiting;
-        for (_, done) in released {
-            self.await_custody(done);
+        for (routes, done) in released {
+            let why = routes.iter().find_map(|route| refused.get(route)).cloned();
+            self.await_custody(done, why);
         }
     }
 

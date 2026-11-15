@@ -1566,7 +1566,7 @@ impl Task {
                 let held: BTreeSet<DocumentRoute> =
                     self.engine.held_writes().lock().keys().cloned().collect();
                 if held.is_empty() {
-                    self.await_custody(done);
+                    self.await_custody(done, None);
                 } else {
                     self.held_barriers.push((held, done));
                 }
