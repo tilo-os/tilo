@@ -247,114 +247,118 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_deleted_workspace_is_forgotten_and_no_other() {
-        let list = remember(Vec::new(), entry("https://a", "kept", HOST)).entered;
-        let list = remember(list, entry("https://a", "deleted", HOST)).entered;
-        let changed = forget_deleted(list, &place("https://a", "deleted"));
-        assert_eq!(changed.unchoose, [place("https://a", "deleted")]);
-        assert_eq!(changed.entered.len(), 1);
-        assert_eq!(changed.entered[0].workspace, "kept");
-        let again = forget_deleted(changed.entered, &place("https://a", "deleted"));
-        assert!(
-            again.unchoose.is_empty(),
-            "one not remembered changes nothing"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_entered_workspaces_a_page_remembers;
 
-    #[test]
-    fn the_last_opened_comes_first_keeps_its_name_and_the_list_is_bounded() {
-        let mut list = Vec::new();
-        for workspace in 0..40 {
-            list = remember(list, entry("https://a", &workspace.to_string(), HOST)).entered;
+        phase a_deleted_workspace_is_forgotten_and_no_other;
+        {
+            let list = remember(Vec::new(), entry("https://a", "kept", HOST)).entered;
+            let list = remember(list, entry("https://a", "deleted", HOST)).entered;
+            let changed = forget_deleted(list, &place("https://a", "deleted"));
+            assert_eq!(changed.unchoose, [place("https://a", "deleted")]);
+            assert_eq!(changed.entered.len(), 1);
+            assert_eq!(changed.entered[0].workspace, "kept");
+            let again = forget_deleted(changed.entered, &place("https://a", "deleted"));
+            assert!(
+                again.unchoose.is_empty(),
+                "one not remembered changes nothing"
+            );
         }
-        assert_eq!(list.len(), MAX_ENTERED);
-        assert_eq!(list[0].workspace, "39");
-        let named = name(list, &place("https://a", "39"), "Acme").entered;
-        let again = remember(named, entry("https://a", "39", HOST)).entered;
-        assert_eq!(
-            again[0].name.as_deref(),
-            Some("Acme"),
-            "an earlier name stays"
-        );
-        assert_eq!(
-            remember(again.clone(), entry("https://a", "", HOST)).entered,
-            again,
-            "a damaged entry is never remembered"
-        );
-    }
 
-    #[test]
-    fn the_page_reads_what_it_stored() {
-        // The page keeps this list in its browser's storage and hands it back as JSON, entry
-        // for entry: the workspace's id is `workspace`, the host's key `hostDevice`. A list it
-        // wrote must come back with what it needs to reach the workspace again, and what these
-        // rules answer must be a list it can read.
-        let stored = serde_json::json!({
-            "origin": "https://a",
-            "workspace": "1",
-            "hostDevice": HOST,
-            "name": "Acme",
-        });
-        let entry: Entered = serde_json::from_value(stored).expect("an entry the page wrote");
-        assert_eq!(
-            (entry.workspace.as_str(), entry.host_device.as_str()),
-            ("1", HOST)
-        );
-        let answered = serde_json::to_value(remember(Vec::new(), entry)).expect("a list");
-        let first = &answered["entered"][0];
-        assert_eq!(first["workspace"], "1");
-        assert_eq!(first["hostDevice"], HOST);
-        let place: Place =
-            serde_json::from_value(serde_json::json!({"origin": "https://a", "workspace": "1"}))
-                .expect("a place the page wrote");
-        assert_eq!(place.workspace, "1");
-    }
+        phase the_last_opened_comes_first_keeps_its_name_and_the_list_is_bounded;
+        {
+            let mut list = Vec::new();
+            for workspace in 0..40 {
+                list = remember(list, entry("https://a", &workspace.to_string(), HOST)).entered;
+            }
+            assert_eq!(list.len(), MAX_ENTERED);
+            assert_eq!(list[0].workspace, "39");
+            let named = name(list, &place("https://a", "39"), "Acme").entered;
+            let again = remember(named, entry("https://a", "39", HOST)).entered;
+            assert_eq!(
+                again[0].name.as_deref(),
+                Some("Acme"),
+                "an earlier name stays"
+            );
+            assert_eq!(
+                remember(again.clone(), entry("https://a", "", HOST)).entered,
+                again,
+                "a damaged entry is never remembered"
+            );
+        }
 
-    #[test]
-    fn a_host_set_up_again_forgets_what_the_one_before_it_held() {
-        let list = remember(Vec::new(), entry("https://a", "1", HOST)).entered;
-        let list = remember(list, entry("https://b", "2", HOST)).entered;
-        let changed = remember(list, entry("https://a", "3", OTHER));
-        assert_eq!(
-            changed
-                .entered
-                .iter()
-                .map(|entry| entry.workspace.as_str())
-                .collect::<Vec<_>>(),
-            ["3", "2"]
-        );
-        assert_eq!(changed.unchoose, [place("https://a", "1")]);
-    }
+        phase the_page_reads_what_it_stored;
+        {
+            // The page keeps this list in its browser's storage and hands it back as JSON, entry
+            // for entry: the workspace's id is `workspace`, the host's key `hostDevice`. A list it
+            // wrote must come back with what it needs to reach the workspace again, and what these
+            // rules answer must be a list it can read.
+            let stored = serde_json::json!({
+                "origin": "https://a",
+                "workspace": "1",
+                "hostDevice": HOST,
+                "name": "Acme",
+            });
+            let entry: Entered = serde_json::from_value(stored).expect("an entry the page wrote");
+            assert_eq!(
+                (entry.workspace.as_str(), entry.host_device.as_str()),
+                ("1", HOST)
+            );
+            let answered = serde_json::to_value(remember(Vec::new(), entry)).expect("a list");
+            let first = &answered["entered"][0];
+            assert_eq!(first["workspace"], "1");
+            assert_eq!(first["hostDevice"], HOST);
+            let place: Place =
+                serde_json::from_value(serde_json::json!({"origin": "https://a", "workspace": "1"}))
+                    .expect("a place the page wrote");
+            assert_eq!(place.workspace, "1");
+        }
 
-    #[test]
-    fn a_failed_open_forgets_only_what_another_host_now_answers_for() {
-        let list = remember(Vec::new(), entry("https://a", "1", HOST)).entered;
-        let (changed, settled) = settle_failed(list.clone(), &place("https://a", "1"), None, false);
-        assert_eq!(settled, Settled::Unavailable);
-        assert!(changed.entered[0].unavailable);
-        assert_eq!(
-            changed.unchoose,
-            [place("https://a", "1")],
-            "a bare entry stops reopening it"
-        );
-        let (changed, settled) =
-            settle_failed(list.clone(), &place("https://a", "1"), Some(HOST), false);
-        assert_eq!(settled, Settled::Unavailable);
-        assert_eq!(changed.entered.len(), 1);
-        let (changed, settled) =
-            settle_failed(list.clone(), &place("https://a", "1"), Some(OTHER), false);
-        assert_eq!(settled, Settled::Gone);
-        assert!(changed.entered.is_empty());
-        // The host that held it says its owner deleted it: forgotten.
-        let (changed, settled) =
-            settle_failed(list.clone(), &place("https://a", "1"), Some(HOST), true);
-        assert_eq!(settled, Settled::Deleted);
-        assert!(changed.entered.is_empty());
-        assert_eq!(changed.unchoose, [place("https://a", "1")]);
-        assert_eq!(
-            settle_failed(list, &place("https://a", "9"), None, false).1,
-            Settled::Unknown
-        );
+        phase a_host_set_up_again_forgets_what_the_one_before_it_held;
+        {
+            let list = remember(Vec::new(), entry("https://a", "1", HOST)).entered;
+            let list = remember(list, entry("https://b", "2", HOST)).entered;
+            let changed = remember(list, entry("https://a", "3", OTHER));
+            assert_eq!(
+                changed
+                    .entered
+                    .iter()
+                    .map(|entry| entry.workspace.as_str())
+                    .collect::<Vec<_>>(),
+                ["3", "2"]
+            );
+            assert_eq!(changed.unchoose, [place("https://a", "1")]);
+        }
+
+        phase a_failed_open_forgets_only_what_another_host_now_answers_for;
+        {
+            let list = remember(Vec::new(), entry("https://a", "1", HOST)).entered;
+            let (changed, settled) = settle_failed(list.clone(), &place("https://a", "1"), None, false);
+            assert_eq!(settled, Settled::Unavailable);
+            assert!(changed.entered[0].unavailable);
+            assert_eq!(
+                changed.unchoose,
+                [place("https://a", "1")],
+                "a bare entry stops reopening it"
+            );
+            let (changed, settled) =
+                settle_failed(list.clone(), &place("https://a", "1"), Some(HOST), false);
+            assert_eq!(settled, Settled::Unavailable);
+            assert_eq!(changed.entered.len(), 1);
+            let (changed, settled) =
+                settle_failed(list.clone(), &place("https://a", "1"), Some(OTHER), false);
+            assert_eq!(settled, Settled::Gone);
+            assert!(changed.entered.is_empty());
+            // The host that held it says its owner deleted it: forgotten.
+            let (changed, settled) =
+                settle_failed(list.clone(), &place("https://a", "1"), Some(HOST), true);
+            assert_eq!(settled, Settled::Deleted);
+            assert!(changed.entered.is_empty());
+            assert_eq!(changed.unchoose, [place("https://a", "1")]);
+            assert_eq!(
+                settle_failed(list, &place("https://a", "9"), None, false).1,
+                Settled::Unknown
+            );
+        }
     }
 }

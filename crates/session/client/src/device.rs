@@ -1075,87 +1075,134 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_hosts_typed_refusal_reads_typed_with_its_own_words() {
-        let refused = HostRefusal::of(&ActionHostError::Refused {
-            reason: too_many().to_reason(),
-        });
-        assert_eq!(refused.code, "refused");
-        assert_eq!(refused.message, too_many().message);
-        assert_eq!(refused.refusal, Some(too_many()));
-        // An operation that ran and failed with one reads the same way.
-        let failed = HostRefusal::failed(&too_many().to_reason());
-        assert_eq!(failed.code, HostRefusal::FAILED);
-        assert_eq!(failed.refusal, Some(too_many()));
-    }
+    tilo_test_env::scenario! {
+        fn a_hosts_refusal_reads_with_its_code_and_words;
 
-    #[test]
-    fn a_busy_host_reads_as_rate_limited_with_its_wait_through_any_entry() {
-        let busy = ActionHostError::Unavailable {
-            reason: format!(
-                "backpressure: {}",
-                tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(
-                    480
-                ))
-            ),
-        };
-        let refused = HostRefusal::of(&busy);
-        assert_eq!(refused.code, HostRefusal::RATE_LIMITED);
-        assert_eq!(refused.retry_after_ms, Some(480));
-        // Through an entry's certification error and back, it stays what it is.
-        let entry = CertifyError::from(refused.clone());
-        assert!(
-            matches!(
-                entry,
-                CertifyError::RateLimited {
-                    retry_after_ms: 480
+        phase a_hosts_typed_refusal_reads_typed_with_its_own_words;
+        {
+            let refused = HostRefusal::of(&ActionHostError::Refused {
+                reason: too_many().to_reason(),
+            });
+            assert_eq!(refused.code, "refused");
+            assert_eq!(refused.message, too_many().message);
+            assert_eq!(refused.refusal, Some(too_many()));
+            // An operation that ran and failed with one reads the same way.
+            let failed = HostRefusal::failed(&too_many().to_reason());
+            assert_eq!(failed.code, HostRefusal::FAILED);
+            assert_eq!(failed.refusal, Some(too_many()));
+        }
+
+        phase a_busy_host_reads_as_rate_limited_with_its_wait_through_any_entry;
+        {
+            let busy = ActionHostError::Unavailable {
+                reason: format!(
+                    "backpressure: {}",
+                    tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(
+                        480
+                    ))
+                ),
+            };
+            let refused = HostRefusal::of(&busy);
+            assert_eq!(refused.code, HostRefusal::RATE_LIMITED);
+            assert_eq!(refused.retry_after_ms, Some(480));
+            // Through an entry's certification error and back, it stays what it is.
+            let entry = CertifyError::from(refused.clone());
+            assert!(
+                matches!(
+                    entry,
+                    CertifyError::RateLimited {
+                        retry_after_ms: 480
+                    }
+                ),
+                "{entry}"
+            );
+            assert_eq!(HostRefusal::from(entry), refused);
+            // Any other unavailability stays as it was.
+            let offline = HostRefusal::of(&ActionHostError::Unavailable {
+                reason: "offline: the device left".into(),
+            });
+            assert_eq!(offline.code, "remote_actions_unavailable");
+            assert_eq!(offline.retry_after_ms, None);
+        }
+
+        phase every_refusal_reads_with_the_code_and_words_it_travels_with;
+        {
+            // Each refusal as it travels, with its code and words (tilo-actions holds the file to the
+            // type): what the CLI, the API server and the page read off it.
+            let file: Vec<Value> = serde_json::from_str(include_str!(
+                "../../../collab/actions/tests/host_refusals.json"
+            ))
+            .unwrap();
+            for entry in file {
+                let wire: ActionHostError = serde_json::from_value(entry["wire"].clone()).unwrap();
+                let read = HostRefusal::of(&wire);
+                assert_eq!(read.code, entry["code"], "{entry}");
+                match (&wire, &read.refusal) {
+                    (_, Some(typed)) => assert_eq!(read.message, typed.message),
+                    (ActionHostError::Refused { reason }, None) => assert_eq!(&read.message, reason),
+                    (_, None) => assert_eq!(read.message, entry["display"], "{entry}"),
                 }
-            ),
-            "{entry}"
-        );
-        assert_eq!(HostRefusal::from(entry), refused);
-        // Any other unavailability stays as it was.
-        let offline = HostRefusal::of(&ActionHostError::Unavailable {
-            reason: "offline: the device left".into(),
-        });
-        assert_eq!(offline.code, "remote_actions_unavailable");
-        assert_eq!(offline.retry_after_ms, None);
-    }
-
-    #[test]
-    fn every_refusal_reads_with_the_code_and_words_it_travels_with() {
-        // Each refusal as it travels, with its code and words (tilo-actions holds the file to the
-        // type): what the CLI, the API server and the page read off it.
-        let file: Vec<Value> = serde_json::from_str(include_str!(
-            "../../../collab/actions/tests/host_refusals.json"
-        ))
-        .unwrap();
-        for entry in file {
-            let wire: ActionHostError = serde_json::from_value(entry["wire"].clone()).unwrap();
-            let read = HostRefusal::of(&wire);
-            assert_eq!(read.code, entry["code"], "{entry}");
-            match (&wire, &read.refusal) {
-                (_, Some(typed)) => assert_eq!(read.message, typed.message),
-                (ActionHostError::Refused { reason }, None) => assert_eq!(&read.message, reason),
-                (_, None) => assert_eq!(read.message, entry["display"], "{entry}"),
             }
         }
-    }
 
-    #[test]
-    fn a_refusal_in_words_alone_keeps_them_and_every_other_answer_its_code() {
-        let refused = HostRefusal::of(&ActionHostError::Refused {
-            reason: "that workspace is not one of your own".into(),
-        });
-        assert_eq!(refused.message, "that workspace is not one of your own");
-        assert_eq!(refused.refusal, None);
-        let unknown = HostRefusal::of(&ActionHostError::UnknownAction);
-        assert_eq!(unknown.code, "unknown_action");
-        assert_eq!(unknown.message, "no such action is offered");
-        assert_eq!(
-            HostRefusal::of(&ActionHostError::StaleRevision).code,
-            "stale_revision"
-        );
+        phase a_refusal_in_words_alone_keeps_them_and_every_other_answer_its_code;
+        {
+            let refused = HostRefusal::of(&ActionHostError::Refused {
+                reason: "that workspace is not one of your own".into(),
+            });
+            assert_eq!(refused.message, "that workspace is not one of your own");
+            assert_eq!(refused.refusal, None);
+            let unknown = HostRefusal::of(&ActionHostError::UnknownAction);
+            assert_eq!(unknown.code, "unknown_action");
+            assert_eq!(unknown.message, "no such action is offered");
+            assert_eq!(
+                HostRefusal::of(&ActionHostError::StaleRevision).code,
+                "stale_revision"
+            );
+        }
+
+        phase a_computers_entry_reports_no_answer_as_a_request_and_a_refusal_as_a_denial;
+        {
+            assert!(matches!(
+                CertifyError::from(HostRefusal::unanswered("the host did not answer")),
+                CertifyError::Request(_)
+            ));
+            assert!(matches!(
+                CertifyError::from(HostRefusal::of(&ActionHostError::NotPermitted)),
+                CertifyError::Denied(_)
+            ));
+            let admitted = HostRefusal::from(CertifyError::Denied("not in".into()));
+            assert_eq!(admitted.code, HostRefusal::NOT_ADMITTED);
+        }
+
+        phase a_host_refusing_a_person_never_let_in_answers_the_doors_refusal;
+        // A host turning away a person its site never let in says it as the site's door does: the
+        // refusal reads as not admitted, with the door's wait list for whoever shows it.
+        {
+            use tilo_relay_protocol::directory::{DoorRefusalCode, DoorRefused};
+            let door = DoorRefused {
+                code: DoorRefusalCode::InvitationOnly,
+                error: "tilo.test takes people by invitation".into(),
+                wait_list: true,
+                contact: Some("hello@tilo.test".into()),
+                mail: true,
+            };
+            let refusal = HostRefusal::of(&ActionHostError::Refused {
+                reason: door.to_reason(),
+            });
+            assert_eq!(refusal.code, HostRefusal::NOT_ADMITTED);
+            assert_eq!(refusal.message, door.error);
+            assert_eq!(refusal.door.as_ref(), Some(&door));
+            assert!(matches!(
+                CertifyError::from(refusal),
+                CertifyError::Denied(why) if why == door.error
+            ));
+            // A host account's typed refusal is not the door's.
+            let plain = HostRefusal::of(&ActionHostError::Refused {
+                reason: "no such workspace".into(),
+            });
+            assert_eq!(plain.door, None);
+        }
     }
 
     fn cert(device: u8, expires_at_ns: Option<u64>) -> DeviceCert {
@@ -1178,230 +1225,192 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_device_comes_back_with_what_it_kept_from_that_host_alone() {
-        let host = cert(9, None);
-        let day = RENEWING_NS;
-        let now = 10 * day;
-        let kept = held(2, 9, None);
-        assert_eq!(
-            reconnecting(Some(&kept), None, &host, true, now),
-            Reconnecting::Kept
-        );
-        assert_eq!(
-            reconnecting(None, None, &host, true, now),
-            Reconnecting::Certify
-        );
-        // Another host answers where the kept one did: nothing kept is handed to it.
-        let elsewhere = held(2, 8, None);
-        assert_eq!(
-            reconnecting(Some(&elsewhere), None, &host, true, now),
-            Reconnecting::HostChanged
-        );
-        // Unless that host just admitted this device: what was kept moves aside.
-        let admitted = held(2, 9, None);
-        assert_eq!(
-            reconnecting(Some(&elsewhere), Some(&admitted), &host, true, now),
-            Reconnecting::AdoptHost
-        );
-        assert_eq!(
-            reconnecting(Some(&kept), Some(&admitted), &host, true, now),
-            Reconnecting::Admitted
-        );
-        // A root renews what ends within a day; a paired device goes on until refused.
-        let ending = held(2, 9, Some(now + day / 2));
-        assert_eq!(
-            reconnecting(Some(&ending), None, &host, true, now),
-            Reconnecting::Certify
-        );
-        assert_eq!(
-            reconnecting(Some(&ending), None, &host, false, now),
-            Reconnecting::Kept
-        );
-        assert_eq!(
-            reconnecting(
-                Some(&held(2, 9, Some(now + 3 * day))),
-                None,
-                &host,
-                true,
-                now
-            ),
-            Reconnecting::Kept
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_returning_device_keeps_or_renews_its_certificate;
 
-    /// The day before a kept certificate ends is the boundary itself, to the nanosecond, and the
-    /// clock's far end does not wrap a certificate back into lasting. Each failure names its row.
-    #[test]
-    fn a_root_certifies_anew_from_exactly_a_day_before_the_kept_certificate_ends() {
-        use Reconnecting::{Certify, Kept};
-        let host = cert(9, None);
-        let day = RENEWING_NS;
-        let now = 10 * day;
-        let rows = [
-            (
-                "exactly a day left, root",
-                Some(now + day),
-                true,
-                now,
-                Certify,
-            ),
-            (
-                "a day and a nanosecond left, root",
-                Some(now + day + 1),
-                true,
-                now,
-                Kept,
-            ),
-            (
-                "a nanosecond short of a day, root",
-                Some(now + day - 1),
-                true,
-                now,
-                Certify,
-            ),
-            ("ended already, root", Some(now - 1), true, now, Certify),
-            (
-                "exactly a day left, paired",
-                Some(now + day),
-                false,
-                now,
-                Kept,
-            ),
-            ("ended already, paired", Some(now - 1), false, now, Kept),
-            ("never ending, root", None, true, now, Kept),
-            (
-                "the clock at its end, root",
-                Some(u64::MAX),
-                true,
-                u64::MAX,
-                Certify,
-            ),
-            (
-                "the clock at its end, never ending",
-                None,
-                true,
-                u64::MAX,
-                Kept,
-            ),
-        ];
-        for (row, expires_at_ns, with_root, at, expected) in rows {
-            let kept = held(2, 9, expires_at_ns);
+        phase a_device_comes_back_with_what_it_kept_from_that_host_alone;
+        {
+            let host = cert(9, None);
+            let day = RENEWING_NS;
+            let now = 10 * day;
+            let kept = held(2, 9, None);
             assert_eq!(
-                reconnecting(Some(&kept), None, &host, with_root, at),
-                expected,
-                "{row}"
+                reconnecting(Some(&kept), None, &host, true, now),
+                Reconnecting::Kept
+            );
+            assert_eq!(
+                reconnecting(None, None, &host, true, now),
+                Reconnecting::Certify
+            );
+            // Another host answers where the kept one did: nothing kept is handed to it.
+            let elsewhere = held(2, 8, None);
+            assert_eq!(
+                reconnecting(Some(&elsewhere), None, &host, true, now),
+                Reconnecting::HostChanged
+            );
+            // Unless that host just admitted this device: what was kept moves aside.
+            let admitted = held(2, 9, None);
+            assert_eq!(
+                reconnecting(Some(&elsewhere), Some(&admitted), &host, true, now),
+                Reconnecting::AdoptHost
+            );
+            assert_eq!(
+                reconnecting(Some(&kept), Some(&admitted), &host, true, now),
+                Reconnecting::Admitted
+            );
+            // A root renews what ends within a day; a paired device goes on until refused.
+            let ending = held(2, 9, Some(now + day / 2));
+            assert_eq!(
+                reconnecting(Some(&ending), None, &host, true, now),
+                Reconnecting::Certify
+            );
+            assert_eq!(
+                reconnecting(Some(&ending), None, &host, false, now),
+                Reconnecting::Kept
+            );
+            assert_eq!(
+                reconnecting(
+                    Some(&held(2, 9, Some(now + 3 * day))),
+                    None,
+                    &host,
+                    true,
+                    now
+                ),
+                Reconnecting::Kept
             );
         }
-    }
 
-    /// The host that answers decides before the certificate's day does: nothing kept for another
-    /// host is handed over or renewed there, and an admission wins over a renewal. Each failure
-    /// names its row.
-    #[test]
-    fn the_host_that_answers_decides_before_a_kept_certificates_last_day_does() {
-        use Reconnecting::{Admitted, AdoptHost, Certify, HostChanged};
-        let host = cert(9, None);
-        let day = RENEWING_NS;
-        let now = 10 * day;
-        let ending = Some(now + day / 2);
-        let here = held(2, 9, None);
-        let there = held(2, 8, None);
-        let rows = [
-            (
-                "ending, kept elsewhere, root",
-                Some(held(2, 8, ending)),
-                None,
-                true,
-                HostChanged,
-            ),
-            (
-                "ending, kept elsewhere, paired",
-                Some(held(2, 8, ending)),
-                None,
-                false,
-                HostChanged,
-            ),
-            (
-                "kept elsewhere, paired",
-                Some(held(2, 8, None)),
-                None,
-                false,
-                HostChanged,
-            ),
-            ("nothing kept, admitted", None, Some(&here), true, Admitted),
-            (
-                "ending, admitted here",
-                Some(held(2, 9, ending)),
-                Some(&here),
-                true,
-                Admitted,
-            ),
-            (
-                "kept here, admitted by another host",
-                Some(held(2, 9, None)),
-                Some(&there),
-                true,
-                AdoptHost,
-            ),
-            (
-                "ending, kept elsewhere, admitted here",
-                Some(held(2, 8, ending)),
-                Some(&here),
-                true,
-                AdoptHost,
-            ),
-            ("nothing kept, paired", None, None, false, Certify),
-        ];
-        for (row, kept, under, with_root, expected) in rows {
-            assert_eq!(
-                reconnecting(kept.as_ref(), under, &host, with_root, now),
-                expected,
-                "{row}"
-            );
+        phase a_root_certifies_anew_from_exactly_a_day_before_the_kept_certificate_ends;
+        // The day before a kept certificate ends is the boundary itself, to the nanosecond, and the
+        // clock's far end does not wrap a certificate back into lasting. Each failure names its row.
+        {
+            use Reconnecting::{Certify, Kept};
+            let host = cert(9, None);
+            let day = RENEWING_NS;
+            let now = 10 * day;
+            let rows = [
+                (
+                    "exactly a day left, root",
+                    Some(now + day),
+                    true,
+                    now,
+                    Certify,
+                ),
+                (
+                    "a day and a nanosecond left, root",
+                    Some(now + day + 1),
+                    true,
+                    now,
+                    Kept,
+                ),
+                (
+                    "a nanosecond short of a day, root",
+                    Some(now + day - 1),
+                    true,
+                    now,
+                    Certify,
+                ),
+                ("ended already, root", Some(now - 1), true, now, Certify),
+                (
+                    "exactly a day left, paired",
+                    Some(now + day),
+                    false,
+                    now,
+                    Kept,
+                ),
+                ("ended already, paired", Some(now - 1), false, now, Kept),
+                ("never ending, root", None, true, now, Kept),
+                (
+                    "the clock at its end, root",
+                    Some(u64::MAX),
+                    true,
+                    u64::MAX,
+                    Certify,
+                ),
+                (
+                    "the clock at its end, never ending",
+                    None,
+                    true,
+                    u64::MAX,
+                    Kept,
+                ),
+            ];
+            for (row, expires_at_ns, with_root, at, expected) in rows {
+                let kept = held(2, 9, expires_at_ns);
+                assert_eq!(
+                    reconnecting(Some(&kept), None, &host, with_root, at),
+                    expected,
+                    "{row}"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn a_computers_entry_reports_no_answer_as_a_request_and_a_refusal_as_a_denial() {
-        assert!(matches!(
-            CertifyError::from(HostRefusal::unanswered("the host did not answer")),
-            CertifyError::Request(_)
-        ));
-        assert!(matches!(
-            CertifyError::from(HostRefusal::of(&ActionHostError::NotPermitted)),
-            CertifyError::Denied(_)
-        ));
-        let admitted = HostRefusal::from(CertifyError::Denied("not in".into()));
-        assert_eq!(admitted.code, HostRefusal::NOT_ADMITTED);
-    }
-
-    /// A host turning away a person its site never let in says it as the site's door does: the
-    /// refusal reads as not admitted, with the door's wait list for whoever shows it.
-    #[test]
-    fn a_host_refusing_a_person_never_let_in_answers_the_doors_refusal() {
-        use tilo_relay_protocol::directory::{DoorRefusalCode, DoorRefused};
-        let door = DoorRefused {
-            code: DoorRefusalCode::InvitationOnly,
-            error: "tilo.test takes people by invitation".into(),
-            wait_list: true,
-            contact: Some("hello@tilo.test".into()),
-            mail: true,
-        };
-        let refusal = HostRefusal::of(&ActionHostError::Refused {
-            reason: door.to_reason(),
-        });
-        assert_eq!(refusal.code, HostRefusal::NOT_ADMITTED);
-        assert_eq!(refusal.message, door.error);
-        assert_eq!(refusal.door.as_ref(), Some(&door));
-        assert!(matches!(
-            CertifyError::from(refusal),
-            CertifyError::Denied(why) if why == door.error
-        ));
-        // A host account's typed refusal is not the door's.
-        let plain = HostRefusal::of(&ActionHostError::Refused {
-            reason: "no such workspace".into(),
-        });
-        assert_eq!(plain.door, None);
+        phase the_host_that_answers_decides_before_a_kept_certificates_last_day_does;
+        // The host that answers decides before the certificate's day does: nothing kept for another
+        // host is handed over or renewed there, and an admission wins over a renewal. Each failure
+        // names its row.
+        {
+            use Reconnecting::{Admitted, AdoptHost, Certify, HostChanged};
+            let host = cert(9, None);
+            let day = RENEWING_NS;
+            let now = 10 * day;
+            let ending = Some(now + day / 2);
+            let here = held(2, 9, None);
+            let there = held(2, 8, None);
+            let rows = [
+                (
+                    "ending, kept elsewhere, root",
+                    Some(held(2, 8, ending)),
+                    None,
+                    true,
+                    HostChanged,
+                ),
+                (
+                    "ending, kept elsewhere, paired",
+                    Some(held(2, 8, ending)),
+                    None,
+                    false,
+                    HostChanged,
+                ),
+                (
+                    "kept elsewhere, paired",
+                    Some(held(2, 8, None)),
+                    None,
+                    false,
+                    HostChanged,
+                ),
+                ("nothing kept, admitted", None, Some(&here), true, Admitted),
+                (
+                    "ending, admitted here",
+                    Some(held(2, 9, ending)),
+                    Some(&here),
+                    true,
+                    Admitted,
+                ),
+                (
+                    "kept here, admitted by another host",
+                    Some(held(2, 9, None)),
+                    Some(&there),
+                    true,
+                    AdoptHost,
+                ),
+                (
+                    "ending, kept elsewhere, admitted here",
+                    Some(held(2, 8, ending)),
+                    Some(&here),
+                    true,
+                    AdoptHost,
+                ),
+                ("nothing kept, paired", None, None, false, Certify),
+            ];
+            for (row, kept, under, with_root, expected) in rows {
+                assert_eq!(
+                    reconnecting(kept.as_ref(), under, &host, with_root, now),
+                    expected,
+                    "{row}"
+                );
+            }
+        }
     }
 }

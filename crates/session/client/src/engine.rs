@@ -2038,247 +2038,258 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_layout_workspace_is_founded_under_the_identity_the_layout_made() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (identity, person) = identity(DeviceCapabilities::member());
-        let at = endpoint(&identity);
-        let engine = engine(state.path(), identity);
-        let workspace = WorkspaceId::new();
+    tilo_test_env::scenario! {
+        fn a_device_founds_and_hosts_its_layouts_workspaces;
 
-        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
-        // Again, as every pass over the layout does: one workspace, still the one the layout made.
-        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+        phase a_layout_workspace_is_founded_under_the_identity_the_layout_made;
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (identity, person) = identity(DeviceCapabilities::member());
+            let at = endpoint(&identity);
+            let engine = engine(state.path(), identity);
+            let workspace = WorkspaceId::new();
 
-        assert!(
-            engine.holds(workspace),
-            "a workspace made on the layout is held here"
-        );
-        assert_eq!(engine.workspaces(), vec![workspace]);
-        assert_eq!(
-            engine.owner_of(&workspace.to_string()),
-            Ok(hex::encode(person)),
-            "the workspace is the person's at this device"
-        );
-        assert!(
-            engine.may_invite(&workspace.to_string()),
-            "its owner may invite into it"
-        );
-        assert!(
-            engine.may_invite_administrator(&workspace.to_string()),
-            "its owner may make administrators of it"
-        );
-    }
+            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            // Again, as every pass over the layout does: one workspace, still the one the layout made.
+            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
 
-    /// An owner's layout makes an administrator's invitation: an Editor's link
-    /// that also makes whoever redeems it an administrator.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn an_owner_issues_an_invitation_that_makes_an_administrator() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (identity, _) = identity(DeviceCapabilities::member());
-        let at = endpoint(&identity);
-        let engine = engine(state.path(), identity);
-        let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            assert!(
+                engine.holds(workspace),
+                "a workspace made on the layout is held here"
+            );
+            assert_eq!(engine.workspaces(), vec![workspace]);
+            assert_eq!(
+                engine.owner_of(&workspace.to_string()),
+                Ok(hex::encode(person)),
+                "the workspace is the person's at this device"
+            );
+            assert!(
+                engine.may_invite(&workspace.to_string()),
+                "its owner may invite into it"
+            );
+            assert!(
+                engine.may_invite_administrator(&workspace.to_string()),
+                "its owner may make administrators of it"
+            );
+        }
 
-        let issued = pollster::block_on(engine.issue_invitation(
-            &workspace.to_string(),
-            Part::administrator(),
-            None,
-            None,
-            600,
-            &at,
-            SystemTime::now(),
-        ))
-        .expect("the owner issues an administrator's invitation");
-        assert_eq!(issued.role, Role::Editor);
-        let verified = tilo_peer_state::join::decode_and_verify_invitation_text(
-            &issued.link,
-            None,
-            &tilo_user_identity::RevocationList::new(),
-            tilo_clock::unix_now_ns(),
-        )
-        .expect("the link hands over the invitation");
-        assert!(
-            verified.administrator(),
-            "redeeming it makes the person an administrator"
-        );
-    }
+        phase a_workspace_this_device_hosts_names_its_own_host_and_commits_here;
+        {
+            use tilo_broker_core::custody::OwnerCustody as _;
 
-    #[test]
-    fn a_workspace_this_device_hosts_names_its_own_host_and_commits_here() {
-        use tilo_broker_core::custody::OwnerCustody as _;
+            let state = tempfile::tempdir().expect("a state directory");
+            let (identity, _) = identity(DeviceCapabilities::member());
+            let at = endpoint(&identity);
+            let host = identity.device_cert.device_public_key;
+            let engine = engine(state.path(), identity);
+            let workspace = WorkspaceId::new();
+            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
 
-        let state = tempfile::tempdir().expect("a state directory");
-        let (identity, _) = identity(DeviceCapabilities::member());
-        let at = endpoint(&identity);
-        let host = identity.device_cert.device_public_key;
-        let engine = engine(state.path(), identity);
-        let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
-
-        let hint = engine
-            .owner
-            .with_current(workspace, |view| view.transport_hint().cloned())
-            .expect("a workspace this device founded names where its host is reached");
-        assert_eq!(
-            hint.host.device_public_key, host,
-            "the host it names is this device, whose host is in this process"
-        );
-        engine
-            .check_custody(&engine.owner, workspace)
-            .expect("its own member acts there, its host being in this process");
-    }
-
-    /// A pass names the host of the workspaces this device hosts only when what it would name
-    /// moved: the same address on the next pass signs nothing and waits on no record's turn.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn a_pass_names_the_hosts_of_its_workspaces_only_when_the_address_moves() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (identity, _) = identity(DeviceCapabilities::member());
-        let at = endpoint(&identity);
-        let device = iroh_base::EndpointId::from_bytes(&identity.device_cert.device_public_key)
-            .expect("a device endpoint");
-        let engine = engine(state.path(), identity);
-        let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
-        let named = || {
-            engine
+            let hint = engine
                 .owner
-                .with_current(workspace, |view| Ok(view.transport_hint().cloned()))
-                .expect("a workspace this device founded")
-        };
-        let first = named();
-
-        engine.name_own_hosts(&at);
-        assert!(
-            engine.named(&[workspace], &at),
-            "the address it named is the one it keeps"
-        );
-        // The record says something else now, as a net report of the address beside the same
-        // relay would have it: one more pass at the same address writes nothing, and the pass
-        // after an address that moved names it again.
-        let elsewhere = iroh_base::EndpointAddr::new(device)
-            .with_relay_url("https://relay.example.com/".parse().expect("a relay"));
-        engine.name_own_hosts(&at);
-        assert_eq!(
-            named(),
-            first,
-            "a pass with the same address writes nothing"
-        );
-        assert!(
-            !engine.named(&[workspace], &elsewhere),
-            "an address that moved is not what it last named"
-        );
-        engine.name_own_hosts(&elsewhere);
-        assert_ne!(
-            named(),
-            first,
-            "a pass with an address that moved writes it"
-        );
-        assert!(engine.named(&[workspace], &elsewhere));
-    }
-
-    /// What this device tells its siblings of where its workspaces are hosted reads back as the
-    /// hint itself: a sibling decodes a `TransportHint` from each, and enters the workspace at the
-    /// host it names.
-    #[test]
-    fn the_host_hints_a_device_tells_decode_as_hints() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (identity, _) = identity(DeviceCapabilities::member());
-        let at = endpoint(&identity);
-        let host = identity.device_cert.device_public_key;
-        let engine = engine(state.path(), identity);
-        let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
-
-        let hints = engine.host_hints();
-        assert_eq!(hints.len(), 1, "one hint for the one workspace held");
-        let (named, bytes) = &hints[0];
-        assert_eq!(named, &workspace.to_string());
-        let hint = postcard::from_bytes::<tilo_peer_state::join::TransportHint>(bytes)
-            .expect("the hint decodes as the device that reads it decodes it");
-        assert_eq!(hint.host.device_public_key, host);
-    }
-
-    #[test]
-    fn a_workspace_this_device_hosts_without_an_address_commits_here() {
-        use tilo_broker_core::custody::OwnerCustody as _;
-
-        let state = tempfile::tempdir().expect("a state directory");
-        let (identity, _) = identity(DeviceCapabilities::member());
-        let engine = engine(state.path(), identity);
-        let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Office", None));
-
-        assert!(
-            engine.holds(workspace),
-            "a session with nowhere other devices reach it founds its layout's workspace"
-        );
-        assert!(
+                .with_current(workspace, |view| view.transport_hint().cloned())
+                .expect("a workspace this device founded names where its host is reached");
+            assert_eq!(
+                hint.host.device_public_key, host,
+                "the host it names is this device, whose host is in this process"
+            );
             engine
-                .owner
-                .with_current(workspace, |view| Ok(view.transport_hint().is_err()))
-                .expect("the workspace is held here"),
-            "its record names no host to reach until this device has one"
-        );
-        engine
-            .check_custody(&engine.owner, workspace)
-            .expect("its own member acts there, its host being in this process");
+                .check_custody(&engine.owner, workspace)
+                .expect("its own member acts there, its host being in this process");
+        }
+
+        phase the_host_hints_a_device_tells_decode_as_hints;
+        // What this device tells its siblings of where its workspaces are hosted reads back as the
+        // hint itself: a sibling decodes a `TransportHint` from each, and enters the workspace at the
+        // host it names.
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (identity, _) = identity(DeviceCapabilities::member());
+            let at = endpoint(&identity);
+            let host = identity.device_cert.device_public_key;
+            let engine = engine(state.path(), identity);
+            let workspace = WorkspaceId::new();
+            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+
+            let hints = engine.host_hints();
+            assert_eq!(hints.len(), 1, "one hint for the one workspace held");
+            let (named, bytes) = &hints[0];
+            assert_eq!(named, &workspace.to_string());
+            let hint = postcard::from_bytes::<tilo_peer_state::join::TransportHint>(bytes)
+                .expect("the hint decodes as the device that reads it decodes it");
+            assert_eq!(hint.host.device_public_key, host);
+        }
+
+        phase a_workspace_this_device_hosts_without_an_address_commits_here;
+        {
+            use tilo_broker_core::custody::OwnerCustody as _;
+
+            let state = tempfile::tempdir().expect("a state directory");
+            let (identity, _) = identity(DeviceCapabilities::member());
+            let engine = engine(state.path(), identity);
+            let workspace = WorkspaceId::new();
+            pollster::block_on(engine.found(workspace, "Office", None));
+
+            assert!(
+                engine.holds(workspace),
+                "a session with nowhere other devices reach it founds its layout's workspace"
+            );
+            assert!(
+                engine
+                    .owner
+                    .with_current(workspace, |view| Ok(view.transport_hint().is_err()))
+                    .expect("the workspace is held here"),
+                "its record names no host to reach until this device has one"
+            );
+            engine
+                .check_custody(&engine.owner, workspace)
+                .expect("its own member acts there, its host being in this process");
+        }
+
+        phase a_device_that_may_not_own_workspaces_founds_none;
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (identity, _) = identity(DeviceCapabilities::member());
+            let mut identity = identity;
+            identity.device_cert.capabilities.can_own_workspaces = false;
+            let at = endpoint(&identity);
+            let engine = engine(state.path(), identity);
+            let workspace = WorkspaceId::new();
+
+            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+
+            assert!(!engine.holds(workspace));
+            assert!(!engine.may_invite(&workspace.to_string()));
+        }
     }
 
-    #[test]
-    fn a_workspace_made_here_and_held_nowhere_else_may_be_deleted() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (identity, _) = identity(DeviceCapabilities::member());
-        let at = endpoint(&identity);
-        let engine = engine(state.path(), identity);
-        let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn an_owners_device_issues_invitations_and_names_its_hosts;
 
-        assert!(
-            engine.may_delete(workspace),
-            "its owner, in it alone, on its only device, may delete it"
-        );
-        assert_eq!(
-            engine.delete(workspace),
-            Ok(true),
-            "the record it was held in is taken out"
-        );
-        assert!(!engine.holds(workspace));
-        assert!(!engine.may_delete(workspace));
-        assert_eq!(
-            engine.delete(workspace),
-            Ok(false),
-            "a record holding nothing of it has nothing to take out"
-        );
+        phase an_owner_issues_an_invitation_that_makes_an_administrator;
+        // An owner's layout makes an administrator's invitation: an Editor's link
+        // that also makes whoever redeems it an administrator.
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (identity, _) = identity(DeviceCapabilities::member());
+            let at = endpoint(&identity);
+            let engine = engine(state.path(), identity);
+            let workspace = WorkspaceId::new();
+            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+
+            let issued = pollster::block_on(engine.issue_invitation(
+                &workspace.to_string(),
+                Part::administrator(),
+                None,
+                None,
+                600,
+                &at,
+                SystemTime::now(),
+            ))
+            .expect("the owner issues an administrator's invitation");
+            assert_eq!(issued.role, Role::Editor);
+            let verified = tilo_peer_state::join::decode_and_verify_invitation_text(
+                &issued.link,
+                None,
+                &tilo_user_identity::RevocationList::new(),
+                tilo_clock::unix_now_ns(),
+            )
+            .expect("the link hands over the invitation");
+            assert!(
+                verified.administrator(),
+                "redeeming it makes the person an administrator"
+            );
+        }
+
+        phase a_pass_names_the_hosts_of_its_workspaces_only_when_the_address_moves;
+        // A pass names the host of the workspaces this device hosts only when what it would name
+        // moved: the same address on the next pass signs nothing and waits on no record's turn.
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (identity, _) = identity(DeviceCapabilities::member());
+            let at = endpoint(&identity);
+            let device = iroh_base::EndpointId::from_bytes(&identity.device_cert.device_public_key)
+                .expect("a device endpoint");
+            let engine = engine(state.path(), identity);
+            let workspace = WorkspaceId::new();
+            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            let named = || {
+                engine
+                    .owner
+                    .with_current(workspace, |view| Ok(view.transport_hint().cloned()))
+                    .expect("a workspace this device founded")
+            };
+            let first = named();
+
+            engine.name_own_hosts(&at);
+            assert!(
+                engine.named(&[workspace], &at),
+                "the address it named is the one it keeps"
+            );
+            // The record says something else now, as a net report of the address beside the same
+            // relay would have it: one more pass at the same address writes nothing, and the pass
+            // after an address that moved names it again.
+            let elsewhere = iroh_base::EndpointAddr::new(device)
+                .with_relay_url("https://relay.example.com/".parse().expect("a relay"));
+            engine.name_own_hosts(&at);
+            assert_eq!(
+                named(),
+                first,
+                "a pass with the same address writes nothing"
+            );
+            assert!(
+                !engine.named(&[workspace], &elsewhere),
+                "an address that moved is not what it last named"
+            );
+            engine.name_own_hosts(&elsewhere);
+            assert_ne!(
+                named(),
+                first,
+                "a pass with an address that moved writes it"
+            );
+            assert!(engine.named(&[workspace], &elsewhere));
+        }
     }
 
-    #[test]
-    fn a_workspace_this_device_holds_no_record_of_may_not_be_deleted() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (identity, _) = identity(DeviceCapabilities::member());
-        let engine = engine(state.path(), identity);
+    tilo_test_env::scenario! {
+        fn a_workspace_is_deleted_only_by_the_device_that_alone_holds_it;
 
-        assert!(!engine.may_delete(WorkspaceId::new()));
-    }
+        phase a_workspace_made_here_and_held_nowhere_else_may_be_deleted;
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (identity, _) = identity(DeviceCapabilities::member());
+            let at = endpoint(&identity);
+            let engine = engine(state.path(), identity);
+            let workspace = WorkspaceId::new();
+            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
 
-    #[test]
-    fn a_device_that_may_not_own_workspaces_founds_none() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (identity, _) = identity(DeviceCapabilities::member());
-        let mut identity = identity;
-        identity.device_cert.capabilities.can_own_workspaces = false;
-        let at = endpoint(&identity);
-        let engine = engine(state.path(), identity);
-        let workspace = WorkspaceId::new();
+            assert!(
+                engine.may_delete(workspace),
+                "its owner, in it alone, on its only device, may delete it"
+            );
+            assert_eq!(
+                engine.delete(workspace),
+                Ok(true),
+                "the record it was held in is taken out"
+            );
+            assert!(!engine.holds(workspace));
+            assert!(!engine.may_delete(workspace));
+            assert_eq!(
+                engine.delete(workspace),
+                Ok(false),
+                "a record holding nothing of it has nothing to take out"
+            );
+        }
 
-        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+        phase a_workspace_this_device_holds_no_record_of_may_not_be_deleted;
+        {
+            let state = tempfile::tempdir().expect("a state directory");
+            let (identity, _) = identity(DeviceCapabilities::member());
+            let engine = engine(state.path(), identity);
 
-        assert!(!engine.holds(workspace));
-        assert!(!engine.may_invite(&workspace.to_string()));
+            assert!(!engine.may_delete(WorkspaceId::new()));
+        }
     }
 
     /// A machine copied from a device, before the workspace admits it, reads what the copy holds,

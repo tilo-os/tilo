@@ -392,58 +392,63 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_connection_sends_each_write_once_and_a_new_one_sends_it_again() {
-        let mut sending = Sending::default();
-        let queued = || std::iter::once([1; 32]);
-        assert!(!sending.pass(queued(), std::iter::once(write(1)), |_| false));
-        let mut sent = 0;
-        for _ in 0..2 {
-            assert!(sending.pass(queued(), std::iter::once(write(1)), |taken| {
-                assert_eq!(taken.bytes, b"exact signed bytes");
-                sent += 1;
-                true
-            }));
-        }
-        assert_eq!(
-            sent, 1,
-            "a write the transport took leaves once per connection"
-        );
-        assert!(
-            Sending::default().pass(queued(), std::iter::once(write(1)), |_| {
-                sent += 1;
-                true
-            })
-        );
-        assert_eq!(sent, 2, "the next connection sends it again");
-        sending.pass(std::iter::empty(), std::iter::empty(), |_| {
-            panic!("retired")
-        });
-        assert!(sending.sent.is_empty(), "what left custody is forgotten");
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_connection_sends_what_is_in_custody_once;
 
-    #[test]
-    fn a_write_held_back_while_in_custody_is_not_sent_twice() {
-        let mut sending = Sending::default();
-        let mut sent = 0;
-        let mut count = |_: Outgoing<'_>| {
-            sent += 1;
-            true
-        };
-        sending.pass(
-            std::iter::once([3; 32]),
-            std::iter::once(write(3)),
-            &mut count,
-        );
-        sending.pass(std::iter::once([3; 32]), std::iter::empty(), &mut count);
-        sending.pass(
-            std::iter::once([3; 32]),
-            std::iter::once(write(3)),
-            &mut count,
-        );
-        assert_eq!(sent, 1);
-        assert_eq!(sending.answered(&[3; 16]), Some([3; 32]));
-        assert_eq!(sending.answered(&[3; 16]), None, "an answer is taken once");
+        phase a_connection_sends_each_write_once_and_a_new_one_sends_it_again;
+        {
+            let mut sending = Sending::default();
+            let queued = || std::iter::once([1; 32]);
+            assert!(!sending.pass(queued(), std::iter::once(write(1)), |_| false));
+            let mut sent = 0;
+            for _ in 0..2 {
+                assert!(sending.pass(queued(), std::iter::once(write(1)), |taken| {
+                    assert_eq!(taken.bytes, b"exact signed bytes");
+                    sent += 1;
+                    true
+                }));
+            }
+            assert_eq!(
+                sent, 1,
+                "a write the transport took leaves once per connection"
+            );
+            assert!(
+                Sending::default().pass(queued(), std::iter::once(write(1)), |_| {
+                    sent += 1;
+                    true
+                })
+            );
+            assert_eq!(sent, 2, "the next connection sends it again");
+            sending.pass(std::iter::empty(), std::iter::empty(), |_| {
+                panic!("retired")
+            });
+            assert!(sending.sent.is_empty(), "what left custody is forgotten");
+        }
+
+        phase a_write_held_back_while_in_custody_is_not_sent_twice;
+        {
+            let mut sending = Sending::default();
+            let mut sent = 0;
+            let mut count = |_: Outgoing<'_>| {
+                sent += 1;
+                true
+            };
+            sending.pass(
+                std::iter::once([3; 32]),
+                std::iter::once(write(3)),
+                &mut count,
+            );
+            sending.pass(std::iter::once([3; 32]), std::iter::empty(), &mut count);
+            sending.pass(
+                std::iter::once([3; 32]),
+                std::iter::once(write(3)),
+                &mut count,
+            );
+            assert_eq!(sent, 1);
+            assert_eq!(sending.answered(&[3; 16]), Some([3; 32]));
+            assert_eq!(sending.answered(&[3; 16]), None, "an answer is taken once");
+        }
     }
 
     #[test]

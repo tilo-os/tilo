@@ -831,157 +831,165 @@ pub fn roster_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Roster,
 mod tests {
     use super::*;
 
-    /// What the plane heard is the groups' governance and nothing else.
-    #[test]
-    fn only_governance_reaches_the_group_service() {
-        let link = KeyLink::new();
-        let hello = NeighbourMsg::IdentityHello {
-            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            cert: Box::new(device_cert()),
-            revocations: Vec::new(),
-        };
-        link.heard(&hello);
-        assert!(
-            link.take_inbound().is_empty(),
-            "an identity hello is the plane's own, not the groups'"
-        );
-        let workspace = ModelWorkspaceId::new();
-        link.heard(&NeighbourMsg::MlsGovernance {
-            workspace: workspace.to_string(),
-            frame: Box::new(collab_types::MlsGovernanceFrame {
-                version: collab_types::MLS_GOVERNANCE_VERSION,
-                workspace: collab_types::WorkspaceId::new(),
-                previous_frame_digest: [0; 32],
-                epoch: 1,
-                action: collab_types::MlsGovernanceAction::Genesis,
-                signed_by: Ed25519PublicKey::from_bytes([2; 32]),
-                signature: collab_types::Signature([0; 64]),
-            }),
-            delivery: 1,
-        });
-        assert_eq!(
-            link.take_inbound().len(),
-            1,
-            "a governance frame waits for the next settle"
-        );
-        assert!(link.take_inbound().is_empty(), "and is taken once");
-    }
+    tilo_test_env::scenario! {
+        fn governance_reaches_the_groups_through_the_key_link;
 
-    /// A roster is told when its workspace moved, and one that moved without its devices changing
-    /// is told nothing.
-    #[test]
-    fn a_roster_moves_only_when_its_devices_do() {
-        let workspace = topic_of(ModelWorkspaceId::new());
-        let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
-        let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
-        let mut rosters = Rosters::default();
-        let one: Roster = vec![(device, None)];
-        let both: Roster = vec![(device, None), (other, None)];
-        assert!(
-            rosters.moved(workspace, &one),
-            "a workspace never told is told"
-        );
-        rosters.told.insert(workspace, both.clone());
-        assert!(
-            !rosters.moved(workspace, &both),
-            "the roster the plane holds is not told again"
-        );
-        assert!(
-            rosters.moved(workspace, &one),
-            "a device the workspace removed leaves, and the plane is told"
-        );
-    }
-
-    /// A roster the plane did not take is not remembered as told: the workspace is read again and
-    /// the roster told when the plane takes it.
-    #[test]
-    fn a_roster_the_plane_did_not_take_is_told_again() {
-        let link = KeyLink::new();
-        let workspace = ModelWorkspaceId::new();
-        let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
-        let mut rosters = Rosters::default();
-        rosters.tell(&link, workspace, vec![(device, None)]);
-        assert_eq!(
-            link.take_changed(),
-            vec![workspace],
-            "the plane took nothing, so the workspace is read again"
-        );
-
-        let (outgoing, mut sent) = tokio::sync::mpsc::unbounded_channel();
-        link.attach(std::sync::Arc::new(outgoing));
-        rosters.tell(&link, workspace, vec![(device, None)]);
-        assert!(
-            link.take_changed().is_empty(),
-            "once the plane takes the roster, the workspace is not read again"
-        );
-        assert!(
-            matches!(sent.try_recv(), Ok(Cmd::Roster { .. })),
-            "and the plane was told it"
-        );
-    }
-
-    /// The members linked to a device that hosts their workspace hear a group's governance
-    /// through that device alone: what it says and what the plane brings it reach them, and what
-    /// they say reaches its key service and, on the plane, the workspace's own host.
-    #[test]
-    fn governance_passes_between_the_plane_and_the_members_linked_here() {
-        #[derive(Default)]
-        struct Linked(Mutex<Vec<NeighbourMsg>>);
-        impl Members for Linked {
-            fn carry(&self, message: &NeighbourMsg) {
-                self.0.lock_recover().push(message.clone());
-            }
+        phase only_governance_reaches_the_group_service;
+        // What the plane heard is the groups' governance and nothing else.
+        {
+            let link = KeyLink::new();
+            let hello = NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                cert: Box::new(device_cert()),
+                revocations: Vec::new(),
+            };
+            link.heard(&hello);
+            assert!(
+                link.take_inbound().is_empty(),
+                "an identity hello is the plane's own, not the groups'"
+            );
+            let workspace = ModelWorkspaceId::new();
+            link.heard(&NeighbourMsg::MlsGovernance {
+                workspace: workspace.to_string(),
+                frame: Box::new(collab_types::MlsGovernanceFrame {
+                    version: collab_types::MLS_GOVERNANCE_VERSION,
+                    workspace: collab_types::WorkspaceId::new(),
+                    previous_frame_digest: [0; 32],
+                    epoch: 1,
+                    action: collab_types::MlsGovernanceAction::Genesis,
+                    signed_by: Ed25519PublicKey::from_bytes([2; 32]),
+                    signature: collab_types::Signature([0; 64]),
+                }),
+                delivery: 1,
+            });
+            assert_eq!(
+                link.take_inbound().len(),
+                1,
+                "a governance frame waits for the next settle"
+            );
+            assert!(link.take_inbound().is_empty(), "and is taken once");
         }
-        let link = KeyLink::new();
-        let (outgoing, mut said) = tokio::sync::mpsc::unbounded_channel();
-        link.attach(std::sync::Arc::new(outgoing));
-        let members = Arc::new(Linked::default());
-        link.serve_members(Arc::clone(&members) as Arc<dyn Members>);
-        let workspace = ModelWorkspaceId::new();
-        let frame = |epoch| NeighbourMsg::MlsGovernance {
-            workspace: workspace.to_string(),
-            frame: Box::new(collab_types::MlsGovernanceFrame {
-                version: collab_types::MLS_GOVERNANCE_VERSION,
-                workspace: collab_types::WorkspaceId::new(),
-                previous_frame_digest: [0; 32],
-                epoch,
-                action: collab_types::MlsGovernanceAction::Genesis,
-                signed_by: Ed25519PublicKey::from_bytes([2; 32]),
-                signature: collab_types::Signature([0; 64]),
-            }),
-            delivery: epoch,
-        };
-        let published = |said: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>| {
-            let mut published = Vec::new();
-            while let Ok(command) = said.try_recv() {
-                if let Cmd::Publish { msg, .. } = command {
-                    published.push(*msg);
+
+        phase governance_passes_between_the_plane_and_the_members_linked_here;
+        // The members linked to a device that hosts their workspace hear a group's governance
+        // through that device alone: what it says and what the plane brings it reach them, and what
+        // they say reaches its key service and, on the plane, the workspace's own host.
+        {
+            #[derive(Default)]
+            struct Linked(Mutex<Vec<NeighbourMsg>>);
+            impl Members for Linked {
+                fn carry(&self, message: &NeighbourMsg) {
+                    self.0.lock_recover().push(message.clone());
                 }
             }
-            published
-        };
+            let link = KeyLink::new();
+            let (outgoing, mut said) = tokio::sync::mpsc::unbounded_channel();
+            link.attach(std::sync::Arc::new(outgoing));
+            let members = Arc::new(Linked::default());
+            link.serve_members(Arc::clone(&members) as Arc<dyn Members>);
+            let workspace = ModelWorkspaceId::new();
+            let frame = |epoch| NeighbourMsg::MlsGovernance {
+                workspace: workspace.to_string(),
+                frame: Box::new(collab_types::MlsGovernanceFrame {
+                    version: collab_types::MLS_GOVERNANCE_VERSION,
+                    workspace: collab_types::WorkspaceId::new(),
+                    previous_frame_digest: [0; 32],
+                    epoch,
+                    action: collab_types::MlsGovernanceAction::Genesis,
+                    signed_by: Ed25519PublicKey::from_bytes([2; 32]),
+                    signature: collab_types::Signature([0; 64]),
+                }),
+                delivery: epoch,
+            };
+            let published = |said: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>| {
+                let mut published = Vec::new();
+                while let Ok(command) = said.try_recv() {
+                    if let Cmd::Publish { msg, .. } = command {
+                        published.push(*msg);
+                    }
+                }
+                published
+            };
 
-        // What this device's key service says goes out on the plane and to the members.
-        let own = frame(1);
-        assert!(link.publish(own.clone()));
-        assert_eq!(published(&mut said), vec![own.clone()]);
-        assert_eq!(*members.0.lock_recover(), vec![own]);
+            // What this device's key service says goes out on the plane and to the members.
+            let own = frame(1);
+            assert!(link.publish(own.clone()));
+            assert_eq!(published(&mut said), vec![own.clone()]);
+            assert_eq!(*members.0.lock_recover(), vec![own]);
 
-        // What the plane brings reaches the key service and the members, and is not said
-        // again on the plane.
-        let from_the_host = frame(2);
-        link.heard(&from_the_host);
-        assert_eq!(link.take_inbound().len(), 1);
-        assert!(published(&mut said).is_empty());
-        assert_eq!(members.0.lock_recover().last(), Some(&from_the_host));
+            // What the plane brings reaches the key service and the members, and is not said
+            // again on the plane.
+            let from_the_host = frame(2);
+            link.heard(&from_the_host);
+            assert_eq!(link.take_inbound().len(), 1);
+            assert!(published(&mut said).is_empty());
+            assert_eq!(members.0.lock_recover().last(), Some(&from_the_host));
 
-        // What a member says reaches the key service and goes on to the workspace's host; its
-        // link already sent it to the other members.
-        let from_a_member = frame(3);
-        link.heard_from_member(&from_a_member);
-        assert_eq!(link.take_inbound().len(), 1);
-        assert_eq!(published(&mut said), vec![from_a_member]);
-        assert_eq!(members.0.lock_recover().len(), 2);
+            // What a member says reaches the key service and goes on to the workspace's host; its
+            // link already sent it to the other members.
+            let from_a_member = frame(3);
+            link.heard_from_member(&from_a_member);
+            assert_eq!(link.take_inbound().len(), 1);
+            assert_eq!(published(&mut said), vec![from_a_member]);
+            assert_eq!(members.0.lock_recover().len(), 2);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_roster_is_told_to_the_plane_when_it_moved;
+
+        phase a_roster_moves_only_when_its_devices_do;
+        // A roster is told when its workspace moved, and one that moved without its devices changing
+        // is told nothing.
+        {
+            let workspace = topic_of(ModelWorkspaceId::new());
+            let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
+            let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
+            let mut rosters = Rosters::default();
+            let one: Roster = vec![(device, None)];
+            let both: Roster = vec![(device, None), (other, None)];
+            assert!(
+                rosters.moved(workspace, &one),
+                "a workspace never told is told"
+            );
+            rosters.told.insert(workspace, both.clone());
+            assert!(
+                !rosters.moved(workspace, &both),
+                "the roster the plane holds is not told again"
+            );
+            assert!(
+                rosters.moved(workspace, &one),
+                "a device the workspace removed leaves, and the plane is told"
+            );
+        }
+
+        phase a_roster_the_plane_did_not_take_is_told_again;
+        // A roster the plane did not take is not remembered as told: the workspace is read again and
+        // the roster told when the plane takes it.
+        {
+            let link = KeyLink::new();
+            let workspace = ModelWorkspaceId::new();
+            let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
+            let mut rosters = Rosters::default();
+            rosters.tell(&link, workspace, vec![(device, None)]);
+            assert_eq!(
+                link.take_changed(),
+                vec![workspace],
+                "the plane took nothing, so the workspace is read again"
+            );
+
+            let (outgoing, mut sent) = tokio::sync::mpsc::unbounded_channel();
+            link.attach(std::sync::Arc::new(outgoing));
+            rosters.tell(&link, workspace, vec![(device, None)]);
+            assert!(
+                link.take_changed().is_empty(),
+                "once the plane takes the roster, the workspace is not read again"
+            );
+            assert!(
+                matches!(sent.try_recv(), Ok(Cmd::Roster { .. })),
+                "and the plane was told it"
+            );
+        }
     }
 
     fn device_cert() -> tilo_user_identity::DeviceCert {

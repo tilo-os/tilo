@@ -224,151 +224,155 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_link_s_secrets_choose_the_way_before_any_account_is_read() {
-        let unread = Here {
-            accounts: None,
-            ..here(true, false, 0)
-        };
-        let named = at(Some("r"));
-        assert_eq!(
-            way_in(
-                &Link {
-                    malformed: true,
-                    invite: true,
-                    ..named.clone()
-                },
-                &unread
-            ),
-            Way::Malformed
-        );
-        assert_eq!(
-            way_in(
-                &Link {
-                    invite: true,
-                    ..named.clone()
-                },
-                &unread
-            ),
-            Way::Invitation
-        );
-        assert_eq!(
-            way_in(
-                &Link {
-                    ticket: true,
-                    ..named.clone()
-                },
-                &unread
-            ),
-            Way::Ticket
-        );
-        assert_eq!(
-            way_in(
-                &Link {
-                    ticket: true,
-                    ..named.clone()
-                },
-                &Here {
-                    can: Can {
-                        tickets: false,
-                        ..unread.can
+    tilo_test_env::scenario! {
+        fn the_way_in_is_chosen_from_the_link_and_who_is_here;
+
+        phase a_link_s_secrets_choose_the_way_before_any_account_is_read;
+        {
+            let unread = Here {
+                accounts: None,
+                ..here(true, false, 0)
+            };
+            let named = at(Some("r"));
+            assert_eq!(
+                way_in(
+                    &Link {
+                        malformed: true,
+                        invite: true,
+                        ..named.clone()
                     },
-                    ..unread
-                }
-            ),
-            Way::NoTickets
-        );
-        let pair = |pairing| Link {
-            pair: Some(pairing),
-            ..named.clone()
-        };
-        assert_eq!(way_in(&pair(Pairing::Named), &unread), Way::Pair);
-        assert_eq!(
-            way_in(&pair(Pairing::Damaged), &unread),
-            Way::MalformedPairing
-        );
-        assert_eq!(
-            way_in(
-                &pair(Pairing::Named),
-                &Here {
-                    can: Can {
-                        pairing: false,
-                        ..unread.can
+                    &unread
+                ),
+                Way::Malformed
+            );
+            assert_eq!(
+                way_in(
+                    &Link {
+                        invite: true,
+                        ..named.clone()
                     },
-                    ..unread
-                }
-            ),
-            Way::NoPairing
-        );
-        assert_eq!(
-            way_in(&named, &unread),
-            Way::Accounts,
-            "only now are accounts read"
-        );
-    }
+                    &unread
+                ),
+                Way::Invitation
+            );
+            assert_eq!(
+                way_in(
+                    &Link {
+                        ticket: true,
+                        ..named.clone()
+                    },
+                    &unread
+                ),
+                Way::Ticket
+            );
+            assert_eq!(
+                way_in(
+                    &Link {
+                        ticket: true,
+                        ..named.clone()
+                    },
+                    &Here {
+                        can: Can {
+                            tickets: false,
+                            ..unread.can
+                        },
+                        ..unread
+                    }
+                ),
+                Way::NoTickets
+            );
+            let pair = |pairing| Link {
+                pair: Some(pairing),
+                ..named.clone()
+            };
+            assert_eq!(way_in(&pair(Pairing::Named), &unread), Way::Pair);
+            assert_eq!(
+                way_in(&pair(Pairing::Damaged), &unread),
+                Way::MalformedPairing
+            );
+            assert_eq!(
+                way_in(
+                    &pair(Pairing::Named),
+                    &Here {
+                        can: Can {
+                            pairing: false,
+                            ..unread.can
+                        },
+                        ..unread
+                    }
+                ),
+                Way::NoPairing
+            );
+            assert_eq!(
+                way_in(&named, &unread),
+                Way::Accounts,
+                "only now are accounts read"
+            );
+        }
 
-    #[test]
-    fn the_own_desktop_a_sealed_link_and_a_bare_entry_have_one_way_each() {
-        let own = Link {
-            scope: Scope::Own,
-            ..at(None)
-        };
-        assert_eq!(way_in(&own, &Here::default()), Way::OwnDesktop);
-        let sealed = Link {
-            scope: Scope::Sealed,
-            invite: true,
-            ..at(None)
-        };
-        assert_eq!(way_in(&sealed, &Here::default()), Way::SealedInvitation);
-        assert_eq!(
-            way_in(&at(None), &here(true, false, 1)),
-            Way::Door,
-            "the door names the workspace"
-        );
-        assert_eq!(
-            way_in(
-                &Link {
-                    invite: true,
-                    ..at(None)
-                },
-                &here(false, false, 1)
-            ),
-            Way::NoAccess,
-            "a bare entry has no way in but its host's door"
-        );
-    }
+        phase the_own_desktop_a_sealed_link_and_a_bare_entry_have_one_way_each;
+        {
+            let own = Link {
+                scope: Scope::Own,
+                ..at(None)
+            };
+            assert_eq!(way_in(&own, &Here::default()), Way::OwnDesktop);
+            let sealed = Link {
+                scope: Scope::Sealed,
+                invite: true,
+                ..at(None)
+            };
+            assert_eq!(way_in(&sealed, &Here::default()), Way::SealedInvitation);
+            assert_eq!(
+                way_in(&at(None), &here(true, false, 1)),
+                Way::Door,
+                "the door names the workspace"
+            );
+            assert_eq!(
+                way_in(
+                    &Link {
+                        invite: true,
+                        ..at(None)
+                    },
+                    &here(false, false, 1)
+                ),
+                Way::NoAccess,
+                "a bare entry has no way in but its host's door"
+            );
+        }
 
-    #[test]
-    fn a_member_connects_and_anyone_else_comes_back_as_the_person_or_asks_the_door() {
-        let named = at(Some("r"));
-        assert_eq!(way_in(&named, &here(true, false, 1)), Way::Member);
-        assert_eq!(way_in(&named, &here(true, false, 0)), Way::Door);
-        assert_eq!(
-            way_in(&named, &here(true, true, 0)),
-            Way::Reconnect,
-            "entered before: as the person first"
-        );
-        assert_eq!(way_in(&named, &here(false, false, 0)), Way::Reconnect);
-    }
+        phase a_member_connects_and_anyone_else_comes_back_as_the_person_or_asks_the_door;
+        {
+            let named = at(Some("r"));
+            assert_eq!(way_in(&named, &here(true, false, 1)), Way::Member);
+            assert_eq!(way_in(&named, &here(true, false, 0)), Way::Door);
+            assert_eq!(
+                way_in(&named, &here(true, true, 0)),
+                Way::Reconnect,
+                "entered before: as the person first"
+            );
+            assert_eq!(way_in(&named, &here(false, false, 0)), Way::Reconnect);
+        }
 
-    #[test]
-    fn a_failed_way_ends_in_the_door_or_no_access() {
-        assert_eq!(after(Failed::Member, &here(true, false, 1)), Way::NoAccess);
-        assert_eq!(after(Failed::Reconnect, &here(true, true, 0)), Way::Door);
-        assert_eq!(
-            after(Failed::Reconnect, &here(false, false, 0)),
-            Way::NoAccess
-        );
-    }
+        phase a_failed_way_ends_in_the_door_or_no_access;
+        {
+            assert_eq!(after(Failed::Member, &here(true, false, 1)), Way::NoAccess);
+            assert_eq!(after(Failed::Reconnect, &here(true, true, 0)), Way::Door);
+            assert_eq!(
+                after(Failed::Reconnect, &here(false, false, 0)),
+                Way::NoAccess
+            );
+        }
 
-    #[test]
-    fn a_link_is_followed_only_into_the_workspace_it_names() {
-        assert!(as_asked(Some("r"), Some("r")));
-        assert!(!as_asked(Some("r"), Some("other")));
-        assert!(
-            as_asked(None, Some("other")),
-            "a bare entry goes where the door admits"
-        );
-        assert!(as_asked(Some("r"), None));
+        phase a_link_is_followed_only_into_the_workspace_it_names;
+        {
+            assert!(as_asked(Some("r"), Some("r")));
+            assert!(!as_asked(Some("r"), Some("other")));
+            assert!(
+                as_asked(None, Some("other")),
+                "a bare entry goes where the door admits"
+            );
+            assert!(as_asked(Some("r"), None));
+        }
     }
 }

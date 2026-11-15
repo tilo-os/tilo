@@ -201,56 +201,60 @@ pub mod lines {
     mod tests {
         use super::*;
 
-        /// Each request is said as what the run is at now, on what.
-        #[test]
-        fn a_request_is_said_as_what_the_run_is_doing() {
-            assert_eq!(looking(None), "Looking at the apps");
-            assert_eq!(looking(Some("so.tilo.terminal")), "Looking at Terminal");
-            assert_eq!(reading("so.tilo.notes"), "Reading Notes");
-            assert_eq!(searching(" invoices "), "Searching for invoices");
-            assert_eq!(waiting(), "Waiting");
-            assert_eq!(
-                doing("so.tilo.sheets", tilo_actions::CREATE_ACTION, None),
-                "Creating in Sheets"
-            );
-            assert_eq!(
-                doing("so.tilo.word-processor", "append-paragraph", None),
-                "Working in Word processor",
-                "an app is named in words: its id's last part as a person reads it"
-            );
-            let command = serde_json::json!({"command": "cargo build"});
-            assert_eq!(
-                doing("so.tilo.terminal", "run", Some(&command)),
-                "Running cargo build"
-            );
-            assert_eq!(
-                doing("so.tilo.terminal", "run", None),
-                "Working in Terminal"
-            );
-            assert_eq!(failed("Working in Sheets"), "Working in Sheets (failed)");
-        }
+        tilo_test_env::scenario! {
+            fn a_runs_lines_are_said_in_a_persons_words;
 
-        /// A step is said in the catalogue's words for its kind, on the record it acts in:
-        /// "Writing in Trip plan", never words assembled from the action's English label.
-        #[test]
-        fn a_step_is_said_on_the_record_it_acts_in() {
-            assert_eq!(
-                step(&Step::new(StepKind::Write, Some("Trip plan"))),
-                "Writing in Trip plan"
-            );
-            assert_eq!(
-                step(&Step::new(StepKind::Delete, Some("Trip plan"))),
-                "Deleting Trip plan"
-            );
-            let long = step(&Step::new(StepKind::Write, Some(&"x".repeat(200))));
-            assert!(long.ends_with('…') && long.chars().count() <= SHOWN_CHARS);
-        }
+            phase a_request_is_said_as_what_the_run_is_doing;
+            // Each request is said as what the run is at now, on what.
+            {
+                assert_eq!(looking(None), "Looking at the apps");
+                assert_eq!(looking(Some("so.tilo.terminal")), "Looking at Terminal");
+                assert_eq!(reading("so.tilo.notes"), "Reading Notes");
+                assert_eq!(searching(" invoices "), "Searching for invoices");
+                assert_eq!(waiting(), "Waiting");
+                assert_eq!(
+                    doing("so.tilo.sheets", tilo_actions::CREATE_ACTION, None),
+                    "Creating in Sheets"
+                );
+                assert_eq!(
+                    doing("so.tilo.word-processor", "append-paragraph", None),
+                    "Working in Word processor",
+                    "an app is named in words: its id's last part as a person reads it"
+                );
+                let command = serde_json::json!({"command": "cargo build"});
+                assert_eq!(
+                    doing("so.tilo.terminal", "run", Some(&command)),
+                    "Running cargo build"
+                );
+                assert_eq!(
+                    doing("so.tilo.terminal", "run", None),
+                    "Working in Terminal"
+                );
+                assert_eq!(failed("Working in Sheets"), "Working in Sheets (failed)");
+            }
 
-        /// A long line is cut where a person stops reading.
-        #[test]
-        fn a_long_line_is_cut_where_a_person_stops_reading() {
-            let long = searching(&"x".repeat(200));
-            assert!(long.ends_with('…') && long.chars().count() <= SHOWN_CHARS);
+            phase a_step_is_said_on_the_record_it_acts_in;
+            // A step is said in the catalogue's words for its kind, on the record it acts in:
+            // "Writing in Trip plan", never words assembled from the action's English label.
+            {
+                assert_eq!(
+                    step(&Step::new(StepKind::Write, Some("Trip plan"))),
+                    "Writing in Trip plan"
+                );
+                assert_eq!(
+                    step(&Step::new(StepKind::Delete, Some("Trip plan"))),
+                    "Deleting Trip plan"
+                );
+                let long = step(&Step::new(StepKind::Write, Some(&"x".repeat(200))));
+                assert!(long.ends_with('…') && long.chars().count() <= SHOWN_CHARS);
+            }
+
+            phase a_long_line_is_cut_where_a_person_stops_reading;
+            // A long line is cut where a person stops reading.
+            {
+                let long = searching(&"x".repeat(200));
+                assert!(long.ends_with('…') && long.chars().count() <= SHOWN_CHARS);
+            }
         }
 
         use super::super::SHOWN_CHARS;
@@ -303,123 +307,127 @@ mod tests {
             .collect()
     }
 
-    /// An action is narrated as work a page admits from the agent that did
-    /// it, named as a person reads it, by the execution it is.
-    #[test]
-    fn an_action_is_narrated_as_the_agents_work_on_its_record() {
-        let invocation = InvocationId::new();
-        let action = ActionAddress::new("workbook", "new-sheet");
-        let event = frame(
-            &Narrated {
-                agent: "Claude Code",
-                invocation,
-                app: "so.tilo.sheets",
-                action: &action,
-                phase: InteractionPhase::Applying,
-                on_behalf: None,
-            },
-            3,
-            1_700_000_000_000,
-        )
-        .expect("a well-formed action is narrated");
-        assert_eq!((event.execution, event.seq), (invocation.0, 3));
-        let agent = [7; 32];
-        let admitted = admit(&here(agent, [8; 32]), agent, &event).expect("admitted");
-        assert_eq!(admitted.invocation, invocation);
-        assert_eq!(admitted.action.label, "New sheet");
-        assert_eq!(admitted.resource.id, "workbook");
-        assert_eq!(admitted.resource.label, "Sheets");
-        assert_eq!(admitted.phase, InteractionPhase::Applying);
-    }
+    tilo_test_env::scenario! {
+        fn narrated_work_is_drawn_only_as_the_member_that_did_it;
 
-    /// Narrated work is drawn only as the agent here that published it: a
-    /// person, a stranger, or work naming another execution is not drawn,
-    /// and whoever the work claims to be, it is that agent's.
-    #[test]
-    fn only_an_agent_here_narrates_work_and_only_as_itself() {
-        let (agent, person, stranger) = ([7; 32], [8; 32], [9; 32]);
-        let present = here(agent, person);
-        let action = ActionAddress::new("workbook", "new-sheet");
-        let invocation = InvocationId::new();
-        let event = frame(
-            &Narrated {
-                agent: "someone-else",
-                invocation,
-                app: "so.tilo.sheets",
-                action: &action,
-                phase: InteractionPhase::Committed,
-                on_behalf: None,
-            },
-            1,
-            1,
-        )
-        .unwrap();
+        phase an_action_is_narrated_as_the_agents_work_on_its_record;
+        // An action is narrated as work a page admits from the agent that did
+        // it, named as a person reads it, by the execution it is.
+        {
+            let invocation = InvocationId::new();
+            let action = ActionAddress::new("workbook", "new-sheet");
+            let event = frame(
+                &Narrated {
+                    agent: "Claude Code",
+                    invocation,
+                    app: "so.tilo.sheets",
+                    action: &action,
+                    phase: InteractionPhase::Applying,
+                    on_behalf: None,
+                },
+                3,
+                1_700_000_000_000,
+            )
+            .expect("a well-formed action is narrated");
+            assert_eq!((event.execution, event.seq), (invocation.0, 3));
+            let agent = [7; 32];
+            let admitted = admit(&here(agent, [8; 32]), agent, &event).expect("admitted");
+            assert_eq!(admitted.invocation, invocation);
+            assert_eq!(admitted.action.label, "New sheet");
+            assert_eq!(admitted.resource.id, "workbook");
+            assert_eq!(admitted.resource.label, "Sheets");
+            assert_eq!(admitted.phase, InteractionPhase::Applying);
+        }
 
-        let admitted = admit(&present, agent, &event).expect("the agent's work is drawn");
-        assert_eq!(
-            admitted.actor,
-            Acting::agent(hex::encode(agent)),
-            "bound to the publisher"
-        );
+        phase only_an_agent_here_narrates_work_and_only_as_itself;
+        // Narrated work is drawn only as the agent here that published it: a
+        // person, a stranger, or work naming another execution is not drawn,
+        // and whoever the work claims to be, it is that agent's.
+        {
+            let (agent, person, stranger) = ([7; 32], [8; 32], [9; 32]);
+            let present = here(agent, person);
+            let action = ActionAddress::new("workbook", "new-sheet");
+            let invocation = InvocationId::new();
+            let event = frame(
+                &Narrated {
+                    agent: "someone-else",
+                    invocation,
+                    app: "so.tilo.sheets",
+                    action: &action,
+                    phase: InteractionPhase::Committed,
+                    on_behalf: None,
+                },
+                1,
+                1,
+            )
+            .unwrap();
 
-        assert!(
-            admit(&present, person, &event).is_none(),
-            "a person narrates no work"
-        );
-        assert!(
-            admit(&present, stranger, &event).is_none(),
-            "nor does a stranger"
-        );
-        let mut elsewhere = event;
-        elsewhere.execution = InvocationId::new().0;
-        assert!(
-            admit(&present, agent, &elsewhere).is_none(),
-            "work that names another execution is not drawn"
-        );
-        let mut malformed = elsewhere;
-        malformed.execution = invocation.0;
-        malformed.interaction_json = "{}".into();
-        assert!(admit(&present, agent, &malformed).is_none());
-    }
+            let admitted = admit(&present, agent, &event).expect("the agent's work is drawn");
+            assert_eq!(
+                admitted.actor,
+                Acting::agent(hex::encode(agent)),
+                "bound to the publisher"
+            );
 
-    /// Work the workspace's host narrates for a run is the member it speaks
-    /// for that run; the same frame from any device the board did not take
-    /// as that run's speaker is not drawn.
-    #[test]
-    fn the_host_narrates_a_run_as_the_member_it_speaks_for() {
-        let (host, other) = ([5; 32], [6; 32]);
-        let run = "agent-run:7";
-        let stand_in = collab_types::presence::stand_in(host, run);
-        let present = vec![Shown {
-            publisher: hex::encode(stand_in),
-            epoch: 1,
-            agent: true,
-            spoken_by: Some(hex::encode(host)),
-            label: "Visa backend".into(),
-            ..Shown::default()
-        }];
-        let action = ActionAddress::new("workbook", "new-sheet");
-        let event = frame(
-            &Narrated {
-                agent: "Visa backend",
-                invocation: InvocationId::new(),
-                app: "so.tilo.sheets",
-                action: &action,
-                phase: InteractionPhase::Committed,
-                on_behalf: Some(run),
-            },
-            1,
-            1,
-        )
-        .unwrap();
-        let admitted = admit(&present, host, &event).expect("the host's word for its run");
-        assert_eq!(admitted.actor, Acting::agent(hex::encode(stand_in)));
-        assert!(
-            admit(&present, other, &event).is_none(),
-            "another device does not speak for the host's run"
-        );
-        let mut unspoken = present;
-        unspoken[0].spoken_by = None;
-        assert!(admit(&unspoken, host, &event).is_none());
+            assert!(
+                admit(&present, person, &event).is_none(),
+                "a person narrates no work"
+            );
+            assert!(
+                admit(&present, stranger, &event).is_none(),
+                "nor does a stranger"
+            );
+            let mut elsewhere = event;
+            elsewhere.execution = InvocationId::new().0;
+            assert!(
+                admit(&present, agent, &elsewhere).is_none(),
+                "work that names another execution is not drawn"
+            );
+            let mut malformed = elsewhere;
+            malformed.execution = invocation.0;
+            malformed.interaction_json = "{}".into();
+            assert!(admit(&present, agent, &malformed).is_none());
+        }
+
+        phase the_host_narrates_a_run_as_the_member_it_speaks_for;
+        // Work the workspace's host narrates for a run is the member it speaks
+        // for that run; the same frame from any device the board did not take
+        // as that run's speaker is not drawn.
+        {
+            let (host, other) = ([5; 32], [6; 32]);
+            let run = "agent-run:7";
+            let stand_in = collab_types::presence::stand_in(host, run);
+            let present = vec![Shown {
+                publisher: hex::encode(stand_in),
+                epoch: 1,
+                agent: true,
+                spoken_by: Some(hex::encode(host)),
+                label: "Visa backend".into(),
+                ..Shown::default()
+            }];
+            let action = ActionAddress::new("workbook", "new-sheet");
+            let event = frame(
+                &Narrated {
+                    agent: "Visa backend",
+                    invocation: InvocationId::new(),
+                    app: "so.tilo.sheets",
+                    action: &action,
+                    phase: InteractionPhase::Committed,
+                    on_behalf: Some(run),
+                },
+                1,
+                1,
+            )
+            .unwrap();
+            let admitted = admit(&present, host, &event).expect("the host's word for its run");
+            assert_eq!(admitted.actor, Acting::agent(hex::encode(stand_in)));
+            assert!(
+                admit(&present, other, &event).is_none(),
+                "another device does not speak for the host's run"
+            );
+            let mut unspoken = present;
+            unspoken[0].spoken_by = None;
+            assert!(admit(&unspoken, host, &event).is_none());
+        }
     }
 }

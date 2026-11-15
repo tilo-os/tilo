@@ -155,45 +155,49 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_vault_opens_on_the_key_it_stored_and_keeps_it() {
-        let dir = tempfile::tempdir().expect("a directory");
-        let root = dir.path().join("mls");
-        let (state, locator, _secrets) = seeded(&root, [6; 32]);
+    tilo_test_env::scenario! {
+        fn a_vault_opens_only_on_the_master_key_it_kept;
 
-        let vault = MlsVault::open(Arc::clone(&state), &locator)
-            .expect("the vault opens on the master key it kept");
+        phase a_vault_opens_on_the_key_it_stored_and_keeps_it;
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let root = dir.path().join("mls");
+            let (state, locator, _secrets) = seeded(&root, [6; 32]);
 
-        assert_eq!(
-            hex::encode(vault.group_state_key_bytes()),
-            "8a488a4bdd1c84405a60bbbce6dd1fd05d98114eb33e5908862e25f48618d79d",
-            "the derived key is the one group state is sealed with"
-        );
-        let reopened = MlsVault::open(state, &locator).expect("the vault opens again");
-        assert_eq!(
-            reopened.group_state_key_bytes(),
-            vault.group_state_key_bytes(),
-            "and the master key is kept"
-        );
-    }
+            let vault = MlsVault::open(Arc::clone(&state), &locator)
+                .expect("the vault opens on the master key it kept");
 
-    #[test]
-    fn a_vault_whose_state_is_kept_refuses_a_new_key() {
-        let dir = tempfile::tempdir().expect("a directory");
-        let root = dir.path().join("mls");
-        let workspace = root
-            .join("groups")
-            .join("302d59e0-f586-42e1-a59e-3aa613f0f866");
-        fs::create_dir_all(workspace.join("groups")).expect("the group state");
-        fs::write(workspace.join("groups/0b6f.peer"), [1]).expect("a peer");
-        let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
+            assert_eq!(
+                hex::encode(vault.group_state_key_bytes()),
+                "8a488a4bdd1c84405a60bbbce6dd1fd05d98114eb33e5908862e25f48618d79d",
+                "the derived key is the one group state is sealed with"
+            );
+            let reopened = MlsVault::open(state, &locator).expect("the vault opens again");
+            assert_eq!(
+                reopened.group_state_key_bytes(),
+                vault.group_state_key_bytes(),
+                "and the master key is kept"
+            );
+        }
 
-        let state: Arc<dyn KeyStorage> =
-            Arc::new(tilo_workspace_keys::KeyDir::new(root.join("groups")));
+        phase a_vault_whose_state_is_kept_refuses_a_new_key;
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let root = dir.path().join("mls");
+            let workspace = root
+                .join("groups")
+                .join("302d59e0-f586-42e1-a59e-3aa613f0f866");
+            fs::create_dir_all(workspace.join("groups")).expect("the group state");
+            fs::write(workspace.join("groups/0b6f.peer"), [1]).expect("a peer");
+            let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
 
-        assert!(
-            MlsVault::open(state, &master_key_locator(&root)).is_err(),
-            "a new key would open none of the state sealed under the lost one"
-        );
+            let state: Arc<dyn KeyStorage> =
+                Arc::new(tilo_workspace_keys::KeyDir::new(root.join("groups")));
+
+            assert!(
+                MlsVault::open(state, &master_key_locator(&root)).is_err(),
+                "a new key would open none of the state sealed under the lost one"
+            );
+        }
     }
 }

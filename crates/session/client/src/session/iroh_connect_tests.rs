@@ -94,68 +94,72 @@ async fn transport_refusal_remains_generic_unavailable() {
     assert_ne!(reason, "host does not speak tilo-relay/1");
 }
 
-#[test]
-fn only_an_unanswered_dial_is_tried_again() {
-    // The host was not reached, or closed a handshake it may take next time.
-    assert!(transient(&LinkError::Unavailable("timed out".into())));
-    assert!(transient(&LinkError::Refused("the stream ended".into())));
-    // Answers another attempt cannot change.
-    assert!(!transient(&LinkError::Sign("locked".into())));
-    assert!(!transient(&LinkError::Malformed("bad ack".into())));
-    assert!(!transient(&LinkError::HostChanged));
-    assert!(!transient(&LinkError::PeerVersion { theirs: 0 }));
-}
+tilo_test_env::scenario! {
+    fn a_failed_dial_is_classed_and_tried_again;
 
-#[test]
-fn retry_waits_double_with_jitter_and_stay_capped() {
-    // The base wait of each attempt, before jitter: doubling, then capped.
-    for (index, expected_ms) in [500u64, 1000, 2000, 4000, 5000, 5000].iter().enumerate() {
-        let attempt = u32::try_from(index).unwrap().saturating_add(1);
-        let base = std::time::Duration::from_millis(*expected_ms);
-        for _ in 0..32 {
-            let delay = connect_backoff(attempt);
-            assert!(
-                delay >= base.mul_f64(0.75) && delay <= base.mul_f64(1.25),
-                "attempt {attempt} waited {delay:?}, expected around {base:?}",
-            );
-            assert!(delay <= std::time::Duration::from_secs(5));
+    phase only_an_unanswered_dial_is_tried_again;
+    {
+        // The host was not reached, or closed a handshake it may take next time.
+        assert!(transient(&LinkError::Unavailable("timed out".into())));
+        assert!(transient(&LinkError::Refused("the stream ended".into())));
+        // Answers another attempt cannot change.
+        assert!(!transient(&LinkError::Sign("locked".into())));
+        assert!(!transient(&LinkError::Malformed("bad ack".into())));
+        assert!(!transient(&LinkError::HostChanged));
+        assert!(!transient(&LinkError::PeerVersion { theirs: 0 }));
+    }
+
+    phase retry_waits_double_with_jitter_and_stay_capped;
+    {
+        // The base wait of each attempt, before jitter: doubling, then capped.
+        for (index, expected_ms) in [500u64, 1000, 2000, 4000, 5000, 5000].iter().enumerate() {
+            let attempt = u32::try_from(index).unwrap().saturating_add(1);
+            let base = std::time::Duration::from_millis(*expected_ms);
+            for _ in 0..32 {
+                let delay = connect_backoff(attempt);
+                assert!(
+                    delay >= base.mul_f64(0.75) && delay <= base.mul_f64(1.25),
+                    "attempt {attempt} waited {delay:?}, expected around {base:?}",
+                );
+                assert!(delay <= std::time::Duration::from_secs(5));
+            }
         }
     }
-}
 
-#[test]
-fn every_client_error_has_a_deliberate_link_class() {
-    use tilo_relay_protocol::auth::AuthError;
-    use tilo_relay_session::ClientError;
+    phase every_client_error_has_a_deliberate_link_class;
+    {
+        use tilo_relay_protocol::auth::AuthError;
+        use tilo_relay_session::ClientError;
 
-    // Reachability: retried with backoff, never counted as a refusal.
-    assert_eq!(
-        link_error(ClientError::UnsupportedProtocol),
-        LinkError::Unavailable("host does not speak tilo-relay/1".into()),
-    );
-    assert_eq!(
-        link_error(ClientError::Transport("timed out".into())),
-        LinkError::Unavailable("timed out".into()),
-    );
-    // The device's own signer.
-    assert_eq!(
-        link_error(ClientError::Sign("locked".into())),
-        LinkError::Sign("locked".into()),
-    );
-    // An answer that does not decode says nothing about this device.
-    assert_eq!(
-        link_error(ClientError::Codec("bad ack".into())),
-        LinkError::Malformed("bad ack".into()),
-    );
-    // The host turned this device away without a reason.
-    assert_eq!(
-        link_error(ClientError::Auth(AuthError::Revoked)),
-        LinkError::Refused("auth: peer device is revoked".into()),
-    );
-    assert_eq!(
-        link_error(ClientError::Io(std::io::ErrorKind::UnexpectedEof.into())),
-        LinkError::Refused("io: unexpected end of file".into()),
-    );
+        // Reachability: retried with backoff, never counted as a refusal.
+        assert_eq!(
+            link_error(ClientError::UnsupportedProtocol),
+            LinkError::Unavailable("host does not speak tilo-relay/1".into()),
+        );
+        assert_eq!(
+            link_error(ClientError::Transport("timed out".into())),
+            LinkError::Unavailable("timed out".into()),
+        );
+        // The device's own signer.
+        assert_eq!(
+            link_error(ClientError::Sign("locked".into())),
+            LinkError::Sign("locked".into()),
+        );
+        // An answer that does not decode says nothing about this device.
+        assert_eq!(
+            link_error(ClientError::Codec("bad ack".into())),
+            LinkError::Malformed("bad ack".into()),
+        );
+        // The host turned this device away without a reason.
+        assert_eq!(
+            link_error(ClientError::Auth(AuthError::Revoked)),
+            LinkError::Refused("auth: peer device is revoked".into()),
+        );
+        assert_eq!(
+            link_error(ClientError::Io(std::io::ErrorKind::UnexpectedEof.into())),
+            LinkError::Refused("io: unexpected end of file".into()),
+        );
+    }
 }
 
 /// A session beside its device's own dials its host from the endpoint the device already runs

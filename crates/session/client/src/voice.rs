@@ -282,121 +282,125 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_granted_participation_beats_and_resumes_with_its_id() {
-        let mut calls = Participations::default();
-        assert!(matches!(
-            calls.join(workspace(), [1; 32]).as_slice(),
-            [Envelope::VoiceJoin {
-                participation: None,
-                ..
-            }]
-        ));
-        assert!(calls.heartbeats().is_empty(), "no second fresh join");
-        let (event, reply) = calls.inbound(&grant([1; 32], [9; 32])).unwrap();
-        assert!(matches!(event, Some(VoiceEvent::Granted { .. })));
-        assert!(reply.is_none());
-        for beat in [calls.heartbeats(), calls.resume()] {
+    tilo_test_env::scenario! {
+        fn a_calls_participation_through_grants_and_refusals;
+
+        phase a_granted_participation_beats_and_resumes_with_its_id;
+        {
+            let mut calls = Participations::default();
             assert!(matches!(
-                beat.as_slice(),
+                calls.join(workspace(), [1; 32]).as_slice(),
                 [Envelope::VoiceJoin {
-                    participation: Some([9, ..]),
+                    participation: None,
                     ..
                 }]
             ));
+            assert!(calls.heartbeats().is_empty(), "no second fresh join");
+            let (event, reply) = calls.inbound(&grant([1; 32], [9; 32])).unwrap();
+            assert!(matches!(event, Some(VoiceEvent::Granted { .. })));
+            assert!(reply.is_none());
+            for beat in [calls.heartbeats(), calls.resume()] {
+                assert!(matches!(
+                    beat.as_slice(),
+                    [Envelope::VoiceJoin {
+                        participation: Some([9, ..]),
+                        ..
+                    }]
+                ));
+            }
+            assert!(matches!(
+                calls.leave(workspace()),
+                Some(Envelope::VoiceLeave {
+                    participation: [9, ..],
+                    ..
+                })
+            ));
+            assert!(calls.heartbeats().is_empty());
         }
-        assert!(matches!(
-            calls.leave(workspace()),
-            Some(Envelope::VoiceLeave {
-                participation: [9, ..],
-                ..
-            })
-        ));
-        assert!(calls.heartbeats().is_empty());
-    }
 
-    #[test]
-    fn a_forgotten_participation_joins_afresh_once_then_ends() {
-        let mut calls = Participations::default();
-        calls.join(workspace(), [1; 32]);
-        calls.inbound(&grant([1; 32], [9; 32]));
-        let (event, reply) = calls.inbound(&refused([1; 32])).unwrap();
-        assert!(event.is_none());
-        assert!(matches!(
-            reply,
-            Some(Envelope::VoiceJoin {
-                participation: None,
-                ..
-            })
-        ));
-        let (event, _) = calls.inbound(&grant([1; 32], [10; 32])).unwrap();
-        assert!(
-            matches!(event, Some(VoiceEvent::Granted { grant, .. }) if grant.participation == [10; 32])
-        );
-        let (event, reply) = calls.inbound(&grant([1; 32], [9; 32])).unwrap();
-        assert!(event.is_none());
-        assert!(matches!(
-            reply,
-            Some(Envelope::VoiceLeave {
-                participation: [9, ..],
-                ..
-            })
-        ));
-        calls.inbound(&refused([1; 32]));
-        let (event, reply) = calls.inbound(&refused([1; 32])).unwrap();
-        assert!(matches!(event, Some(VoiceEvent::Ended { .. })));
-        assert!(reply.is_none());
-        assert!(calls.resume().is_empty());
-    }
-
-    #[test]
-    fn a_page_that_stood_still_joins_afresh_once_for_all_its_refused_beats() {
-        let mut calls = Participations::default();
-        calls.join(workspace(), [1; 32]);
-        calls.inbound(&grant([1; 32], [9; 32]));
-        // Three beats out at once; the host forgot the participation.
-        for _ in 0..3 {
-            assert_eq!(calls.heartbeats().len(), 1);
-        }
-        let (event, reply) = calls.inbound(&refused([1; 32])).unwrap();
-        assert!(event.is_none());
-        assert!(matches!(
-            reply,
-            Some(Envelope::VoiceJoin {
-                participation: None,
-                ..
-            })
-        ));
-        for _ in 0..2 {
-            assert_eq!(
-                calls.inbound(&refused([1; 32])),
-                Some((None, None)),
-                "the answer to an earlier beat, not to the fresh join"
-            );
-        }
-        let (event, _) = calls.inbound(&grant([1; 32], [10; 32])).unwrap();
-        assert!(
-            matches!(event, Some(VoiceEvent::Granted { grant, .. }) if grant.participation == [10; 32]),
-            "the call goes on with a fresh participation"
-        );
-    }
-
-    #[test]
-    fn joining_another_call_leaves_the_first() {
-        let mut calls = Participations::default();
-        calls.join(workspace(), [1; 32]);
-        calls.inbound(&grant([1; 32], [9; 32]));
-        assert!(calls.join(workspace(), [1; 32]).is_empty(), "already in it");
-        assert!(matches!(
-            calls.join(workspace(), [2; 32]).as_slice(),
-            [
-                Envelope::VoiceLeave { call: [1, ..], .. },
-                Envelope::VoiceJoin {
-                    call: [2, ..],
+        phase a_forgotten_participation_joins_afresh_once_then_ends;
+        {
+            let mut calls = Participations::default();
+            calls.join(workspace(), [1; 32]);
+            calls.inbound(&grant([1; 32], [9; 32]));
+            let (event, reply) = calls.inbound(&refused([1; 32])).unwrap();
+            assert!(event.is_none());
+            assert!(matches!(
+                reply,
+                Some(Envelope::VoiceJoin {
                     participation: None,
                     ..
-                }
-            ]
-        ));
+                })
+            ));
+            let (event, _) = calls.inbound(&grant([1; 32], [10; 32])).unwrap();
+            assert!(
+                matches!(event, Some(VoiceEvent::Granted { grant, .. }) if grant.participation == [10; 32])
+            );
+            let (event, reply) = calls.inbound(&grant([1; 32], [9; 32])).unwrap();
+            assert!(event.is_none());
+            assert!(matches!(
+                reply,
+                Some(Envelope::VoiceLeave {
+                    participation: [9, ..],
+                    ..
+                })
+            ));
+            calls.inbound(&refused([1; 32]));
+            let (event, reply) = calls.inbound(&refused([1; 32])).unwrap();
+            assert!(matches!(event, Some(VoiceEvent::Ended { .. })));
+            assert!(reply.is_none());
+            assert!(calls.resume().is_empty());
+        }
+
+        phase a_page_that_stood_still_joins_afresh_once_for_all_its_refused_beats;
+        {
+            let mut calls = Participations::default();
+            calls.join(workspace(), [1; 32]);
+            calls.inbound(&grant([1; 32], [9; 32]));
+            // Three beats out at once; the host forgot the participation.
+            for _ in 0..3 {
+                assert_eq!(calls.heartbeats().len(), 1);
+            }
+            let (event, reply) = calls.inbound(&refused([1; 32])).unwrap();
+            assert!(event.is_none());
+            assert!(matches!(
+                reply,
+                Some(Envelope::VoiceJoin {
+                    participation: None,
+                    ..
+                })
+            ));
+            for _ in 0..2 {
+                assert_eq!(
+                    calls.inbound(&refused([1; 32])),
+                    Some((None, None)),
+                    "the answer to an earlier beat, not to the fresh join"
+                );
+            }
+            let (event, _) = calls.inbound(&grant([1; 32], [10; 32])).unwrap();
+            assert!(
+                matches!(event, Some(VoiceEvent::Granted { grant, .. }) if grant.participation == [10; 32]),
+                "the call goes on with a fresh participation"
+            );
+        }
+
+        phase joining_another_call_leaves_the_first;
+        {
+            let mut calls = Participations::default();
+            calls.join(workspace(), [1; 32]);
+            calls.inbound(&grant([1; 32], [9; 32]));
+            assert!(calls.join(workspace(), [1; 32]).is_empty(), "already in it");
+            assert!(matches!(
+                calls.join(workspace(), [2; 32]).as_slice(),
+                [
+                    Envelope::VoiceLeave { call: [1, ..], .. },
+                    Envelope::VoiceJoin {
+                        call: [2, ..],
+                        participation: None,
+                        ..
+                    }
+                ]
+            ));
+        }
     }
 }
