@@ -263,6 +263,11 @@ async def history_named(workspace: object, name: str) -> list[dict]:
     return [version for version in versions or [] if (version.get("actor") or {}).get("name") == name]
 
 
+def acting_agent(version: dict) -> dict:
+    """The agent a version's acting tree names (`actor.by.member`), empty for another actor."""
+    return (((version.get("actor") or {}).get("by") or {}).get("member") or {})
+
+
 async def refused() -> dict[str, object]:
     """The plans rule: a Linux action needs a card on file."""
     kept = await state()
@@ -451,7 +456,7 @@ async def terminal() -> dict[str, object]:
         check(versions, f"History names the run after the key that ran it ({PERSON_KEY_NAME})")
         first = versions[0]
         check(
-            first.get("actor", {}).get("kind") == "agent",
+            acting_agent(first).get("agent"),
             f"the version is an agent's ({first.get('actor')})",
         )
         check(
@@ -526,7 +531,7 @@ async def agent() -> dict[str, object]:
         check(versions, f"History names the run after the agent's key ({AGENT_KEY_NAME})")
         first = versions[0]
         check(
-            first.get("actor", {}).get("kind") == "agent",
+            acting_agent(first).get("agent"),
             f"the version is the agent's ({first.get('actor')})",
         )
         check(
