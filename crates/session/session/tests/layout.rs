@@ -446,8 +446,9 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
 fn a_restart_brings_back_the_shell_the_session_kept() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
-    let (seat, _) = Seat::with_layout(&mut home, &wide_shell());
+    let seat = Seat::in_home(&mut home);
     let state = seat.state.clone();
+    save_layout(&seat.state, &wide_shell());
 
     let kept = {
         let mut session = session_keeping(&state, None);
@@ -922,7 +923,7 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
     installed_probe_package(&mut home);
     let launcher = recording_launcher(&home, &started, &arguments);
     let (seat, workspace_ids) = Seat::with_layout(&mut home, &two_workspaces());
-    let state = seat.state.clone();
+    let state = seat.state;
 
     let apps = apps_at(&home, Some(launcher.path().to_owned()));
     let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
