@@ -29,41 +29,7 @@ use tilo_app_package::pack::{SigningIdentity, pack};
 mod authoring;
 
 pub(crate) fn tilo_install_bin() -> PathBuf {
-    let executable = std::env::current_exe().expect("running test executable");
-    let profile = executable
-        .parent()
-        .and_then(Path::parent)
-        .expect("Cargo test executable lives under a profile's deps directory");
-    let sibling = profile.join("tilo-install");
-    if sibling.is_file() {
-        return sibling;
-    }
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest_dir
-        .ancestors()
-        .nth(3)
-        .expect("workspace root is three levels above this crate");
-    let target = root.join("target");
-    let native_triple = match std::env::consts::ARCH {
-        "x86_64" => Some("x86_64-unknown-linux-gnu"),
-        "aarch64" => Some("aarch64-unknown-linux-gnu"),
-        _ => None,
-    };
-    for profile in ["debug", "release"] {
-        for candidate in std::iter::once(target.join(profile).join("tilo-install")).chain(
-            native_triple.map(|triple| target.join(triple).join(profile).join("tilo-install")),
-        ) {
-            if candidate.exists() {
-                return candidate;
-            }
-        }
-    }
-    panic!(
-        "tilo-install is not built under {}/target/[<native-triple>/]{{debug,release}}. \
-         This test installs a real package with the real installer; \
-         build it first with `cargo build -p install`.",
-        root.display()
-    );
+    tilo_test_env::sibling_binary("install", "tilo-install")
 }
 
 /// Author a signed .tapp for `package_id`, declaring a GUI entrypoint so the desktop would treat it as launchable.
