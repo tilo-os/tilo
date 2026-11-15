@@ -551,7 +551,7 @@ impl MainPanel {
             .with_kind(TextInputKind::Name)
             .as_title()
             .with_id("note_title")
-            .on_change(move |text| *edited.borrow_mut() = Some(text.to_owned()));
+            .on_change_view(move |text| *edited.borrow_mut() = Some(text.to_owned()));
         title.set_placeholder(&CATALOG.t("notes-title-placeholder"));
         title.set_accessible_name(CATALOG.t("notes-a11y-page-title"));
         Self {
