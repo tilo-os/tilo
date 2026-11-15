@@ -151,6 +151,7 @@ fn actual_redemption_at(
 }
 
 tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn native_enrollment_retains_exactly_what_it_verified;
 
     phase native_enrollment_retains_actual_verified_redemption_and_governance;
@@ -171,6 +172,26 @@ tilo_test_env::scenario! {
         assert_eq!(enrolled.bootstrap(), &bootstrap);
         assert_eq!(enrolled.local_device(), &device);
         assert_eq!(enrolled.transport_hint(), &hint);
+    }
+
+    phase native_enrollment_refuses_bootstrap_scope_and_identity_substitution;
+    {
+        for change in 0..6 {
+            let (join, complete, mut bootstrap, device, hint, now) = actual_redemption();
+            match change {
+                0 => bootstrap.invite_id[0] ^= 1,
+                1 => bootstrap.workspace_id = WorkspaceId::from_u128(1),
+                2 => bootstrap.host = bootstrap.device_cert.clone(),
+                3 => bootstrap.device_cert = bootstrap.host.clone(),
+                4 => bootstrap.role = Role::Viewer,
+                _ => bootstrap.generation = 0,
+            }
+            let intent =
+                VerifiedNativeEnrollmentIntent::from_proof(join, complete, device, hint, now).unwrap();
+            let (_directory, owner) = pending_owner();
+            let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+            assert!(crate::owner::testing::finalize(intent, id, bootstrap).is_err());
+        }
     }
 
     phase native_enrollment_retains_exact_complete_bytes_and_rejects_tampering;
@@ -201,25 +222,18 @@ tilo_test_env::scenario! {
             VerifiedNativeEnrollmentIntent::restore(&postcard::to_stdvec(&record).unwrap()).is_err()
         );
     }
-}
 
-#[test]
-fn native_enrollment_refuses_bootstrap_scope_and_identity_substitution() {
-    for change in 0..6 {
-        let (join, complete, mut bootstrap, device, hint, now) = actual_redemption();
-        match change {
-            0 => bootstrap.invite_id[0] ^= 1,
-            1 => bootstrap.workspace_id = WorkspaceId::from_u128(1),
-            2 => bootstrap.host = bootstrap.device_cert.clone(),
-            3 => bootstrap.device_cert = bootstrap.host.clone(),
-            4 => bootstrap.role = Role::Viewer,
-            _ => bootstrap.generation = 0,
-        }
+    phase native_enrollment_uncertain_complete_survives_challenge_expiry_exactly;
+    {
+        let prepared = SystemTime::now() - Duration::from_secs(120);
+        let (join, complete, _, device, hint, _) = actual_redemption_at(prepared);
+        assert!(complete.proof.challenge.expires_at_ns < now_ns(SystemTime::now()).unwrap());
         let intent =
-            VerifiedNativeEnrollmentIntent::from_proof(join, complete, device, hint, now).unwrap();
-        let (_directory, owner) = pending_owner();
-        let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-        assert!(crate::owner::testing::finalize(intent, id, bootstrap).is_err());
+            VerifiedNativeEnrollmentIntent::from_proof(join, complete, device, hint, prepared).unwrap();
+        let saved = intent.durable_bytes().unwrap();
+        let restored = VerifiedNativeEnrollmentIntent::restore(&saved).unwrap();
+        assert_eq!(restored.complete_bytes(), intent.complete_bytes());
+        assert_eq!(restored.durable_bytes().unwrap(), saved);
     }
 }
 
@@ -227,17 +241,4 @@ fn pending_owner() -> (tempfile::TempDir, crate::owner::NativeWorkspaceOwner) {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let owner = crate::owner::open_file(&directory.path().join("joined-workspaces.json")).unwrap();
     (directory, owner)
-}
-
-#[test]
-fn native_enrollment_uncertain_complete_survives_challenge_expiry_exactly() {
-    let prepared = SystemTime::now() - Duration::from_secs(120);
-    let (join, complete, _, device, hint, _) = actual_redemption_at(prepared);
-    assert!(complete.proof.challenge.expires_at_ns < now_ns(SystemTime::now()).unwrap());
-    let intent =
-        VerifiedNativeEnrollmentIntent::from_proof(join, complete, device, hint, prepared).unwrap();
-    let saved = intent.durable_bytes().unwrap();
-    let restored = VerifiedNativeEnrollmentIntent::restore(&saved).unwrap();
-    assert_eq!(restored.complete_bytes(), intent.complete_bytes());
-    assert_eq!(restored.durable_bytes().unwrap(), saved);
 }

@@ -76,92 +76,243 @@ fn topic(document: &AutoCommit) -> Option<String> {
         .map(|(value, _)| value.to_string())
 }
 
-/// The changes since a held revision, applied to that revision, are the
-/// document a whole read hands out now, with its revision; and they are read
-/// without capturing the document again.
-#[test]
-fn the_changes_since_a_held_revision_complete_it_to_the_current_read() {
-    let joined = enrolled();
-    let member = member().verifying_key().to_bytes();
-    let held = full(&joined, member);
-    commit(&joined, |chat| chat.put(ROOT, "topic", "edited").unwrap());
-    crate::owner::document_read::reset_captures();
-    let Ok(DocumentRead::Changes(read)) = changes(&joined, member, &held.heads, usize::MAX) else {
-        panic!("the member is handed the changes since what it holds");
-    };
-    assert_eq!(
-        crate::owner::document_read::captures(),
-        0,
-        "the changes come from the committed document, not a whole capture"
-    );
-    let current = full(&joined, member);
-    assert_eq!(read.revision, current.revision);
-    assert_eq!(read.heads, current.heads);
-    let mut replica = AutoCommit::load(&held.bytes).unwrap();
-    replica.load_incoming(&read.bytes).unwrap();
-    assert!(replica.get_missing_deps(&[]).is_empty());
-    let mut heads = replica
-        .get_heads()
-        .iter()
-        .map(|head| head.0)
-        .collect::<Vec<_>>();
-    heads.sort_unstable();
-    assert_eq!(heads, current.heads);
-    assert_eq!(topic(&replica), Some("\"edited\"".into()));
-    assert!(
-        read.bytes.len() < current.bytes.len(),
-        "{} change bytes for one edit, {} for the whole document",
-        read.bytes.len(),
-        current.bytes.len()
-    );
-    assert!(matches!(
-        changes(&joined, member, &current.heads, usize::MAX),
-        Ok(DocumentRead::Unchanged(revision)) if revision == current.revision
-    ));
-}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_changes_read_completes_a_held_revision_as_a_whole_read_would;
 
-/// The delta path decides nothing a whole read decides differently: a
-/// stranger is refused, and a base the document does not hold, heads out of
-/// order or changes over the limit are answered with a whole read.
-#[test]
-fn a_changes_read_refuses_a_stranger_and_leaves_the_rest_to_a_whole_read() {
-    let joined = enrolled();
-    let member = member().verifying_key().to_bytes();
-    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
-    let held = full(&joined, member);
-    commit(&joined, |chat| chat.put(ROOT, "topic", "one").unwrap());
-    let between = full(&joined, member);
-    commit(&joined, |chat| chat.put(ROOT, "topic", "two").unwrap());
-    assert!(
-        changes(&joined, stranger, &held.heads, usize::MAX).is_err(),
-        "a device outside the workspace is refused, as by a whole read"
-    );
-    assert!(full_refused(&joined, stranger));
-    assert!(matches!(
-        changes(&joined, member, &[[7; 32]], usize::MAX),
-        Ok(DocumentRead::Captured(_))
-    ));
-    let mut unordered = between.heads.clone();
-    unordered.extend(&held.heads);
-    unordered.sort_unstable();
-    unordered.reverse();
-    if unordered.len() > 1 {
+    phase the_changes_since_a_held_revision_complete_it_to_the_current_read;
+    // The changes since a held revision, applied to that revision, are the
+    // document a whole read hands out now, with its revision; and they are read
+    // without capturing the document again.
+    {
+        let joined = enrolled();
+        let member = member().verifying_key().to_bytes();
+        let held = full(&joined, member);
+        commit(&joined, |chat| chat.put(ROOT, "topic", "edited").unwrap());
+        crate::owner::document_read::reset_captures();
+        let Ok(DocumentRead::Changes(read)) = changes(&joined, member, &held.heads, usize::MAX) else {
+            panic!("the member is handed the changes since what it holds");
+        };
+        assert_eq!(
+            crate::owner::document_read::captures(),
+            0,
+            "the changes come from the committed document, not a whole capture"
+        );
+        let current = full(&joined, member);
+        assert_eq!(read.revision, current.revision);
+        assert_eq!(read.heads, current.heads);
+        let mut replica = AutoCommit::load(&held.bytes).unwrap();
+        replica.load_incoming(&read.bytes).unwrap();
+        assert!(replica.get_missing_deps(&[]).is_empty());
+        let mut heads = replica
+            .get_heads()
+            .iter()
+            .map(|head| head.0)
+            .collect::<Vec<_>>();
+        heads.sort_unstable();
+        assert_eq!(heads, current.heads);
+        assert_eq!(topic(&replica), Some("\"edited\"".into()));
+        assert!(
+            read.bytes.len() < current.bytes.len(),
+            "{} change bytes for one edit, {} for the whole document",
+            read.bytes.len(),
+            current.bytes.len()
+        );
         assert!(matches!(
-            changes(&joined, member, &unordered, usize::MAX),
-            Ok(DocumentRead::Captured(_))
+            changes(&joined, member, &current.heads, usize::MAX),
+            Ok(DocumentRead::Unchanged(revision)) if revision == current.revision
         ));
     }
-    assert!(
-        changes(&joined, member, &held.heads, 1).is_err(),
-        "changes over the limit are read whole, which the limit refuses too"
-    );
-    let Ok(DocumentRead::Changes(read)) = changes(&joined, member, &between.heads, usize::MAX)
-    else {
-        panic!("an intermediate revision is completed too");
-    };
-    let mut replica = AutoCommit::load(&between.bytes).unwrap();
-    replica.load_incoming(&read.bytes).unwrap();
-    assert_eq!(topic(&replica), Some("\"two\"".into()));
+
+    phase a_changes_read_refuses_a_stranger_and_leaves_the_rest_to_a_whole_read;
+    // The delta path decides nothing a whole read decides differently: a
+    // stranger is refused, and a base the document does not hold, heads out of
+    // order or changes over the limit are answered with a whole read.
+    {
+        let joined = enrolled();
+        let member = member().verifying_key().to_bytes();
+        let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+        let held = full(&joined, member);
+        commit(&joined, |chat| chat.put(ROOT, "topic", "one").unwrap());
+        let between = full(&joined, member);
+        commit(&joined, |chat| chat.put(ROOT, "topic", "two").unwrap());
+        assert!(
+            changes(&joined, stranger, &held.heads, usize::MAX).is_err(),
+            "a device outside the workspace is refused, as by a whole read"
+        );
+        assert!(full_refused(&joined, stranger));
+        assert!(matches!(
+            changes(&joined, member, &[[7; 32]], usize::MAX),
+            Ok(DocumentRead::Captured(_))
+        ));
+        let mut unordered = between.heads.clone();
+        unordered.extend(&held.heads);
+        unordered.sort_unstable();
+        unordered.reverse();
+        if unordered.len() > 1 {
+            assert!(matches!(
+                changes(&joined, member, &unordered, usize::MAX),
+                Ok(DocumentRead::Captured(_))
+            ));
+        }
+        assert!(
+            changes(&joined, member, &held.heads, 1).is_err(),
+            "changes over the limit are read whole, which the limit refuses too"
+        );
+        let Ok(DocumentRead::Changes(read)) = changes(&joined, member, &between.heads, usize::MAX)
+        else {
+            panic!("an intermediate revision is completed too");
+        };
+        let mut replica = AutoCommit::load(&between.bytes).unwrap();
+        replica.load_incoming(&read.bytes).unwrap();
+        assert_eq!(topic(&replica), Some("\"two\"".into()));
+    }
+
+    phase a_changes_read_between_the_frames_of_one_checkpoint_is_pending;
+    // A changes read between the frames of one checkpoint hands out nothing:
+    // it says pending, as the whole read does.
+    {
+        let joined = enrolled();
+        let member = member().verifying_key().to_bytes();
+        let held = full(&joined, member);
+        let governor_key = SigningKey::from_bytes(&[61; 32]);
+        let covered = edit_with(&joined.owner, joined.workspace, joined.now, "covered next");
+        joined.owner.commit_document(covered, joined.now).unwrap();
+        let mut remote = joined
+            .owner
+            .with_current(joined.workspace, |view| Ok(view.peer().clone()))
+            .unwrap();
+        let frames = remote
+            .publication_mut()
+            .durable_bootstrap_messages(&governor_key, joined.now, 600)
+            .unwrap();
+        let mut pending = 0;
+        for frame in frames {
+            joined
+                .owner
+                .receive(
+                    joined.workspace,
+                    TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                    frame,
+                    joined.now,
+                )
+                .unwrap();
+            let whole = joined.owner.with_current(joined.workspace, |view| {
+                view.read_document(member, APP, "", None, usize::MAX, joined.now)
+            });
+            if matches!(whole, Ok(DocumentRead::CheckpointPending)) {
+                pending += 1;
+                assert!(
+                    matches!(
+                        changes(&joined, member, &held.heads, usize::MAX),
+                        Ok(DocumentRead::CheckpointPending)
+                    ),
+                    "a pending checkpoint is never answered with changes"
+                );
+            }
+        }
+        assert!(
+            pending > 0,
+            "the checkpoint's frames leave the workspace between cuts"
+        );
+    }
+
+    phase a_remote_edit_of_a_large_document_costs_its_reader_the_edit;
+    // What one remote edit of a large shared document costs a reader that
+    // already holds it: before, a whole read (the owner captures the whole
+    // document; the reader loads and merges all of it); now, the
+    // changes since (the owner reads the edit's changes; the reader takes them
+    // in). Budgeted: bytes per edit, and the speedup on both sides.
+    {
+        let joined = enrolled();
+        let member = member().verifying_key().to_bytes();
+        // One signed write carrying the document's whole history: an edit per
+        // line, as typing leaves it.
+        commit(&joined, |chat| {
+            let body = chat.put_object(ROOT, "body", ObjType::Text).unwrap();
+            let line_characters = LARGE_CHARACTERS / LARGE_EDITS;
+            chat.commit_edit("fixture", "body");
+            for edit in 0..LARGE_EDITS {
+                let mut line = format!("{edit:04} {:x} ", edit.wrapping_mul(7919));
+                while line.len() < line_characters.saturating_sub(1) {
+                    let letter = line.len().wrapping_mul(31).wrapping_add(edit) % 26;
+                    line.push(char::from(
+                        b'a'.saturating_add(u8::try_from(letter).unwrap()),
+                    ));
+                }
+                line.push('\n');
+                let end = chat.length(&body);
+                chat.splice_text(&body, end, 0, &line).unwrap();
+                chat.commit_edit("fixture", "line");
+            }
+        });
+        let held = full(&joined, member);
+        commit(&joined, |chat| {
+            let body = chat.get(ROOT, "body").unwrap().unwrap().1;
+            chat.splice_text(&body, LARGE_CHARACTERS / 2, 0, "x")
+                .unwrap();
+        });
+        let (whole_owner, whole) = fastest(3, || {
+            joined
+                .owner
+                .with_current(joined.workspace, |view| {
+                    view.read_document(member, APP, "", Some(held.revision), usize::MAX, joined.now)
+                })
+                .unwrap()
+        });
+        let DocumentRead::Captured(whole) = whole else {
+            panic!("a whole read hands out the edited document");
+        };
+        let (changes_owner, read) = fastest(3, || changes(&joined, member, &held.heads, usize::MAX));
+        let Ok(DocumentRead::Changes(read)) = read else {
+            panic!("the reader is handed the edit's changes");
+        };
+        assert_eq!(read.revision, whole.revision);
+        let base = AutoCommit::load(&held.bytes).unwrap();
+        let mut replicas = std::iter::repeat_with(|| base.clone())
+            .take(6)
+            .collect::<Vec<_>>();
+        let (whole_reader, ()) = fastest(3, || {
+            let mut replica = replicas.pop().unwrap();
+            let mut incoming = AutoCommit::load(&whole.bytes).unwrap();
+            replica.merge_incoming(&mut incoming).unwrap();
+        });
+        let (changes_reader, mut replica) = fastest(3, || {
+            let mut replica = replicas.pop().unwrap();
+            replica.load_incoming(&read.bytes).unwrap();
+            replica
+        });
+        let mut heads = replica
+            .get_heads()
+            .iter()
+            .map(|head| head.0)
+            .collect::<Vec<_>>();
+        heads.sort_unstable();
+        assert_eq!(heads, whole.heads, "both reads end at the same document");
+        eprintln!(
+            "COMMITTED-READ-LARGE characters={LARGE_CHARACTERS} edits={LARGE_EDITS} whole_bytes={} changes_bytes={} owner_whole_us={} owner_changes_us={} reader_whole_us={} reader_changes_us={}",
+            whole.bytes.len(),
+            read.bytes.len(),
+            whole_owner.as_micros(),
+            changes_owner.as_micros(),
+            whole_reader.as_micros(),
+            changes_reader.as_micros(),
+        );
+        assert!(
+            read.bytes.len() <= CHANGES_BYTES_BUDGET,
+            "one edit handed {} change bytes (budget {CHANGES_BYTES_BUDGET}); the whole document is {}",
+            read.bytes.len(),
+            whole.bytes.len()
+        );
+        assert!(
+            changes_owner <= whole_owner * OWNER_CHANGES_OVER_WHOLE,
+            "the owner read the changes in {changes_owner:?}, the whole document in {whole_owner:?}"
+        );
+        assert!(
+            changes_reader * READER_SPEEDUP_BUDGET <= whole_reader,
+            "the reader took the changes in in {changes_reader:?}, the whole document in {whole_reader:?}"
+        );
+    }
 }
 
 fn full_refused(joined: &Enrolled, reader: [u8; 32]) -> bool {
@@ -171,55 +322,6 @@ fn full_refused(joined: &Enrolled, reader: [u8; 32]) -> bool {
             view.read_document(reader, APP, "", None, usize::MAX, joined.now)
         })
         .is_err()
-}
-
-/// A changes read between the frames of one checkpoint hands out nothing:
-/// it says pending, as the whole read does.
-#[test]
-fn a_changes_read_between_the_frames_of_one_checkpoint_is_pending() {
-    let joined = enrolled();
-    let member = member().verifying_key().to_bytes();
-    let held = full(&joined, member);
-    let governor_key = SigningKey::from_bytes(&[61; 32]);
-    let covered = edit_with(&joined.owner, joined.workspace, joined.now, "covered next");
-    joined.owner.commit_document(covered, joined.now).unwrap();
-    let mut remote = joined
-        .owner
-        .with_current(joined.workspace, |view| Ok(view.peer().clone()))
-        .unwrap();
-    let frames = remote
-        .publication_mut()
-        .durable_bootstrap_messages(&governor_key, joined.now, 600)
-        .unwrap();
-    let mut pending = 0;
-    for frame in frames {
-        joined
-            .owner
-            .receive(
-                joined.workspace,
-                TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
-                frame,
-                joined.now,
-            )
-            .unwrap();
-        let whole = joined.owner.with_current(joined.workspace, |view| {
-            view.read_document(member, APP, "", None, usize::MAX, joined.now)
-        });
-        if matches!(whole, Ok(DocumentRead::CheckpointPending)) {
-            pending += 1;
-            assert!(
-                matches!(
-                    changes(&joined, member, &held.heads, usize::MAX),
-                    Ok(DocumentRead::CheckpointPending)
-                ),
-                "a pending checkpoint is never answered with changes"
-            );
-        }
-    }
-    assert!(
-        pending > 0,
-        "the checkpoint's frames leave the workspace between cuts"
-    );
 }
 
 /// Characters in the large document, one text op each, written in
@@ -248,101 +350,4 @@ fn fastest<T>(runs: usize, mut run: impl FnMut() -> T) -> (std::time::Duration, 
         last = Some(value);
     }
     (best.unwrap(), last.unwrap())
-}
-
-/// What one remote edit of a large shared document costs a reader that
-/// already holds it: before, a whole read (the owner captures the whole
-/// document; the reader loads and merges all of it); now, the
-/// changes since (the owner reads the edit's changes; the reader takes them
-/// in). Budgeted: bytes per edit, and the speedup on both sides.
-#[test]
-fn a_remote_edit_of_a_large_document_costs_its_reader_the_edit() {
-    let joined = enrolled();
-    let member = member().verifying_key().to_bytes();
-    // One signed write carrying the document's whole history: an edit per
-    // line, as typing leaves it.
-    commit(&joined, |chat| {
-        let body = chat.put_object(ROOT, "body", ObjType::Text).unwrap();
-        let line_characters = LARGE_CHARACTERS / LARGE_EDITS;
-        chat.commit_edit("fixture", "body");
-        for edit in 0..LARGE_EDITS {
-            let mut line = format!("{edit:04} {:x} ", edit.wrapping_mul(7919));
-            while line.len() < line_characters.saturating_sub(1) {
-                let letter = line.len().wrapping_mul(31).wrapping_add(edit) % 26;
-                line.push(char::from(
-                    b'a'.saturating_add(u8::try_from(letter).unwrap()),
-                ));
-            }
-            line.push('\n');
-            let end = chat.length(&body);
-            chat.splice_text(&body, end, 0, &line).unwrap();
-            chat.commit_edit("fixture", "line");
-        }
-    });
-    let held = full(&joined, member);
-    commit(&joined, |chat| {
-        let body = chat.get(ROOT, "body").unwrap().unwrap().1;
-        chat.splice_text(&body, LARGE_CHARACTERS / 2, 0, "x")
-            .unwrap();
-    });
-    let (whole_owner, whole) = fastest(3, || {
-        joined
-            .owner
-            .with_current(joined.workspace, |view| {
-                view.read_document(member, APP, "", Some(held.revision), usize::MAX, joined.now)
-            })
-            .unwrap()
-    });
-    let DocumentRead::Captured(whole) = whole else {
-        panic!("a whole read hands out the edited document");
-    };
-    let (changes_owner, read) = fastest(3, || changes(&joined, member, &held.heads, usize::MAX));
-    let Ok(DocumentRead::Changes(read)) = read else {
-        panic!("the reader is handed the edit's changes");
-    };
-    assert_eq!(read.revision, whole.revision);
-    let base = AutoCommit::load(&held.bytes).unwrap();
-    let mut replicas = std::iter::repeat_with(|| base.clone())
-        .take(6)
-        .collect::<Vec<_>>();
-    let (whole_reader, ()) = fastest(3, || {
-        let mut replica = replicas.pop().unwrap();
-        let mut incoming = AutoCommit::load(&whole.bytes).unwrap();
-        replica.merge_incoming(&mut incoming).unwrap();
-    });
-    let (changes_reader, mut replica) = fastest(3, || {
-        let mut replica = replicas.pop().unwrap();
-        replica.load_incoming(&read.bytes).unwrap();
-        replica
-    });
-    let mut heads = replica
-        .get_heads()
-        .iter()
-        .map(|head| head.0)
-        .collect::<Vec<_>>();
-    heads.sort_unstable();
-    assert_eq!(heads, whole.heads, "both reads end at the same document");
-    eprintln!(
-        "COMMITTED-READ-LARGE characters={LARGE_CHARACTERS} edits={LARGE_EDITS} whole_bytes={} changes_bytes={} owner_whole_us={} owner_changes_us={} reader_whole_us={} reader_changes_us={}",
-        whole.bytes.len(),
-        read.bytes.len(),
-        whole_owner.as_micros(),
-        changes_owner.as_micros(),
-        whole_reader.as_micros(),
-        changes_reader.as_micros(),
-    );
-    assert!(
-        read.bytes.len() <= CHANGES_BYTES_BUDGET,
-        "one edit handed {} change bytes (budget {CHANGES_BYTES_BUDGET}); the whole document is {}",
-        read.bytes.len(),
-        whole.bytes.len()
-    );
-    assert!(
-        changes_owner <= whole_owner * OWNER_CHANGES_OVER_WHOLE,
-        "the owner read the changes in {changes_owner:?}, the whole document in {whole_owner:?}"
-    );
-    assert!(
-        changes_reader * READER_SPEEDUP_BUDGET <= whole_reader,
-        "the reader took the changes in in {changes_reader:?}, the whole document in {whole_reader:?}"
-    );
 }

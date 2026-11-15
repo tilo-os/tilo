@@ -235,6 +235,28 @@ tilo_test_env::scenario! {
             "the stored key names the workspace's host"
         );
     }
+
+    phase owner_files_hold_byte_fields_as_compact_base64;
+    {
+        let joined = enrolled();
+        // The journals beside the files are binary.
+        for (file, bytes) in record_on_disk(&joined.path)
+            .into_iter()
+            .filter(|(file, _)| {
+                file.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+        {
+            assert!(!bytes.contains(&b'\n'), "{} is compact", file.display());
+        }
+        let file = workspace_file(&joined.path, joined.workspace);
+        let bytes = std::fs::read(&file).unwrap();
+        assert!(!bytes.contains(&b'\n'), "the workspace's file is compact");
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        for field in ["peer", "invitation", "enrollment_intent"] {
+            assert!(value[field].is_string(), "{field} is base64 text");
+        }
+    }
 }
 
 tilo_test_env::scenario! {
@@ -351,6 +373,61 @@ tilo_test_env::scenario! {
                 .get(&(APP.to_owned(), String::new())),
             Some(&answered)
         );
+    }
+
+    phase a_write_signed_outside_the_owner_turn_commits_with_exact_admission_evidence;
+    {
+        let joined = enrolled();
+        let request = unordered_edit(&joined, "unordered edit");
+        joined
+            .owner
+            .commit_document(request.clone(), joined.now)
+            .unwrap();
+        let CommitOperation::Document { envelope, .. } = &request.operation else {
+            panic!("the unordered edit is a document write")
+        };
+        joined
+            .owner
+            .with_current(joined.workspace, |view| {
+                assert!(
+                    view.peer()
+                        .lookup_exact_local_document(APP, "", envelope, joined.now)
+                        .map_err(|error| error.to_string())?
+                        .is_some(),
+                    "the caller-signed write must leave exact admission evidence"
+                );
+                let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+                assert_eq!(
+                    chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
+                    Some("unordered edit")
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    phase an_uncertain_write_fences_every_workspace_until_reopened;
+    {
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+        let joined = enrolled();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let _subscription = joined.owner.observe_fences(Arc::new(move |_, _| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        let request = edit(&joined.owner, joined.workspace, joined.now);
+        assert!(
+            with_failure(Checkpoint::AfterPublish, || joined
+                .owner
+                .commit_document(request.clone(), joined.now))
+            .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(joined.owner.health().is_err());
+        assert!(joined.owner.contains_workspace(joined.workspace));
+        assert!(joined.owner.commit_document(request, joined.now).is_err());
+        drop(joined.owner);
+        open_file(&joined.path).unwrap().health().unwrap();
     }
 
     phase retained_replay_reuses_exact_committed_publication;
@@ -482,37 +559,6 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
     }
 }
 
-#[test]
-fn a_write_signed_outside_the_owner_turn_commits_with_exact_admission_evidence() {
-    let joined = enrolled();
-    let request = unordered_edit(&joined, "unordered edit");
-    joined
-        .owner
-        .commit_document(request.clone(), joined.now)
-        .unwrap();
-    let CommitOperation::Document { envelope, .. } = &request.operation else {
-        panic!("the unordered edit is a document write")
-    };
-    joined
-        .owner
-        .with_current(joined.workspace, |view| {
-            assert!(
-                view.peer()
-                    .lookup_exact_local_document(APP, "", envelope, joined.now)
-                    .map_err(|error| error.to_string())?
-                    .is_some(),
-                "the caller-signed write must leave exact admission evidence"
-            );
-            let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
-            assert_eq!(
-                chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
-                Some("unordered edit")
-            );
-            Ok(())
-        })
-        .unwrap();
-}
-
 /// Two local writers of this device sign their writes before the owner's
 /// turn orders them. The write that reaches the turn second, though signed
 /// first, is taken all the same, signed again past the record's floor; one
@@ -580,30 +626,6 @@ async fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
             Ok(())
         })
         .unwrap();
-}
-
-#[test]
-fn an_uncertain_write_fences_every_workspace_until_reopened() {
-    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
-    let joined = enrolled();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&calls);
-    let _subscription = joined.owner.observe_fences(Arc::new(move |_, _| {
-        counter.fetch_add(1, Ordering::SeqCst);
-    }));
-    let request = edit(&joined.owner, joined.workspace, joined.now);
-    assert!(
-        with_failure(Checkpoint::AfterPublish, || joined
-            .owner
-            .commit_document(request.clone(), joined.now))
-        .is_err()
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(joined.owner.health().is_err());
-    assert!(joined.owner.contains_workspace(joined.workspace));
-    assert!(joined.owner.commit_document(request, joined.now).is_err());
-    drop(joined.owner);
-    open_file(&joined.path).unwrap().health().unwrap();
 }
 
 tilo_test_env::scenario! {
@@ -705,39 +727,39 @@ tilo_test_env::scenario! {
     }
 }
 
-#[test]
-fn a_member_reads_the_admitted_document_and_a_stranger_does_not() {
-    let joined = enrolled();
-    let member = member().verifying_key().to_bytes();
-    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
-    let read = |reader, record: &str, known, maximum| {
-        joined.owner.with_current(joined.workspace, |view| {
-            view.read_document(reader, APP, record, known, maximum, joined.now)
-        })
-    };
-    let Ok(DocumentRead::Captured(document)) = read(member, "", None, usize::MAX) else {
-        panic!("a member reads what the workspace admitted");
-    };
-    let doc = AutoCommit::load(&document.bytes).unwrap();
-    assert!(doc.get(ROOT, "channels").unwrap().is_some());
-    assert!(matches!(
-        read(member, "", Some(document.revision), usize::MAX),
-        Ok(DocumentRead::Unchanged(revision)) if revision == document.revision
-    ));
-    assert!(
-        read(member, "", None, document.bytes.len() - 1).is_err(),
-        "a document larger than the reader can hold is refused"
-    );
-    assert!(
-        read(stranger, "", None, usize::MAX).is_err(),
-        "a device outside the workspace reads nothing"
-    );
-    assert!(read(member, "uuid:absent", None, usize::MAX).is_err());
-}
-
 tilo_test_env::scenario! {
     #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_committed_document_is_read_by_members_at_the_revision_they_hold;
+
+    phase a_member_reads_the_admitted_document_and_a_stranger_does_not;
+    {
+        let joined = enrolled();
+        let member = member().verifying_key().to_bytes();
+        let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+        let read = |reader, record: &str, known, maximum| {
+            joined.owner.with_current(joined.workspace, |view| {
+                view.read_document(reader, APP, record, known, maximum, joined.now)
+            })
+        };
+        let Ok(DocumentRead::Captured(document)) = read(member, "", None, usize::MAX) else {
+            panic!("a member reads what the workspace admitted");
+        };
+        let doc = AutoCommit::load(&document.bytes).unwrap();
+        assert!(doc.get(ROOT, "channels").unwrap().is_some());
+        assert!(matches!(
+            read(member, "", Some(document.revision), usize::MAX),
+            Ok(DocumentRead::Unchanged(revision)) if revision == document.revision
+        ));
+        assert!(
+            read(member, "", None, document.bytes.len() - 1).is_err(),
+            "a document larger than the reader can hold is refused"
+        );
+        assert!(
+            read(stranger, "", None, usize::MAX).is_err(),
+            "a device outside the workspace reads nothing"
+        );
+        assert!(read(member, "uuid:absent", None, usize::MAX).is_err());
+    }
 
     phase a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused;
     // A governor checkpoint reaches this owner as several signed frames. A read
@@ -839,46 +861,46 @@ tilo_test_env::scenario! {
             "a device outside the workspace cannot reuse a revision it was never given"
         );
     }
-}
 
-#[test]
-fn a_held_revision_is_checked_from_heads_with_the_read_permission() {
-    let joined = enrolled();
-    let member = member().verifying_key().to_bytes();
-    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
-    let Ok(DocumentRead::Captured(document)) =
-        joined.owner.with_current(joined.workspace, |view| {
-            view.read_document(member, APP, "", None, usize::MAX, joined.now)
-        })
-    else {
-        panic!("the first read admits the document");
-    };
-    let holds = |reader, known| {
-        joined.owner.with_current(joined.workspace, |view| {
-            let history = History {
-                open: &mut |_| Err("the record is not sealed".into()),
-                kept: &mut KeptRecord::default(),
-            };
-            view.document_revision(reader, (APP, ""), joined.now, history)
-                .map(|revision| revision.map(|revision| revision == known))
-        })
-    };
-    crate::owner::document_read::reset_captures();
-    assert_eq!(holds(member, document.revision), Ok(Some(true)));
-    assert_eq!(
-        holds(member, [0; 32]),
-        Ok(Some(false)),
-        "another revision is not held"
-    );
-    assert_eq!(
-        crate::owner::document_read::captures(),
-        0,
-        "answered from the admitted heads, without capturing the document again"
-    );
-    assert!(
-        holds(stranger, document.revision).is_err(),
-        "the read permission is checked as a read checks it"
-    );
+    phase a_held_revision_is_checked_from_heads_with_the_read_permission;
+    {
+        let joined = enrolled();
+        let member = member().verifying_key().to_bytes();
+        let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+        let Ok(DocumentRead::Captured(document)) =
+            joined.owner.with_current(joined.workspace, |view| {
+                view.read_document(member, APP, "", None, usize::MAX, joined.now)
+            })
+        else {
+            panic!("the first read admits the document");
+        };
+        let holds = |reader, known| {
+            joined.owner.with_current(joined.workspace, |view| {
+                let history = History {
+                    open: &mut |_| Err("the record is not sealed".into()),
+                    kept: &mut KeptRecord::default(),
+                };
+                view.document_revision(reader, (APP, ""), joined.now, history)
+                    .map(|revision| revision.map(|revision| revision == known))
+            })
+        };
+        crate::owner::document_read::reset_captures();
+        assert_eq!(holds(member, document.revision), Ok(Some(true)));
+        assert_eq!(
+            holds(member, [0; 32]),
+            Ok(Some(false)),
+            "another revision is not held"
+        );
+        assert_eq!(
+            crate::owner::document_read::captures(),
+            0,
+            "answered from the admitted heads, without capturing the document again"
+        );
+        assert!(
+            holds(stranger, document.revision).is_err(),
+            "the read permission is checked as a read checks it"
+        );
+    }
 }
 
 /// What a sealed write says, which no file of the keyless owner may hold.
@@ -954,103 +976,250 @@ fn sent(owner: &NativeWorkspaceOwner, workspace: WorkspaceId, now: SystemTime) -
         .unwrap()
 }
 
-/// Native publication classifies through the one host classifier browser
-/// peers use, so a sealed checkpoint is a checkpoint to it there too. A
-/// member still never replaces the record's retained checkpoint under its own
-/// relay author: the sealed checkpoint leaves as a delta after it, while a
-/// cleartext snapshot stays a checkpoint the member never releases.
-#[test]
-fn native_sealed_checkpoint_is_classified_like_browser() {
-    use neighbour_wire::{Retention, retention};
-    let joined = enrolled();
-    let (keys, _) = rotated_channel();
-    let envelope = commit_sealed_as(&joined, &keys, collab_types::ContentRetention::Checkpoint);
-    let [bytes] = sent(&joined.owner, joined.workspace, joined.now)
-        .try_into()
-        .expect("the committed sealed checkpoint is released");
-    let message: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
-    let NeighbourMsg::AppDocument { envelope: sent, .. } = &message else {
-        panic!("a document write")
-    };
-    assert_eq!(**sent, envelope);
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn sealed_history_is_published_and_read_through_its_keys;
 
-    let (channel, class) = retention(&message, false).expect("sealed state is retained");
-    assert_eq!(class, Retention::Checkpoint, "the browser peer's class");
-    let (_, recorded, incremental) = crate::owner::publication::metadata(&message).unwrap();
-    assert_eq!(recorded, channel, "the same host channel as a browser peer");
-    assert!(
-        incremental,
-        "a member's sealed checkpoint is published as a delta"
-    );
-    let published = joined
-        .owner
-        .with_outgoing(joined.workspace, joined.now, |_, outgoing| {
-            Ok(outgoing
-                .entries()
-                .map(|entry| (entry.channel(), entry.retention()))
-                .collect::<Vec<_>>())
-        })
-        .unwrap();
-    assert_eq!(published, [(channel, Retention::Delta)]);
+    phase native_sealed_checkpoint_is_classified_like_browser;
+    // Native publication classifies through the one host classifier browser
+    // peers use, so a sealed checkpoint is a checkpoint to it there too. A
+    // member still never replaces the record's retained checkpoint under its own
+    // relay author: the sealed checkpoint leaves as a delta after it, while a
+    // cleartext snapshot stays a checkpoint the member never releases.
+    {
+        use neighbour_wire::{Retention, retention};
+        let joined = enrolled();
+        let (keys, _) = rotated_channel();
+        let envelope = commit_sealed_as(&joined, &keys, collab_types::ContentRetention::Checkpoint);
+        let [bytes] = sent(&joined.owner, joined.workspace, joined.now)
+            .try_into()
+            .expect("the committed sealed checkpoint is released");
+        let message: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
+        let NeighbourMsg::AppDocument { envelope: sent, .. } = &message else {
+            panic!("a document write")
+        };
+        assert_eq!(**sent, envelope);
 
-    let mut snapshot = message.clone();
-    let mut single_use = message;
-    if let NeighbourMsg::AppDocument { envelope, .. } = &mut snapshot {
-        envelope.encryption = None;
-        envelope.payload = collab_types::DocumentMutation::Snapshot(vec![1])
-            .encode()
+        let (channel, class) = retention(&message, false).expect("sealed state is retained");
+        assert_eq!(class, Retention::Checkpoint, "the browser peer's class");
+        let (_, recorded, incremental) = crate::owner::publication::metadata(&message).unwrap();
+        assert_eq!(recorded, channel, "the same host channel as a browser peer");
+        assert!(
+            incremental,
+            "a member's sealed checkpoint is published as a delta"
+        );
+        let published = joined
+            .owner
+            .with_outgoing(joined.workspace, joined.now, |_, outgoing| {
+                Ok(outgoing
+                    .entries()
+                    .map(|entry| (entry.channel(), entry.retention()))
+                    .collect::<Vec<_>>())
+            })
             .unwrap();
-    }
-    assert_eq!(
-        retention(&snapshot, false).map(|(_, class)| class),
-        Some(Retention::Checkpoint)
-    );
-    assert!(
-        !crate::owner::publication::metadata(&snapshot).unwrap().2,
-        "a cleartext snapshot stays the governor's checkpoint"
-    );
-    if let NeighbourMsg::AppDocument { envelope, .. } = &mut single_use {
-        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(0));
-    }
-    assert!(
-        crate::owner::publication::metadata(&single_use).is_err(),
-        "a single-use MLS message has no retention class"
-    );
-}
+        assert_eq!(published, [(channel, Retention::Delta)]);
 
-/// A member's sealed compaction is the one checkpoint it publishes as itself:
-/// the host replaces that member's retained history of the record with it,
-/// where a sealed snapshot would only be appended after the checkpoint a
-/// member never releases.
-#[test]
-fn a_members_sealed_compaction_is_published_as_a_checkpoint() {
-    use neighbour_wire::{Retention, retention};
-    let joined = enrolled();
-    let (keys, _) = rotated_channel();
-    let sealed = commit_sealed_as(&joined, &keys, collab_types::ContentRetention::Checkpoint);
-    let [bytes] = sent(&joined.owner, joined.workspace, joined.now)
-        .try_into()
-        .expect("the committed sealed checkpoint is released");
-    let mut message: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
-    let NeighbourMsg::AppDocument { envelope: op, .. } = &mut message else {
-        panic!("a document write")
-    };
-    op.kind = collab_types::OpKind::Compaction;
-    collab_types::sign_op(op, &member()).unwrap();
-    assert_eq!(
-        op.seq, sealed.seq,
-        "the same write, published as a compaction"
-    );
+        let mut snapshot = message.clone();
+        let mut single_use = message;
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut snapshot {
+            envelope.encryption = None;
+            envelope.payload = collab_types::DocumentMutation::Snapshot(vec![1])
+                .encode()
+                .unwrap();
+        }
+        assert_eq!(
+            retention(&snapshot, false).map(|(_, class)| class),
+            Some(Retention::Checkpoint)
+        );
+        assert!(
+            !crate::owner::publication::metadata(&snapshot).unwrap().2,
+            "a cleartext snapshot stays the governor's checkpoint"
+        );
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut single_use {
+            envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(0));
+        }
+        assert!(
+            crate::owner::publication::metadata(&single_use).is_err(),
+            "a single-use MLS message has no retention class"
+        );
+    }
 
-    assert_eq!(
-        retention(&message, false).map(|(_, class)| class),
-        Some(Retention::Checkpoint)
-    );
-    let (_, _, incremental) = crate::owner::publication::metadata(&message).unwrap();
-    assert!(
-        !incremental,
-        "a member's sealed compaction replaces the record's retained history"
-    );
+    phase a_members_sealed_compaction_is_published_as_a_checkpoint;
+    // A member's sealed compaction is the one checkpoint it publishes as itself:
+    // the host replaces that member's retained history of the record with it,
+    // where a sealed snapshot would only be appended after the checkpoint a
+    // member never releases.
+    {
+        use neighbour_wire::{Retention, retention};
+        let joined = enrolled();
+        let (keys, _) = rotated_channel();
+        let sealed = commit_sealed_as(&joined, &keys, collab_types::ContentRetention::Checkpoint);
+        let [bytes] = sent(&joined.owner, joined.workspace, joined.now)
+            .try_into()
+            .expect("the committed sealed checkpoint is released");
+        let mut message: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
+        let NeighbourMsg::AppDocument { envelope: op, .. } = &mut message else {
+            panic!("a document write")
+        };
+        op.kind = collab_types::OpKind::Compaction;
+        collab_types::sign_op(op, &member()).unwrap();
+        assert_eq!(
+            op.seq, sealed.seq,
+            "the same write, published as a compaction"
+        );
+
+        assert_eq!(
+            retention(&message, false).map(|(_, class)| class),
+            Some(Retention::Checkpoint)
+        );
+        let (_, _, incremental) = crate::owner::publication::metadata(&message).unwrap();
+        assert!(
+            !incremental,
+            "a member's sealed compaction replaces the record's retained history"
+        );
+    }
+
+    phase a_kept_sealed_record_opens_each_write_once;
+    // A reader that keeps a sealed record opened opens each write once: a read again opens nothing,
+    // and a reader holding the revision is told it is unchanged.
+    {
+        let joined = enrolled();
+        let reader = member().verifying_key().to_bytes();
+        let (keys, _) = rotated_channel();
+        commit_sealed(&joined, &keys);
+        let mut decryptions = 0;
+        let mut kept = KeptRecord::default();
+        let mut read = |holding: Holding<'_>, kept: &mut KeptRecord| {
+            joined.owner.with_current(joined.workspace, |view| {
+                let open = &mut |op: &collab_types::SignedOp| {
+                    decryptions += 1;
+                    let ciphertext =
+                        collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+                    keys.open_content(
+                        op.artifact,
+                        &op.encryption.ok_or("not sealed")?,
+                        &ciphertext,
+                    )
+                    .map(|bytes| bytes.to_vec())
+                    .map_err(|error| error.to_string())
+                };
+                view.read_document_with_history(
+                    reader,
+                    (APP, ""),
+                    holding,
+                    1024 * 1024,
+                    joined.now,
+                    History { open, kept },
+                )
+            })
+        };
+        let Ok(DocumentRead::Captured(first)) = read(Holding::default(), &mut kept) else {
+            panic!("a first read captures the history");
+        };
+        let holding = Holding {
+            revision: Some(first.revision),
+            heads: &first.heads,
+        };
+        assert!(
+            matches!(read(holding, &mut kept), Ok(DocumentRead::Unchanged(revision)) if revision == first.revision)
+        );
+        assert!(
+            matches!(read(Holding::default(), &mut kept), Ok(DocumentRead::Captured(again)) if again.bytes == first.bytes)
+        );
+        assert_eq!(decryptions, 1, "the kept record opened its one write once");
+    }
+
+    phase encrypted_committed_history_reads_through_held_keys_without_mutating_the_owner;
+    {
+        let joined = enrolled();
+        let reader = member().verifying_key().to_bytes();
+        let (keys, _) = rotated_channel();
+        commit_sealed(&joined, &keys);
+        let before = record_on_disk(&joined.path);
+        let mut decryptions = 0;
+        let mut opener = |op: &collab_types::SignedOp| {
+            decryptions += 1;
+            let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+            keys.open_content(
+                op.artifact,
+                &op.encryption.ok_or("not sealed")?,
+                &ciphertext,
+            )
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| error.to_string())
+        };
+        let captured = joined
+            .owner
+            .with_current(joined.workspace, |view| {
+                assert!(
+                    view.read_document(reader, APP, "", None, 1024 * 1024, joined.now)
+                        .is_err(),
+                    "the plaintext-only door must retain its encrypted refusal"
+                );
+                assert!(
+                    view.read_document_with_history(
+                        [0x77; 32],
+                        (APP, ""),
+                        Holding::default(),
+                        1024 * 1024,
+                        joined.now,
+                        History {
+                            open: &mut opener,
+                            kept: &mut KeptRecord::default(),
+                        },
+                    )
+                    .is_err(),
+                    "a stranger cannot open history"
+                );
+                view.read_document_with_history(
+                    reader,
+                    (APP, ""),
+                    Holding::default(),
+                    1024 * 1024,
+                    joined.now,
+                    History {
+                        open: &mut opener,
+                        kept: &mut KeptRecord::default(),
+                    },
+                )
+            })
+            .unwrap();
+        let DocumentRead::Captured(captured) = captured else {
+            panic!("a first encrypted read captures history");
+        };
+        assert_eq!(
+            decryptions, 1,
+            "only the admitted member's read opens the write"
+        );
+        let doc = AutoCommit::load(&captured.bytes).unwrap();
+        assert_eq!(
+            doc.get(ROOT, "topic")
+                .unwrap()
+                .unwrap()
+                .0
+                .into_string()
+                .unwrap(),
+            SECRET
+        );
+        assert_eq!(record_on_disk(&joined.path), before);
+        let path = joined.path.clone();
+        let workspace = joined.workspace;
+        let now = joined.now;
+        drop(joined.owner);
+        let reopened = open_file(&path).unwrap();
+        assert!(matches!(reopened.with_current(workspace, |view| {
+            let holding = Holding { revision: Some(captured.revision), heads: &[] };
+            view.read_document_with_history(reader, (APP, ""), holding, 1024 * 1024, now, History {
+                open: &mut |op| {
+                    keys.open_content(op.artifact, &op.encryption.ok_or("not sealed")?,
+                        &collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?)
+                        .map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
+                },
+                kept: &mut KeptRecord::default(),
+            })
+        }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
+        assert_eq!(record_on_disk(&path), before);
+    }
 }
 
 #[tokio::test]
@@ -1234,170 +1403,6 @@ async fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
             .await
             .is_err()
     );
-}
-
-#[test]
-fn owner_files_hold_byte_fields_as_compact_base64() {
-    let joined = enrolled();
-    // The journals beside the files are binary.
-    for (file, bytes) in record_on_disk(&joined.path)
-        .into_iter()
-        .filter(|(file, _)| {
-            file.extension()
-                .is_some_and(|extension| extension == "json")
-        })
-    {
-        assert!(!bytes.contains(&b'\n'), "{} is compact", file.display());
-    }
-    let file = workspace_file(&joined.path, joined.workspace);
-    let bytes = std::fs::read(&file).unwrap();
-    assert!(!bytes.contains(&b'\n'), "the workspace's file is compact");
-    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    for field in ["peer", "invitation", "enrollment_intent"] {
-        assert!(value[field].is_string(), "{field} is base64 text");
-    }
-}
-
-/// A reader that keeps a sealed record opened opens each write once: a read again opens nothing,
-/// and a reader holding the revision is told it is unchanged.
-#[test]
-fn a_kept_sealed_record_opens_each_write_once() {
-    let joined = enrolled();
-    let reader = member().verifying_key().to_bytes();
-    let (keys, _) = rotated_channel();
-    commit_sealed(&joined, &keys);
-    let mut decryptions = 0;
-    let mut kept = KeptRecord::default();
-    let mut read = |holding: Holding<'_>, kept: &mut KeptRecord| {
-        joined.owner.with_current(joined.workspace, |view| {
-            let open = &mut |op: &collab_types::SignedOp| {
-                decryptions += 1;
-                let ciphertext =
-                    collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
-                keys.open_content(
-                    op.artifact,
-                    &op.encryption.ok_or("not sealed")?,
-                    &ciphertext,
-                )
-                .map(|bytes| bytes.to_vec())
-                .map_err(|error| error.to_string())
-            };
-            view.read_document_with_history(
-                reader,
-                (APP, ""),
-                holding,
-                1024 * 1024,
-                joined.now,
-                History { open, kept },
-            )
-        })
-    };
-    let Ok(DocumentRead::Captured(first)) = read(Holding::default(), &mut kept) else {
-        panic!("a first read captures the history");
-    };
-    let holding = Holding {
-        revision: Some(first.revision),
-        heads: &first.heads,
-    };
-    assert!(
-        matches!(read(holding, &mut kept), Ok(DocumentRead::Unchanged(revision)) if revision == first.revision)
-    );
-    assert!(
-        matches!(read(Holding::default(), &mut kept), Ok(DocumentRead::Captured(again)) if again.bytes == first.bytes)
-    );
-    assert_eq!(decryptions, 1, "the kept record opened its one write once");
-}
-
-#[test]
-fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owner() {
-    let joined = enrolled();
-    let reader = member().verifying_key().to_bytes();
-    let (keys, _) = rotated_channel();
-    commit_sealed(&joined, &keys);
-    let before = record_on_disk(&joined.path);
-    let mut decryptions = 0;
-    let mut opener = |op: &collab_types::SignedOp| {
-        decryptions += 1;
-        let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
-        keys.open_content(
-            op.artifact,
-            &op.encryption.ok_or("not sealed")?,
-            &ciphertext,
-        )
-        .map(|bytes| bytes.to_vec())
-        .map_err(|error| error.to_string())
-    };
-    let captured = joined
-        .owner
-        .with_current(joined.workspace, |view| {
-            assert!(
-                view.read_document(reader, APP, "", None, 1024 * 1024, joined.now)
-                    .is_err(),
-                "the plaintext-only door must retain its encrypted refusal"
-            );
-            assert!(
-                view.read_document_with_history(
-                    [0x77; 32],
-                    (APP, ""),
-                    Holding::default(),
-                    1024 * 1024,
-                    joined.now,
-                    History {
-                        open: &mut opener,
-                        kept: &mut KeptRecord::default(),
-                    },
-                )
-                .is_err(),
-                "a stranger cannot open history"
-            );
-            view.read_document_with_history(
-                reader,
-                (APP, ""),
-                Holding::default(),
-                1024 * 1024,
-                joined.now,
-                History {
-                    open: &mut opener,
-                    kept: &mut KeptRecord::default(),
-                },
-            )
-        })
-        .unwrap();
-    let DocumentRead::Captured(captured) = captured else {
-        panic!("a first encrypted read captures history");
-    };
-    assert_eq!(
-        decryptions, 1,
-        "only the admitted member's read opens the write"
-    );
-    let doc = AutoCommit::load(&captured.bytes).unwrap();
-    assert_eq!(
-        doc.get(ROOT, "topic")
-            .unwrap()
-            .unwrap()
-            .0
-            .into_string()
-            .unwrap(),
-        SECRET
-    );
-    assert_eq!(record_on_disk(&joined.path), before);
-    let path = joined.path.clone();
-    let workspace = joined.workspace;
-    let now = joined.now;
-    drop(joined.owner);
-    let reopened = open_file(&path).unwrap();
-    assert!(matches!(reopened.with_current(workspace, |view| {
-        let holding = Holding { revision: Some(captured.revision), heads: &[] };
-        view.read_document_with_history(reader, (APP, ""), holding, 1024 * 1024, now, History {
-            open: &mut |op| {
-                keys.open_content(op.artifact, &op.encryption.ok_or("not sealed")?,
-                    &collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?)
-                    .map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
-            },
-            kept: &mut KeptRecord::default(),
-        })
-    }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
-    assert_eq!(record_on_disk(&path), before);
 }
 
 /// A change chunk that makes Automerge's decoder panic in the isolated worker.

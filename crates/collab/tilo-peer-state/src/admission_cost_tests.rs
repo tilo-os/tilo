@@ -128,131 +128,136 @@ fn time<T>(label: &str, members: u32, run: impl FnOnce() -> T) -> T {
     value
 }
 
-/// Every kind of change a governor makes to a crowded workspace reads the
-/// same through the narrowed paths (the parts a change wrote, the rows a
-/// change left as they were) as through a whole reading: each governance
-/// write a test makes compares the two ([`crate::workspace::changed_rows_by`]),
-/// and the member list, access and standings after each step are the ones a
-/// copy that never read an earlier state derives.
-#[test]
-fn every_change_reads_the_same_narrowed_as_whole() {
-    type Step<'a> = (&'a str, Box<dyn Fn(&mut StatePeer) + 'a>);
-    let (mut peer, authority, now) = crowd(4);
-    let person = |n: u32| person(n).1.user_public_key;
-    let steps: Vec<Step<'_>> = vec![
-        ("admit", Box::new(|peer| admit(peer, &authority, 10, now))),
-        (
-            "rename",
-            Box::new(|peer| {
-                peer.governance_mut()
-                    .name_person(person(1), "Renamed", &authority, now)
-                    .unwrap();
-            }),
-        ),
-        (
-            "role",
-            Box::new(|peer| {
-                peer.governance_mut()
-                    .set_member_role(person(2), Role::Viewer, &authority, now)
-                    .unwrap();
-            }),
-        ),
-        (
-            "administrator",
-            Box::new(|peer| {
-                peer.governance_mut()
-                    .set_member_administrator(person(3), None, &authority, now)
-                    .unwrap();
-            }),
-        ),
-        (
-            "remove",
-            Box::new(|peer| {
-                peer.governance_mut()
-                    .remove_member(person(0), &authority, now)
-                    .unwrap();
-            }),
-        ),
-        ("readmit", Box::new(|peer| admit(peer, &authority, 11, now))),
-    ];
-    for (step, change) in steps {
-        // Read the state before, so its views carry over into the next.
-        let _ = peer.governance().governed_members(now).unwrap();
-        change(&mut peer);
-        let fresh = StatePeer::restore(
-            &peer.durable().unwrap(),
-            peer.workspace_id(),
-            peer.owner_certificates()[0].clone(),
-            vec![],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        assert_eq!(
-            peer.governance().governed_members(now).unwrap(),
-            fresh.governance().governed_members(now).unwrap(),
-            "{step}: the people"
-        );
-        assert_eq!(
-            peer.governance().governed_access(now).unwrap(),
-            fresh.governance().governed_access(now).unwrap(),
-            "{step}: who may read"
-        );
-        assert_eq!(
-            peer.governance().governed_standings(now).unwrap(),
-            fresh.governance().governed_standings(now).unwrap(),
-            "{step}: what each device may do"
-        );
-    }
-}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_crowded_workspaces_governance_is_read_and_stored_by_what_changed;
 
-/// The governance copy is stored as a saved base and the changes since it:
-/// an admission keeps the base its state was stored on, the same allocation,
-/// and stores only its own change beside it; once the changes since the base
-/// weigh as much as half of it, a base is saved anew. Whatever was stored
-/// restores the workspace as it stands.
-#[test]
-fn the_governance_copy_is_stored_as_a_base_and_the_changes_since() {
-    let (mut peer, authority, now) = crowd(3);
-    let workspace = peer.workspace_id().to_owned();
-    let owner = peer.owner_certificates()[0].clone();
-    let restored = |parts: &[std::sync::Arc<[u8]>]| {
-        StatePeer::restore(
-            &parts.concat(),
-            &workspace,
-            owner.clone(),
-            vec![],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap()
-    };
-    let first = peer.durable_parts().unwrap();
-    let mut base = std::sync::Arc::clone(&first[1]);
-    let mut rebased = 0;
-    for n in 3..40 {
-        admit(&mut peer, &authority, n, now);
-        let parts = peer.durable_parts().unwrap();
-        assert_eq!(parts.concat(), peer.durable_whole().unwrap());
-        if std::sync::Arc::ptr_eq(&parts[1], &base) {
-            assert!(
-                parts[2].len().saturating_mul(2) <= base.len().saturating_add(64),
-                "the changes since the base stay within half of it"
+    phase every_change_reads_the_same_narrowed_as_whole;
+    // Every kind of change a governor makes to a crowded workspace reads the
+    // same through the narrowed paths (the parts a change wrote, the rows a
+    // change left as they were) as through a whole reading: each governance
+    // write a test makes compares the two ([`crate::workspace::changed_rows_by`]),
+    // and the member list, access and standings after each step are the ones a
+    // copy that never read an earlier state derives.
+    {
+        type Step<'a> = (&'a str, Box<dyn Fn(&mut StatePeer) + 'a>);
+        let (mut peer, authority, now) = crowd(4);
+        let person = |n: u32| person(n).1.user_public_key;
+        let steps: Vec<Step<'_>> = vec![
+            ("admit", Box::new(|peer| admit(peer, &authority, 10, now))),
+            (
+                "rename",
+                Box::new(|peer| {
+                    peer.governance_mut()
+                        .name_person(person(1), "Renamed", &authority, now)
+                        .unwrap();
+                }),
+            ),
+            (
+                "role",
+                Box::new(|peer| {
+                    peer.governance_mut()
+                        .set_member_role(person(2), Role::Viewer, &authority, now)
+                        .unwrap();
+                }),
+            ),
+            (
+                "administrator",
+                Box::new(|peer| {
+                    peer.governance_mut()
+                        .set_member_administrator(person(3), None, &authority, now)
+                        .unwrap();
+                }),
+            ),
+            (
+                "remove",
+                Box::new(|peer| {
+                    peer.governance_mut()
+                        .remove_member(person(0), &authority, now)
+                        .unwrap();
+                }),
+            ),
+            ("readmit", Box::new(|peer| admit(peer, &authority, 11, now))),
+        ];
+        for (step, change) in steps {
+            // Read the state before, so its views carry over into the next.
+            let _ = peer.governance().governed_members(now).unwrap();
+            change(&mut peer);
+            let fresh = StatePeer::restore(
+                &peer.durable().unwrap(),
+                peer.workspace_id(),
+                peer.owner_certificates()[0].clone(),
+                vec![],
+                RevocationList::new(),
+                now,
+            )
+            .unwrap();
+            assert_eq!(
+                peer.governance().governed_members(now).unwrap(),
+                fresh.governance().governed_members(now).unwrap(),
+                "{step}: the people"
             );
-        } else {
-            rebased += 1;
-            base = std::sync::Arc::clone(&parts[1]);
+            assert_eq!(
+                peer.governance().governed_access(now).unwrap(),
+                fresh.governance().governed_access(now).unwrap(),
+                "{step}: who may read"
+            );
+            assert_eq!(
+                peer.governance().governed_standings(now).unwrap(),
+                fresh.governance().governed_standings(now).unwrap(),
+                "{step}: what each device may do"
+            );
         }
-        assert_eq!(
-            restored(&parts).governance().governed_members(now).unwrap(),
-            peer.governance().governed_members(now).unwrap(),
-            "admission {n} restores as it stands"
+    }
+
+    phase the_governance_copy_is_stored_as_a_base_and_the_changes_since;
+    // The governance copy is stored as a saved base and the changes since it:
+    // an admission keeps the base its state was stored on, the same allocation,
+    // and stores only its own change beside it; once the changes since the base
+    // weigh as much as half of it, a base is saved anew. Whatever was stored
+    // restores the workspace as it stands.
+    {
+        let (mut peer, authority, now) = crowd(3);
+        let workspace = peer.workspace_id().to_owned();
+        let owner = peer.owner_certificates()[0].clone();
+        let restored = |parts: &[std::sync::Arc<[u8]>]| {
+            StatePeer::restore(
+                &parts.concat(),
+                &workspace,
+                owner.clone(),
+                vec![],
+                RevocationList::new(),
+                now,
+            )
+            .unwrap()
+        };
+        let first = peer.durable_parts().unwrap();
+        let mut base = std::sync::Arc::clone(&first[1]);
+        let mut rebased = 0;
+        for n in 3..40 {
+            admit(&mut peer, &authority, n, now);
+            let parts = peer.durable_parts().unwrap();
+            assert_eq!(parts.concat(), peer.durable_whole().unwrap());
+            if std::sync::Arc::ptr_eq(&parts[1], &base) {
+                assert!(
+                    parts[2].len().saturating_mul(2) <= base.len().saturating_add(64),
+                    "the changes since the base stay within half of it"
+                );
+            } else {
+                rebased += 1;
+                base = std::sync::Arc::clone(&parts[1]);
+            }
+            assert_eq!(
+                restored(&parts).governance().governed_members(now).unwrap(),
+                peer.governance().governed_members(now).unwrap(),
+                "admission {n} restores as it stands"
+            );
+        }
+        assert!(
+            rebased >= 1 && rebased * 2 < 37,
+            "a base is saved anew now and then, not with every change: {rebased} of 37"
         );
     }
-    assert!(
-        rebased >= 1 && rebased * 2 < 37,
-        "a base is saved anew now and then, not with every change: {rebased} of 37"
-    );
 }
 
 #[test]

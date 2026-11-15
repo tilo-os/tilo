@@ -69,6 +69,93 @@ tilo_test_env::scenario! {
         assert_eq!(receiver.rows(), rows);
     }
 
+    phase delivery_admission_same_sequence_changed_body_conflicts_unknown_floor_does_not_duplicate;
+    {
+        let (mut receiver, _, key, _, now) = seeded();
+        let mut author = receiver.clone();
+        let message = incremental(&mut author, &key, now, "A");
+        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let mut legacy = receiver.clone();
+        legacy.receive_from(origin, message.clone(), now).unwrap();
+        legacy = restore(&legacy, now);
+        legacy.select_exact_admissions().unwrap();
+        let unknown = legacy
+            .receive_from_report(origin, message.clone(), now)
+            .unwrap();
+        assert_eq!(
+            unknown.primary(),
+            &InputDisposition::RetryLater(MissingPrerequisite::ExactHistoricalEvidence)
+        );
+        receiver.select_exact_admissions().unwrap();
+        receiver
+            .receive_from_report(origin, message.clone(), now)
+            .unwrap();
+        let before = receiver.durable().unwrap();
+        let mut changed = message.clone();
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut changed {
+            envelope.timestamp += Duration::from_secs(1);
+            collab_types::sign_op(envelope, &key).unwrap();
+        }
+        assert!(matches!(
+            receiver.receive_from_report(origin, changed.clone(), now),
+            Err(AdmissionError::ConflictingSequence)
+        ));
+        assert_eq!(receiver.durable().unwrap(), before);
+        // Compatibility: legacy receive keeps its old floor/duplicate semantics.
+        assert!(
+            receiver
+                .receive_from(origin, changed, now)
+                .unwrap()
+                .duplicate
+        );
+        let mut different_payload = incremental(&mut author, &key, now, "B");
+        if let (
+            NeighbourMsg::AppDocument {
+                envelope: original, ..
+            },
+            NeighbourMsg::AppDocument {
+                envelope: changed, ..
+            },
+        ) = (&message, &mut different_payload)
+        {
+            changed.seq = original.seq;
+            collab_types::sign_op(changed, &key).unwrap();
+        }
+        assert!(matches!(
+            receiver.receive_from_report(origin, different_payload.clone(), now),
+            Err(AdmissionError::ConflictingSequence)
+        ));
+        assert_eq!(
+            legacy
+                .receive_from_report(origin, different_payload, now)
+                .unwrap()
+                .primary(),
+            &InputDisposition::RetryLater(MissingPrerequisite::ExactHistoricalEvidence)
+        );
+    }
+
+    phase delivery_admission_new_same_heads_envelope_is_accepted;
+    {
+        let (mut receiver, _, key, _, now) = seeded();
+        let mut author = receiver.clone();
+        let first = incremental(&mut author, &key, now, "A");
+        let mut second = first.clone();
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut second {
+            envelope.seq += 1;
+            collab_types::sign_op(envelope, &key).unwrap();
+        }
+        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        receiver.select_exact_admissions().unwrap();
+        let first = receiver.receive_from_report(origin, first, now).unwrap();
+        let rows = receiver.rows();
+        let second = receiver.receive_from_report(origin, second, now).unwrap();
+        assert!(matches!(second.primary(), InputDisposition::Accepted(_)));
+        assert_ne!(first.primary(), second.primary());
+        assert_eq!(rows, receiver.rows());
+        assert!(!second.summary().changed);
+        assert!(second.summary().metadata_changed);
+    }
+
     phase delivery_admission_metadata_and_unsupported_families_have_no_operation_receipt;
     {
         let (mut receiver, key, _, _, now) = seeded();
@@ -152,6 +239,34 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase delivery_admission_local_candidate_delta_includes_all_routes_and_refuses_evidence_loss;
+    {
+        let (mut base, key, _, _, now) = seeded();
+        base.select_exact_admissions().unwrap();
+        let mut candidate = base.clone();
+        let bytes = candidate.document("test.app", "tab:1").unwrap();
+        candidate
+            .publication_mut()
+            .publish_document("test.app", "tab:1", bytes.clone(), &key, now)
+            .unwrap();
+        candidate
+            .publication_mut()
+            .publish_document("test.app", "tab:2", bytes, &key, now)
+            .unwrap();
+        let delta = candidate.admissions_since(&base).unwrap();
+        assert_eq!(delta.len(), 2);
+        assert_eq!(
+            delta
+                .iter()
+                .map(super::super::admission::DocumentAdmission::record)
+                .collect::<Vec<_>>(),
+            ["tab:1", "tab:2"]
+        );
+        assert!(base.admissions_since(&candidate).is_err());
+        let restored = restore(&candidate, now);
+        assert_eq!(restored.admissions_since(&base).unwrap(), delta);
+    }
+
     phase delivery_admission_operation_id_names_the_literal_signed_bytes;
     {
         let (mut receiver, _, key, _, now) = seeded();
@@ -177,93 +292,6 @@ tilo_test_env::scenario! {
             "the operation id names no literal canonical SignedOp bytes"
         );
     }
-}
-
-#[test]
-fn delivery_admission_same_sequence_changed_body_conflicts_unknown_floor_does_not_duplicate() {
-    let (mut receiver, _, key, _, now) = seeded();
-    let mut author = receiver.clone();
-    let message = incremental(&mut author, &key, now, "A");
-    let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    let mut legacy = receiver.clone();
-    legacy.receive_from(origin, message.clone(), now).unwrap();
-    legacy = restore(&legacy, now);
-    legacy.select_exact_admissions().unwrap();
-    let unknown = legacy
-        .receive_from_report(origin, message.clone(), now)
-        .unwrap();
-    assert_eq!(
-        unknown.primary(),
-        &InputDisposition::RetryLater(MissingPrerequisite::ExactHistoricalEvidence)
-    );
-    receiver.select_exact_admissions().unwrap();
-    receiver
-        .receive_from_report(origin, message.clone(), now)
-        .unwrap();
-    let before = receiver.durable().unwrap();
-    let mut changed = message.clone();
-    if let NeighbourMsg::AppDocument { envelope, .. } = &mut changed {
-        envelope.timestamp += Duration::from_secs(1);
-        collab_types::sign_op(envelope, &key).unwrap();
-    }
-    assert!(matches!(
-        receiver.receive_from_report(origin, changed.clone(), now),
-        Err(AdmissionError::ConflictingSequence)
-    ));
-    assert_eq!(receiver.durable().unwrap(), before);
-    // Compatibility: legacy receive keeps its old floor/duplicate semantics.
-    assert!(
-        receiver
-            .receive_from(origin, changed, now)
-            .unwrap()
-            .duplicate
-    );
-    let mut different_payload = incremental(&mut author, &key, now, "B");
-    if let (
-        NeighbourMsg::AppDocument {
-            envelope: original, ..
-        },
-        NeighbourMsg::AppDocument {
-            envelope: changed, ..
-        },
-    ) = (&message, &mut different_payload)
-    {
-        changed.seq = original.seq;
-        collab_types::sign_op(changed, &key).unwrap();
-    }
-    assert!(matches!(
-        receiver.receive_from_report(origin, different_payload.clone(), now),
-        Err(AdmissionError::ConflictingSequence)
-    ));
-    assert_eq!(
-        legacy
-            .receive_from_report(origin, different_payload, now)
-            .unwrap()
-            .primary(),
-        &InputDisposition::RetryLater(MissingPrerequisite::ExactHistoricalEvidence)
-    );
-}
-
-#[test]
-fn delivery_admission_new_same_heads_envelope_is_accepted() {
-    let (mut receiver, _, key, _, now) = seeded();
-    let mut author = receiver.clone();
-    let first = incremental(&mut author, &key, now, "A");
-    let mut second = first.clone();
-    if let NeighbourMsg::AppDocument { envelope, .. } = &mut second {
-        envelope.seq += 1;
-        collab_types::sign_op(envelope, &key).unwrap();
-    }
-    let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    receiver.select_exact_admissions().unwrap();
-    let first = receiver.receive_from_report(origin, first, now).unwrap();
-    let rows = receiver.rows();
-    let second = receiver.receive_from_report(origin, second, now).unwrap();
-    assert!(matches!(second.primary(), InputDisposition::Accepted(_)));
-    assert_ne!(first.primary(), second.primary());
-    assert_eq!(rows, receiver.rows());
-    assert!(!second.summary().changed);
-    assert!(second.summary().metadata_changed);
 }
 
 tilo_test_env::scenario! {
@@ -366,6 +394,50 @@ tilo_test_env::scenario! {
         assert_eq!(live.rows(), rows);
     }
 
+    phase delivery_admission_review_strict_drain_keeps_retained_pending_history_held;
+    {
+        let (mut receiver, authority, key, _, now) = seeded();
+        let mut author = receiver.clone();
+        let _first = incremental(&mut author, &key, now, "A");
+        let second = incremental(&mut author, &key, now, "B");
+        let origin = TransportOrigin::RetainedRelayDelta(key.verifying_key().to_bytes());
+        // Queue through the legacy retained path to exercise persisted provenance.
+        assert!(
+            receiver
+                .receive_from(origin, second.clone(), now)
+                .unwrap()
+                .deferred
+        );
+        receiver = restore(&receiver, now);
+        receiver.select_exact_admissions().unwrap();
+        let later = now + Duration::from_secs(301);
+        let workspace = receiver.workspace_message();
+        let report = receiver
+            .receive_from_report(
+                TransportOrigin::RelayDelta(authority.verifying_key().to_bytes()),
+                workspace,
+                later,
+            )
+            .unwrap();
+        assert_eq!(
+            report.summary().rejected,
+            0,
+            "retained pending history is not expired by its age"
+        );
+        assert_eq!(
+            receiver.pending_count(),
+            1,
+            "it still waits for the write it builds on"
+        );
+        assert!(report.settled().is_empty());
+        assert!(
+            receiver
+                .lookup_exact_document(origin, &second, later)
+                .unwrap()
+                .is_none()
+        );
+    }
+
     phase a_sealed_record_takes_its_cleartext_base_and_no_cleartext_after_the_seal;
     {
         let (receiver, _, key, _, now) = seeded();
@@ -409,75 +481,4 @@ tilo_test_env::scenario! {
             assert!(doc.get(ROOT, name).unwrap().is_none(), "{name} was applied");
         }
     }
-}
-#[test]
-fn delivery_admission_local_candidate_delta_includes_all_routes_and_refuses_evidence_loss() {
-    let (mut base, key, _, _, now) = seeded();
-    base.select_exact_admissions().unwrap();
-    let mut candidate = base.clone();
-    let bytes = candidate.document("test.app", "tab:1").unwrap();
-    candidate
-        .publication_mut()
-        .publish_document("test.app", "tab:1", bytes.clone(), &key, now)
-        .unwrap();
-    candidate
-        .publication_mut()
-        .publish_document("test.app", "tab:2", bytes, &key, now)
-        .unwrap();
-    let delta = candidate.admissions_since(&base).unwrap();
-    assert_eq!(delta.len(), 2);
-    assert_eq!(
-        delta
-            .iter()
-            .map(super::super::admission::DocumentAdmission::record)
-            .collect::<Vec<_>>(),
-        ["tab:1", "tab:2"]
-    );
-    assert!(base.admissions_since(&candidate).is_err());
-    let restored = restore(&candidate, now);
-    assert_eq!(restored.admissions_since(&base).unwrap(), delta);
-}
-
-#[test]
-fn delivery_admission_review_strict_drain_keeps_retained_pending_history_held() {
-    let (mut receiver, authority, key, _, now) = seeded();
-    let mut author = receiver.clone();
-    let _first = incremental(&mut author, &key, now, "A");
-    let second = incremental(&mut author, &key, now, "B");
-    let origin = TransportOrigin::RetainedRelayDelta(key.verifying_key().to_bytes());
-    // Queue through the legacy retained path to exercise persisted provenance.
-    assert!(
-        receiver
-            .receive_from(origin, second.clone(), now)
-            .unwrap()
-            .deferred
-    );
-    receiver = restore(&receiver, now);
-    receiver.select_exact_admissions().unwrap();
-    let later = now + Duration::from_secs(301);
-    let workspace = receiver.workspace_message();
-    let report = receiver
-        .receive_from_report(
-            TransportOrigin::RelayDelta(authority.verifying_key().to_bytes()),
-            workspace,
-            later,
-        )
-        .unwrap();
-    assert_eq!(
-        report.summary().rejected,
-        0,
-        "retained pending history is not expired by its age"
-    );
-    assert_eq!(
-        receiver.pending_count(),
-        1,
-        "it still waits for the write it builds on"
-    );
-    assert!(report.settled().is_empty());
-    assert!(
-        receiver
-            .lookup_exact_document(origin, &second, later)
-            .unwrap()
-            .is_none()
-    );
 }

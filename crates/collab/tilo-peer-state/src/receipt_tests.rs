@@ -687,6 +687,33 @@ tilo_test_env::scenario! {
         .expect("an editor names the newer surface");
     }
 
+    phase a_persons_change_showing_another_name_is_refused;
+    // A person's device that writes a change showing another name, as only a
+    // bot allowed it may, is refused by every receiver.
+    {
+        let (mut peer, key, guest) = workspace_with(Role::Editor);
+        let impostor = tilo_actions::ActionInvoker::person("person:guest").with_appearance(Some(
+            tilo_actions::Appearance::new("Owner", None, None).unwrap(),
+        ));
+        let edited = guest_write_by(
+            &peer,
+            &key,
+            |doc| doc.put(ROOT, "value", "x").unwrap(),
+            edit_value(),
+            impostor,
+        );
+        let refused = receive(&mut peer, &guest, edited).unwrap_err();
+        assert!(refused.contains("appearance"), "{refused}");
+        let plain = guest_write_by(
+            &peer,
+            &key,
+            |doc| doc.put(ROOT, "value", "y").unwrap(),
+            edit_value(),
+            tilo_actions::ActionInvoker::person("person:guest"),
+        );
+        receive(&mut peer, &guest, plain).expect("an editor's own edit is admitted");
+    }
+
     phase a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may;
     // The bot device whose installation allows Personas may show another
     // name; the same bot installed with its own appearance only may not.
@@ -830,33 +857,6 @@ tilo_test_env::scenario! {
         );
         assert!(peer.governance().app_versions().is_empty());
     }
-}
-
-/// A person's device that writes a change showing another name, as only a
-/// bot allowed it may, is refused by every receiver.
-#[test]
-fn a_persons_change_showing_another_name_is_refused() {
-    let (mut peer, key, guest) = workspace_with(Role::Editor);
-    let impostor = tilo_actions::ActionInvoker::person("person:guest").with_appearance(Some(
-        tilo_actions::Appearance::new("Owner", None, None).unwrap(),
-    ));
-    let edited = guest_write_by(
-        &peer,
-        &key,
-        |doc| doc.put(ROOT, "value", "x").unwrap(),
-        edit_value(),
-        impostor,
-    );
-    let refused = receive(&mut peer, &guest, edited).unwrap_err();
-    assert!(refused.contains("appearance"), "{refused}");
-    let plain = guest_write_by(
-        &peer,
-        &key,
-        |doc| doc.put(ROOT, "value", "y").unwrap(),
-        edit_value(),
-        tilo_actions::ActionInvoker::person("person:guest"),
-    );
-    receive(&mut peer, &guest, plain).expect("an editor's own edit is admitted");
 }
 
 /// The record's `value` as the peer holds it.

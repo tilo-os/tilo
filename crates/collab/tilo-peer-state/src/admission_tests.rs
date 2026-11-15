@@ -34,29 +34,35 @@ fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
     let (b, bc) = make(3);
     (a, ac, b, bc, now)
 }
-#[test]
-fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
-    let (peer, _, _, cert, now) = seeded();
-    crate::workspace::POLICY_READS.with(|count| count.set(0));
-    let expected = peer.permissions(cert.device_public_key, now).unwrap();
-    for _ in 0..100 {
-        let actual = peer
-            .clone()
-            .permissions(cert.device_public_key, now)
-            .unwrap();
-        assert_eq!(
-            serde_json::to_vec(&actual.policy).unwrap(),
-            serde_json::to_vec(&expected.policy).unwrap()
-        );
-        assert_eq!(actual.person_id(), expected.person_id());
-    }
-    assert!(
-        crate::workspace::POLICY_READS.with(std::cell::Cell::get) <= 1,
-        "unchanged policy data is decoded at most once"
-    );
-}
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one cached policy followed through expiry, removal and replacement"
+    )]
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn permission_queries_reuse_what_admission_already_verified;
+
+    phase unchanged_permission_queries_share_policy_data_across_peer_clones;
+    {
+        let (peer, _, _, cert, now) = seeded();
+        crate::workspace::POLICY_READS.with(|count| count.set(0));
+        let expected = peer.permissions(cert.device_public_key, now).unwrap();
+        for _ in 0..100 {
+            let actual = peer
+                .clone()
+                .permissions(cert.device_public_key, now)
+                .unwrap();
+            assert_eq!(
+                serde_json::to_vec(&actual.policy).unwrap(),
+                serde_json::to_vec(&expected.policy).unwrap()
+            );
+            assert_eq!(actual.person_id(), expected.person_id());
+        }
+        assert!(
+            crate::workspace::POLICY_READS.with(std::cell::Cell::get) <= 1,
+            "unchanged policy data is decoded at most once"
+        );
+    }
 
     phase admitted_immutable_certificate_does_not_repeat_signature_checks_per_permission_query;
     {
@@ -109,256 +115,953 @@ tilo_test_env::scenario! {
         assert_eq!(peer.durable().unwrap(), before);
         assert!(peer.certificates().contains(&cert));
     }
-}
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one cached policy followed through expiry, removal and replacement"
-)]
-fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
-    use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
-    let (key, cert, _, other, now) = fixtures();
-    let workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let mut doc = crate::workspace::candidate(
-        None,
-        &seed_workspace(workspace_id, &cert, &[cert.clone(), other.clone()]).unwrap(),
-    )
-    .unwrap();
-    let owner = other_owner();
-    doc.put(ROOT, "owner", hex::encode(owner.1.user_public_key))
+
+    phase cached_policy_rechecks_membership_expiry_and_governance_replacement;
+    {
+        use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
+        let (key, cert, _, other, now) = fixtures();
+        let workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut doc = crate::workspace::candidate(
+            None,
+            &seed_workspace(workspace_id, &cert, &[cert.clone(), other.clone()]).unwrap(),
+        )
         .unwrap();
-    let person = hex::encode(cert.user_public_key);
-    // A time-limited hold on undoable changes, rechecked at every decision.
-    let hold = Grant::new(
-        "hold",
-        Grantee::person(person.clone()),
-        TreePath::workspace(workspace_id),
-        KindSet::UNDOABLE,
-        Answer::Deny,
-        Grantee::person(hex::encode(other_owner().1.user_public_key)),
-    )
-    .with_lifetime(Lifetime::Until(2_001_000));
-    let editor = collab_types::Role::Editor;
-    let changes = vec![
-        Change::AddMember {
-            person: person.clone(),
-            role: editor,
-        },
-        Change::Grant(hold),
-    ];
-    owner_signs(&mut doc, &owner, now, changes);
-    let changes = doc
-        .get_changes(&[])
-        .into_iter()
-        .map(|c| c.raw_bytes().to_vec())
-        .collect();
-    let mut peer = StatePeer::new(
-        workspace_id,
-        cert.clone(),
-        vec![cert.clone(), other],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    peer.install_seed(
-        SeedState {
-            workspace_changes: changes,
-            documents: vec![],
-        },
-        &key,
-        now,
-    )
-    .unwrap();
-    assert_eq!(
-        peer.role(&cert.device_public_key, now).unwrap(),
-        collab_types::Role::Editor
-    );
-    let workspace_node = TreePath::workspace(workspace_id);
-    assert!(
-        !peer
-            .permissions(cert.device_public_key, now)
-            .unwrap()
-            .allows(&workspace_node, ActionKind::Undoable, now)
-    );
-    assert!(
-        peer.permissions(cert.device_public_key, now + Duration::from_secs(2))
-            .unwrap()
-            .allows(
-                &workspace_node,
-                ActionKind::Undoable,
-                now + Duration::from_secs(2)
-            )
-    );
-    let old = peer.clone();
-    owner_signs(&mut doc, &owner, now, vec![Change::RemoveMember { person }]);
-    let changes = doc
-        .get_changes(&[])
-        .into_iter()
-        .map(|c| c.raw_bytes().to_vec())
-        .collect();
-    peer.receive(
-        cert.device_public_key,
-        NeighbourMsg::SyncResp {
-            changes,
-            workspace: peer.workspace_id().to_owned(),
-        },
-        now,
-    )
-    .unwrap();
-    assert!(matches!(
-        peer.permissions(cert.device_public_key, now),
-        Err(MembershipError::NoMembership)
-    ));
-    assert_eq!(
-        old.role(&cert.device_public_key, now).unwrap(),
-        collab_types::Role::Editor
-    );
-}
-#[test]
-fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_action() {
-    let (a, ac, _, bc, now) = fixtures();
-    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let mut native = StatePeer::new(
-        workspace,
-        ac.clone(),
-        vec![ac.clone(), bc.clone()],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    let mut document = AutoCommit::new();
-    document.put(ROOT, "value", "native").unwrap();
-    document.commit_edit("fixture", "value");
-    let seed = SeedState {
-        workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()]).unwrap(),
-        documents: vec![SeedDocument {
-            app_id: "test.app".into(),
-            record_id: "tab:1".into(),
-            kind: "test".into(),
-            bytes: document.save(),
-        }],
-    };
-    native.install_seed(seed, &a, now).unwrap();
-    let mut browser = StatePeer::new(
-        workspace,
-        ac.clone(),
-        vec![ac, bc],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    let app = native
-        .publication_mut()
-        .signed_snapshots(&a, now)
-        .unwrap()
-        .remove(0);
-    assert!(
-        browser
-            .receive(a.verifying_key().to_bytes(), app.clone(), now)
-            .unwrap()
-            .deferred
-    );
-    assert!(browser.rows().is_empty());
-    browser
-        .receive(
-            a.verifying_key().to_bytes(),
-            native.workspace_message(),
+        let owner = other_owner();
+        doc.put(ROOT, "owner", hex::encode(owner.1.user_public_key))
+            .unwrap();
+        let person = hex::encode(cert.user_public_key);
+        // A time-limited hold on undoable changes, rechecked at every decision.
+        let hold = Grant::new(
+            "hold",
+            Grantee::person(person.clone()),
+            TreePath::workspace(workspace_id),
+            KindSet::UNDOABLE,
+            Answer::Deny,
+            Grantee::person(hex::encode(other_owner().1.user_public_key)),
+        )
+        .with_lifetime(Lifetime::Until(2_001_000));
+        let editor = collab_types::Role::Editor;
+        let changes = vec![
+            Change::AddMember {
+                person: person.clone(),
+                role: editor,
+            },
+            Change::Grant(hold),
+        ];
+        owner_signs(&mut doc, &owner, now, changes);
+        let changes = doc
+            .get_changes(&[])
+            .into_iter()
+            .map(|c| c.raw_bytes().to_vec())
+            .collect();
+        let mut peer = StatePeer::new(
+            workspace_id,
+            cert.clone(),
+            vec![cert.clone(), other],
+            RevocationList::new(),
             now,
         )
         .unwrap();
-    assert_eq!(browser.rows(), native.rows());
-    assert!(
-        browser
-            .receive(a.verifying_key().to_bytes(), app, now)
-            .unwrap()
-            .duplicate
-    );
-    let restored = StatePeer::restore(
-        &browser.durable().unwrap(),
-        workspace,
-        native.owner_certificates()[0].clone(),
-        vec![native.owner_certificates()[0].clone()],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert_eq!(restored.rows(), browser.rows());
-}
-#[test]
-fn source_workspace_signature_and_aged_checkpoint_fail_closed() {
-    let (a, ac, _, bc, now) = fixtures();
-    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let mut native = StatePeer::new(
-        workspace,
-        ac.clone(),
-        vec![ac.clone(), bc.clone()],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    let mut document = AutoCommit::new();
-    document.put(ROOT, "value", 1).unwrap();
-    document.commit_edit("fixture", "value");
-    native
-        .install_seed(
+        peer.install_seed(
             SeedState {
-                workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()])
-                    .unwrap(),
-                documents: vec![SeedDocument {
-                    app_id: "test.app".into(),
-                    record_id: "tab:1".into(),
-                    kind: "test".into(),
-                    bytes: document.save(),
+                workspace_changes: changes,
+                documents: vec![],
+            },
+            &key,
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            peer.role(&cert.device_public_key, now).unwrap(),
+            collab_types::Role::Editor
+        );
+        let workspace_node = TreePath::workspace(workspace_id);
+        assert!(
+            !peer
+                .permissions(cert.device_public_key, now)
+                .unwrap()
+                .allows(&workspace_node, ActionKind::Undoable, now)
+        );
+        assert!(
+            peer.permissions(cert.device_public_key, now + Duration::from_secs(2))
+                .unwrap()
+                .allows(
+                    &workspace_node,
+                    ActionKind::Undoable,
+                    now + Duration::from_secs(2)
+                )
+        );
+        let old = peer.clone();
+        owner_signs(&mut doc, &owner, now, vec![Change::RemoveMember { person }]);
+        let changes = doc
+            .get_changes(&[])
+            .into_iter()
+            .map(|c| c.raw_bytes().to_vec())
+            .collect();
+        peer.receive(
+            cert.device_public_key,
+            NeighbourMsg::SyncResp {
+                changes,
+                workspace: peer.workspace_id().to_owned(),
+            },
+            now,
+        )
+        .unwrap();
+        assert!(matches!(
+            peer.permissions(cert.device_public_key, now),
+            Err(MembershipError::NoMembership)
+        ));
+        assert_eq!(
+            old.role(&cert.device_public_key, now).unwrap(),
+            collab_types::Role::Editor
+        );
+    }
+}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_governance_change_is_its_writers_role_and_converges;
+
+    phase app_waits_for_governance_then_signed_state_converges_without_reexecuting_action;
+    {
+        let (a, ac, _, bc, now) = fixtures();
+        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut native = StatePeer::new(
+            workspace,
+            ac.clone(),
+            vec![ac.clone(), bc.clone()],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        let mut document = AutoCommit::new();
+        document.put(ROOT, "value", "native").unwrap();
+        document.commit_edit("fixture", "value");
+        let seed = SeedState {
+            workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()]).unwrap(),
+            documents: vec![SeedDocument {
+                app_id: "test.app".into(),
+                record_id: "tab:1".into(),
+                kind: "test".into(),
+                bytes: document.save(),
+            }],
+        };
+        native.install_seed(seed, &a, now).unwrap();
+        let mut browser = StatePeer::new(
+            workspace,
+            ac.clone(),
+            vec![ac, bc],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        let app = native
+            .publication_mut()
+            .signed_snapshots(&a, now)
+            .unwrap()
+            .remove(0);
+        assert!(
+            browser
+                .receive(a.verifying_key().to_bytes(), app.clone(), now)
+                .unwrap()
+                .deferred
+        );
+        assert!(browser.rows().is_empty());
+        browser
+            .receive(
+                a.verifying_key().to_bytes(),
+                native.workspace_message(),
+                now,
+            )
+            .unwrap();
+        assert_eq!(browser.rows(), native.rows());
+        assert!(
+            browser
+                .receive(a.verifying_key().to_bytes(), app, now)
+                .unwrap()
+                .duplicate
+        );
+        let restored = StatePeer::restore(
+            &browser.durable().unwrap(),
+            workspace,
+            native.owner_certificates()[0].clone(),
+            vec![native.owner_certificates()[0].clone()],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(restored.rows(), browser.rows());
+    }
+
+    phase a_members_governance_change_is_its_roles_and_another_receiver_takes_it;
+    // A governance change is its writer's role's, not its person's: a member the
+    // workspace makes an administrator writes a host, their device records the
+    // change as the operation naming the rows it wrote, and another receiver takes
+    // it as it takes the owner's. A change the writer's role does not permit is
+    // refused and lands nowhere.
+    {
+        use crate::join::TransportHint;
+        use crate::members::MembershipOpCommand;
+        use crate::workspace::GovernanceRow;
+        use tilo_action_policy::{Grantee, roles};
+
+        let (mut peer, authority_key, _, _, now) = seeded();
+        let (editor_key, editor_cert, editor_person) =
+            add_member_with(&mut peer, &authority_key, now, 5, 6);
+        let hint = TransportHint {
+            kind: "iroh".into(),
+            opaque_json: "an address".into(),
+            host: editor_cert.clone(),
+            service_public_key: [3; 32],
+            host_signature: [4; 64],
+        };
+        let held = crate::members::ops(peer.admitted_workspace().unwrap()).len();
+        assert!(
+            peer.governance_mut()
+                .author_workspace_host(&hint, &editor_key, now)
+                .is_err(),
+            "an editor holds no governance grant"
+        );
+        assert!(peer.governance().workspace_hosts().is_empty());
+        assert_eq!(
+            crate::members::ops(peer.admitted_workspace().unwrap()).len(),
+            held,
+            "a refused change lands nowhere"
+        );
+        let person = hex::encode(peer.owner());
+        let workspace = peer.workspace_id().to_owned();
+        assert!(
+            peer.governance_mut()
+                .put_governed_grants(
+                    &[roles::administrator_grant(
+                        &workspace,
+                        &hex::encode(editor_person),
+                        Grantee::person(person),
+                    )],
+                    &authority_key,
+                    now,
+                )
+                .unwrap()
+        );
+        let mut receiver = peer.clone();
+        let heads = peer.admitted_workspace().unwrap().clone().get_heads();
+        assert!(
+            peer.governance_mut()
+                .author_workspace_host(&hint, &editor_key, now)
+                .unwrap()
+        );
+        let named = crate::members::ops(peer.admitted_workspace().unwrap())
+            .into_values()
+            .find_map(|op| match &op.command {
+                MembershipOpCommand::Governance { rows } if rows == &[GovernanceRow::Hosts] => {
+                    Some(op.person())
+                }
+                _ => None,
+            })
+            .expect("the change names the rows it wrote");
+        assert_eq!(named, hex::encode(editor_person));
+        let changed = peer
+            .admitted_workspace()
+            .unwrap()
+            .clone()
+            .get_changes(&heads)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        receiver
+            .receive_from(
+                TransportOrigin::RelayDelta(editor_cert.device_public_key),
+                NeighbourMsg::SyncResp {
+                    changes: changed,
+                    workspace,
+                },
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            receiver.governance().workspace_hosts(),
+            peer.governance().workspace_hosts(),
+            "a receiver takes the member's governance change as it takes the owner's"
+        );
+    }
+
+    phase a_removed_members_device_writes_nothing_after_its_removal;
+    // A removed member's device keeps its keys, and nothing it writes after the
+    // removal counts: a frame it publishes is refused however it signs it, and a
+    // membership operation it writes has no effect even where the workspace's own
+    // devices relay it. What it wrote before the removal stays.
+    {
+        let (mut peer, authority_key, _, _, now) = seeded();
+        let (guest_key, guest) = admitted_guest(&mut peer, &authority_key, now);
+        let origin = TransportOrigin::RelayDelta(guest_key.verifying_key().to_bytes());
+
+        // The guest's device publishes a frame while it is a member.
+        let mut guest_peer = peer.clone();
+        let before = frame(&mut guest_peer, &guest_key, now, "before");
+        peer.receive_from(origin, before, now)
+            .expect("a member's frame is admitted");
+
+        assert!(
+            peer.governance_mut()
+                .remove_member(guest.user_public_key, &authority_key, now)
+                .unwrap()
+        );
+
+        // The same device, with the same keys, writes a frame after the removal.
+        let later = now + Duration::from_secs(30);
+        let after = frame(&mut guest_peer, &guest_key, later, "after");
+        assert!(
+            peer.receive_from(origin, after, later).is_err(),
+            "a removed device's frame is refused"
+        );
+        let held = AutoCommit::load(&peer.document("test.app", "tab:1").unwrap()).unwrap();
+        assert!(
+            held.get(ROOT, "after").unwrap().is_none(),
+            "the refused frame wrote nothing"
+        );
+        assert!(
+            held.get(ROOT, "before").unwrap().is_some(),
+            "the frame admitted before the removal stays"
+        );
+
+        // A membership operation the removed device writes is relayed by the
+        // workspace's own devices and kept: replay gives it no effect, because its
+        // author is no longer a member.
+        let newcomer = SigningKey::from_bytes(&[66; 32]);
+        let mut newcomer_cert = DeviceCert {
+            user_public_key: newcomer.verifying_key().to_bytes(),
+            device_public_key: SigningKey::from_bytes(&[67; 32]).verifying_key().to_bytes(),
+            device_label: "Newcomer".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut newcomer_cert, &newcomer).unwrap();
+        let NeighbourMsg::SyncResp { changes, workspace } = peer.workspace_message() else {
+            panic!("unexpected fixture shape");
+        };
+        let mut workspace_doc = crate::workspace::candidate(None, &changes).unwrap();
+        let op = crate::members::SignedMembershipOp::signed(
+            &guest,
+            &guest_key,
+            crate::members::heads(&crate::members::ops(&workspace_doc)),
+            ns_since_epoch(later),
+            crate::members::MembershipOpCommand::Project {
+                changes: vec![tilo_action_policy::Change::AddMember {
+                    person: hex::encode(newcomer_cert.user_public_key),
+                    role: tilo_action_policy::Role::Viewer,
                 }],
             },
-            &a,
+        )
+        .unwrap();
+        let heads = workspace_doc.get_heads();
+        crate::members::put_op(&mut workspace_doc, &op).unwrap();
+        peer.receive_from(
+            TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
+            NeighbourMsg::SyncResp {
+                changes: workspace_doc
+                    .get_changes(&heads)
+                    .into_iter()
+                    .map(|change| change.raw_bytes().to_vec())
+                    .collect(),
+                workspace,
+            },
+            later,
+        )
+        .expect("the workspace's device relays the operation");
+        let held = peer.workspace_message();
+        let NeighbourMsg::SyncResp { changes, .. } = held else {
+            panic!("unexpected fixture shape");
+        };
+        let held = crate::workspace::candidate(None, &changes).unwrap();
+        assert!(
+            crate::members::ops(&held)
+                .values()
+                .any(|held| held.id().unwrap() == op.id().unwrap()),
+            "the operation is kept"
+        );
+        assert_eq!(
+            crate::members::replay(&held, peer.workspace_id())
+                .role_of(&hex::encode(newcomer_cert.user_public_key)),
+            None,
+            "and has no effect"
+        );
+        assert!(
+            peer.permissions(newcomer_cert.device_public_key, later)
+                .is_err()
+        );
+    }
+}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_checkpoint_installs_only_with_its_governed_coverage;
+
+    phase source_workspace_signature_and_aged_checkpoint_fail_closed;
+    {
+        let (a, ac, _, bc, now) = fixtures();
+        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut native = StatePeer::new(
+            workspace,
+            ac.clone(),
+            vec![ac.clone(), bc.clone()],
+            RevocationList::new(),
             now,
         )
         .unwrap();
-    let mut receiver = StatePeer::new(
-        workspace,
-        ac.clone(),
-        vec![ac, bc.clone()],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    receiver
-        .receive(
-            a.verifying_key().to_bytes(),
-            native.workspace_message(),
+        let mut document = AutoCommit::new();
+        document.put(ROOT, "value", 1).unwrap();
+        document.commit_edit("fixture", "value");
+        native
+            .install_seed(
+                SeedState {
+                    workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()])
+                        .unwrap(),
+                    documents: vec![SeedDocument {
+                        app_id: "test.app".into(),
+                        record_id: "tab:1".into(),
+                        kind: "test".into(),
+                        bytes: document.save(),
+                    }],
+                },
+                &a,
+                now,
+            )
+            .unwrap();
+        let mut receiver = StatePeer::new(
+            workspace,
+            ac.clone(),
+            vec![ac, bc.clone()],
+            RevocationList::new(),
             now,
         )
         .unwrap();
-    let message = native
-        .publication_mut()
-        .signed_snapshots(&a, now)
-        .unwrap()
-        .remove(0);
-    assert!(
-        receiver
-            .receive(bc.device_public_key, message.clone(), now)
-            .is_err()
-    );
-    assert!(
         receiver
             .receive(
                 a.verifying_key().to_bytes(),
-                message.clone(),
-                now + Duration::from_secs(301)
+                native.workspace_message(),
+                now,
+            )
+            .unwrap();
+        let message = native
+            .publication_mut()
+            .signed_snapshots(&a, now)
+            .unwrap()
+            .remove(0);
+        assert!(
+            receiver
+                .receive(bc.device_public_key, message.clone(), now)
+                .is_err()
+        );
+        assert!(
+            receiver
+                .receive(
+                    a.verifying_key().to_bytes(),
+                    message.clone(),
+                    now + Duration::from_secs(301)
+                )
+                .is_err()
+        );
+        let mut forged = message;
+        if let NeighbourMsg::AppDocument { cluster_id, .. } = &mut forged {
+            *cluster_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
+        }
+        assert!(
+            receiver
+                .receive(a.verifying_key().to_bytes(), forged, now)
+                .is_err()
+        );
+        assert!(receiver.rows().is_empty());
+    }
+
+    phase retained_relay_replay_accepts_certified_document_after_live_freshness_window;
+    {
+        let (mut governor, authority, _, browser_cert, authored_at) = seeded();
+        let replayed_at = authored_at + Duration::from_secs(301);
+        let mut browser = StatePeer::new(
+            governor.workspace_id(),
+            governor.owner_certificates()[0].clone(),
+            vec![browser_cert],
+            RevocationList::new(),
+            replayed_at,
+        )
+        .unwrap();
+        let origin = TransportOrigin::RetainedRelayDelta(authority.verifying_key().to_bytes());
+
+        for message in governor
+            .publication_mut()
+            .bootstrap_messages(&authority, authored_at)
+            .unwrap()
+        {
+            browser.receive_from(origin, message, replayed_at).unwrap();
+        }
+
+        assert_eq!(browser.rows(), governor.rows());
+        assert_eq!(
+            browser.document_heads("test.app", "tab:1"),
+            governor.document_heads("test.app", "tab:1")
+        );
+    }
+
+    phase fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_sequence;
+    {
+        let (mut native, a, b, bc, now) = seeded();
+        let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
+        let before = doc.get_heads();
+        doc.put(ROOT, "other", "B").unwrap();
+        doc.commit_edit("fixture", "other");
+        let old = native
+            .publication_mut()
+            .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
+            .unwrap();
+        let bootstrap = native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap();
+        let mut fresh = StatePeer::new(
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc.clone()],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        // Retained per-channel replay can arrive in either order.
+        assert!(
+            fresh
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    bootstrap[1].clone(),
+                    now
+                )
+                .unwrap()
+                .deferred
+        );
+        fresh
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                bootstrap[0].clone(),
+                now,
+            )
+            .unwrap();
+        assert_eq!(fresh.rows(), native.rows());
+        assert!(
+            fresh
+                .receive_from(
+                    TransportOrigin::RelayDelta(bc.device_public_key),
+                    old.clone(),
+                    now
+                )
+                .unwrap()
+                .duplicate
+        );
+        let checkpoint = fresh.durable().unwrap();
+        let mut reload = StatePeer::restore(
+            &checkpoint,
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert!(
+            reload
+                .receive_from(
+                    TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+                    old,
+                    now
+                )
+                .unwrap()
+                .duplicate
+        );
+        let mut doc = AutoCommit::load(&reload.document("test.app", "tab:1").unwrap()).unwrap();
+        let before = doc.get_heads();
+        doc.put(ROOT, "new", "B2").unwrap();
+        doc.commit_edit("fixture", "new");
+        let next = reload
+            .publication_mut()
+            .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
+            .unwrap();
+        assert!(matches!(next,NeighbourMsg::AppDocument{envelope,..} if envelope.seq==2));
+    }
+
+    phase state_on_presence_cannot_install_governance_or_advance_watermarks;
+    {
+        let (mut native, a, _, bc, now) = seeded();
+        let bootstrap = native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap();
+        let mut fresh = StatePeer::new(
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        for message in &bootstrap {
+            assert!(
+                fresh
+                    .receive_from(
+                        TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
+                        message.clone(),
+                        now
+                    )
+                    .is_err()
+            );
+        }
+        assert!(!fresh.has_governance());
+        assert!(fresh.rows().is_empty());
+        for message in bootstrap {
+            fresh
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        assert_eq!(fresh.rows(), native.rows());
+    }
+
+    phase forged_or_mismatched_coverage_cannot_install_snapshot;
+    {
+        let (mut native, a, _, bc, now) = seeded();
+        let bootstrap = native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap();
+        let mut fresh = StatePeer::new(
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        fresh
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                bootstrap[0].clone(),
+                now,
+            )
+            .unwrap();
+        let mut mismatch = bootstrap[1].clone();
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut mismatch {
+            let mut replacement = AutoCommit::new();
+            replacement.put(ROOT, "attack", true).unwrap();
+            replacement.commit_edit("fixture", "attack");
+            envelope.payload = collab_types::DocumentMutation::Snapshot(replacement.save())
+                .encode()
+                .unwrap();
+            collab_types::sign_op(envelope, &a).unwrap();
+        }
+        assert!(
+            fresh
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    mismatch,
+                    now
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("coverage")
+        );
+        assert!(fresh.rows().is_empty());
+        fresh
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                bootstrap[1].clone(),
+                now,
+            )
+            .unwrap();
+        assert_eq!(fresh.rows(), native.rows());
+    }
+
+    phase checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress;
+    {
+        let (mut native, a, _, bc, now) = seeded();
+        let messages = native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap();
+        let NeighbourMsg::SyncResp { changes, workspace } = messages[0].clone() else {
+            panic!("unexpected fixture shape")
+        };
+        let mut doc = workspace::candidate(None, &changes).unwrap();
+        doc.delete(ROOT, coverage::FIELD_V2).unwrap();
+        doc.commit_edit("fixture", "fixture");
+        let legacy = NeighbourMsg::SyncResp {
+            workspace: workspace.clone(),
+            changes: doc
+                .get_changes(&[])
+                .into_iter()
+                .map(|c| c.raw_bytes().to_vec())
+                .collect(),
+        };
+        let mut receiver = StatePeer::new(
+            &workspace,
+            native.owner_certificates()[0].clone(),
+            vec![bc],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        receiver
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                legacy,
+                now,
+            )
+            .unwrap();
+        assert!(
+            receiver
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    messages[1].clone(),
+                    now
+                )
+                .unwrap()
+                .deferred
+        );
+        assert!(receiver.rows().is_empty());
+        let mut candidate = workspace::candidate(None, &changes).unwrap();
+        let mut rows = coverage::entries(&candidate).unwrap();
+        let entry = rows.values_mut().next().unwrap();
+        entry.sequence = 0;
+        let regressed = entry.clone();
+        coverage::put(&mut candidate, regressed).unwrap();
+        assert!(
+            coverage::monotonic(
+                Some(&workspace::candidate(None, &changes).unwrap()),
+                &candidate
             )
             .is_err()
-    );
-    let mut forged = message;
-    if let NeighbourMsg::AppDocument { cluster_id, .. } = &mut forged {
-        *cluster_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
+        );
     }
-    assert!(
+
+    phase fresh_same_head_checkpoint_is_still_a_durable_watermark_mutation;
+    {
+        let (mut native, a, _, bc, now) = seeded();
+        let mut receiver = StatePeer::new(
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        for message in native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap()
+        {
+            receiver
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        let heads = receiver.rows();
+        let fresh = native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap();
         receiver
-            .receive(a.verifying_key().to_bytes(), forged, now)
-            .is_err()
-    );
-    assert!(receiver.rows().is_empty());
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                fresh[0].clone(),
+                now,
+            )
+            .unwrap();
+        let outcome = receiver
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                fresh[1].clone(),
+                now,
+            )
+            .unwrap();
+        assert!(!outcome.changed);
+        assert!(outcome.metadata_changed);
+        assert_eq!(heads, receiver.rows());
+    }
+
+    phase aged_retained_checkpoint_rejects_without_poisoning_fresh_sync_or_durable_ready_state;
+    {
+        let (mut native, key, _, browser_cert, created) = seeded();
+        let delayed = created + Duration::from_secs(301);
+        let stale = native
+            .publication_mut()
+            .bootstrap_messages(&key, created)
+            .unwrap();
+        let mut receiver = StatePeer::new(
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![native.owner_certificates()[0].clone(), browser_cert],
+            RevocationList::new(),
+            delayed,
+        )
+        .unwrap();
+        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        receiver
+            .receive_from(origin, stale[0].clone(), delayed)
+            .unwrap();
+        let before = receiver.durable().unwrap();
+        assert!(
+            receiver
+                .receive_from(origin, stale[1].clone(), delayed)
+                .unwrap_err()
+                .to_string()
+                .contains("timestamp")
+        );
+        assert_eq!(receiver.durable().unwrap(), before);
+        assert!(receiver.rows().is_empty());
+        assert_eq!(receiver.incomplete_reason(), None);
+        for message in native
+            .publication_mut()
+            .bootstrap_messages(&key, delayed)
+            .unwrap()
+        {
+            receiver.receive_from(origin, message, delayed).unwrap();
+        }
+        assert_eq!(receiver.rows(), native.rows());
+        let admitted = receiver.durable().unwrap();
+        assert!(
+            receiver
+                .receive_from(origin, stale[1].clone(), delayed)
+                .is_err()
+        );
+        assert_eq!(receiver.durable().unwrap(), admitted);
+        assert_eq!(receiver.incomplete_reason(), None);
+    }
+
+    phase reordered_incrementals_are_pending_durable_and_drain_after_predecessor;
+    {
+        let (receiver, _, author_key, author_cert, now) = seeded();
+        let mut author = receiver.clone();
+        let app = "test.app";
+        let record = "tab:1";
+        let mut document = AutoCommit::load(&author.document(app, record).unwrap()).unwrap();
+        document.set_actor(automerge::ActorId::from(
+            author_key.verifying_key().to_bytes().to_vec(),
+        ));
+
+        let before = document.get_heads();
+        document.put(ROOT, "first", "A").unwrap();
+        document.commit_edit("fixture", "first");
+        let first = author
+            .publication_mut()
+            .publish_incremental(app, record, document.save_after(&before), &author_key, now)
+            .unwrap();
+        let before = document.get_heads();
+        document.put(ROOT, "second", "B").unwrap();
+        document.commit_edit("fixture", "second");
+        let second = author
+            .publication_mut()
+            .publish_incremental(app, record, document.save_after(&before), &author_key, now)
+            .unwrap();
+
+        let origin = TransportOrigin::RelayDelta(author_key.verifying_key().to_bytes());
+        let mut receiver = receiver;
+        let outcome = receiver.receive_from(origin, second.clone(), now).unwrap();
+        assert!(outcome.deferred);
+        assert_eq!(receiver.pending_count(), 1);
+        assert!(!receiver.covers(&second));
+
+        let mut receiver = StatePeer::restore(
+            &receiver.durable().unwrap(),
+            receiver.workspace_id(),
+            receiver.owner_certificates()[0].clone(),
+            vec![author_cert],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(receiver.pending_count(), 1);
+        receiver.receive_from(origin, first, now).unwrap();
+        assert_eq!(receiver.pending_count(), 0);
+        assert_eq!(
+            receiver.document_heads(app, record),
+            Some(document.base_heads())
+        );
+    }
+
+    phase a_record_covered_as_empty_is_held_from_its_coverage;
+    // A record the workspace covers as empty is held by the replica the
+    // governance reaches, though no one can send it: an empty record carries no
+    // change to replay. The coverage row names exactly that empty checkpoint, so
+    // the replica holds the record and a member's write builds on it.
+    {
+        let (mut native, a_key, b_key, b_cert, now) = seeded();
+        let empty = AutoCommit::new().save();
+        // The governor checkpoints an empty record: the coverage row it writes
+        // names the route with no heads and the hash of that empty snapshot.
+        native
+            .publication_mut()
+            .publish_document("test.app", "tab:2", empty.clone(), &a_key, now)
+            .unwrap();
+        let messages = native
+            .publication_mut()
+            .bootstrap_messages(&a_key, now)
+            .unwrap();
+        let NeighbourMsg::SyncResp { changes, workspace } = messages[0].clone() else {
+            panic!("unexpected fixture shape")
+        };
+        let mut joiner = StatePeer::new(
+            &workspace,
+            native.owner_certificates()[0].clone(),
+            vec![b_cert],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        // Only the governance arrives.
+        joiner
+            .receive_from(
+                TransportOrigin::RelayDelta(a_key.verifying_key().to_bytes()),
+                NeighbourMsg::SyncResp { changes, workspace },
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            joiner.document("test.app", "tab:2").as_deref(),
+            Some(empty.as_slice()),
+            "the replica holds the empty record the governance covers"
+        );
+        assert!(
+            joiner
+                .document_heads("test.app", "tab:2")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!joiner.checkpoint_pending("test.app", "tab:2"));
+        assert_eq!(
+            joiner.document("test.app", "tab:1"),
+            None,
+            "a covered record with changes is not made up"
+        );
+        // Held, not carved in stone: the member's write builds on it.
+        let mut doc = AutoCommit::load(&joiner.document("test.app", "tab:2").unwrap()).unwrap();
+        doc.set_actor(automerge::ActorId::from(
+            b_key.verifying_key().to_bytes().to_vec(),
+        ));
+        let heads = doc.get_heads();
+        doc.put(ROOT, "note", "mine").unwrap();
+        doc.commit_edit("fixture", "note");
+        joiner
+            .publication_mut()
+            .publish_incremental("test.app", "tab:2", doc.save_after(&heads), &b_key, now)
+            .unwrap();
+        assert_eq!(
+            joiner.document_heads("test.app", "tab:2").unwrap().len(),
+            1,
+            "the member's write lands on the record"
+        );
+    }
 }
 
 /// Invite a second person into `peer` as an Editor with one device, as the
@@ -792,105 +1495,233 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
 }
 
-#[test]
-fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
-    use crate::join::{
-        InviteGrant, JoinChallenge, Role, decode_and_verify_invitation, issue_invitation,
-        sign_join_proof, verify_join_proof,
-    };
-    let (base, authority_key, _, _, now) = seeded();
-    let now_ns: u64 = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap();
-    let signed = issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(base.workspace_id()).unwrap(),
-            issuer: base.owner_certificates()[0].clone(),
-            role: Role::Editor,
-            nonce: [70; 16],
-            recipient_user_public_key: None,
-            invitee_name: None,
-            expires_at_ns: now_ns.saturating_add(10_000_000_000),
-            transport: vec![],
-        },
-        &authority_key,
-    )
-    .unwrap();
-    let redeem = |root_seed: u8, device_seed: u8, request: u8, challenge_nonce: u8| {
-        let root = SigningKey::from_bytes(&[root_seed; 32]);
-        let device = SigningKey::from_bytes(&[device_seed; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: format!("concurrent-{device_seed}"),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let join = decode_and_verify_invitation(
-            &signed,
-            Some(cert.user_public_key),
-            &RevocationList::new(),
-            now_ns,
-        )
-        .unwrap();
-        let challenge = JoinChallenge::new(
-            &join,
-            &cert,
-            [request; 32],
-            [challenge_nonce; 32],
-            now_ns + 1_000_000_000,
-            now_ns,
-        )
-        .unwrap();
-        let proof = sign_join_proof(challenge.clone(), &device).unwrap();
-        verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns).unwrap()
-    };
-    let first = redeem(71, 72, 73, 74);
-    let second = redeem(75, 76, 77, 78);
-    let mut left = base.clone();
-    let mut right = base.clone();
-    assert!(
-        left.governance_mut()
-            .admit_invited_member(&first, &authority_key, now)
-            .unwrap()
-    );
-    assert!(
-        right
-            .governance_mut()
-            .admit_invited_member(&second, &authority_key, now)
-            .unwrap()
-    );
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn an_invitation_admits_one_person_once;
 
-    let authority = base.owner_certificates()[0].device_public_key;
-    let mut receiver = base;
-    receiver
-        .receive_from(
-            TransportOrigin::RelayDelta(authority),
-            left.workspace_message(),
-            now,
+    phase concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation;
+    {
+        use crate::join::{
+            InviteGrant, JoinChallenge, Role, decode_and_verify_invitation, issue_invitation,
+            sign_join_proof, verify_join_proof,
+        };
+        let (base, authority_key, _, _, now) = seeded();
+        let now_ns: u64 = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .try_into()
+            .unwrap();
+        let signed = issue_invitation(
+            InviteGrant {
+                workspace_id: WorkspaceId::parse(base.workspace_id()).unwrap(),
+                issuer: base.owner_certificates()[0].clone(),
+                role: Role::Editor,
+                nonce: [70; 16],
+                recipient_user_public_key: None,
+                invitee_name: None,
+                expires_at_ns: now_ns.saturating_add(10_000_000_000),
+                transport: vec![],
+            },
+            &authority_key,
         )
         .unwrap();
-    let accepted = receiver.durable().unwrap();
-    let error = receiver
-        .receive_from(
-            TransportOrigin::RelayDelta(authority),
-            right.workspace_message(),
-            now,
+        let redeem = |root_seed: u8, device_seed: u8, request: u8, challenge_nonce: u8| {
+            let root = SigningKey::from_bytes(&[root_seed; 32]);
+            let device = SigningKey::from_bytes(&[device_seed; 32]);
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: format!("concurrent-{device_seed}"),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            sign_device_cert(&mut cert, &root).unwrap();
+            let join = decode_and_verify_invitation(
+                &signed,
+                Some(cert.user_public_key),
+                &RevocationList::new(),
+                now_ns,
+            )
+            .unwrap();
+            let challenge = JoinChallenge::new(
+                &join,
+                &cert,
+                [request; 32],
+                [challenge_nonce; 32],
+                now_ns + 1_000_000_000,
+                now_ns,
+            )
+            .unwrap();
+            let proof = sign_join_proof(challenge.clone(), &device).unwrap();
+            verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns).unwrap()
+        };
+        let first = redeem(71, 72, 73, 74);
+        let second = redeem(75, 76, 77, 78);
+        let mut left = base.clone();
+        let mut right = base.clone();
+        assert!(
+            left.governance_mut()
+                .admit_invited_member(&first, &authority_key, now)
+                .unwrap()
+        );
+        assert!(
+            right
+                .governance_mut()
+                .admit_invited_member(&second, &authority_key, now)
+                .unwrap()
+        );
+
+        let authority = base.owner_certificates()[0].device_public_key;
+        let mut receiver = base;
+        receiver
+            .receive_from(
+                TransportOrigin::RelayDelta(authority),
+                left.workspace_message(),
+                now,
+            )
+            .unwrap();
+        let accepted = receiver.durable().unwrap();
+        let error = receiver
+            .receive_from(
+                TransportOrigin::RelayDelta(authority),
+                right.workspace_message(),
+                now,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("conflicting redemption") || error.contains("duplicate seq"),
+            "concurrent redemption must fail before two receipts merge: {error}"
+        );
+        assert_eq!(receiver.durable().unwrap(), accepted);
+    }
+
+    phase concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first;
+    // Two participants may redeem one invitation at once, each before it holds
+    // the other's receipt. An invitation admits one person: every receiver keeps
+    // the redemption that reached it first and refuses the other, whichever of
+    // the two arrives first.
+    {
+        let (base, authority_key, _, _, now) = seeded();
+        let NeighbourMsg::SyncResp { changes, workspace } = base.workspace_message() else {
+            panic!("unexpected fixture shape")
+        };
+        let mut document = crate::workspace::candidate(None, &changes).unwrap();
+        let base_heads = document.get_heads();
+        let mut left = document.fork();
+        let mut right = document.fork();
+        let invitation_receipts = left.get(ROOT, "invitation_receipts_v1").unwrap().unwrap().1;
+        let invite_id = [97; 32];
+        let receipt = |device_public_key, request_id| crate::state::RedemptionReceipt {
+            invite_id,
+            user_public_key: [98; 32],
+            device_public_key,
+            request_id,
+            role: crate::join::Role::Viewer,
+        };
+        let ledgered = |receipt| crate::state::LedgerReceipt {
+            receipt,
+            invitation: vec![],
+        };
+        let ledgered = |receipt| ledgered(receipt).encode().unwrap();
+        left.set_actor(automerge::ActorId::from(vec![98; 32]));
+        left.put(
+            &invitation_receipts,
+            hex::encode(invite_id),
+            automerge::ScalarValue::Bytes(ledgered(receipt([99; 32], [100; 32]))),
         )
-        .unwrap_err()
-        .to_string();
-    assert!(
-        error.contains("conflicting redemption") || error.contains("duplicate seq"),
-        "concurrent redemption must fail before two receipts merge: {error}"
-    );
-    assert_eq!(receiver.durable().unwrap(), accepted);
+        .unwrap();
+        left.commit_edit("fixture", "fixture");
+        right.set_actor(automerge::ActorId::from(vec![101; 32]));
+        right
+            .put(
+                &invitation_receipts,
+                hex::encode(invite_id),
+                automerge::ScalarValue::Bytes(ledgered(receipt([102; 32], [103; 32]))),
+            )
+            .unwrap();
+        right.commit_edit("fixture", "fixture");
+        let message = |mut branch: AutoCommit| NeighbourMsg::SyncResp {
+            changes: branch
+                .get_changes(&base_heads)
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect(),
+            workspace: workspace.clone(),
+        };
+        let from = TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes());
+        let receive = |first: NeighbourMsg, second: NeighbourMsg| {
+            let mut receiver = base.clone();
+            receiver.receive_from(from, first, now).unwrap();
+            let refused = receiver
+                .receive_from(from, second, now)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                refused.contains("conflicting redemption"),
+                "the second redemption of one invitation must be refused: {refused}"
+            );
+            let held = receiver.workspace_message();
+            let NeighbourMsg::SyncResp { changes, .. } = held else {
+                panic!("workspace message is a SyncResp")
+            };
+            crate::workspace::candidate(None, &changes).unwrap()
+        };
+        for redemption in [
+            receive(message(left.clone()), message(right.clone())),
+            receive(message(right), message(left)),
+        ] {
+            let held = crate::workspace::invitation_receipts(&redemption).unwrap();
+            assert_eq!(held[&hex::encode(invite_id)].len(), 1);
+        }
+    }
+
+    phase admission_records_when_a_member_joined_and_a_role_change_keeps_it;
+    // The governor records when the workspace admitted a person, once: a role
+    // change keeps it, so the numbers namesakes are told apart by never shift,
+    // and removal forgets it.
+    {
+        let (mut peer, authority_key, _, _, now) = seeded();
+        let (_, root) = add_editor(&mut peer, &authority_key, now);
+        let person = hex::encode(root);
+        let joined = |peer: &StatePeer| {
+            let NeighbourMsg::SyncResp { changes, .. } = peer.workspace_message() else {
+                panic!("unexpected fixture shape")
+            };
+            let doc = crate::workspace::candidate(None, &changes).unwrap();
+            crate::workspace::extract_governed_fields(&doc)
+                .1
+                .joined
+                .get(&person)
+                .copied()
+        };
+        let at_ms = u64::try_from(
+            now.duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        assert_eq!(joined(&peer), Some(at_ms));
+
+        let later = now + Duration::from_secs(60);
+        assert!(
+            peer.governance_mut()
+                .set_member_role(root, crate::join::Role::Viewer, &authority_key, later)
+                .unwrap()
+        );
+        assert_eq!(joined(&peer), Some(at_ms), "a role change keeps it");
+
+        assert!(
+            peer.governance_mut()
+                .remove_member(root, &authority_key, later)
+                .unwrap()
+        );
+        assert_eq!(joined(&peer), None);
+    }
 }
 
 #[test]
@@ -1043,622 +1874,6 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         );
     }
 }
-
-/// A governance change is its writer's role's, not its person's: a member the
-/// workspace makes an administrator writes a host, their device records the
-/// change as the operation naming the rows it wrote, and another receiver takes
-/// it as it takes the owner's. A change the writer's role does not permit is
-/// refused and lands nowhere.
-#[test]
-fn a_members_governance_change_is_its_roles_and_another_receiver_takes_it() {
-    use crate::join::TransportHint;
-    use crate::members::MembershipOpCommand;
-    use crate::workspace::GovernanceRow;
-    use tilo_action_policy::{Grantee, roles};
-
-    let (mut peer, authority_key, _, _, now) = seeded();
-    let (editor_key, editor_cert, editor_person) =
-        add_member_with(&mut peer, &authority_key, now, 5, 6);
-    let hint = TransportHint {
-        kind: "iroh".into(),
-        opaque_json: "an address".into(),
-        host: editor_cert.clone(),
-        service_public_key: [3; 32],
-        host_signature: [4; 64],
-    };
-    let held = crate::members::ops(peer.admitted_workspace().unwrap()).len();
-    assert!(
-        peer.governance_mut()
-            .author_workspace_host(&hint, &editor_key, now)
-            .is_err(),
-        "an editor holds no governance grant"
-    );
-    assert!(peer.governance().workspace_hosts().is_empty());
-    assert_eq!(
-        crate::members::ops(peer.admitted_workspace().unwrap()).len(),
-        held,
-        "a refused change lands nowhere"
-    );
-    let person = hex::encode(peer.owner());
-    let workspace = peer.workspace_id().to_owned();
-    assert!(
-        peer.governance_mut()
-            .put_governed_grants(
-                &[roles::administrator_grant(
-                    &workspace,
-                    &hex::encode(editor_person),
-                    Grantee::person(person),
-                )],
-                &authority_key,
-                now,
-            )
-            .unwrap()
-    );
-    let mut receiver = peer.clone();
-    let heads = peer.admitted_workspace().unwrap().clone().get_heads();
-    assert!(
-        peer.governance_mut()
-            .author_workspace_host(&hint, &editor_key, now)
-            .unwrap()
-    );
-    let named = crate::members::ops(peer.admitted_workspace().unwrap())
-        .into_values()
-        .find_map(|op| match &op.command {
-            MembershipOpCommand::Governance { rows } if rows == &[GovernanceRow::Hosts] => {
-                Some(op.person())
-            }
-            _ => None,
-        })
-        .expect("the change names the rows it wrote");
-    assert_eq!(named, hex::encode(editor_person));
-    let changed = peer
-        .admitted_workspace()
-        .unwrap()
-        .clone()
-        .get_changes(&heads)
-        .into_iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect();
-    receiver
-        .receive_from(
-            TransportOrigin::RelayDelta(editor_cert.device_public_key),
-            NeighbourMsg::SyncResp {
-                changes: changed,
-                workspace,
-            },
-            now,
-        )
-        .unwrap();
-    assert_eq!(
-        receiver.governance().workspace_hosts(),
-        peer.governance().workspace_hosts(),
-        "a receiver takes the member's governance change as it takes the owner's"
-    );
-}
-
-/// Two participants may redeem one invitation at once, each before it holds
-/// the other's receipt. An invitation admits one person: every receiver keeps
-/// the redemption that reached it first and refuses the other, whichever of
-/// the two arrives first.
-#[test]
-fn concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first() {
-    let (base, authority_key, _, _, now) = seeded();
-    let NeighbourMsg::SyncResp { changes, workspace } = base.workspace_message() else {
-        panic!("unexpected fixture shape")
-    };
-    let mut document = crate::workspace::candidate(None, &changes).unwrap();
-    let base_heads = document.get_heads();
-    let mut left = document.fork();
-    let mut right = document.fork();
-    let invitation_receipts = left.get(ROOT, "invitation_receipts_v1").unwrap().unwrap().1;
-    let invite_id = [97; 32];
-    let receipt = |device_public_key, request_id| crate::state::RedemptionReceipt {
-        invite_id,
-        user_public_key: [98; 32],
-        device_public_key,
-        request_id,
-        role: crate::join::Role::Viewer,
-    };
-    let ledgered = |receipt| crate::state::LedgerReceipt {
-        receipt,
-        invitation: vec![],
-    };
-    let ledgered = |receipt| ledgered(receipt).encode().unwrap();
-    left.set_actor(automerge::ActorId::from(vec![98; 32]));
-    left.put(
-        &invitation_receipts,
-        hex::encode(invite_id),
-        automerge::ScalarValue::Bytes(ledgered(receipt([99; 32], [100; 32]))),
-    )
-    .unwrap();
-    left.commit_edit("fixture", "fixture");
-    right.set_actor(automerge::ActorId::from(vec![101; 32]));
-    right
-        .put(
-            &invitation_receipts,
-            hex::encode(invite_id),
-            automerge::ScalarValue::Bytes(ledgered(receipt([102; 32], [103; 32]))),
-        )
-        .unwrap();
-    right.commit_edit("fixture", "fixture");
-    let message = |mut branch: AutoCommit| NeighbourMsg::SyncResp {
-        changes: branch
-            .get_changes(&base_heads)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect(),
-        workspace: workspace.clone(),
-    };
-    let from = TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes());
-    let receive = |first: NeighbourMsg, second: NeighbourMsg| {
-        let mut receiver = base.clone();
-        receiver.receive_from(from, first, now).unwrap();
-        let refused = receiver
-            .receive_from(from, second, now)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            refused.contains("conflicting redemption"),
-            "the second redemption of one invitation must be refused: {refused}"
-        );
-        let held = receiver.workspace_message();
-        let NeighbourMsg::SyncResp { changes, .. } = held else {
-            panic!("workspace message is a SyncResp")
-        };
-        crate::workspace::candidate(None, &changes).unwrap()
-    };
-    for redemption in [
-        receive(message(left.clone()), message(right.clone())),
-        receive(message(right), message(left)),
-    ] {
-        let held = crate::workspace::invitation_receipts(&redemption).unwrap();
-        assert_eq!(held[&hex::encode(invite_id)].len(), 1);
-    }
-}
-
-tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
-    fn a_checkpoint_installs_only_with_its_governed_coverage;
-
-    phase retained_relay_replay_accepts_certified_document_after_live_freshness_window;
-    {
-        let (mut governor, authority, _, browser_cert, authored_at) = seeded();
-        let replayed_at = authored_at + Duration::from_secs(301);
-        let mut browser = StatePeer::new(
-            governor.workspace_id(),
-            governor.owner_certificates()[0].clone(),
-            vec![browser_cert],
-            RevocationList::new(),
-            replayed_at,
-        )
-        .unwrap();
-        let origin = TransportOrigin::RetainedRelayDelta(authority.verifying_key().to_bytes());
-
-        for message in governor
-            .publication_mut()
-            .bootstrap_messages(&authority, authored_at)
-            .unwrap()
-        {
-            browser.receive_from(origin, message, replayed_at).unwrap();
-        }
-
-        assert_eq!(browser.rows(), governor.rows());
-        assert_eq!(
-            browser.document_heads("test.app", "tab:1"),
-            governor.document_heads("test.app", "tab:1")
-        );
-    }
-
-    phase fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_sequence;
-    {
-        let (mut native, a, b, bc, now) = seeded();
-        let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
-        let before = doc.get_heads();
-        doc.put(ROOT, "other", "B").unwrap();
-        doc.commit_edit("fixture", "other");
-        let old = native
-            .publication_mut()
-            .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
-            .unwrap();
-        let bootstrap = native
-            .publication_mut()
-            .bootstrap_messages(&a, now)
-            .unwrap();
-        let mut fresh = StatePeer::new(
-            native.workspace_id(),
-            native.owner_certificates()[0].clone(),
-            vec![bc.clone()],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        // Retained per-channel replay can arrive in either order.
-        assert!(
-            fresh
-                .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                    bootstrap[1].clone(),
-                    now
-                )
-                .unwrap()
-                .deferred
-        );
-        fresh
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                bootstrap[0].clone(),
-                now,
-            )
-            .unwrap();
-        assert_eq!(fresh.rows(), native.rows());
-        assert!(
-            fresh
-                .receive_from(
-                    TransportOrigin::RelayDelta(bc.device_public_key),
-                    old.clone(),
-                    now
-                )
-                .unwrap()
-                .duplicate
-        );
-        let checkpoint = fresh.durable().unwrap();
-        let mut reload = StatePeer::restore(
-            &checkpoint,
-            native.workspace_id(),
-            native.owner_certificates()[0].clone(),
-            vec![bc],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        assert!(
-            reload
-                .receive_from(
-                    TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
-                    old,
-                    now
-                )
-                .unwrap()
-                .duplicate
-        );
-        let mut doc = AutoCommit::load(&reload.document("test.app", "tab:1").unwrap()).unwrap();
-        let before = doc.get_heads();
-        doc.put(ROOT, "new", "B2").unwrap();
-        doc.commit_edit("fixture", "new");
-        let next = reload
-            .publication_mut()
-            .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
-            .unwrap();
-        assert!(matches!(next,NeighbourMsg::AppDocument{envelope,..} if envelope.seq==2));
-    }
-
-    phase state_on_presence_cannot_install_governance_or_advance_watermarks;
-    {
-        let (mut native, a, _, bc, now) = seeded();
-        let bootstrap = native
-            .publication_mut()
-            .bootstrap_messages(&a, now)
-            .unwrap();
-        let mut fresh = StatePeer::new(
-            native.workspace_id(),
-            native.owner_certificates()[0].clone(),
-            vec![bc],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        for message in &bootstrap {
-            assert!(
-                fresh
-                    .receive_from(
-                        TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
-                        message.clone(),
-                        now
-                    )
-                    .is_err()
-            );
-        }
-        assert!(!fresh.has_governance());
-        assert!(fresh.rows().is_empty());
-        for message in bootstrap {
-            fresh
-                .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                    message,
-                    now,
-                )
-                .unwrap();
-        }
-        assert_eq!(fresh.rows(), native.rows());
-    }
-
-    phase forged_or_mismatched_coverage_cannot_install_snapshot;
-    {
-        let (mut native, a, _, bc, now) = seeded();
-        let bootstrap = native
-            .publication_mut()
-            .bootstrap_messages(&a, now)
-            .unwrap();
-        let mut fresh = StatePeer::new(
-            native.workspace_id(),
-            native.owner_certificates()[0].clone(),
-            vec![bc],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        fresh
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                bootstrap[0].clone(),
-                now,
-            )
-            .unwrap();
-        let mut mismatch = bootstrap[1].clone();
-        if let NeighbourMsg::AppDocument { envelope, .. } = &mut mismatch {
-            let mut replacement = AutoCommit::new();
-            replacement.put(ROOT, "attack", true).unwrap();
-            replacement.commit_edit("fixture", "attack");
-            envelope.payload = collab_types::DocumentMutation::Snapshot(replacement.save())
-                .encode()
-                .unwrap();
-            collab_types::sign_op(envelope, &a).unwrap();
-        }
-        assert!(
-            fresh
-                .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                    mismatch,
-                    now
-                )
-                .unwrap_err()
-                .to_string()
-                .contains("coverage")
-        );
-        assert!(fresh.rows().is_empty());
-        fresh
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                bootstrap[1].clone(),
-                now,
-            )
-            .unwrap();
-        assert_eq!(fresh.rows(), native.rows());
-    }
-
-    phase fresh_same_head_checkpoint_is_still_a_durable_watermark_mutation;
-    {
-        let (mut native, a, _, bc, now) = seeded();
-        let mut receiver = StatePeer::new(
-            native.workspace_id(),
-            native.owner_certificates()[0].clone(),
-            vec![bc],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        for message in native
-            .publication_mut()
-            .bootstrap_messages(&a, now)
-            .unwrap()
-        {
-            receiver
-                .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                    message,
-                    now,
-                )
-                .unwrap();
-        }
-        let heads = receiver.rows();
-        let fresh = native
-            .publication_mut()
-            .bootstrap_messages(&a, now)
-            .unwrap();
-        receiver
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                fresh[0].clone(),
-                now,
-            )
-            .unwrap();
-        let outcome = receiver
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                fresh[1].clone(),
-                now,
-            )
-            .unwrap();
-        assert!(!outcome.changed);
-        assert!(outcome.metadata_changed);
-        assert_eq!(heads, receiver.rows());
-    }
-
-    phase reordered_incrementals_are_pending_durable_and_drain_after_predecessor;
-    {
-        let (receiver, _, author_key, author_cert, now) = seeded();
-        let mut author = receiver.clone();
-        let app = "test.app";
-        let record = "tab:1";
-        let mut document = AutoCommit::load(&author.document(app, record).unwrap()).unwrap();
-        document.set_actor(automerge::ActorId::from(
-            author_key.verifying_key().to_bytes().to_vec(),
-        ));
-
-        let before = document.get_heads();
-        document.put(ROOT, "first", "A").unwrap();
-        document.commit_edit("fixture", "first");
-        let first = author
-            .publication_mut()
-            .publish_incremental(app, record, document.save_after(&before), &author_key, now)
-            .unwrap();
-        let before = document.get_heads();
-        document.put(ROOT, "second", "B").unwrap();
-        document.commit_edit("fixture", "second");
-        let second = author
-            .publication_mut()
-            .publish_incremental(app, record, document.save_after(&before), &author_key, now)
-            .unwrap();
-
-        let origin = TransportOrigin::RelayDelta(author_key.verifying_key().to_bytes());
-        let mut receiver = receiver;
-        let outcome = receiver.receive_from(origin, second.clone(), now).unwrap();
-        assert!(outcome.deferred);
-        assert_eq!(receiver.pending_count(), 1);
-        assert!(!receiver.covers(&second));
-
-        let mut receiver = StatePeer::restore(
-            &receiver.durable().unwrap(),
-            receiver.workspace_id(),
-            receiver.owner_certificates()[0].clone(),
-            vec![author_cert],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        assert_eq!(receiver.pending_count(), 1);
-        receiver.receive_from(origin, first, now).unwrap();
-        assert_eq!(receiver.pending_count(), 0);
-        assert_eq!(
-            receiver.document_heads(app, record),
-            Some(document.base_heads())
-        );
-    }
-
-    phase a_record_covered_as_empty_is_held_from_its_coverage;
-    // A record the workspace covers as empty is held by the replica the
-    // governance reaches, though no one can send it: an empty record carries no
-    // change to replay. The coverage row names exactly that empty checkpoint, so
-    // the replica holds the record and a member's write builds on it.
-    {
-        let (mut native, a_key, b_key, b_cert, now) = seeded();
-        let empty = AutoCommit::new().save();
-        // The governor checkpoints an empty record: the coverage row it writes
-        // names the route with no heads and the hash of that empty snapshot.
-        native
-            .publication_mut()
-            .publish_document("test.app", "tab:2", empty.clone(), &a_key, now)
-            .unwrap();
-        let messages = native
-            .publication_mut()
-            .bootstrap_messages(&a_key, now)
-            .unwrap();
-        let NeighbourMsg::SyncResp { changes, workspace } = messages[0].clone() else {
-            panic!("unexpected fixture shape")
-        };
-        let mut joiner = StatePeer::new(
-            &workspace,
-            native.owner_certificates()[0].clone(),
-            vec![b_cert],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        // Only the governance arrives.
-        joiner
-            .receive_from(
-                TransportOrigin::RelayDelta(a_key.verifying_key().to_bytes()),
-                NeighbourMsg::SyncResp { changes, workspace },
-                now,
-            )
-            .unwrap();
-        assert_eq!(
-            joiner.document("test.app", "tab:2").as_deref(),
-            Some(empty.as_slice()),
-            "the replica holds the empty record the governance covers"
-        );
-        assert!(
-            joiner
-                .document_heads("test.app", "tab:2")
-                .unwrap()
-                .is_empty()
-        );
-        assert!(!joiner.checkpoint_pending("test.app", "tab:2"));
-        assert_eq!(
-            joiner.document("test.app", "tab:1"),
-            None,
-            "a covered record with changes is not made up"
-        );
-        // Held, not carved in stone: the member's write builds on it.
-        let mut doc = AutoCommit::load(&joiner.document("test.app", "tab:2").unwrap()).unwrap();
-        doc.set_actor(automerge::ActorId::from(
-            b_key.verifying_key().to_bytes().to_vec(),
-        ));
-        let heads = doc.get_heads();
-        doc.put(ROOT, "note", "mine").unwrap();
-        doc.commit_edit("fixture", "note");
-        joiner
-            .publication_mut()
-            .publish_incremental("test.app", "tab:2", doc.save_after(&heads), &b_key, now)
-            .unwrap();
-        assert_eq!(
-            joiner.document_heads("test.app", "tab:2").unwrap().len(),
-            1,
-            "the member's write lands on the record"
-        );
-    }
-}
-#[test]
-fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
-    let (mut native, a, _, bc, now) = seeded();
-    let messages = native
-        .publication_mut()
-        .bootstrap_messages(&a, now)
-        .unwrap();
-    let NeighbourMsg::SyncResp { changes, workspace } = messages[0].clone() else {
-        panic!("unexpected fixture shape")
-    };
-    let mut doc = workspace::candidate(None, &changes).unwrap();
-    doc.delete(ROOT, coverage::FIELD_V2).unwrap();
-    doc.commit_edit("fixture", "fixture");
-    let legacy = NeighbourMsg::SyncResp {
-        workspace: workspace.clone(),
-        changes: doc
-            .get_changes(&[])
-            .into_iter()
-            .map(|c| c.raw_bytes().to_vec())
-            .collect(),
-    };
-    let mut receiver = StatePeer::new(
-        &workspace,
-        native.owner_certificates()[0].clone(),
-        vec![bc],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    receiver
-        .receive_from(
-            TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-            legacy,
-            now,
-        )
-        .unwrap();
-    assert!(
-        receiver
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                messages[1].clone(),
-                now
-            )
-            .unwrap()
-            .deferred
-    );
-    assert!(receiver.rows().is_empty());
-    let mut candidate = workspace::candidate(None, &changes).unwrap();
-    let mut rows = coverage::entries(&candidate).unwrap();
-    let entry = rows.values_mut().next().unwrap();
-    entry.sequence = 0;
-    let regressed = entry.clone();
-    coverage::put(&mut candidate, regressed).unwrap();
-    assert!(
-        coverage::monotonic(
-            Some(&workspace::candidate(None, &changes).unwrap()),
-            &candidate
-        )
-        .is_err()
-    );
-}
 tilo_test_env::scenario! {
     fn durable_state_keeps_its_obligations_and_refuses_what_it_cannot_read;
 
@@ -1779,6 +1994,82 @@ tilo_test_env::scenario! {
                 )
                 .is_err()
         );
+    }
+
+    phase dynamic_governed_identity_import_preserves_history_and_requires_authority;
+    {
+        let (mut governor, a, _, _, now) = seeded();
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let new_key = SigningKey::from_bytes(&[8; 32]);
+        let stranger = SigningKey::from_bytes(&[0x5a; 32]);
+        let mut cert = governor.owner_certificates()[0].clone();
+        cert.device_public_key = new_key.verifying_key().to_bytes();
+        cert.device_label = "dynamic client".into();
+        sign_device_cert(&mut cert, &root).unwrap();
+        let mut existing = governor.clone();
+        let before = governor.durable().unwrap();
+        assert!(
+            governor
+                .admit_certificate(cert.clone(), &stranger, now)
+                .is_err()
+        );
+        assert_eq!(before, governor.durable().unwrap());
+        let rows = governor.rows();
+        let floors = governor.replay_floors();
+        assert!(governor.admit_certificate(cert.clone(), &a, now).unwrap());
+        assert!(!governor.admit_certificate(cert.clone(), &a, now).unwrap());
+        assert_eq!(rows, governor.rows());
+        assert_eq!(floors, governor.replay_floors());
+        let outcome = existing
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                governor.workspace_message(),
+                now,
+            )
+            .unwrap();
+        assert!(outcome.metadata_changed);
+        assert!(existing.certificates().contains(&cert));
+        assert!(
+            existing
+                .permissions(new_key.verifying_key().to_bytes(), now)
+                .is_ok()
+        );
+        assert_eq!(rows, existing.rows());
+        let mut doc = AutoCommit::load(&existing.document("test.app", "tab:1").unwrap()).unwrap();
+        doc.set_actor(automerge::ActorId::from(
+            new_key.verifying_key().to_bytes().to_vec(),
+        ));
+        let before = doc.get_heads();
+        doc.put(ROOT, "joined", true).unwrap();
+        doc.commit_edit("fixture", "joined");
+        let message = existing
+            .publication_mut()
+            .publish_incremental("test.app", "tab:1", doc.save_after(&before), &new_key, now)
+            .unwrap();
+        assert!(
+            governor
+                .receive_from(
+                    TransportOrigin::RelayDelta(new_key.verifying_key().to_bytes()),
+                    message,
+                    now
+                )
+                .unwrap()
+                .changed
+        );
+        let restored = StatePeer::restore(
+            &existing.durable().unwrap(),
+            existing.workspace_id(),
+            existing.owner_certificates()[0].clone(),
+            vec![],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert!(restored.certificates().contains(&cert));
+        let other_root = SigningKey::from_bytes(&[9; 32]);
+        cert.user_public_key = other_root.verifying_key().to_bytes();
+        sign_device_cert(&mut cert, &other_root).unwrap();
+        assert!(governor.admit_certificate(cert, &a, now).is_err());
     }
 
     phase expired_known_identity_does_not_block_governed_join;
@@ -1989,55 +2280,51 @@ tilo_test_env::scenario! {
             ))
         ));
     }
-}
 
-#[test]
-fn aged_retained_checkpoint_rejects_without_poisoning_fresh_sync_or_durable_ready_state() {
-    let (mut native, key, _, browser_cert, created) = seeded();
-    let delayed = created + Duration::from_secs(301);
-    let stale = native
-        .publication_mut()
-        .bootstrap_messages(&key, created)
-        .unwrap();
-    let mut receiver = StatePeer::new(
-        native.workspace_id(),
-        native.owner_certificates()[0].clone(),
-        vec![native.owner_certificates()[0].clone(), browser_cert],
-        RevocationList::new(),
-        delayed,
-    )
-    .unwrap();
-    let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    receiver
-        .receive_from(origin, stale[0].clone(), delayed)
-        .unwrap();
-    let before = receiver.durable().unwrap();
-    assert!(
-        receiver
-            .receive_from(origin, stale[1].clone(), delayed)
-            .unwrap_err()
-            .to_string()
-            .contains("timestamp")
-    );
-    assert_eq!(receiver.durable().unwrap(), before);
-    assert!(receiver.rows().is_empty());
-    assert_eq!(receiver.incomplete_reason(), None);
-    for message in native
-        .publication_mut()
-        .bootstrap_messages(&key, delayed)
-        .unwrap()
+    phase governed_import_is_atomic_even_for_direct_admission;
     {
-        receiver.receive_from(origin, message, delayed).unwrap();
+        use automerge::ReadDoc;
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let (mut source, a, _, _, now) = seeded();
+        let mut receiver = source.clone();
+        let mut valid = source.owner_certificates()[0].clone();
+        valid.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+        sign_device_cert(&mut valid, &root).unwrap();
+        source.admit_certificate(valid, &a, now).unwrap();
+        let NeighbourMsg::SyncResp { changes, workspace } = source.workspace_message() else {
+            panic!("unexpected fixture shape")
+        };
+        let mut candidate = workspace::candidate(None, &changes).unwrap();
+        let (_, identities) = candidate.get(ROOT, "peer_identities_v1").unwrap().unwrap();
+        candidate
+            .put(
+                &identities,
+                "zz-invalid",
+                automerge::ScalarValue::Bytes(vec![0]),
+            )
+            .unwrap();
+        candidate.commit_edit("fixture", "fixture");
+        let changes = candidate
+            .get_changes(&[])
+            .into_iter()
+            .map(|c| c.raw_bytes().to_vec())
+            .collect();
+        let before = receiver.durable().unwrap();
+        assert!(
+            receiver
+                .receive(
+                    a.verifying_key().to_bytes(),
+                    NeighbourMsg::SyncResp { changes, workspace },
+                    now
+                )
+                .is_err()
+        );
+        assert_eq!(
+            before,
+            receiver.durable().unwrap(),
+            "direct receive cannot partly import certificate metadata"
+        );
     }
-    assert_eq!(receiver.rows(), native.rows());
-    let admitted = receiver.durable().unwrap();
-    assert!(
-        receiver
-            .receive_from(origin, stale[1].clone(), delayed)
-            .is_err()
-    );
-    assert_eq!(receiver.durable().unwrap(), admitted);
-    assert_eq!(receiver.incomplete_reason(), None);
 }
 
 #[test]
@@ -2279,127 +2566,6 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
         );
     }
 }
-
-#[test]
-fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
-    let (mut governor, a, _, _, now) = seeded();
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let new_key = SigningKey::from_bytes(&[8; 32]);
-    let stranger = SigningKey::from_bytes(&[0x5a; 32]);
-    let mut cert = governor.owner_certificates()[0].clone();
-    cert.device_public_key = new_key.verifying_key().to_bytes();
-    cert.device_label = "dynamic client".into();
-    sign_device_cert(&mut cert, &root).unwrap();
-    let mut existing = governor.clone();
-    let before = governor.durable().unwrap();
-    assert!(
-        governor
-            .admit_certificate(cert.clone(), &stranger, now)
-            .is_err()
-    );
-    assert_eq!(before, governor.durable().unwrap());
-    let rows = governor.rows();
-    let floors = governor.replay_floors();
-    assert!(governor.admit_certificate(cert.clone(), &a, now).unwrap());
-    assert!(!governor.admit_certificate(cert.clone(), &a, now).unwrap());
-    assert_eq!(rows, governor.rows());
-    assert_eq!(floors, governor.replay_floors());
-    let outcome = existing
-        .receive_from(
-            TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-            governor.workspace_message(),
-            now,
-        )
-        .unwrap();
-    assert!(outcome.metadata_changed);
-    assert!(existing.certificates().contains(&cert));
-    assert!(
-        existing
-            .permissions(new_key.verifying_key().to_bytes(), now)
-            .is_ok()
-    );
-    assert_eq!(rows, existing.rows());
-    let mut doc = AutoCommit::load(&existing.document("test.app", "tab:1").unwrap()).unwrap();
-    doc.set_actor(automerge::ActorId::from(
-        new_key.verifying_key().to_bytes().to_vec(),
-    ));
-    let before = doc.get_heads();
-    doc.put(ROOT, "joined", true).unwrap();
-    doc.commit_edit("fixture", "joined");
-    let message = existing
-        .publication_mut()
-        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &new_key, now)
-        .unwrap();
-    assert!(
-        governor
-            .receive_from(
-                TransportOrigin::RelayDelta(new_key.verifying_key().to_bytes()),
-                message,
-                now
-            )
-            .unwrap()
-            .changed
-    );
-    let restored = StatePeer::restore(
-        &existing.durable().unwrap(),
-        existing.workspace_id(),
-        existing.owner_certificates()[0].clone(),
-        vec![],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert!(restored.certificates().contains(&cert));
-    let other_root = SigningKey::from_bytes(&[9; 32]);
-    cert.user_public_key = other_root.verifying_key().to_bytes();
-    sign_device_cert(&mut cert, &other_root).unwrap();
-    assert!(governor.admit_certificate(cert, &a, now).is_err());
-}
-#[test]
-fn governed_import_is_atomic_even_for_direct_admission() {
-    use automerge::ReadDoc;
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let (mut source, a, _, _, now) = seeded();
-    let mut receiver = source.clone();
-    let mut valid = source.owner_certificates()[0].clone();
-    valid.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
-    sign_device_cert(&mut valid, &root).unwrap();
-    source.admit_certificate(valid, &a, now).unwrap();
-    let NeighbourMsg::SyncResp { changes, workspace } = source.workspace_message() else {
-        panic!("unexpected fixture shape")
-    };
-    let mut candidate = workspace::candidate(None, &changes).unwrap();
-    let (_, identities) = candidate.get(ROOT, "peer_identities_v1").unwrap().unwrap();
-    candidate
-        .put(
-            &identities,
-            "zz-invalid",
-            automerge::ScalarValue::Bytes(vec![0]),
-        )
-        .unwrap();
-    candidate.commit_edit("fixture", "fixture");
-    let changes = candidate
-        .get_changes(&[])
-        .into_iter()
-        .map(|c| c.raw_bytes().to_vec())
-        .collect();
-    let before = receiver.durable().unwrap();
-    assert!(
-        receiver
-            .receive(
-                a.verifying_key().to_bytes(),
-                NeighbourMsg::SyncResp { changes, workspace },
-                now
-            )
-            .is_err()
-    );
-    assert_eq!(
-        before,
-        receiver.durable().unwrap(),
-        "direct receive cannot partly import certificate metadata"
-    );
-}
-
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -2699,49 +2865,6 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
     );
 }
 
-/// The governor records when the workspace admitted a person, once: a role
-/// change keeps it, so the numbers namesakes are told apart by never shift,
-/// and removal forgets it.
-#[test]
-fn admission_records_when_a_member_joined_and_a_role_change_keeps_it() {
-    let (mut peer, authority_key, _, _, now) = seeded();
-    let (_, root) = add_editor(&mut peer, &authority_key, now);
-    let person = hex::encode(root);
-    let joined = |peer: &StatePeer| {
-        let NeighbourMsg::SyncResp { changes, .. } = peer.workspace_message() else {
-            panic!("unexpected fixture shape")
-        };
-        let doc = crate::workspace::candidate(None, &changes).unwrap();
-        crate::workspace::extract_governed_fields(&doc)
-            .1
-            .joined
-            .get(&person)
-            .copied()
-    };
-    let at_ms = u64::try_from(
-        now.duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis(),
-    )
-    .unwrap();
-    assert_eq!(joined(&peer), Some(at_ms));
-
-    let later = now + Duration::from_secs(60);
-    assert!(
-        peer.governance_mut()
-            .set_member_role(root, crate::join::Role::Viewer, &authority_key, later)
-            .unwrap()
-    );
-    assert_eq!(joined(&peer), Some(at_ms), "a role change keeps it");
-
-    assert!(
-        peer.governance_mut()
-            .remove_member(root, &authority_key, later)
-            .unwrap()
-    );
-    assert_eq!(joined(&peer), None);
-}
-
 /// A frame `author` signs as `key`: one change to its record, as a device
 /// publishes it.
 fn frame(author: &mut StatePeer, key: &SigningKey, now: SystemTime, name: &str) -> NeighbourMsg {
@@ -2829,113 +2952,4 @@ fn ns_since_epoch(now: SystemTime) -> u64 {
         .as_nanos()
         .try_into()
         .unwrap()
-}
-
-/// A removed member's device keeps its keys, and nothing it writes after the
-/// removal counts: a frame it publishes is refused however it signs it, and a
-/// membership operation it writes has no effect even where the workspace's own
-/// devices relay it. What it wrote before the removal stays.
-#[test]
-fn a_removed_members_device_writes_nothing_after_its_removal() {
-    let (mut peer, authority_key, _, _, now) = seeded();
-    let (guest_key, guest) = admitted_guest(&mut peer, &authority_key, now);
-    let origin = TransportOrigin::RelayDelta(guest_key.verifying_key().to_bytes());
-
-    // The guest's device publishes a frame while it is a member.
-    let mut guest_peer = peer.clone();
-    let before = frame(&mut guest_peer, &guest_key, now, "before");
-    peer.receive_from(origin, before, now)
-        .expect("a member's frame is admitted");
-
-    assert!(
-        peer.governance_mut()
-            .remove_member(guest.user_public_key, &authority_key, now)
-            .unwrap()
-    );
-
-    // The same device, with the same keys, writes a frame after the removal.
-    let later = now + Duration::from_secs(30);
-    let after = frame(&mut guest_peer, &guest_key, later, "after");
-    assert!(
-        peer.receive_from(origin, after, later).is_err(),
-        "a removed device's frame is refused"
-    );
-    let held = AutoCommit::load(&peer.document("test.app", "tab:1").unwrap()).unwrap();
-    assert!(
-        held.get(ROOT, "after").unwrap().is_none(),
-        "the refused frame wrote nothing"
-    );
-    assert!(
-        held.get(ROOT, "before").unwrap().is_some(),
-        "the frame admitted before the removal stays"
-    );
-
-    // A membership operation the removed device writes is relayed by the
-    // workspace's own devices and kept: replay gives it no effect, because its
-    // author is no longer a member.
-    let newcomer = SigningKey::from_bytes(&[66; 32]);
-    let mut newcomer_cert = DeviceCert {
-        user_public_key: newcomer.verifying_key().to_bytes(),
-        device_public_key: SigningKey::from_bytes(&[67; 32]).verifying_key().to_bytes(),
-        device_label: "Newcomer".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut newcomer_cert, &newcomer).unwrap();
-    let NeighbourMsg::SyncResp { changes, workspace } = peer.workspace_message() else {
-        panic!("unexpected fixture shape");
-    };
-    let mut workspace_doc = crate::workspace::candidate(None, &changes).unwrap();
-    let op = crate::members::SignedMembershipOp::signed(
-        &guest,
-        &guest_key,
-        crate::members::heads(&crate::members::ops(&workspace_doc)),
-        ns_since_epoch(later),
-        crate::members::MembershipOpCommand::Project {
-            changes: vec![tilo_action_policy::Change::AddMember {
-                person: hex::encode(newcomer_cert.user_public_key),
-                role: tilo_action_policy::Role::Viewer,
-            }],
-        },
-    )
-    .unwrap();
-    let heads = workspace_doc.get_heads();
-    crate::members::put_op(&mut workspace_doc, &op).unwrap();
-    peer.receive_from(
-        TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
-        NeighbourMsg::SyncResp {
-            changes: workspace_doc
-                .get_changes(&heads)
-                .into_iter()
-                .map(|change| change.raw_bytes().to_vec())
-                .collect(),
-            workspace,
-        },
-        later,
-    )
-    .expect("the workspace's device relays the operation");
-    let held = peer.workspace_message();
-    let NeighbourMsg::SyncResp { changes, .. } = held else {
-        panic!("unexpected fixture shape");
-    };
-    let held = crate::workspace::candidate(None, &changes).unwrap();
-    assert!(
-        crate::members::ops(&held)
-            .values()
-            .any(|held| held.id().unwrap() == op.id().unwrap()),
-        "the operation is kept"
-    );
-    assert_eq!(
-        crate::members::replay(&held, peer.workspace_id())
-            .role_of(&hex::encode(newcomer_cert.user_public_key)),
-        None,
-        "and has no effect"
-    );
-    assert!(
-        peer.permissions(newcomer_cert.device_public_key, later)
-            .is_err()
-    );
 }

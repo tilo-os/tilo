@@ -383,6 +383,50 @@ mod tests {
             assert_eq!(opened.mutation(), Some(snapshot));
         }
 
+        phase a_checkpoint_and_its_coalesced_tail_converge_like_one_change_at_a_time;
+        {
+            let mut author = AutoCommit::new();
+            let text = author
+                .put_object(automerge::ROOT, "text", automerge::ObjType::Text)
+                .unwrap();
+            author.splice_text(&text, 0, 0, "begin ").unwrap();
+            let checkpoint = author.save();
+            let mut tail = Vec::new();
+            for round in 0..50 {
+                author
+                    .splice_text(&text, 0, 0, &format!("round {round} "))
+                    .unwrap();
+                tail.push(DocumentMutation::Incremental(author.save_incremental()));
+            }
+            let mut mutations = vec![DocumentMutation::Snapshot(checkpoint)];
+            mutations.extend(tail.iter().cloned());
+            let runs = coalesce(mutations);
+            assert_eq!(runs.len(), 2, "one snapshot, one change set");
+
+            let apply = |runs: &[DocumentMutation]| {
+                let mut doc = AutoCommit::new();
+                for run in runs {
+                    match run {
+                        DocumentMutation::Snapshot(bytes) => {
+                            doc.merge_incoming(&mut AutoCommit::load(bytes).unwrap())
+                                .unwrap();
+                        }
+                        DocumentMutation::Incremental(bytes) => {
+                            doc.load_incoming(bytes).unwrap();
+                        }
+                    }
+                }
+                doc
+            };
+            let mut one_by_one = vec![runs[0].clone()];
+            one_by_one.extend(tail);
+            let mut batched = apply(&runs);
+            let mut single = apply(&one_by_one);
+            assert_eq!(batched.get_heads(), author.get_heads());
+            assert_eq!(single.get_heads(), batched.get_heads());
+            assert_eq!(batched.text(&text).unwrap(), author.text(&text).unwrap());
+        }
+
         phase a_writer_reads_its_held_writes_over_what_the_replica_holds;
         {
             let mut doc = AutoCommit::new();
@@ -412,50 +456,6 @@ mod tests {
                 state.to_le_bytes()[0]
             })
             .collect()
-    }
-
-    #[test]
-    fn a_checkpoint_and_its_coalesced_tail_converge_like_one_change_at_a_time() {
-        let mut author = AutoCommit::new();
-        let text = author
-            .put_object(automerge::ROOT, "text", automerge::ObjType::Text)
-            .unwrap();
-        author.splice_text(&text, 0, 0, "begin ").unwrap();
-        let checkpoint = author.save();
-        let mut tail = Vec::new();
-        for round in 0..50 {
-            author
-                .splice_text(&text, 0, 0, &format!("round {round} "))
-                .unwrap();
-            tail.push(DocumentMutation::Incremental(author.save_incremental()));
-        }
-        let mut mutations = vec![DocumentMutation::Snapshot(checkpoint)];
-        mutations.extend(tail.iter().cloned());
-        let runs = coalesce(mutations);
-        assert_eq!(runs.len(), 2, "one snapshot, one change set");
-
-        let apply = |runs: &[DocumentMutation]| {
-            let mut doc = AutoCommit::new();
-            for run in runs {
-                match run {
-                    DocumentMutation::Snapshot(bytes) => {
-                        doc.merge_incoming(&mut AutoCommit::load(bytes).unwrap())
-                            .unwrap();
-                    }
-                    DocumentMutation::Incremental(bytes) => {
-                        doc.load_incoming(bytes).unwrap();
-                    }
-                }
-            }
-            doc
-        };
-        let mut one_by_one = vec![runs[0].clone()];
-        one_by_one.extend(tail);
-        let mut batched = apply(&runs);
-        let mut single = apply(&one_by_one);
-        assert_eq!(batched.get_heads(), author.get_heads());
-        assert_eq!(single.get_heads(), batched.get_heads());
-        assert_eq!(batched.text(&text).unwrap(), author.text(&text).unwrap());
     }
 
     tilo_test_env::scenario! {

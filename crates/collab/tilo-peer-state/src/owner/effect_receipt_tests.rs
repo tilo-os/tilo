@@ -5,115 +5,115 @@ use ed25519_dalek::SigningKey;
 use tilo_actions::{ActionContext, ActionFacet, EffectReceiptStatus, InvocationId};
 use tilo_user_identity::DeviceCert;
 
-#[test]
-fn a_member_device_records_its_own_receipts_which_the_governor_admits_as_theirs() {
-    let mut fixture = fixture();
-    let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("member.json");
-    let member = enroll_remote_history_member(&mut fixture, &path);
-    let owner = crate::owner::open_file(&path).unwrap();
-    let operation = request(&member, EffectReceiptStatus::Succeeded);
-    let original = owner
-        .commit_effect_receipt(&operation, fixture.now)
-        .unwrap();
-    original.validate_for(&operation).unwrap();
-    let committed = record_on_disk(&path);
-    let reopened = crate::owner::open_file(&path).unwrap();
-    let retry = reopened
-        .commit_effect_receipt(&operation, fixture.now)
-        .unwrap();
-    assert_eq!(retry.binding, original.binding);
-    assert_eq!(retry.generation, original.generation);
-    assert_eq!(retry.aggregate_hash, original.aggregate_hash);
-    assert_eq!(record_on_disk(&path), committed);
-    assert!(
-        reopened
-            .commit_effect_receipt(
-                &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
-                fixture.now,
-            )
-            .is_err(),
-        "a member records no one else's receipt"
-    );
-    assert_eq!(record_on_disk(&path), committed);
-    let frames = reopened
-        .with_outgoing(workspace, fixture.now, |_, outgoing| {
-            Ok(outgoing
-                .entries()
-                .map(|entry| entry.bytes().to_vec())
-                .collect::<Vec<_>>())
-        })
-        .unwrap();
-    assert!(
-        !frames.is_empty(),
-        "the receipt is published as the member's change"
-    );
-    for frame in frames {
-        fixture
-            .governor
-            .receive(
-                crate::TransportOrigin::RetainedRelayDelta(member.device_public_key),
-                postcard::from_bytes(&frame).unwrap(),
-            )
-            .unwrap();
-    }
-    assert!(
-        tilo_desktop_model::projection::workspace_effect_receipts_of(
-            fixture.governor.peer().admitted_workspace().unwrap(),
-        )
-        .contains(&decode(&operation).unwrap()),
-        "the governor admits the member's own receipt"
-    );
-}
-
-/// A running session keeps the owner it committed with and publishes from
-/// it: the receipt's change is one this owner holds, so the governor admits
-/// it without the owner being reopened from disk first.
-#[test]
-fn the_owner_that_committed_a_receipt_publishes_it_without_reopening() {
-    let mut fixture = fixture();
-    let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("member.json");
-    let member = enroll_remote_history_member(&mut fixture, &path);
-    let owner = crate::owner::open_file(&path).unwrap();
-    let operation = request(&member, EffectReceiptStatus::Succeeded);
-    owner
-        .commit_effect_receipt(&operation, fixture.now)
-        .unwrap();
-    let frames = owner
-        .with_outgoing(workspace, fixture.now, |_, outgoing| {
-            Ok(outgoing
-                .entries()
-                .map(|entry| entry.bytes().to_vec())
-                .collect::<Vec<_>>())
-        })
-        .unwrap();
-    assert!(
-        !frames.is_empty(),
-        "the committing owner publishes the receipt as its own change"
-    );
-    for frame in frames {
-        fixture
-            .governor
-            .receive(
-                crate::TransportOrigin::RetainedRelayDelta(member.device_public_key),
-                postcard::from_bytes(&frame).unwrap(),
-            )
-            .unwrap();
-    }
-    assert!(
-        tilo_desktop_model::projection::workspace_effect_receipts_of(
-            fixture.governor.peer().admitted_workspace().unwrap(),
-        )
-        .contains(&decode(&operation).unwrap()),
-        "the governor admits the receipt the running owner published"
-    );
-}
-
 tilo_test_env::scenario! {
     fn an_effect_receipt_is_recorded_published_and_admitted_as_its_devices;
+
+    phase a_member_device_records_its_own_receipts_which_the_governor_admits_as_theirs;
+    {
+        let mut fixture = fixture();
+        let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("member.json");
+        let member = enroll_remote_history_member(&mut fixture, &path);
+        let owner = crate::owner::open_file(&path).unwrap();
+        let operation = request(&member, EffectReceiptStatus::Succeeded);
+        let original = owner
+            .commit_effect_receipt(&operation, fixture.now)
+            .unwrap();
+        original.validate_for(&operation).unwrap();
+        let committed = record_on_disk(&path);
+        let reopened = crate::owner::open_file(&path).unwrap();
+        let retry = reopened
+            .commit_effect_receipt(&operation, fixture.now)
+            .unwrap();
+        assert_eq!(retry.binding, original.binding);
+        assert_eq!(retry.generation, original.generation);
+        assert_eq!(retry.aggregate_hash, original.aggregate_hash);
+        assert_eq!(record_on_disk(&path), committed);
+        assert!(
+            reopened
+                .commit_effect_receipt(
+                    &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
+                    fixture.now,
+                )
+                .is_err(),
+            "a member records no one else's receipt"
+        );
+        assert_eq!(record_on_disk(&path), committed);
+        let frames = reopened
+            .with_outgoing(workspace, fixture.now, |_, outgoing| {
+                Ok(outgoing
+                    .entries()
+                    .map(|entry| entry.bytes().to_vec())
+                    .collect::<Vec<_>>())
+            })
+            .unwrap();
+        assert!(
+            !frames.is_empty(),
+            "the receipt is published as the member's change"
+        );
+        for frame in frames {
+            fixture
+                .governor
+                .receive(
+                    crate::TransportOrigin::RetainedRelayDelta(member.device_public_key),
+                    postcard::from_bytes(&frame).unwrap(),
+                )
+                .unwrap();
+        }
+        assert!(
+            tilo_desktop_model::projection::workspace_effect_receipts_of(
+                fixture.governor.peer().admitted_workspace().unwrap(),
+            )
+            .contains(&decode(&operation).unwrap()),
+            "the governor admits the member's own receipt"
+        );
+    }
+
+    phase the_owner_that_committed_a_receipt_publishes_it_without_reopening;
+    // A running session keeps the owner it committed with and publishes from
+    // it: the receipt's change is one this owner holds, so the governor admits
+    // it without the owner being reopened from disk first.
+    {
+        let mut fixture = fixture();
+        let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("member.json");
+        let member = enroll_remote_history_member(&mut fixture, &path);
+        let owner = crate::owner::open_file(&path).unwrap();
+        let operation = request(&member, EffectReceiptStatus::Succeeded);
+        owner
+            .commit_effect_receipt(&operation, fixture.now)
+            .unwrap();
+        let frames = owner
+            .with_outgoing(workspace, fixture.now, |_, outgoing| {
+                Ok(outgoing
+                    .entries()
+                    .map(|entry| entry.bytes().to_vec())
+                    .collect::<Vec<_>>())
+            })
+            .unwrap();
+        assert!(
+            !frames.is_empty(),
+            "the committing owner publishes the receipt as its own change"
+        );
+        for frame in frames {
+            fixture
+                .governor
+                .receive(
+                    crate::TransportOrigin::RetainedRelayDelta(member.device_public_key),
+                    postcard::from_bytes(&frame).unwrap(),
+                )
+                .unwrap();
+        }
+        assert!(
+            tilo_desktop_model::projection::workspace_effect_receipts_of(
+                fixture.governor.peer().admitted_workspace().unwrap(),
+            )
+            .contains(&decode(&operation).unwrap()),
+            "the governor admits the receipt the running owner published"
+        );
+    }
 
     phase a_receipt_whose_public_half_is_not_admitted_keeps_its_workspace;
     // A device's record holds the receipt of an effect it served whose public

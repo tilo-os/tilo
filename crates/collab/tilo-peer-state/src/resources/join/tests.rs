@@ -232,37 +232,37 @@ tilo_test_env::scenario! {
             Err(PeerResourceError::Capacity)
         ));
     }
-}
 
-#[test]
-fn owner_bootstrap_wire_keeps_response_tags_and_role_bytes() {
-    for (tag, response) in responses().iter().enumerate() {
-        assert_eq!(
-            postcard::to_allocvec(response).unwrap()[0],
-            u8::try_from(tag).unwrap()
-        );
-    }
-    for (role, wire) in [
-        (Role::Viewer, vec![0]),
-        (Role::Commenter, vec![1]),
-        (Role::Editor, vec![2]),
-    ] {
-        assert_eq!(postcard::to_allocvec(&role).unwrap(), wire);
-    }
-    let response = responses().pop().unwrap();
-    let bytes = postcard::to_allocvec(&response).unwrap();
-    let held = BoundedJoinResponse::decode(&bytes, limits()).unwrap();
-    assert_eq!(held.response(), &response);
-    for limited in [
-        OuterLimits {
-            allocation_bytes: 1024,
-            collection_entries: 16384,
-        },
-        OuterLimits {
-            allocation_bytes: 96 * 1024,
-            collection_entries: 1,
-        },
-    ] {
-        assert!(BoundedJoinResponse::decode(&bytes, limited).is_err());
+    phase owner_bootstrap_wire_keeps_response_tags_and_role_bytes;
+    {
+        for (tag, response) in responses().iter().enumerate() {
+            assert_eq!(
+                postcard::to_allocvec(response).unwrap()[0],
+                u8::try_from(tag).unwrap()
+            );
+        }
+        for (role, wire) in [
+            (Role::Viewer, vec![0]),
+            (Role::Commenter, vec![1]),
+            (Role::Editor, vec![2]),
+        ] {
+            assert_eq!(postcard::to_allocvec(&role).unwrap(), wire);
+        }
+        let response = responses().pop().unwrap();
+        let bytes = postcard::to_allocvec(&response).unwrap();
+        let held = BoundedJoinResponse::decode(&bytes, limits()).unwrap();
+        assert_eq!(held.response(), &response);
+        for limited in [
+            OuterLimits {
+                allocation_bytes: 1024,
+                collection_entries: 16384,
+            },
+            OuterLimits {
+                allocation_bytes: 96 * 1024,
+                collection_entries: 1,
+            },
+        ] {
+            assert!(BoundedJoinResponse::decode(&bytes, limited).is_err());
+        }
     }
 }

@@ -250,21 +250,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_workspace_keeps_proposals_by_id_and_prunes_settled_ones() {
-        let mut doc = AutoCommit::new();
-        put_entry(&mut doc, &entry(1, 100)).unwrap();
-        put_entry(&mut doc, &entry(2, 1_000)).unwrap();
-        let kept = entries(&doc);
-        assert_eq!(kept.len(), 2);
-        assert_eq!(kept[&key(&[1; 32])].state(50), ImportState::Pending);
-        assert_eq!(kept[&key(&[1; 32])].state(100), ImportState::Expired);
-        assert_eq!(prune(&mut doc, 500).unwrap(), 1);
-        assert_eq!(entries(&doc).len(), 1);
-    }
-
     tilo_test_env::scenario! {
         fn import_proposals_are_governed_and_kept_by_id;
+
+        phase the_workspace_keeps_proposals_by_id_and_prunes_settled_ones;
+        {
+            let mut doc = AutoCommit::new();
+            put_entry(&mut doc, &entry(1, 100)).unwrap();
+            put_entry(&mut doc, &entry(2, 1_000)).unwrap();
+            let kept = entries(&doc);
+            assert_eq!(kept.len(), 2);
+            assert_eq!(kept[&key(&[1; 32])].state(50), ImportState::Pending);
+            assert_eq!(kept[&key(&[1; 32])].state(100), ImportState::Expired);
+            assert_eq!(prune(&mut doc, 500).unwrap(), 1);
+            assert_eq!(entries(&doc).len(), 1);
+        }
 
         phase import_proposals_are_governance;
         {

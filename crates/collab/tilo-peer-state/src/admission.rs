@@ -716,26 +716,26 @@ mod tests {
         index
     }
 
-    #[test]
-    fn the_admission_index_kept_here_reads_and_writes_as_it_is() {
-        assert_golden_bytes(
-            "a peer's admission index",
-            &hex::decode(KEPT).unwrap(),
-            |bytes| {
-                let index = ExactAdmissions::decode(bytes).unwrap();
-                assert_eq!(index.len(), 2);
-                assert_eq!(index.get(&admission(1, 1, 1).key), Some(&[1; 32]));
-                assert_eq!(index.get(&admission(2, 2, 2).key), Some(&[2; 32]));
-                assert!(index.covers(&admission(9, 5, 3).key));
-                assert!(!index.covers(&admission(9, 6, 4).key));
-            },
-            || kept_index().encode().unwrap(),
-        );
-    }
-
     tilo_test_env::scenario! {
         #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn the_admission_index_keeps_one_exact_ordered_encoding;
+
+        phase the_admission_index_kept_here_reads_and_writes_as_it_is;
+        {
+            assert_golden_bytes(
+                "a peer's admission index",
+                &hex::decode(KEPT).unwrap(),
+                |bytes| {
+                    let index = ExactAdmissions::decode(bytes).unwrap();
+                    assert_eq!(index.len(), 2);
+                    assert_eq!(index.get(&admission(1, 1, 1).key), Some(&[1; 32]));
+                    assert_eq!(index.get(&admission(2, 2, 2).key), Some(&[2; 32]));
+                    assert!(index.covers(&admission(9, 5, 3).key));
+                    assert!(!index.covers(&admission(9, 6, 4).key));
+                },
+                || kept_index().encode().unwrap(),
+            );
+        }
 
         phase delivery_admission_index_bounds_and_duplicate_decode_are_fail_closed;
         {
@@ -827,64 +827,64 @@ mod tests {
                     .unwrap();
             assert!(ExactAdmissions::decode(&forged).is_err());
         }
-    }
 
-    /// Copies share the settled entries; the index still reads as one map
-    /// in key order, encodes its settled and recent entries apart, and
-    /// decodes back to the same bytes.
-    #[test]
-    fn a_copy_shares_settled_admissions_and_encodes_one_ordered_index() {
-        let admission = |sequence: u64| DocumentAdmission {
-            key: AdmissionKey {
-                workspace: "workspace".into(),
-                app: "app".into(),
-                record: "record".into(),
-                author: [u8::try_from(sequence % 7).unwrap(); 32],
-                sequence,
-            },
-            operation_id: [1; 32],
-        };
-        let mut index = ExactAdmissions::default();
-        // Out of key order, past one settling.
-        for sequence in (0..RECENT_ADMISSIONS as u64 + 40).rev() {
-            index.insert(&admission(sequence)).unwrap();
-        }
-        let copy = index.clone();
-        assert!(std::sync::Arc::ptr_eq(&index.settled, &copy.settled));
-        assert!(copy.shares_settled(&index));
-        assert!(copy.recent.len() < RECENT_ADMISSIONS);
-        let keys: Vec<_> = index.iter().map(|(key, _)| key.clone()).collect();
-        let mut sorted = keys.clone();
-        sorted.sort();
-        assert_eq!(keys, sorted);
-        assert_eq!(keys.len(), RECENT_ADMISSIONS + 40);
-        let bytes = index.encode().unwrap();
-        let marks = BTreeMap::<WriterKey, u64>::new();
-        assert_eq!(
-            bytes,
-            postcard::to_allocvec(&(&index.settled.entries, &index.recent, marks)).unwrap()
-        );
-        let decoded = ExactAdmissions::decode(&bytes).unwrap();
-        assert_eq!(decoded.encode().unwrap(), bytes);
-        assert_eq!(decoded.recent.len(), index.recent.len());
+        phase a_copy_shares_settled_admissions_and_encodes_one_ordered_index;
+        // Copies share the settled entries; the index still reads as one map
+        // in key order, encodes its settled and recent entries apart, and
+        // decodes back to the same bytes.
+        {
+            let admission = |sequence: u64| DocumentAdmission {
+                key: AdmissionKey {
+                    workspace: "workspace".into(),
+                    app: "app".into(),
+                    record: "record".into(),
+                    author: [u8::try_from(sequence % 7).unwrap(); 32],
+                    sequence,
+                },
+                operation_id: [1; 32],
+            };
+            let mut index = ExactAdmissions::default();
+            // Out of key order, past one settling.
+            for sequence in (0..RECENT_ADMISSIONS as u64 + 40).rev() {
+                index.insert(&admission(sequence)).unwrap();
+            }
+            let copy = index.clone();
+            assert!(std::sync::Arc::ptr_eq(&index.settled, &copy.settled));
+            assert!(copy.shares_settled(&index));
+            assert!(copy.recent.len() < RECENT_ADMISSIONS);
+            let keys: Vec<_> = index.iter().map(|(key, _)| key.clone()).collect();
+            let mut sorted = keys.clone();
+            sorted.sort();
+            assert_eq!(keys, sorted);
+            assert_eq!(keys.len(), RECENT_ADMISSIONS + 40);
+            let bytes = index.encode().unwrap();
+            let marks = BTreeMap::<WriterKey, u64>::new();
+            assert_eq!(
+                bytes,
+                postcard::to_allocvec(&(&index.settled.entries, &index.recent, marks)).unwrap()
+            );
+            let decoded = ExactAdmissions::decode(&bytes).unwrap();
+            assert_eq!(decoded.encode().unwrap(), bytes);
+            assert_eq!(decoded.recent.len(), index.recent.len());
 
-        // The settled part is encoded once and shared by every copy until
-        // the entries settle again.
-        let (settled, _) = index.encode_parts().unwrap();
-        let (again, _) = copy.encode_parts().unwrap();
-        assert!(std::sync::Arc::ptr_eq(&settled, &again));
-        let mut grown = copy;
-        for sequence in 1000..1000 + RECENT_ADMISSIONS as u64 {
-            grown.insert(&admission(sequence)).unwrap();
+            // The settled part is encoded once and shared by every copy until
+            // the entries settle again.
+            let (settled, _) = index.encode_parts().unwrap();
+            let (again, _) = copy.encode_parts().unwrap();
+            assert!(std::sync::Arc::ptr_eq(&settled, &again));
+            let mut grown = copy;
+            for sequence in 1000..1000 + RECENT_ADMISSIONS as u64 {
+                grown.insert(&admission(sequence)).unwrap();
+            }
+            assert!(!grown.shares_settled(&index));
+            let (resettled, _) = grown.encode_parts().unwrap();
+            assert!(!std::sync::Arc::ptr_eq(&settled, &resettled));
+            assert_eq!(
+                ExactAdmissions::decode(&grown.encode().unwrap())
+                    .unwrap()
+                    .len(),
+                grown.len()
+            );
         }
-        assert!(!grown.shares_settled(&index));
-        let (resettled, _) = grown.encode_parts().unwrap();
-        assert!(!std::sync::Arc::ptr_eq(&settled, &resettled));
-        assert_eq!(
-            ExactAdmissions::decode(&grown.encode().unwrap())
-                .unwrap()
-                .len(),
-            grown.len()
-        );
     }
 }

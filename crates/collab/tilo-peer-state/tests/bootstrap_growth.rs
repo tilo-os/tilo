@@ -205,132 +205,137 @@ fn durable_bootstrap_workspace_history_growth_is_measured_for_one_eight_thirty_t
     eprintln!("{output}");
 }
 
-#[test]
-fn durable_bootstrap_batches_exact_snapshots_coverage_receipts_and_replay() {
-    let (key, baseline, now) = fixture_with_documents(8);
-    let mut serial = baseline.clone();
-    let mut expected_messages = Vec::new();
-    for row in baseline.rows() {
-        expected_messages.push(
-            serial
-                .publication_mut()
-                .publish_document(
-                    &row.app_id,
-                    &row.record_id,
-                    baseline.document(&row.app_id, &row.record_id).unwrap(),
-                    &key,
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_bootstrap_batches_its_snapshots_coverage_and_receipts;
+
+    phase durable_bootstrap_batches_exact_snapshots_coverage_receipts_and_replay;
+    {
+        let (key, baseline, now) = fixture_with_documents(8);
+        let mut serial = baseline.clone();
+        let mut expected_messages = Vec::new();
+        for row in baseline.rows() {
+            expected_messages.push(
+                serial
+                    .publication_mut()
+                    .publish_document(
+                        &row.app_id,
+                        &row.record_id,
+                        baseline.document(&row.app_id, &row.record_id).unwrap(),
+                        &key,
+                        now,
+                    )
+                    .unwrap(),
+            );
+        }
+        let serial_workspace = workspace_document(&serial.workspace_message());
+        let expected_coverage = tilo_peer_state::coverage::entries(&serial_workspace).unwrap();
+        let expected_receipts = expected_coverage
+            .iter()
+            .map(|(route, coverage)| {
+                (
+                    route.clone(),
+                    tilo_peer_state::durability::DurableReceipt::new(coverage.clone(), 7).unwrap(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let mut batched = baseline;
+        let messages = batched
+            .publication_mut()
+            .durable_bootstrap_messages(&key, now, 7)
+            .unwrap();
+        assert_eq!(&messages[1..], expected_messages);
+        let batched_workspace = workspace_document(&messages[0]);
+        assert_eq!(
+            tilo_peer_state::coverage::entries(&batched_workspace).unwrap(),
+            expected_coverage
+        );
+        assert_eq!(
+            tilo_peer_state::durability::entries(&batched_workspace).unwrap(),
+            expected_receipts
+        );
+        assert_eq!(batched.rows(), serial.rows());
+        assert_eq!(batched.replay_floors(), serial.replay_floors());
+
+        let authority = batched.owner_certificates()[0].clone();
+        let mut fresh = StatePeer::new(
+            WORKSPACE,
+            authority.clone(),
+            batched.certificates(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        for message in messages {
+            fresh
+                .receive_from(
+                    TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                    message,
                     now,
                 )
-                .unwrap(),
-        );
-    }
-    let serial_workspace = workspace_document(&serial.workspace_message());
-    let expected_coverage = tilo_peer_state::coverage::entries(&serial_workspace).unwrap();
-    let expected_receipts = expected_coverage
-        .iter()
-        .map(|(route, coverage)| {
-            (
-                route.clone(),
-                tilo_peer_state::durability::DurableReceipt::new(coverage.clone(), 7).unwrap(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    let mut batched = baseline;
-    let messages = batched
-        .publication_mut()
-        .durable_bootstrap_messages(&key, now, 7)
+                .unwrap();
+        }
+        assert_eq!(fresh.rows(), batched.rows());
+        assert_eq!(fresh.replay_floors(), batched.replay_floors());
+        for row in batched.rows() {
+            assert_eq!(
+                fresh.durable_coverage(&row.app_id, &row.record_id).unwrap(),
+                batched
+                    .durable_coverage(&row.app_id, &row.record_id)
+                    .unwrap()
+            );
+        }
+        let restored = StatePeer::restore(
+            &fresh.durable().unwrap(),
+            WORKSPACE,
+            authority,
+            fresh.certificates(),
+            RevocationList::new(),
+            now,
+        )
         .unwrap();
-    assert_eq!(&messages[1..], expected_messages);
-    let batched_workspace = workspace_document(&messages[0]);
-    assert_eq!(
-        tilo_peer_state::coverage::entries(&batched_workspace).unwrap(),
-        expected_coverage
-    );
-    assert_eq!(
-        tilo_peer_state::durability::entries(&batched_workspace).unwrap(),
-        expected_receipts
-    );
-    assert_eq!(batched.rows(), serial.rows());
-    assert_eq!(batched.replay_floors(), serial.replay_floors());
+        assert_eq!(restored.rows(), batched.rows());
+        assert_eq!(restored.replay_floors(), batched.replay_floors());
+    }
 
-    let authority = batched.owner_certificates()[0].clone();
-    let mut fresh = StatePeer::new(
-        WORKSPACE,
-        authority.clone(),
-        batched.certificates(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    for message in messages {
-        fresh
-            .receive_from(
-                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-                message,
-                now,
-            )
+    phase failed_public_snapshot_batch_keeps_the_original_peer_exact;
+    {
+        let expiration = 2_500_u64 * 1_000_000_000;
+        let (key, mut peer, now) = fixture_with_documents_and_expiry(8, Some(expiration));
+        let before = peer.durable().unwrap();
+        let error = peer
+            .publication_mut()
+            .signed_snapshots(&key, now + Duration::from_secs(1_000))
+            .unwrap_err();
+        assert!(error.contains("expired"), "unexpected failure: {error}");
+        assert_eq!(peer.durable().unwrap(), before);
+    }
+
+    phase empty_durable_bootstrap_writes_empty_receipts_once;
+    {
+        let measurement = measure(0);
+        assert_eq!(measurement.first.changes, 1);
+        // No document receipts contain a generation, so the second empty map is
+        // identical and Automerge does not create another change.
+        assert_eq!(measurement.repeated.changes, 0);
+        assert_eq!(measurement.repeated.bytes, 0);
+    }
+
+    phase nondurable_bootstrap_batches_coverage_into_one_change;
+    {
+        let (key, mut peer, now) = fixture_with_documents(8);
+        let before = workspace_stats(&peer.workspace_message());
+        let messages = peer
+            .publication_mut()
+            .bootstrap_messages(&key, now)
             .unwrap();
-    }
-    assert_eq!(fresh.rows(), batched.rows());
-    assert_eq!(fresh.replay_floors(), batched.replay_floors());
-    for row in batched.rows() {
+        assert_eq!(messages.len(), 9);
         assert_eq!(
-            fresh.durable_coverage(&row.app_id, &row.record_id).unwrap(),
-            batched
-                .durable_coverage(&row.app_id, &row.record_id)
-                .unwrap()
+            workspace_delta(workspace_stats(&messages[0]), before).changes,
+            1
         );
     }
-    let restored = StatePeer::restore(
-        &fresh.durable().unwrap(),
-        WORKSPACE,
-        authority,
-        fresh.certificates(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert_eq!(restored.rows(), batched.rows());
-    assert_eq!(restored.replay_floors(), batched.replay_floors());
-}
-
-#[test]
-fn failed_public_snapshot_batch_keeps_the_original_peer_exact() {
-    let expiration = 2_500_u64 * 1_000_000_000;
-    let (key, mut peer, now) = fixture_with_documents_and_expiry(8, Some(expiration));
-    let before = peer.durable().unwrap();
-    let error = peer
-        .publication_mut()
-        .signed_snapshots(&key, now + Duration::from_secs(1_000))
-        .unwrap_err();
-    assert!(error.contains("expired"), "unexpected failure: {error}");
-    assert_eq!(peer.durable().unwrap(), before);
-}
-
-#[test]
-fn empty_durable_bootstrap_writes_empty_receipts_once() {
-    let measurement = measure(0);
-    assert_eq!(measurement.first.changes, 1);
-    // No document receipts contain a generation, so the second empty map is
-    // identical and Automerge does not create another change.
-    assert_eq!(measurement.repeated.changes, 0);
-    assert_eq!(measurement.repeated.bytes, 0);
-}
-
-#[test]
-fn nondurable_bootstrap_batches_coverage_into_one_change() {
-    let (key, mut peer, now) = fixture_with_documents(8);
-    let before = workspace_stats(&peer.workspace_message());
-    let messages = peer
-        .publication_mut()
-        .bootstrap_messages(&key, now)
-        .unwrap();
-    assert_eq!(messages.len(), 9);
-    assert_eq!(
-        workspace_delta(workspace_stats(&messages[0]), before).changes,
-        1
-    );
 }
 
 /// Workspace governance growth per durable generation: one document

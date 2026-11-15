@@ -24,20 +24,20 @@ fn actual_index() -> (ExactAdmissions, Vec<DocumentAdmission>) {
     assert_eq!(index.iter().count(), 2);
     (index, admissions)
 }
-#[test]
-fn exact_resource_decode_preserves_actual_signed_admissions() {
-    let (index, admissions) = actual_index();
-    let bytes = index.encode().unwrap();
-    let decoded = ExactAdmissions::decode(&bytes).unwrap();
-    drop(bytes);
-    for admission in &admissions {
-        assert_eq!(decoded.get(&admission.key), Some(&admission.operation_id));
-    }
-    assert_eq!(decoded.iter().count(), admissions.len());
-}
-
 tilo_test_env::scenario! {
     fn an_exact_resource_reads_only_its_canonical_encoding;
+
+    phase exact_resource_decode_preserves_actual_signed_admissions;
+    {
+        let (index, admissions) = actual_index();
+        let bytes = index.encode().unwrap();
+        let decoded = ExactAdmissions::decode(&bytes).unwrap();
+        drop(bytes);
+        for admission in &admissions {
+            assert_eq!(decoded.get(&admission.key), Some(&admission.operation_id));
+        }
+        assert_eq!(decoded.iter().count(), admissions.len());
+    }
 
     phase exact_resource_rejects_duplicate_unsorted_trailing_and_announced_count_forms;
     {
