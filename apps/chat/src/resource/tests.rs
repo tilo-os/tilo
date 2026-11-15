@@ -658,8 +658,7 @@ fn feedback_is_filed_by_people_and_never_offered_to_agents() {
 fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
     use ui::tilo_actions::ActionInvoker;
     let mut app = TestApp::<ChatShell>::new().unwrap();
-    let agent =
-        ActionInvoker::agent("agent-task:44444444-4444-4444-8444-444444444444").acting_for("ada");
+    let agent = ActionInvoker::agent("44444444-4444-4444-8444-444444444444").acting_for("ada");
     let _ = general(&app);
     app.call_by(
         agent.clone(),
@@ -672,7 +671,7 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
     let posted = messages(&mut app).pop().unwrap();
     assert_eq!(posted.text, "Summary: two open questions");
     assert_eq!(
-        posted.author, "agent-task:44444444-4444-4444-8444-444444444444",
+        posted.author, "agent:44444444-4444-4444-8444-444444444444",
         "the post is the agent's, not its person's"
     );
     let react = crate::parts::ChatPart::paths()
@@ -696,7 +695,7 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
             .iter()
             .map(|reactor| reactor.by.as_str())
             .collect::<Vec<_>>(),
-        ["agent-task:44444444-4444-4444-8444-444444444444"],
+        ["agent:44444444-4444-4444-8444-444444444444"],
         "the reaction is the agent's"
     );
 }
@@ -969,8 +968,8 @@ tilo_test_env::scenario! {
     {
         use ui::tilo_actions::ActionInvoker;
         let mut app = TestApp::<ChatShell>::new().unwrap();
-        let agent = ActionInvoker::agent("agent-task:55555555-5555-4555-8555-555555555555")
-            .acting_for("ada");
+        let agent =
+            ActionInvoker::agent("55555555-5555-4555-8555-555555555555").acting_for("ada");
         let (channel, _) = general(&app);
         app.call_by(
             agent.clone(),
@@ -1026,7 +1025,7 @@ tilo_test_env::scenario! {
 
         let sentences = app.sentences(app.history().iter().filter(|entry| {
             entry.invoker.as_ref().is_some_and(|invoker| {
-                invoker.key() == "agent-task:55555555-5555-4555-8555-555555555555"
+                invoker.key() == "agent:55555555-5555-4555-8555-555555555555"
             })
         }));
         assert_eq!(
