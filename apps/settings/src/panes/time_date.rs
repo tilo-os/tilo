@@ -530,7 +530,7 @@ impl TimeDateArea {
         }
         let into_minute = self.clock.unix_now().rem_euclid(60);
         Some(
-            ui::time::Instant::now()
+            ui::time::now()
                 + std::time::Duration::from_secs(u64::try_from(60 - into_minute).unwrap_or(60)),
         )
     }

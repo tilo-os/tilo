@@ -7601,7 +7601,7 @@ impl FilesState {
                 self.preview
                     .as_ref()
                     .filter(|preview| preview.is_loading())
-                    .map(|_| Instant::now() + Duration::from_millis(50)),
+                    .map(|_| ui::time::now() + Duration::from_millis(50)),
             )
             .chain(
                 crate::file_ops::active_transfers()
@@ -7609,7 +7609,7 @@ impl FilesState {
                     .and_then(|transfer| transfer.started)
                     .map(|started| {
                         (started + TRANSFER_SHOWN_AFTER)
-                            .max(Instant::now() + Duration::from_millis(250))
+                            .max(ui::time::now() + Duration::from_millis(250))
                     }),
             )
             .chain(self.spring.as_ref().map(|(_, since)| *since + SPRING_OPEN))

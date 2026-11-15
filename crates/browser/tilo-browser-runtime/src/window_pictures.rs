@@ -504,7 +504,7 @@ impl Widget for WindowView {
             .decoder
             .as_ref()
             .is_some_and(|decoder| decoder.pending());
-        owed.then(|| Instant::now().checked_add(LATE_PICTURE))
+        owed.then(|| ui::time::now().checked_add(LATE_PICTURE))
             .flatten()
     }
 

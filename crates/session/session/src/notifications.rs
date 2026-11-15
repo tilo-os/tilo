@@ -121,7 +121,7 @@ pub(crate) fn history_file() -> Option<std::path::PathBuf> {
 /// bodies, its senders and how old each is. What a row could act on does not survive: the sender,
 /// its actions and the session's routes are gone with it.
 pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Path) {
-    let encoded = match notices.kept(ui::time::SystemTime::now()) {
+    let encoded = match notices.kept(ui::time::wall()) {
         Ok(encoded) => encoded,
         Err(error) => {
             tracing::warn!(%error, "the notification centre was not written");
@@ -149,7 +149,7 @@ pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Pat
 pub(crate) fn restore_history(notices: &DesktopNotifications) -> Option<std::path::PathBuf> {
     let path = history_file()?;
     if let Ok(bytes) = std::fs::read(&path)
-        && let Err(error) = notices.restore_kept(&bytes, ui::time::SystemTime::now())
+        && let Err(error) = notices.restore_kept(&bytes, ui::time::wall())
     {
         tracing::warn!(%error, "the notification centre kept was not read");
     }

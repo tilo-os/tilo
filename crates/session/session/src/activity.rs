@@ -53,7 +53,7 @@ const VIEW_PACKAGE: &str = "so.tilo.session.activity";
 
 /// Seconds since the epoch, as a change of the session names its time.
 pub(crate) fn now_seconds() -> i64 {
-    ui::time::SystemTime::now()
+    ui::time::wall()
         .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |since| {
             i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
@@ -520,11 +520,11 @@ impl Activity {
             }
         }
         let Some((workspace_id, job)) = asked else {
-            self.0.looked_for_model.set(Some(Instant::now()));
+            self.0.looked_for_model.set(Some(ui::time::now()));
             return wrote;
         };
         drop(describer);
-        self.0.looked_for_model.set(Some(Instant::now()));
+        self.0.looked_for_model.set(Some(ui::time::now()));
         self.0.describing.store(true, Ordering::Release);
         let answers = Arc::clone(&self.0.described);
         let describing = Arc::clone(&self.0.describing);

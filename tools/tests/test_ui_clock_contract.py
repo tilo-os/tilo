@@ -86,6 +86,137 @@ class UiClockContractTests(unittest.TestCase):
             )
             self.assertEqual(contract.audit(root), [])
 
+    def tree(self, files: dict[str, str]) -> Path:
+        """A root holding the tree's sources at their own paths."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "clippy.toml").write_text(ROOT_CLIPPY, encoding="utf-8")
+        toolkit = root / "crates/sdk/ui-core"
+        (toolkit / "src").mkdir(parents=True)
+        (toolkit / "clippy.toml").write_text(CRATE_CLIPPY, encoding="utf-8")
+        for relative, text in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return root
+
+    def found(self, root: Path) -> list[str]:
+        return [f"{violation.path}:{violation.line}" for violation in contract.audit(root)]
+
+    def test_a_clock_type_named_through_the_seam_is_not_a_reading_through_it(self):
+        with self.subTest(phase='the module path is read directly'):
+            root = self.tree(
+                {
+                    "apps/board/src/faces.rs": (
+                        "use ui::time::Instant;\n"
+                        "pub fn a() -> Instant { ui::time::Instant::now() }\n"
+                        "pub fn b() -> ui::time::SystemTime { ui::time::SystemTime::now() }\n"
+                    ),
+                }
+            )
+            self.assertEqual(
+                self.found(root),
+                ["apps/board/src/faces.rs:2", "apps/board/src/faces.rs:3"],
+            )
+        with self.subTest(phase='a bare name imported from the seam is read directly'):
+            root = self.tree(
+                {
+                    "apps/board/src/roster.rs": (
+                        "use ui::time::{Duration, Instant};\n"
+                        "fn held() -> Duration { Instant::now().elapsed() }\n"
+                    ),
+                    "apps/board/src/stamps.rs": (
+                        "use ui::time::SystemTime;\n"
+                        "fn stamp() -> SystemTime { SystemTime::now() }\n"
+                    ),
+                }
+            )
+            self.assertEqual(
+                self.found(root),
+                ["apps/board/src/roster.rs:2", "apps/board/src/stamps.rs:2"],
+            )
+        with self.subTest(phase='a glob import brings both of the seam types in'):
+            root = self.tree(
+                {"apps/board/src/glob.rs": "use ui::time::*;\nfn f() { let _ = Instant::now(); }\n"}
+            )
+            self.assertEqual(self.found(root), ["apps/board/src/glob.rs:2"])
+        with self.subTest(phase='the toolkit reads its own clock module the same way'):
+            root = self.tree(
+                {
+                    "crates/sdk/ui-core/src/schedule.rs": (
+                        "pub fn due() -> crate::time::Instant { crate::time::Instant::now() }\n"
+                    ),
+                }
+            )
+            self.assertEqual(self.found(root), ["crates/sdk/ui-core/src/schedule.rs:1"])
+        with self.subTest(phase='the toolkit named by its crate name'):
+            root = self.tree(
+                {
+                    "crates/sdk/tilo-app/src/saves.rs": (
+                        "use ui_core::time::Instant;\n"
+                        "pub fn at() -> Instant { ui_core::time::Instant::now() }\n"
+                    ),
+                }
+            )
+            self.assertEqual(self.found(root), ["crates/sdk/tilo-app/src/saves.rs:2"])
+
+    def test_a_reading_through_the_seam_passes_and_another_time_module_is_not_it(self):
+        with self.subTest(phase='the seam and its types are read through it'):
+            root = self.tree(
+                {
+                    "apps/board/src/seam.rs": (
+                        "use ui::time::{Duration, Instant};\n"
+                        "pub fn t(now: Instant) -> Duration { ui::time::now() - now }\n"
+                        "pub fn w() -> ui::time::SystemTime { ui::time::wall() }\n"
+                    ),
+                    "crates/sdk/ui-core/src/seam.rs": (
+                        "use crate::time::Instant;\n"
+                        "pub fn t(now: Instant) -> crate::time::Instant { crate::time::now() }\n"
+                    ),
+                }
+            )
+            self.assertEqual(self.found(root), [])
+        with self.subTest(phase='a renamed import binds another name'):
+            root = self.tree(
+                {"apps/board/src/renamed.rs": "use ui::time::Instant as Clock;\nfn f() -> Clock { Clock::now() }\n"}
+            )
+            self.assertEqual(self.found(root), [])
+        with self.subTest(phase='a nearer std import shadows the seam'):
+            root = self.tree(
+                {
+                    "apps/board/src/shadow.rs": (
+                        "use ui::time::Instant;\n"
+                        "fn f() { use std::time::Instant; let _ = Instant::now(); }\n"
+                    ),
+                }
+            )
+            self.assertEqual(self.found(root), [])
+        with self.subTest(phase='another crate names its own time module'):
+            root = self.tree(
+                {
+                    "apps/board/src/own_clock.rs": (
+                        "use crate::time::Instant;\nfn f() -> Instant { Instant::now() }\n"
+                    ),
+                }
+            )
+            self.assertEqual(self.found(root), [])
+
+    def test_a_read_past_the_seam_in_tests_or_comments_is_exempt(self):
+        root = self.tree(
+            {
+                "apps/board/tests/probe.rs": "fn f() { let _ = ui::time::Instant::now(); }\n",
+                "apps/board/src/module.rs": (
+                    "#[cfg(test)]\nmod tests { fn f() { let _ = ui::time::Instant::now(); } }\n"
+                ),
+                "apps/board/src/commented.rs": (
+                    "fn f() { let _ = 1; } // ui::time::Instant::now()\n"
+                    'const NAMED: &str = "ui::time::SystemTime::now()";\n'
+                ),
+            }
+        )
+        self.assertEqual(self.found(root), [])
+
     def test_crate_clippy_config_repeats_and_may_only_extend_root_policy(self):
         with self.subTest(phase='crate clippy config must repeat root keys'):
             root = self.fixture({}, crate_clippy='disallowed-methods = []\n')

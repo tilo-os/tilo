@@ -161,7 +161,7 @@ impl Host {
                 break;
             }
         }
-        let walk = Instant::now();
+        let walk = ui::time::now();
         let _ = app.refresh_semantic_tree();
         self.walk_ms = millis(walk);
     }
@@ -198,11 +198,11 @@ impl Host {
     /// Draw frames for `millis` of wall time, a frame every 16 ms, with no
     /// input: the idle time between a person's keys.
     fn idle(&mut self, app: &mut App, millis: u64) {
-        let Some(until) = Instant::now().checked_add(std::time::Duration::from_millis(millis))
+        let Some(until) = ui::time::now().checked_add(std::time::Duration::from_millis(millis))
         else {
             return;
         };
-        while Instant::now() < until {
+        while ui::time::now() < until {
             std::thread::sleep(std::time::Duration::from_millis(16));
             self.draw(app);
         }
@@ -221,7 +221,7 @@ struct Sample {
 /// Send `event` (none: a frame with no input) and draw the frame that shows
 /// it, timed.
 fn timed(app: &mut App, host: &mut Host, event: Option<WindowEvent>) -> Sample {
-    let start = Instant::now();
+    let start = ui::time::now();
     if let Some(event) = event {
         app.surface_input(&Region, event, false);
     }
@@ -340,7 +340,7 @@ fn open(app: &mut App, host: &mut Host, page: notes::PageId) -> Result<Sample, F
         .ok_or("the notebook publishes no open action")?;
     let launch = notes::actions::page_resource_id(page);
     let wanted = page.to_string();
-    let start = Instant::now();
+    let start = ui::time::now();
     if !app.invoke_semantic_action(&target, "open", Some(&launch))? {
         return Err(format!("the notebook refused to open {launch}").into());
     }

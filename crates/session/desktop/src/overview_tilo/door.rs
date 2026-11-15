@@ -45,7 +45,7 @@ impl DoorRead {
         caller: &Caller,
         wake: &Arc<dyn Fn() + Send + Sync>,
     ) -> bool {
-        let now = ui::time::Instant::now();
+        let now = ui::time::now();
         let overdue = self
             .asked
             .is_some_and(|asked| now.saturating_duration_since(asked) >= ASK_AGAIN);

@@ -409,7 +409,7 @@ impl People {
         // What the roster shows is cleared before it draws again: the draw holds what it shows
         // while it draws it.
         self.shown.borrow_mut().close();
-        self.dismissed.set(Some(ui::time::Instant::now()));
+        self.dismissed.set(Some(ui::time::now()));
         self.redraw();
     }
 
@@ -1188,7 +1188,7 @@ impl Panel {
                 };
                 if let Some(sync) = &self.sync {
                     sync.wave(&id);
-                    shown.waved = Some((id, ui::time::Instant::now()));
+                    shown.waved = Some((id, ui::time::now()));
                 }
             }
             // The window software works in: brought forward, so what it is on stands in front of

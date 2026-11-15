@@ -15,6 +15,12 @@ paths:
 * no ``std::time::Instant``, ``std::time::SystemTime`` or
   ``std::time::UNIX_EPOCH`` in production sources outside the clock module;
   test modules and test files are exempt;
+* no production source reads one of the clock module's types directly, in
+  either spelling: the type named through the module
+  (``ui::time::Instant::now()``, ``crate::time::SystemTime::now()``) or a bare
+  name after ``use ui::time::{Instant}``. Those are the machine's reading,
+  not the one a test holds still and a host lends through ``ui::time::now()``
+  and ``ui::time::wall()``;
 * Clippy reads only the nearest ``clippy.toml``, so every key of the root file
   must be repeated in each crate's file with the same value; a list (such as
   ``disallowed-methods``) may extend the root's list but must keep every entry.
@@ -39,7 +45,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from judged import Judged, add_staged_argument, judged  # noqa: E402
-from rust_source import is_test_file, line_number, production_source  # noqa: E402
+from rust_source import (  # noqa: E402
+    code_only,
+    is_test_file,
+    line_number,
+    production_source,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,11 +61,40 @@ CRATES = (
 )
 CLOCK_MODULE = Path("crates/sdk/tilo-host/src/time.rs")
 
+# Every Rust source of the tree: a crate that depends on the toolkit names the
+# clock module as `ui::time`, and reads it past the seam wherever it sits.
+SOURCE_ROOTS = ("crates", "apps", "examples", "tools", "os", "fuzz")
+
 CLOCK_ITEM = r"(?:Instant|SystemTime|UNIX_EPOCH)"
 DIRECT_PATH = re.compile(rf"\bstd::time::{CLOCK_ITEM}\b")
 BRACED_PATH = re.compile(rf"\bstd::time::\{{[^}}]*\b{CLOCK_ITEM}\b")
 GROUPED_USE = re.compile(r"\buse\s+std::\{(?P<body>.*?)\};", re.DOTALL)
 GROUPED_TIME = re.compile(rf"\btime::(?:{CLOCK_ITEM}\b|\{{[^}}]*\b{CLOCK_ITEM}\b)")
+
+# The clock types `ui::time` names. `now()` on one reads the machine whatever
+# module path it is reached by, where `ui::time::now()` is the reading a test
+# holds still and a host lends.
+SEAM_TYPES = r"(?:Instant|SystemTime)"
+SEAM_READ = re.compile(
+    rf"\b(?P<module>ui|ui_core|tilo_ui|crate|tilo_host)\s*::\s*time\s*::"
+    rf"\s*(?P<clock>{SEAM_TYPES})\s*::\s*now\s*\("
+)
+BARE_READ = re.compile(rf"(?<![\w:])(?P<clock>{SEAM_TYPES})\s*::\s*now\s*\(")
+USE_STATEMENT = re.compile(r"\buse\s+[^;]*;", re.DOTALL)
+RENAMED = re.compile(rf"\b{SEAM_TYPES}\s+as\b")
+# A file that never names the clock module cannot read it or import from it.
+SEAM_MENTION = re.compile(r"\b(?:ui|ui_core|tilo_ui|crate|tilo_host)\s*::\s*time\b")
+
+SEAM_REASON = {
+    "Instant": (
+        "reads the ui clock's Instant directly, past the seam a test holds and "
+        "a host lends; use ui::time::now()"
+    ),
+    "SystemTime": (
+        "reads the ui clock's SystemTime directly, past the seam a test holds "
+        "and a host lends; use ui::time::wall()"
+    ),
+}
 
 # The wall clock's two pins, and what a caller must have gone through first:
 # `pin_wall` answers `wall_frozen()`, so it only runs once a capture has
@@ -99,6 +139,71 @@ def audit_sources(files: Judged, crate: Path) -> list[Violation]:
                     "names a std::time clock type; use crate::time instead",
                 )
             )
+    return violations
+
+
+def seam_modules(relative: Path) -> tuple[str, ...]:
+    """How the clock module is named from this file's crate."""
+    inside = any(relative.is_relative_to(crate) for crate in CRATES)
+    named = ("ui", "ui_core", "tilo_ui", "tilo_host")
+    return (*named, "crate") if inside else named
+
+
+def clock_imports(text: str, modules: tuple[str, ...]) -> list[tuple[int, str, bool]]:
+    """The clock types a file's `use` statements bring in, and from which seam.
+
+    ``(offset, type, from the seam)`` per statement. A renamed import
+    (`Instant as Clock`) binds another name, and a bare `Instant::now()` after
+    it is not the seam's; a glob (`use ui::time::*`) brings in both types.
+    """
+    found: list[tuple[int, str, bool]] = []
+    for statement in USE_STATEMENT.finditer(text):
+        body = statement.group()
+        from_seam = any(
+            re.search(rf"\b{module}\s*::\s*time\b", body) for module in modules
+        )
+        renamed = set(RENAMED.findall(body))
+        glob = from_seam and re.search(r"\btime\s*::\s*\*", body) is not None
+        for name in ("Instant", "SystemTime"):
+            if name not in renamed and (glob or re.search(rf"\b{name}\b", body)):
+                found.append((statement.start(), name, from_seam))
+    return found
+
+
+def audit_reads(files: Judged) -> list[Violation]:
+    """A clock type read past the seam, in either spelling."""
+    violations: list[Violation] = []
+    for root in SOURCE_ROOTS:
+        if not (files.root / root).is_dir():
+            continue
+        for relative, source in files.sources(root, errors="strict"):
+            if is_test_file(relative) or not SEAM_MENTION.search(source):
+                continue
+            text = code_only(production_source(source))
+            modules = seam_modules(relative)
+            for found in SEAM_READ.finditer(text):
+                if found.group("module") not in modules:
+                    continue
+                violations.append(
+                    Violation(
+                        str(relative),
+                        line_number(text, found.start()),
+                        SEAM_REASON[found.group("clock")],
+                    )
+                )
+            # The bare name is whichever import of it is in scope: the nearest
+            # one before the read, which is the file's or the test module's own.
+            imports = clock_imports(text, modules)
+            for found in BARE_READ.finditer(text):
+                clock = found.group("clock")
+                in_scope = [
+                    entry for entry in imports if entry[1] == clock and entry[0] < found.start()
+                ]
+                if not in_scope or not max(in_scope)[2]:
+                    continue
+                violations.append(
+                    Violation(str(relative), line_number(text, found.start()), SEAM_REASON[clock])
+                )
     return violations
 
 
@@ -163,7 +268,7 @@ def audit_clippy_config(files: Judged, crate: Path) -> list[Violation]:
 
 
 def audit(root: Path = ROOT, staged: bool = False) -> list[Violation]:
-    """Audit every toolkit crate present under ``root``.
+    """Audit the tree's clock reads, and every toolkit crate present.
 
     The clippy configuration of each crate is judged every time: it is a
     handful of files, and a change to the root ``clippy.toml`` alone can leave
@@ -174,7 +279,7 @@ def audit(root: Path = ROOT, staged: bool = False) -> list[Violation]:
     for crate in CRATES:
         if (root / crate).is_dir():
             violations += audit_clippy_config(files, crate) + audit_sources(files, crate)
-    return violations + audit_pins(files)
+    return violations + audit_reads(files) + audit_pins(files)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -186,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         for violation in violations:
             print(violation)
         return 1
-    print("UI clock contract OK (the toolkit and its host services read time through ui::time)", file=sys.stderr)
+    print("UI clock contract OK (the tree reads time through ui::time)", file=sys.stderr)
     return 0
 
 

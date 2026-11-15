@@ -222,7 +222,7 @@ impl LayoutDocument {
             );
         }
         if looks_only {
-            self.looks_at.set(Some(Instant::now()));
+            self.looks_at.set(Some(ui::time::now()));
         }
         self.keep(&mut doc);
         true

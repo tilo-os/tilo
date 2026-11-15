@@ -86,7 +86,7 @@ impl Host {
             }
         }
         let _ = self.damage.take_copying();
-        let walk = Instant::now();
+        let walk = ui::time::now();
         let _ = app.refresh_semantic_tree();
         self.walk_ms = millis(walk);
     }
@@ -99,7 +99,7 @@ struct Sample {
 }
 
 fn timed(app: &mut App, host: &mut Host, event: Option<WindowEvent>) -> Sample {
-    let start = Instant::now();
+    let start = ui::time::now();
     if let Some(event) = event {
         app.surface_input(&Region, event, false);
     }
@@ -168,7 +168,7 @@ fn open_a_field(app: &mut App, host: &mut Host) -> Result<(String, String), Fail
             continue;
         };
         app.invoke_semantic_action(&row, "activate", None)?;
-        let opened = Instant::now();
+        let opened = ui::time::now();
         let mut found = None;
         while found.is_none() && opened.elapsed() < std::time::Duration::from_secs(2) {
             host.frame(app);

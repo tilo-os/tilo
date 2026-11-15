@@ -930,7 +930,7 @@ impl AppWindow {
         } else {
             ui::SaveState::Idle
         };
-        self.save.set(state, ui::time::Instant::now());
+        self.save.set(state, ui::time::now());
         self.save.publish();
         ui::window_toolbar::show_edited(self.save.shows_unsaved());
     }

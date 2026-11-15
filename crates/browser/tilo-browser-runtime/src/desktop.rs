@@ -1541,7 +1541,7 @@ impl Persistence {
         }
         let bytes = self
             .notifications
-            .kept(ui::time::SystemTime::now())
+            .kept(ui::time::wall())
             .map_err(|error| error.to_string())?;
         self.store
             .write(&self.notifications_key, WriteOp::Replace(bytes), None)
@@ -1822,7 +1822,7 @@ pub(crate) fn mount(
     let notifications = tilo_desktop_surface::DesktopNotifications::default();
     if let Some(stored) = store.read(&notifications_key).ok().flatten() {
         // A record this page cannot read leaves the centre empty rather than the page unopened.
-        let _ = notifications.restore_kept(&stored.bytes, ui::time::SystemTime::now());
+        let _ = notifications.restore_kept(&stored.bytes, ui::time::wall());
     }
     let saved_notifications_revision = Cell::new(notifications.revision());
     let profile = Rc::new(ProfileStore {
