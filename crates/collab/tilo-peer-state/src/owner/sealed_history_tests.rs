@@ -562,22 +562,33 @@ const RELAYED_AT_ONCE: usize = 256;
 /// `member` takes `messages` as its host relays them, the way its session keeps the documents
 /// that arrived at once: one owner turn for a run of them
 /// ([`NativeWorkspaceOwner::receive_batch`], which [`NativeWorkspaceOwner::receive`] is for a
-/// run of one), each decided on its own, and every one of them taken.
+/// run of one), each decided on its own, and every one of them taken. A compaction arrives
+/// alone, as every document did when each was taken in a turn of its own: the member's record
+/// is committed as the writes before the compaction left it, and again as the compaction left
+/// it in place of them, before a write after it is taken.
 fn relay(member: &Enrolled, messages: impl IntoIterator<Item = NeighbourMsg>) {
-    let mut relayed = messages
-        .into_iter()
-        .map(|message| {
-            let NeighbourMsg::AppDocument { envelope, .. } = &message else {
-                panic!("a document write");
-            };
-            let author = TransportOrigin::RetainedRelayDelta(*envelope.author.as_bytes());
-            (author, message)
-        })
-        .peekable();
+    let mut relayed = messages.into_iter().peekable();
     let mut taken = 0_usize;
-    while relayed.peek().is_some() {
-        let arrived: Vec<_> = relayed.by_ref().take(RELAYED_AT_ONCE).collect();
-        let sent = arrived.len();
+    while let Some(first) = relayed.next() {
+        let alone = is_compaction(&first);
+        let mut run = vec![first];
+        while !alone && run.len() < RELAYED_AT_ONCE {
+            let Some(next) = relayed.next_if(|next| !is_compaction(next)) else {
+                break;
+            };
+            run.push(next);
+        }
+        let sent = run.len();
+        let arrived = run
+            .into_iter()
+            .map(|message| {
+                let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+                    panic!("a document write");
+                };
+                let author = TransportOrigin::RetainedRelayDelta(*envelope.author.as_bytes());
+                (author, message)
+            })
+            .collect();
         let reports = member
             .owner
             .receive_batch(member.workspace, arrived, member.now)
