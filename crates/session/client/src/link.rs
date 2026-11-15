@@ -224,6 +224,15 @@ type Queue = Arc<Mutex<VecDeque<Event>>>;
 pub type Takes = fn(&Event) -> bool;
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
+/// What serves a request another device addressed to this session's device on this
+/// session with its host: a listing of a window this session holds, a page action
+/// on it. The host routes such a frame here; it is this device's to answer.
+pub trait InboundActions: Send + Sync {
+    /// Serve the frame `from`, certified for `user`, sent this device in `workspace`.
+    /// The answer goes back on this session, to `from`.
+    fn take(&self, workspace: WorkspaceId, user: [u8; 32], from: [u8; 32], frame: Vec<u8>);
+}
+
 /// What a session reports to everyone holding its [`Link`]: its status, the events it heard, and
 /// who to wake when either changed. The transport writes it; the link reads it.
 pub struct Reports(Mutex<Reported>);
@@ -241,6 +250,9 @@ struct Reported {
     /// What the page shows where its live plane would be, when it has none: that no plane could
     /// be reached ([`Link::live_note`]).
     live_note: Option<String>,
+    /// What serves what another device asks this one through the host
+    /// ([`InboundActions`]): a host's routes reach the session here.
+    inbound: Option<Arc<dyn InboundActions>>,
 }
 
 impl Reported {
@@ -256,6 +268,18 @@ impl Reported {
 }
 
 impl Reports {
+    /// Serve what another device addresses to this device from now on.
+    pub fn serve_inbound(&self, inbound: Arc<dyn InboundActions>) {
+        self.lock().inbound = Some(inbound);
+    }
+
+    /// What serves what another device addresses to this device, once the session
+    /// can answer it.
+    #[must_use]
+    pub fn inbound(&self) -> Option<Arc<dyn InboundActions>> {
+        self.lock().inbound.clone()
+    }
+
     /// What a session of `device` that has not connected yet reports.
     #[must_use]
     pub fn connecting(device: [u8; 32]) -> Arc<Self> {
@@ -266,6 +290,7 @@ impl Reports {
             listeners: Vec::new(),
             fetch_proxy: None,
             live_note: None,
+            inbound: None,
         })))
     }
 
@@ -574,6 +599,12 @@ impl Link {
     /// Call `wake` whenever status or events change.
     pub fn on_change(&self, wake: Wake) {
         self.reports.lock().wakes.push(wake);
+    }
+
+    /// Serve what another device addresses to this device on this session, from
+    /// now on: a window this session holds is reached through the host that way.
+    pub fn serve_inbound(&self, inbound: Arc<dyn InboundActions>) {
+        self.reports.serve_inbound(inbound);
     }
 }
 

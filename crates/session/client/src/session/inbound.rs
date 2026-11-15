@@ -213,7 +213,28 @@ impl Task {
             }
             content @ Envelope::RecordContent { .. } => self.record_content(content, now),
             envelope => {
-                if let Some(event) = addressed(envelope, self.config.host_cert.device_public_key) {
+                if let Some(event) = addressed(
+                    envelope,
+                    self.config.host_cert.device_public_key,
+                    self.config.host_cert.user_public_key,
+                ) {
+                    // A request another device addressed to this one is this
+                    // device's to answer: handed to what serves them, and never
+                    // passed on as what the caller side waits on, which is an
+                    // answer. A session that serves none leaves it unserved.
+                    if let Some(inbound) = self.reports.inbound()
+                        && let Event::Remote(Heard::Action {
+                            workspace_id,
+                            user,
+                            from,
+                            frame,
+                        }) = &event
+                        && tilo_actions::remote::RemoteActionFrame::decode(frame)
+                            .is_ok_and(|decoded| decoded.message.is_request())
+                    {
+                        inbound.take(*workspace_id, *user, *from, frame.clone());
+                        return;
+                    }
                     self.reports.emit(&event);
                 }
             }
@@ -260,7 +281,11 @@ impl Task {
         let device = self.config.cert.device_public_key;
         if let Some(arrived) = self.surface_wants.piece(&device, frame, now) {
             self.surfaces_arrived |= crate::surfaces::keep(&arrived.hash, arrived.bytes);
-        } else if let Some(event) = addressed(envelope, self.config.host_cert.device_public_key) {
+        } else if let Some(event) = addressed(
+            envelope,
+            self.config.host_cert.device_public_key,
+            self.config.host_cert.user_public_key,
+        ) {
             self.reports.emit(&event);
         }
     }
@@ -715,20 +740,23 @@ impl Task {
 /// What the host addressed to this device that it only passes on: an
 /// action frame or what became of one, a piece of content, a member's
 /// coming or going. `host` is the host's own device, which answers its own operations.
-fn addressed(envelope: Envelope, host: [u8; 32]) -> Option<Event> {
+fn addressed(envelope: Envelope, host: [u8; 32], host_user: [u8; 32]) -> Option<Event> {
     match envelope {
         Envelope::HostAction { frame } => Some(Event::Remote(Heard::Action {
             workspace_id: HOST_ITSELF,
+            user: host_user,
             from: host,
             frame,
         })),
         Envelope::RemoteAction {
             workspace_id,
             from_device_public_key,
+            from_user_public_key,
             frame,
             ..
         } => Some(Event::Remote(Heard::Action {
             workspace_id,
+            user: from_user_public_key,
             from: from_device_public_key,
             frame,
         })),

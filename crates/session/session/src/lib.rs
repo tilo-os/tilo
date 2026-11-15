@@ -160,6 +160,8 @@ pub mod dev_rust_views;
 #[cfg(target_os = "linux")]
 mod device_actions;
 #[cfg(target_os = "linux")]
+mod device_inbox;
+#[cfg(target_os = "linux")]
 mod device_lists;
 mod device_state;
 #[cfg(target_os = "linux")]

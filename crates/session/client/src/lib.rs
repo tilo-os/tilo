@@ -53,8 +53,8 @@ pub use client::{Client, Presence};
 pub use custody::{MemoryPeerStore, PeerRecord, PeerStore};
 pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
 pub use link::{
-    Entry, Events, Failure, FailureSubject, Link, LocalState, PAGE_FAILURE_CODES, PeerStatus,
-    Reports, TransportPhase,
+    Entry, Events, Failure, FailureSubject, InboundActions, Link, LocalState, PAGE_FAILURE_CODES,
+    PeerStatus, Reports, TransportPhase,
 };
 pub use plane::{
     Answer, CallFrame, CallPicture, CallShown, Closed, Cmd, Device, Event, Outbox, PageShown,

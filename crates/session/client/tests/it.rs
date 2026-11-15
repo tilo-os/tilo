@@ -108,6 +108,8 @@ mod refused_commit;
 mod rename;
 #[path = "resume.rs"]
 mod resume;
+#[path = "routed_actions.rs"]
+mod routed_actions;
 #[path = "stand_in_revocation.rs"]
 mod stand_in_revocation;
 #[path = "surface_by_hash.rs"]

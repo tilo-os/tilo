@@ -514,7 +514,7 @@ pub fn serve(
     // What search reads of the records themselves, for the changes this
     // session commits and takes in below.
     let records = hosted.records.clone();
-    let services = host_services(
+    let (services, hosting) = host_services_with_hosts(
         link,
         launches,
         fabric,
@@ -523,7 +523,7 @@ pub fn serve(
         memberships,
     );
     let publisher = owner_publisher(engine, records);
-    tilo_action_broker::collab_broker::spawn_with_services(
+    let broker = tilo_action_broker::collab_broker::spawn_with_services(
         socket,
         Some(membership),
         publisher,
@@ -531,7 +531,14 @@ pub fn serve(
         services,
         channels,
         fanout,
-    )
+    )?;
+    // What another device addresses to this device through a workspace's host — a
+    // listing of a window's resources, a page action on it — is served by the broker
+    // that now serves, and the answer goes back on the session it arrived on.
+    if let (Some(hosting), Some(host)) = (hosting, broker.app_action_broker()) {
+        hosting.serve_inbound(host.device_host());
+    }
+    Ok(broker)
 }
 
 /// Where the broker's writes go beyond this device's own apps: into the
@@ -1002,6 +1009,7 @@ impl tilo_action_broker::services::WorkspaceGrants for SessionGrants {
 /// What the apps this session runs reach of it: the resources its services
 /// publish, the launcher that started them, and — when this session runs on a
 /// device fabric — the speaker groups Settings asks that fabric for.
+#[cfg(test)]
 fn host_services(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
@@ -1010,7 +1018,42 @@ fn host_services(
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
 ) -> HostServices {
-    let decided = seams(link, launches, fabric, hosted, certificates, memberships);
+    host_services_with_hosts(link, launches, fabric, hosted, certificates, memberships).0
+}
+
+/// [`host_services`], handing out the hosts of the workspaces placed away from this
+/// device as well: what serves what another device addresses here through one of them,
+/// once the broker can answer it.
+fn host_services_with_hosts(
+    link: std::sync::Arc<Link>,
+    launches: std::sync::Arc<Launches>,
+    fabric: Option<crate::platform::fabric::SharedLink>,
+    hosted: Hosted,
+    certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
+    memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
+) -> (
+    HostServices,
+    Option<crate::hosted_workspaces::HostedWorkspaces>,
+) {
+    // The hosts of the workspaces placed away from this device: where the person's actions on
+    // those workspaces go, where their workspace list is kept, and where the devices of that
+    // record are read back from.
+    let hosting = hosted.engine.as_ref().and_then(|engine| {
+        crate::hosted_workspaces::HostedWorkspaces::service(
+            Some(engine),
+            hosted.endpoint.clone(),
+            tilo_rt::app().handle().clone(),
+        )
+    });
+    let decided = seams(
+        link,
+        launches,
+        fabric,
+        hosted,
+        certificates,
+        memberships,
+        hosting.clone(),
+    );
     // What this session serves nothing of, and why: a session start leaves
     // every decision in its log, so a seam an app found missing can be found
     // here with the reason it was left out.
@@ -1019,7 +1062,7 @@ fn host_services(
             tracing::debug!(seam, why, "this session serves nothing of this seam");
         }
     }
-    decided.into_host_services()
+    (decided.into_host_services(), hosting)
 }
 
 /// This session's decision for every seam of the broker's [`HostServices`]:
@@ -1036,6 +1079,7 @@ fn seams(
     hosted: Hosted,
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
+    hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
 ) -> Seams {
     let Hosted {
         live_activities,
@@ -1051,7 +1095,7 @@ fn seams(
         sealed,
         own_device,
         engine,
-        endpoint,
+        endpoint: _,
         record_content,
         action_offload,
         journal_root,
@@ -1118,16 +1162,6 @@ fn seams(
                 std::sync::Arc::clone(engine),
             )) as std::sync::Arc<dyn BrowserServiceSessionServices>
         });
-    // The hosts of the workspaces placed away from this device: where the person's actions on
-    // those workspaces go, where their workspace list is kept, and where the devices of that
-    // record are read back from.
-    let hosting = engine.as_ref().and_then(|engine| {
-        crate::hosted_workspaces::HostedWorkspaces::service(
-            Some(engine),
-            endpoint,
-            tilo_rt::app().handle().clone(),
-        )
-    });
     Seams {
         // No approved-check runner is installed with this session: a check a
         // project's app asks for has nothing to run it.
@@ -2178,6 +2212,7 @@ mod tests {
             std::sync::Arc::new(Launches::default()),
             None,
             hosted(None),
+            None,
             None,
             None,
         );

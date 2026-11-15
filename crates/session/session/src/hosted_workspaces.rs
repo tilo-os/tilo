@@ -48,6 +48,10 @@ struct Inner {
     runtime: tokio::runtime::Handle,
     /// Each host's session, by the host's device key.
     hosts: Mutex<HashMap<[u8; 32], Arc<Host>>>,
+    /// What serves what another device addresses to this device through a
+    /// host of its, once the session's broker can answer it
+    /// ([`crate::device_inbox`]).
+    inbound: Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>,
 }
 
 /// This device's session with one host, and the workspaces it entered there.
@@ -57,6 +61,21 @@ struct Host {
     entered: Mutex<HashMap<WorkspaceId, SessionActions>>,
     /// Held while a workspace is entered, so two invocations enter it once.
     entering: tokio::sync::Mutex<()>,
+}
+
+impl Host {
+    /// Serve what another device addresses to this device through this host, on
+    /// this device's own session with it, and answer on that same session.
+    fn serve_inbound(&self, actions: &Arc<dyn ActionHost + Send + Sync>) {
+        let session = self.device.session();
+        let outbox = Arc::clone(session.outbox());
+        session.serve_inbound(Arc::new(crate::device_inbox::Inbox::new(
+            Arc::clone(actions),
+            Arc::new(move |workspace, to, frame| {
+                let _ = outbox.send(Cmd::RemoteAction(workspace, to, frame));
+            }),
+        )));
+    }
 }
 
 /// Where a workspace is placed: its host, as its signed hint names it.
@@ -85,7 +104,19 @@ impl HostedWorkspaces {
             endpoint,
             runtime,
             hosts: Mutex::default(),
+            inbound: Mutex::default(),
         })))
+    }
+
+    /// Serve what another device addresses to this device through a host of its:
+    /// a listing of a window's resources, a page action on it. Installed once the
+    /// session's broker can answer, on every session this device holds with a host
+    /// and on each it opens from now on.
+    pub(crate) fn serve_inbound(&self, actions: Arc<dyn ActionHost + Send + Sync>) {
+        for host in self.0.hosts.lock_recover().values() {
+            host.serve_inbound(&actions);
+        }
+        *self.0.inbound.lock_recover() = Some(actions);
     }
 
     /// Where `workspace` is placed, when a host other than this device runs its records.
@@ -139,6 +170,10 @@ impl HostedWorkspaces {
             entered: Mutex::default(),
             entering: tokio::sync::Mutex::new(()),
         });
+        let installed = self.0.inbound.lock_recover().clone();
+        if let Some(actions) = installed {
+            host.serve_inbound(&actions);
+        }
         let ended = hosts.insert(key, Arc::clone(&host));
         drop(hosts);
         if let Some(ended) = ended {

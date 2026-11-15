@@ -79,6 +79,9 @@ pub enum Heard {
     /// A device answered, or another of the person's devices sent a request of its own.
     Action {
         workspace_id: WorkspaceId,
+        /// The person the sending device was certified for, as the session carrying
+        /// the frame authenticated it.
+        user: [u8; 32],
         from: [u8; 32],
         frame: Vec<u8>,
     },
@@ -713,6 +716,7 @@ impl Inner {
                     workspace_id,
                     from,
                     frame,
+                    ..
                 } if workspace_id == self.workspace_id && from == self.device => {
                     let Ok(frame) = RemoteActionFrame::decode(&frame) else {
                         continue;
@@ -1198,6 +1202,7 @@ mod tests {
             let frame = RemoteActionFrame::new(message).encode().expect("encodes");
             self.heard.lock_recover().push(Heard::Action {
                 workspace_id: WorkspaceId::from_u128(1),
+                user: DEVICE,
                 from: DEVICE,
                 frame,
             });

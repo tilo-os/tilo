@@ -735,6 +735,7 @@ impl AgentParticipant {
                 workspace_id,
                 from,
                 frame,
+                ..
             }) if workspace_id == self.workspace_id && from != self.device() => {
                 self.remote.push((from, frame));
             }

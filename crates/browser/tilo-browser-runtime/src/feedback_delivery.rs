@@ -344,6 +344,7 @@ pub(crate) fn pump(id: u32) {
                 workspace_id,
                 from,
                 frame,
+                ..
             }) if workspace_id == state.workspace && from == state.owner.device_public_key => {
                 let Ok(RemoteActionFrame { message, .. }) = RemoteActionFrame::decode(&frame)
                 else {
