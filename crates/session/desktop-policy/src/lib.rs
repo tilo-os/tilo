@@ -734,6 +734,20 @@ impl DesktopPolicy {
         })
     }
 
+    /// Whether `app` has a window on the shell, in front or not, on any workspace: one the
+    /// compositor mapped and the shell gave a tab, not a tab held for a window still to come.
+    #[must_use]
+    pub fn has_window(&self, app: &str) -> bool {
+        self.handle.read(|tree| {
+            tabs(tree).any(|tab| match &tab.tile {
+                TileContent::Foreign { app_id, .. } => {
+                    app_ids_match(&tilo_desktop_model::AppId::new(app_id), app)
+                }
+                _ => false,
+            })
+        })
+    }
+
     /// Give `window` its place: a dialog ([`floating::floats`]) floats over the window it
     /// belongs to; any other gets a tab beside the focused window of the shown strip,
     /// where it takes focus. One whose app asked to open beside a tab of its own takes

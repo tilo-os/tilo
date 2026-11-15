@@ -36,10 +36,6 @@ use crate::search::AppActions;
 /// runs for the person who keeps it.
 const AGENT_PACKAGE: &str = "so.tilo.agent";
 
-/// How soon after its launch an app that ends with no window on the shell never opened: a start
-/// that gets as far as a window takes longer than its refusal does.
-const OPENED_AT_ONCE: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// The answer for `asked` that did not open, and `why`, with trying again as its button.
 fn not_opened(policy: &tilo_desktop_policy::DesktopPolicy, asked: &str, why: &str) -> Outcome {
     use tilo_desktop_surface::i18n::{t, t_args};
@@ -102,9 +98,9 @@ struct State {
     /// The compositor drew its first frame with no GPU to import from: its apps were pinned to the
     /// software renderer it draws with ([`Apps::follow_render_node`]).
     software: bool,
-    /// When each process started for a window someone asked for was started: an app that ends
-    /// within [`OPENED_AT_ONCE`] of it showing no window never opened, whatever its exit said.
-    launched: BTreeMap<u64, std::time::Instant>,
+    /// Each process started for a window someone asked for that has shown none yet: its app and
+    /// when it was started. One that ends while still here never opened, however it ended.
+    launched: BTreeMap<u64, (String, std::time::Instant)>,
     /// The session's launch records, once it has lent them: what its broker admits a connection by,
     /// and so what each launch it makes is written into.
     launches: Option<std::sync::Arc<crate::Launches>>,
@@ -1066,6 +1062,7 @@ impl Apps {
     /// The apps that ended since the last pass: one that chose to end leaves its window behind and
     /// is gone; one that crashed gets a notice in the place it had, offering it again.
     fn follow_ended(&self) {
+        self.forget_shown();
         let ended = self.state.borrow().spawner.events();
         for event in ended {
             // An agent has no window and no place of its own on the shell: its end is logged, and
@@ -1087,12 +1084,11 @@ impl Apps {
                 .borrow_mut()
                 .launched
                 .remove(&event.id)
-                .map(|at| at.elapsed());
-            // An app that ended within moments of its launch with no window of it on the shell
-            // never opened, however it ended and whether or not a tab waits for it: the person
-            // asked for something that did not come, and is told so with the app's own reason.
-            let at_once =
-                lived.is_some_and(|lived| lived < OPENED_AT_ONCE) && !self.shows_a_window(&event);
+                .map(|(_, at)| at.elapsed());
+            // An app that ended without ever showing a window never opened, however long it ran
+            // and however it ended, and whether or not a tab waits for it: the person asked for
+            // something that did not come, and is told so with the app's own reason.
+            let at_once = lived.is_some() && !self.shows_a_window(&event);
             // An app that ended cleanly before its window came never opened either, and is told
             // as one that crashed: the tab the person asked for it in would otherwise wait on a
             // window that is not coming, with nothing logged of why.
@@ -1107,7 +1103,7 @@ impl Apps {
                     lived_ms = lived.map_or(0, |lived| lived.as_millis()),
                     end = %event.end,
                     stderr = %event.said.stderr.join(" | "),
-                    "an app could not open: it ended at once with no window"
+                    "an app could not open: it ended without ever showing a window"
                 );
             } else {
                 tracing::warn!(app = %event.app, end = %event.end, "an app stopped");
@@ -1182,14 +1178,39 @@ impl Apps {
 
     /// Whether the person still waits for the window of the launch that ended with `event`: the
     /// shell holds a place for it that no window filled.
-    /// Whether a window of the app `event` ended in is on the shell: one another process of it
-    /// shows, as when a second launch hands its ask to the running one and leaves.
+    /// Forget the launches whose app has a window on the shell now, in front or not: they opened,
+    /// and their end is an app closing.
+    fn forget_shown(&self) {
+        if self.state.borrow().launched.is_empty() {
+            return;
+        }
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return;
+        };
+        let mut state = self.state.borrow_mut();
+        let State {
+            launched, running, ..
+        } = &mut *state;
+        desktop.with_policy(|policy| {
+            launched.retain(|id, (app, _)| {
+                !(policy.has_window(app)
+                    || running
+                        .get(id)
+                        .is_some_and(|asked| policy.has_window(asked)))
+            });
+        });
+    }
+
+    /// Whether a window of the app `event` ended in is on the shell, in front or not: one another
+    /// process of it shows, as when a second launch hands its ask to the running one and leaves.
     fn shows_a_window(&self, event: &tilo_app_launch::Event) -> bool {
         let asked = self.state.borrow().running.get(&event.id).cloned();
         self.desktop.borrow().clone().is_some_and(|desktop| {
             desktop.with_policy(|policy| {
-                policy.shows(&event.app)
-                    || asked.as_deref().is_some_and(|asked| policy.shows(asked))
+                policy.has_window(&event.app)
+                    || asked
+                        .as_deref()
+                        .is_some_and(|asked| policy.has_window(asked))
             })
         })
     }
@@ -1873,7 +1894,9 @@ impl Apps {
             state.running.insert(started.id, asked.to_owned());
             // A launch with no window to show (an action's run) is not one that could fail to open.
             if !windowless {
-                state.launched.insert(started.id, std::time::Instant::now());
+                state
+                    .launched
+                    .insert(started.id, (planned.app.clone(), std::time::Instant::now()));
             }
         }
         if let Some(door) = door {
@@ -2323,6 +2346,7 @@ mod tests {
     use super::*;
     use tilo_app_launch::output::OutputTail;
     use tilo_app_launch::{End, Event};
+    use tilo_desktop_policy::Window;
 
     const WORKSPACE: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
 
@@ -2667,36 +2691,50 @@ mod tests {
     /// a test opens one) that ends at once without ever showing a window never opened: the person
     /// is told it could not open, with what the app itself said, whether it exited 0 or not.
     /// Chat did that on the e2e-ws-branch box, nineteen times, and left nothing anywhere.
+    /// `apps` started the app `example.Canvas` as process `id`, `lived` ago, and it ended as `end`
+    /// saying `said` on stderr.
+    fn canvas_ended(apps: &Apps, id: u64, lived: std::time::Duration, end: End, said: &str) {
+        let at = std::time::Instant::now()
+            .checked_sub(lived)
+            .expect("the clock reads past the launch");
+        let mut state = apps.state.borrow_mut();
+        state.running.insert(id, "example.Canvas".to_owned());
+        state.launched.insert(id, ("example.Canvas".to_owned(), at));
+        drop(state);
+        apps.state.borrow().spawner.report(Event {
+            id,
+            app: "example.Canvas".to_owned(),
+            title: "Canvas".to_owned(),
+            end,
+            said: OutputTail {
+                stderr: vec![said.to_owned()],
+                dropped: 0,
+            },
+        });
+    }
+
+    /// What the shell shows as text now.
+    fn texts(desktop: &DesktopHost) -> Vec<String> {
+        desktop.with_widgets(|widgets| {
+            widgets.relayout();
+            ui::a11y::texts(widgets.host_mut().root_widget())
+        })
+    }
+
+    /// An app that ended without ever showing a window never opened, however long it ran first
+    /// (Chat joined its workspace's record and went, on the e2e-ws-branch box) and however it
+    /// ended: the person is told it could not open, with what it said, though no tab waited.
     #[test]
-    fn an_app_that_ends_at_once_without_a_window_could_not_open() {
+    fn an_app_that_ends_without_ever_showing_a_window_could_not_open() {
         for (n, end) in [End::exited(0), End::exited(1)].into_iter().enumerate() {
             let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
             let desktop = shell();
             apps.attach(desktop.clone());
             let id = u64::try_from(n).unwrap() + 1;
-            apps.state
-                .borrow_mut()
-                .running
-                .insert(id, "example.Canvas".to_owned());
-            apps.state
-                .borrow_mut()
-                .launched
-                .insert(id, std::time::Instant::now());
-            apps.state.borrow().spawner.report(Event {
-                id,
-                app: "example.Canvas".to_owned(),
-                title: "Canvas".to_owned(),
-                end,
-                said: OutputTail {
-                    stderr: vec!["the display refused this app".to_owned()],
-                    dropped: 0,
-                },
-            });
+            let lived = std::time::Duration::from_secs(30);
+            canvas_ended(&apps, id, lived, end, "the display refused this app");
             apps.follow_ended();
-            let shown = desktop.with_widgets(|widgets| {
-                widgets.relayout();
-                ui::a11y::texts(widgets.host_mut().root_widget())
-            });
+            let shown = texts(&desktop);
             assert!(
                 shown.iter().any(|text| text.contains("could not open")),
                 "{n}: the person is told Canvas could not open: {shown:?}"
@@ -2708,6 +2746,54 @@ mod tests {
                 "{n}: with what Canvas said: {shown:?}"
             );
         }
+    }
+
+    /// An app that showed a window and later ended cleanly opened: its end is no notice, even once
+    /// its window is gone from the shell.
+    #[test]
+    fn an_app_that_showed_a_window_and_ended_is_no_notice() {
+        let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+        let desktop = shell();
+        apps.attach(desktop.clone());
+        let lived = std::time::Duration::from_secs(30);
+        let at = std::time::Instant::now()
+            .checked_sub(lived)
+            .expect("the clock reads past the launch");
+        apps.state
+            .borrow_mut()
+            .running
+            .insert(1, "example.Canvas".to_owned());
+        apps.state
+            .borrow_mut()
+            .launched
+            .insert(1, ("example.Canvas".to_owned(), at));
+        let window = Window {
+            id: 11,
+            app_id: Some("example.Canvas".into()),
+            title: Some("Canvas".into()),
+            ..Window::default()
+        };
+        desktop
+            .with_policy(|policy| policy.map(window))
+            .expect("the window maps");
+        texts(&desktop);
+        // The session's pass sees the window on the shell.
+        apps.follow_ended();
+        desktop.with_policy(|policy| policy.unmap(11));
+        texts(&desktop);
+        apps.state.borrow().spawner.report(Event {
+            id: 1,
+            app: "example.Canvas".to_owned(),
+            title: "Canvas".to_owned(),
+            end: End::exited(0),
+            said: OutputTail::default(),
+        });
+        apps.follow_ended();
+        let shown = texts(&desktop);
+        assert!(
+            !shown.iter().any(|text| text.contains("could not open")),
+            "Canvas opened, and closing is no notice: {shown:?}"
+        );
     }
 
     #[test]
