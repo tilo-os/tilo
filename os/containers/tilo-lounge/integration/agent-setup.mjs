@@ -489,7 +489,24 @@ server.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/call
 const firstSaid = await Promise.race([firstAnswer, sleep(stepLimit(4)).then(() => 'no answer')]);
 report.firstAfterSecond = firstSaid.slice(-600);
 if (!firstSaid.includes(noteTitle)) await fail(`the first agent no longer reads the workspace after the second acted: ${firstSaid.slice(-600)}`);
-await until(first, `(document.body?.innerText ?? '').includes(${JSON.stringify(noteTitle)})`,
+// The window the second agent's open put on the workspace's shared desktop
+// reaches the person's page as a window of Notes, and its content shows the
+// note it wrote. The shell draws windows in one canvas, so what a window
+// shows is read from the semantics it publishes, as the other pages do.
+await until(first, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? [])
+  .some(entry => entry.app === 'so.tilo.notes')`,
+  'the person\'s tab showing the Notes window the second agent opened', stepLimit(3));
+const windowText = `(() => {
+  globalThis.tiloMount?.requestSemantics?.();
+  const out = [];
+  const node = n => { for (const part of [n.name, n.value]) if (part) out.push(part); (n.children || []).forEach(node); };
+  const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+  const root = globalThis.tiloMount?.state()?.semantics?.root;
+  if (root) walk(root);
+  return out.join('\\n');
+})()`;
+report.noteWindow = await first.evaluate(windowText).catch(() => '(the tab did not answer)');
+await until(first, `${windowText}.includes(${JSON.stringify(noteTitle)})`,
   'the person\'s tab showing the second agent\'s note', stepLimit(3));
 otherAgent.stdin.end();
 mark('a second agent on the computer wrote a note the tab shows, the first still connected');
