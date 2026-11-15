@@ -133,7 +133,7 @@ dispatch-only `e2e-agents` check (`tools/ci/vm-acceptance.sh e2e-agents`, `t tes
 e2e-agents`) boots this tree's dev disk and runs them alone, in order, each on what the ones
 before it set up; no shard of vm-acceptance and no run of every check includes them.
 
-The person makes two workspaces (`workspace.create`), opens Notes and Terminal in each, makes an
+The person makes two workspaces (the shell's `new-workspace`), opens Notes and Terminal in each, makes an
 environment in each from Terminal (`create-environment`, `open-in`), and starts an MCP client
 in each environment's shell configured as Claude Code is, `{"command": "tilo-runtime", "args":
 ["--connect"]}`: `guest/mcp_agent.sh`, bash alone (the environment's runtime has no python),
@@ -338,7 +338,7 @@ registered announces a change; when one of those cannot be followed it re-checks
 
 Every new workspace is placed on this device's own host, which governs it: the native
 owner enrolls with that host as a member and the apps' records are sealed with the content
-keys its steward hands the broker. R09 makes one with `workspace.create` and waits until the
+keys its steward hands the broker. R09 makes one with the shell's `new-workspace` and waits until the
 state dump's `held_workspaces` names it.
 
 The workspace has no other member device, so R09 does not cover what a second member's presence
@@ -482,12 +482,12 @@ fail P01 if the VM booted anything else, was moved onto another image since, or 
 | Area | Checks |
 |---|---|
 | provenance | P01 image ↔ commit, P02 headful slot on two outputs with an identity, P03 no failed or restart-looping session units, and no restart of the slot's session unit |
-| window | W01–W21: open/focus, move, resize, maximize, full screen, tabs, strips, workspaces, two outputs, overview, strip switcher, touch, touchpad, animation pacing (frame trace), real keyboard typing, touch that never drives the cursor (a launchpad card tapped open, the cursor hidden until the mouse moves), the on-screen keyboard (shown for a tapped field, typing into it, hidden by the physical keyboard), the on-screen keyboard typing into the shell's own search field, unlocking the session by touch on the lock screen's own keyboard (and the lock refusing a control-socket snapshot) |
+| window | W01–W21: open/focus, move, resize, maximize, full screen, tabs, strips, workspaces, two outputs, overview, the strips ribbon, touch, touchpad, animation pacing (frame trace), real keyboard typing, touch that never drives the cursor (a launchpad card tapped open, the cursor hidden until the mouse moves), the on-screen keyboard (shown for a tapped field, typing into it, hidden by the physical keyboard), the on-screen keyboard typing into the shell's own search field, unlocking the session after a touch (and the lock refusing a control-socket snapshot) |
 | ui | U01 theme and language through actions, U02/U03 Settings, quick settings, workspace settings, overview in light/dark/high-contrast (en, de) with layout checks on `list-targets` rects, U04 German action titles |
 | apps | A01–A07: Terminal (live shell), Files, Settings, Notes, Store, a host Wayland app, an X11 app — first frame, placement, focus, exit on close, no false toasts. A08–A13, the apps used every day, one per toolkit and protocol path: Chromium on Wayland (A08, the engine Electron apps ship) and forced onto X11 (A09), GNOME Text Editor (A10, GTK4/libadwaita), FeatherPad (A11, Qt6 Wayland), alacritty (A12, winit/OpenGL), glxgears (A13, OpenGL X11 like games) — window in the current strip with focus, a first frame with content, the right buffer scale on both outputs as it moves between them, real-keyboard typing, copy to and paste from Tilo's clipboard, exit on close; A13 also full screen and back. A14 Files' first launch: process start to first presented frame within budget, and its folder listing read off its AT-SPI tree. A15 ten warm opens each of Files, Notes and Settings, request to first frame; A16 every launch of the run within its app's budget; A17 Files opens after the session's compositor ended abruptly |
 | search | S01–S09: empty-query view, English and German names, launch from search, windows, actions, files, workspace activity, workspace history |
 | resources | R01/R02 idle CPU, wakeups and frames with no apps and with several (`R01-idle-empty.json`/`R02-idle-apps.json` carry CPU and context switches per thread of the compositor, `shell_threads` and `shell_thread_groups`, and of any other process above 0.5%, plus the compositor's age when the window opened, `session_age_s`; the compositor is the slot user's `shell` with no `shell` above it, so its own shader-seed child is never taken for it; an over-budget compositor names its busiest threads), R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS; R01 and R03 also write the compositor's `smaps_rollup`, status lines and 20 largest anonymous mappings (`R01-shell-smaps.json`/`R03-shell-smaps.json`), so R03 less R01 is what four windows cost and a growing `[heap]` or run of glibc arenas reads apart from one GPU buffer, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware), R05 every app window renders on the machine's GPU, not a CPU fallback; the renderer and whether the display is real hardware are recorded; R06 boot to a usable greeter and where its time went, R07 the render-path gate, R08 greeter sign-in to a usable desktop, R09 an idle shared workspace's broker and app shovels |
-| basics | B01 brightness, B02 Wi-Fi, B03 Bluetooth (unavailable without hardware, no fake controls), B04 de nodeadkeys + compose applied to the physical keys, B05 display arrangement, B06 hotplug. The GNOME keyboard import runs only in a host-desktop session, so the host-desktop VM test checks it (dist/session/vm-e2e, H05) |
+| basics | B01 brightness, B02 Wi-Fi, B03 Bluetooth (unavailable without hardware, no fake controls), B04 de nodeadkeys applied to the physical keys, B05 display arrangement, B06 hotplug. The GNOME keyboard import runs only in a host-desktop session, so the host-desktop VM test checks it (dist/session/vm-e2e, H05) |
 
 The everyday apps (A08–A13) come with the dev image (`os/Containerfile.dev`, about 600 MiB,
 two thirds of it Chromium; the desktop entries for the Chromium variants and glxgears are in
@@ -514,10 +514,8 @@ For the same reason no check may leave a modal, overlay, prompt or dialog open: 
 the keyboard from the window behind it, and the next check's typing lands in it (run 89618's
 A01 typed its Terminal command into the Invite composer W20's first touch had opened on the
 launchpad). After the lock guard, `run_check` reads the state dump again (`core.open_surfaces`:
-the `overlays`, search, the window switcher, the Invite composer and Join card in `peer_sync`,
-`portal_dialog`, pending permission prompts, the workspace-name editor, the `input_capture`
-surfaces, and any other surface for which `input_capture.chrome` says the shell holds input,
-pointer hover over a maximized window's controls aside). A check that ended with one open
+the surfaces the shell shows over the windows in `chrome.overlays`, one flag per slot — search,
+quick settings, the menus, the notification centre, the overview and the strips). A check that ended with one open
 fails ("left a dialog open (…)"), and the harness closes it the way a person cancels: Escape,
 then a slot session restart if Escape does not do it. Nothing is ever confirmed to clean up. The
 report's `dialog_recovered_after` lists each such check, what was open and how it was closed.
