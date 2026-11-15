@@ -266,7 +266,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_run_is_placed_on_the_cheapest_device_that_takes_it;
 
         phase a_device_that_declines_is_never_chosen;

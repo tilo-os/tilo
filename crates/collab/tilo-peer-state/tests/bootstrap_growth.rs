@@ -206,7 +206,6 @@ fn durable_bootstrap_workspace_history_growth_is_measured_for_one_eight_thirty_t
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_bootstrap_batches_its_snapshots_coverage_and_receipts;
 
     phase durable_bootstrap_batches_exact_snapshots_coverage_receipts_and_replay;

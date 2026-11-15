@@ -2720,7 +2720,6 @@ mod encoding_tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_publication_entry_keeps_its_class_and_its_bytes_in_json;
 
         phase an_entry_leaves_as_the_class_it_was_published_by;

@@ -495,7 +495,6 @@ fn commit(fixture: &Fixture, request: &OwnerCommitRequest) -> Result<OwnerCommit
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn an_effect_that_cannot_be_published_whole_changes_nothing;
 
     phase effect_failed_publish_never_acks_or_mutates;

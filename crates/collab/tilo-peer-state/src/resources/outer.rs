@@ -30,7 +30,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn outer_resources_are_bounded_before_they_are_decoded;
 
         phase outer_resources_refuse_announced_collection_before_element_decode;

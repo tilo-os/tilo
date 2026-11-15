@@ -2,7 +2,6 @@ use collab_types::DocumentMutation;
 use collab_types::op::{DocumentMutationEncodeError, MAX_DOCUMENT_MUTATION_BYTES};
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn the_snapshot_hash_is_the_durable_encoders;
 
     phase snapshot_hash_preserves_literal_durable_encoding;

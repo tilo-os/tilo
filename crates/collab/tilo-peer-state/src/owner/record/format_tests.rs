@@ -25,7 +25,6 @@ fn founders() -> WorkspaceId {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn the_record_format_reads_only_the_layout_this_build_writes;
 
     phase the_format_declares_the_layout_this_build_writes;
