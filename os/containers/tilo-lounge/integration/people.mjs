@@ -192,6 +192,13 @@ const dump = async (tab, name) => {
   shown.stepping = {before, after: await frames()};
   shown.text = await tab.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 4000)`);
   writeFileSync(`${out}/${name}.json`, JSON.stringify({...shown, log: tab.log}, null, 2));
+  // What the page showed, said in the run's own log: a failed check keeps no
+  // files, so what a person would have read on the page is read here.
+  const names = (shown.names ?? []).filter(name => name).join(' | ');
+  if (names) console.error(`--- ${name} showed: ${names.slice(0, 2000)}`);
+  const chords = (shown.chords ?? []).map(chord => `${chord.key}${chord.ctrl ? '+ctrl' : ''}${chord.meta ? '+meta' : ''}${chord.trusted ? '' : ' (untrusted)'}${chord.prevented ? ' (prevented)' : ''}`);
+  if (chords.length) console.error(`--- ${name} keys: ${chords.slice(-8).join(', ')}`);
+  if (shown.call) console.error(`--- ${name} call: ${JSON.stringify(shown.call)}`);
   const shot = await tab.screenshot();
   if (shot) writeFileSync(`${out}/${name}.png`, shot);
   return shown;
@@ -346,6 +353,18 @@ const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 
 const search = async (tab, command, query, row, opens = null) => {
   const began = Date.now();
   const framesFrom = await presented(tab);
+  // The shell's search, never one window's: a press that landed in an app's
+  // own search field leaves that window's search up, and the shell's query
+  // typed into it asks that app instead. Whatever is up is closed first (the
+  // chord toggles, so a press over an open search would close it), then the
+  // chord opens the shell's.
+  const openScope = () => tab.evaluate("globalThis.tiloMount?.state()?.searchOpen ? (globalThis.tiloMount.state().searchCard?.scope ?? 'unknown') : null");
+  for (let tries = 0; tries < 3; tries++) {
+    const scope = await openScope();
+    if (scope === null || scope === 'workspace' || scope === 'unknown') break;
+    await key(tab, 'Escape');
+    await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the ${scope} search closing`, stepLimit(2));
+  }
   // The shell keeps the search up until what it opened has arrived, and the
   // chord toggles it: it is opened only when it is down.
   if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
@@ -354,6 +373,8 @@ const search = async (tab, command, query, row, opens = null) => {
   }
   const chorded = Date.now();
   await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, stepLimit(3));
+  const scope = await openScope();
+  if (scope !== 'workspace') failed(`the search for "${query}" is not the shell's (${scope})`);
   await type(tab, query);
   const typed = Date.now();
   const asked = JSON.stringify(query);
@@ -376,7 +397,8 @@ const search = async (tab, command, query, row, opens = null) => {
     if (read === last || Date.now() > deadline) {
       const rows = await paletteRows(tab);
       await dump(tab, `timeout-rows-for-${query}`);
-      failed(`the palette offers no ${row} first for "${query}": ${JSON.stringify(card.rows?.map(entry => entry.title) ?? rows)}`);
+      const offered = card.rows?.map(entry => `${entry.title} [${entry.kind}]`) ?? rows;
+      failed(`the palette offers no ${row} first for "${query}" in the ${card.scope ?? '?'} search: ${JSON.stringify(offered)}`);
     }
     last = read;
   }
