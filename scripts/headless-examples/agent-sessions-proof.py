@@ -32,6 +32,7 @@ Usage:
 import json
 import os
 import pathlib
+import select
 import shutil
 import socket
 import subprocess
@@ -122,13 +123,12 @@ class Shell:
         # there, from the one place that picks it.
         self.runtime = runtime_directory(self.state)
         self.control = self.runtime / "control.sock"
-        self.mcp = self.runtime / "agent.sock"
+        # Where the session binds its MCP server, as it prints it once it started.
+        self.mcp: pathlib.Path | None = None
         self.env = {
             **os.environ,
             "HOME": str(self.home),
             "TILO_TEST_CONTROL": str(self.control),
-            # The MCP socket a developer names, so this proof never meets the login's own.
-            "TILO_MCP_SERVER": str(self.mcp),
             "TILO_IDENTITY_ROOT": str(self.identity),
             "XDG_RUNTIME_DIR": str(self.runtime),
             "XDG_DATA_HOME": str(self.dir / "data"),
@@ -142,7 +142,6 @@ class Shell:
 
     def start(self) -> None:
         self.control.unlink(missing_ok=True)
-        self.mcp.unlink(missing_ok=True)
         self.session = subprocess.Popen(
             [
                 str(SHELL),
@@ -155,7 +154,7 @@ class Shell:
                 str(self.state),
             ],
             env=self.env,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
@@ -163,6 +162,22 @@ class Shell:
             if self.session.poll() is not None:
                 raise SystemExit(f"the session exited at startup: {self.session.stderr.read()}")
             raise SystemExit("the session never answered on its socket")
+        self.mcp = self.printed("TILO_MCP_SERVER")
+
+    def printed(self, name: str, timeout: float = 60.0) -> pathlib.Path | None:
+        """The path the session printed as `name=...` once it bound it, as a launcher reads it."""
+        stdout = self.session.stdout.fileno()
+        seen = b""
+        end = time.time() + timeout
+        while (left := end - time.time()) > 0 and select.select([stdout], [], [], left)[0]:
+            chunk = os.read(stdout, 4096)
+            if not chunk:
+                break
+            seen += chunk
+            for line in seen.decode(errors="replace").split("\n")[:-1]:
+                if line.startswith(f"{name}="):
+                    return pathlib.Path(line.split("=", 1)[1])
+        return None
 
     def stop(self) -> None:
         if self.session is None:
@@ -248,7 +263,8 @@ def main() -> int:
         shell.start()
         check("the shell opens with a workspace in front", bool(shell.workspace()),
               json.dumps(shell.workspace())[:80])
-        check("and its MCP server answers", until(lambda: shell.mcp.exists()))
+        check("and its MCP server answers", shell.mcp is not None and shell.mcp.exists(),
+              str(shell.mcp))
 
         print("\n[1] two agents ask, and nothing they ask for runs yet")
         for name, _ in CLIENTS:

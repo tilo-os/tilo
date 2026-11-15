@@ -58,51 +58,36 @@ record_of() { printf '%s/%s\n' "$1" "$record_name"; }
 # *does* change the artifacts (Cargo files, sources, `vendor/`, build scripts, app manifests and
 # app surfaces, `os/scripts/build-thin-apps.sh`, `tools/apps/`) is what is left in. Python
 # bytecode is out too: a build's own tools write it into the tree, where a git checkout ignores
-# it and a tree outside git would count it as a change the build itself made.
-not_an_input() {
-    case $1 in
-        ./docs/* | ./.claude/* | ./dist/dev/* | ./scripts/headless-examples/* | *.md | ./target/* \
-            | ./os/output/* | ./t.toml | */__pycache__/*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
+# it and a tree outside git would count it as a change the build itself made. The record
+# itself is never a source, so writing one cannot change the tree it records.
+not_inputs='^\./(docs|\.claude|dist/dev|scripts/headless-examples|target|os/output)/|\.md$|^\./t\.toml$|/__pycache__/'
 
-digest_of() {
-    local root=$1 listing present sums
-    listing=$(mktemp)
-    present=$(mktemp)
-    sums=$(mktemp)
-    # shellcheck disable=SC2064 # the temp files are this function's, freed when it returns
-    trap "rm -f $(printf '%q' "$listing") $(printf '%q' "$present") $(printf '%q' "$sums")" RETURN
-    # Every file a build reads: what git tracks, and what it leaves untracked and not ignored.
-    # A tree outside git has no ignore rules, so it hashes its files as `cargo-freshness.sh`
-    # does: everything but the build output, the caches and git's own directory.
-    if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        git -C "$root" ls-files -z --cached --others --exclude-standard -- :/ > "$listing"
-    else
-        (cd "$root" && find . \
-            \( -path ./.git -o -path ./target -o -path ./.cargo-home -o -path ./.sccache \) -prune \
-            -o -type f -print0) > "$listing"
-    fi
-    # A tracked file deleted in the working tree is a change, not a file to hash; the record
-    # itself is never a source, so writing one cannot change the tree it records; and a file
-    # that is not a build input is left out.
+# Each source file's hash and path, sorted: what the digest is the hash of. One pass over the
+# listing, with no program started per file: a tree of twenty thousand files is hashed in
+# seconds, also where its files sit on a slow shared filesystem.
+sums_of() {
+    local root=$1
     (
         cd "$root"
-        while IFS= read -r -d '' file; do
-            [[ -f $file ]] || continue
-            [[ $(basename -- "$file") == *"$record_name" ]] && continue
-            # Both listings name files from the tree's root: git without a `./` and find with
-            # one, so the patterns read one form.
-            not_an_input "./${file#./}" && continue
-            printf '%s\0' "$file"
-        done < "$listing"
-    ) > "$present"
-    # Paths and contents, sorted: a rename is a change, and a changed file is a different
-    # digest.
-    (cd "$root" && xargs -0 -r sha256sum < "$present" | LC_ALL=C sort) > "$sums"
-    sha256sum < "$sums" | cut -d' ' -f1
+        # Every file a build reads: what git tracks, and what it leaves untracked and not
+        # ignored, less a tracked file deleted in the working tree, which is a change and not a
+        # file to hash. A tree outside git has no ignore rules, so it hashes its files as
+        # `cargo-freshness.sh` does: everything but the build output, the caches and git's own
+        # directory. Both name files from the tree's root as `./PATH`.
+        if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            git ls-files -z --cached --others --exclude-standard -- :/ \
+                | grep -zvxF -f <(git ls-files -z --deleted -- :/ | tr '\0' '\n') \
+                | sed -z 's|^|./|'
+        else
+            find . \( -path ./.git -o -path ./target -o -path ./.cargo-home -o -path ./.sccache \) \
+                -prune -o -type f -print0
+        fi \
+            | grep -zvE "$not_inputs|(^|/)[^/]*$record_name\$" \
+            | xargs -0 -r sha256sum | LC_ALL=C sort
+    )
 }
+
+digest_of() { sha256sum < "$1" | cut -d' ' -f1; }
 
 # The commit this tree is at, when git can say; `none` for a tree outside a repository. A
 # dirty tree is still its commit here — the digest is what tells a dirty tree from its
@@ -112,10 +97,10 @@ commit_of() {
     git -C "$root" rev-parse --verify --quiet HEAD 2>/dev/null || printf 'none\n'
 }
 
-# Why `path` is not a build of this tree, as one sentence; empty when it is. `digest` and
-# `commit` are this tree's, computed once by the caller.
+# Why `path` is not a build of this tree, as one sentence and the files that differ; empty when
+# it is. `sums` (sums_of), `digest` and `commit` are this tree's, computed once by the caller.
 mismatch_of() {
-    local path=$1 digest=$2 commit=$3 record recorded_digest recorded_commit
+    local path=$1 sums=$2 digest=$3 commit=$4 record recorded_digest recorded_commit
     record=$(record_of "$path")
     if [[ ! -e $path ]]; then
         printf '%s is not there' "$path"
@@ -141,27 +126,40 @@ mismatch_of() {
         printf '%s was built from %s, not this tree%s' \
             "$path" "$from" \
             "$([[ $commit != none ]] && printf ' (%s)' "$commit")"
+        # The files the build's sources and this tree's differ in, when the build listed them.
+        [[ -f $record.files ]] && diff "$record.files" "$sums" \
+            | awk '/^[<>]/ { print $3 }' | LC_ALL=C sort -u | head -n 10 \
+            | awk '{ printf "\n  differs: %s", $0 }'
     fi
 }
 
 write() {
-    local path digest commit
-    digest=$(digest_of "$repo_root")
+    local path sums digest commit
+    sums=$(mktemp)
+    # shellcheck disable=SC2064 # the temp file is this function's, freed when it returns
+    trap "rm -f $(printf '%q' "$sums")" RETURN
+    sums_of "$repo_root" > "$sums"
+    digest=$(digest_of "$sums")
     commit=$(commit_of "$repo_root")
     for path in "$@"; do
         [[ -d $path ]] || die "$path is no build directory to record"
         printf 'digest %s\ncommit %s\n' "$digest" "$commit" > "$(record_of "$path")"
+        cp -- "$sums" "$(record_of "$path").files"
         printf 'build-provenance: recorded %s as %s\n' \
             "$path" "$([[ $commit == none ]] && printf 'a tree outside git' || printf 'commit %s' "$commit")" >&2
     done
 }
 
 verify() {
-    local digest commit path why failed=0
-    digest=$(digest_of "$repo_root")
+    local sums digest commit path why failed=0
+    sums=$(mktemp)
+    # shellcheck disable=SC2064 # the temp file is this function's, freed when it returns
+    trap "rm -f $(printf '%q' "$sums")" RETURN
+    sums_of "$repo_root" > "$sums"
+    digest=$(digest_of "$sums")
     commit=$(commit_of "$repo_root")
     for path in "$@"; do
-        if why=$(mismatch_of "$path" "$digest" "$commit") && [[ -z $why ]]; then
+        if why=$(mismatch_of "$path" "$sums" "$digest" "$commit") && [[ -z $why ]]; then
             continue
         fi
         printf 'build-provenance: %s\n' "$why" >&2
@@ -187,7 +185,7 @@ show() {
 }
 
 case ${1:-} in
-    digest) shift; digest_of "$repo_root" ;;
+    digest) shift; sums_of "$repo_root" | sha256sum | cut -d' ' -f1 ;;
     write) shift; (($#)) || die "write takes the builds it records"; write "$@" ;;
     verify) shift; (($#)) || die "verify takes the builds it checks"; verify "$@" ;;
     show) shift; (($#)) || die "show takes the builds it names"; show "$@" ;;

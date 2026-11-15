@@ -42,6 +42,13 @@ case $proof in
     agent-sessions|session-lock) python3 "$scripts/$proof-proof.py" ;;
     *) echo "no proof named $proof" >&2; exit 2 ;;
 esac 2>&1 | tee "$out/proof.log" || status=$?
+# A failed run keeps no outputs: the end of each session's log is in the check's own.
+if ((status)); then
+    while IFS= read -r -d '' log; do
+        printf '=== the end of %s\n' "${log#"$run"/}"
+        tail -n 40 -- "$log"
+    done < <(find "$run" -maxdepth 3 -name 'session*.log' -print0)
+fi
 # A proof that writes no verdict of its own gets one: what it said is proof.log.
 [[ -f $run/summary.json ]] || printf '{"proof": "%s", "passed": %s}\n' "$proof" \
     "$( ((status)) && echo false || echo true)" >"$out/summary.json"
