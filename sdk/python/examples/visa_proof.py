@@ -371,11 +371,12 @@ async def main() -> int:
     colours = {(version.get("actor") or {}).get("colour") for version in by_agent}
     check(len(colours) == 1 and None not in colours, f"in one colour ({colours})")
     people = {frozenset(acted_for(version.get("actor") or {})) for version in by_agent}
-    check(len(people) == 1 and set() not in people, f"each on behalf of the one person ({people})")
+    acted_for_people = set().union(*people) if people else set()
+    check(len(people) == 1 and acted_for_people, f"each on behalf of the one person ({people})")
     runs = {version["run_id"]: version.get("run") for version in by_agent if version.get("run_id")}
     say("   runs", str(runs))
     check(list(runs.values()) == [RUN_TITLE], f"History names the agent's one run {RUN_TITLE!r}")
-    check(reviewer_person is None or all(reviewer_person not in acted for acted in people),
+    check(reviewer_person is None or all(reviewer_person not in tree for tree in people),
           "the reviewer is not the person the agent acted for")
 
     say("4d. The reviewer undoes the agent's run")
@@ -393,7 +394,7 @@ async def main() -> int:
     check(jane_usage is not None, "the account meters Jane's workspace")
     check(jane_usage.vm_seconds == 0 and not jane_usage.running, "no VM time in Jane's workspace, none running")
     check(usage.vm_seconds == 0 and not usage.running, f"0 VM seconds across all {len(usage.workspaces)} workspaces")
-    check(usage.raw.get("standing", {}).get("account") in people, "the account is the person the agent acted for")
+    check(usage.raw.get("standing", {}).get("account") in acted_for_people, "the account is the person the agent acted for")
 
     say("4f. Revoking ends what it reached")
     await backend.keys.revoke(minted.grant)
