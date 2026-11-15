@@ -196,9 +196,13 @@ live_origin=http://127.0.0.1:$live_port
 api_origin=http://localhost:$api_port
 # A name of its own under localhost, not an address: a passkey's relying
 # party is the page's host name, and a browser refuses one on an address.
-# Browsers, curl and glibc resolve any *.localhost name to loopback.
 site_host=tilo.localhost
 site_origin=http://$site_host:$site_port
+# The site's health check, at the address the web entry listens on: the names
+# under localhost are this machine's, which a resolver here need not know, so
+# the stack asks the address and carries the name the entry routes by.
+site_health=http://127.0.0.1:$site_port/healthz
+site_host_header="Host: $site_host:$site_port"
 
 state=${TILO_SH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tilo-sh-local}
 # The containers of the stack on these ports: a second stack on other ports
@@ -1407,7 +1411,7 @@ wait_relay() {
 
 wait_api() { wait_for 'API server (its health check)' "http://127.0.0.1:$api_port/health" 20; }
 
-wait_web() { wait_for 'web (its health check)' "$site_origin/healthz" 30; }
+wait_web() { wait_for 'web (its health check)' "$site_health" 30 -H "$site_host_header"; }
 
 native_preflight() {
   # Root is the job sandbox's identity in a check, which is where TILO_SH_STATE
@@ -1723,7 +1727,7 @@ up_images() {
   start web --network "pasta:-T,$plain_port,-T,$releases_port" -p "127.0.0.1:$web_port:8080" \
     --read-only --tmpfs /tmp --user 10001 \
     "${web_args[@]}" "$web"
-  wait_for 'web (its health check)' "$site_origin/healthz" 60
+  wait_for 'web (its health check)' "$site_health" 60 -H "$site_host_header"
 
 }
 
@@ -1785,15 +1789,16 @@ status() {
   local svc url
   printf '%-9s %-8s %s\n' service state address
   for svc in "tls|$relay_origin/mode" "relay|http://127.0.0.1:$routes_port/mode" \
-    "api|http://127.0.0.1:$api_port/health" "web|$site_origin/healthz"; do
-    local name=${svc%%|*} probe=${svc#*|} shown answer
+    "api|http://127.0.0.1:$api_port/health" "web|$site_health"; do
+    local name=${svc%%|*} probe=${svc#*|} shown answer args=()
     case $name in
       tls) shown="$relay_origin (relay), $live_origin (live plane)" ;;
       relay) shown="the Lounge, behind tls" ;;
       api) shown="$api_origin (MCP: $api_origin/mcp)" ;;
       web) shown="$site_origin" ;;
     esac
-    if running "$name" && curl -fsS --max-time 2 "$probe" >/dev/null 2>&1; then
+    [[ $name != web ]] || args=(-H "$site_host_header")
+    if running "$name" && curl -fsS --max-time 2 "${args[@]}" "$probe" >/dev/null 2>&1; then
       answer=up
     elif running "$name"; then answer=starting; else answer=down; fi
     printf '%-9s %-8s %s\n' "$name" "$answer" "$shown"
