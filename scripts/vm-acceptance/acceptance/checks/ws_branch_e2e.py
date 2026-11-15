@@ -33,6 +33,7 @@ import uuid
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
+from ..sheets import press
 from ..vm import VmError, wait_until
 from . import agents_e2e as ae
 
@@ -495,6 +496,9 @@ class Problems(list):
 def set_up(ctx, res):
     ctx.facts["wsb:why"] = "WB01 failed"
     ctx.reset()
+    # The device's files are served, or nothing after this can be: a files service that does not
+    # come names itself here (fs.service, /var/workspace), not as an environment's lost probe.
+    ae.files_served(ctx)
     # A restart here left the environment's files unfound (rdb278da293): the session keeps
     # running, and what it said is read since the machine booted.
     watch_drawing_threads(ctx)
@@ -894,7 +898,7 @@ def post_chat(ctx, ws: dict, text: str) -> None:
                            f"{offered(ctx, CHAT)}; Chat's crash: {crash[-3000:]}; "
                            f"its processes: {running[-3000:]}; its drawing: {gpu[-2500:]}; "
                            f"{app_evidence(ctx, CHAT)}")
-    ae.press(ctx, COMPOSER)
+    press(ctx, COMPOSER)
     ctx.vm.input("type", text)
     ctx.vm.key("Return")
 
@@ -1342,6 +1346,17 @@ def agent_in_branch(ctx, res):
            f"initialize was not answered after the person allowed it: {str(reply)[:300]}")
     agent.send("notifications/initialized", notify=True)
     res.metrics["sheet"] = dialog
+    # The desk seats the agent in the branch's environment: the session whose environment_id is
+    # the TILO_ENVIRONMENT its shell reads (the agent door is the MCP server since a3a6caf4255).
+    environment = agent.hello.get("environment", "")
+    seated = wait_until(lambda: [a for a in ae.agent_sessions(ctx) if a.get("stoppable", True)
+                                 and environment and a.get("environment_id") == environment] or None,
+                        30, interval=1.0) or []
+    res.metrics["seated"] = [{k: a.get(k) for k in ("key", "name", *ae.WHERE)} for a in seated]
+    problems.want(len(seated) == 1, f"the desk seats {len(seated)} agents in {environment!r}: "
+                                    f"{[{k: a.get(k) for k in ('key', 'name', *ae.WHERE)} for a in ae.agent_sessions(ctx)]}")
+    problems.want(environment.startswith(f"{tid}/"),
+                  f"the agent's TILO_ENVIRONMENT {environment!r} is not of its branch {tid}")
     own = scene["edits"][first["id"]]["note"]
     theirs = scene["edits"][source["id"]]["note"]
     found = ae.tool_until(agent, "tilo_find", {"query": own},
