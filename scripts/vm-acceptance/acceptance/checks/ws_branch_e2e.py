@@ -817,8 +817,7 @@ def chat_says(ctx, ws: dict, text: str, label: str) -> dict:
     """Whether `ws`'s chat holds `text`, Chat opened there: in what Chat's own `read` answers,
     and among what the shell's search lists in front."""
     ae.select_workspace(ctx, ws)
-    if not app_rows(ctx, CHAT):
-        open_by_id(ctx, CHAT)
+    open_by_id(ctx, CHAT)
     rows = wait_until(lambda: chat_rows(ctx, "read") or None, 30, interval=1.0)
     read = ae.invoke(ctx, rows[0]["provider"], rows[0]["id"], {}, name=f"chat-read-{label}") if rows else None
     listed = [r for r in ctx.vm.actions(text) if text in json.dumps(r)]
@@ -829,16 +828,30 @@ def chat_says(ctx, ws: dict, text: str, label: str) -> dict:
             "readable": rows is not None}
 
 
+def app_window(ctx, app: str) -> dict | None:
+    """The shell's mapped window of `app`, if one is: a row of its window listing with the app's id
+    and a place on screen (a tab held for a window still to come has none)."""
+    try:
+        windows = ctx.vm.windows()
+    except VmError:
+        return None
+    return next((w for w in windows if w.get("app_id") == app and w.get("rect")), None)
+
+
 def open_by_id(ctx, app: str, patience: float = TERMINAL_S) -> None:
-    """Open `app` in the workspace in front by its id, as the launcher does, and wait until it
-    offers its actions there: a window the shell opened again for it counts as much as a new one."""
+    """Open `app` in the workspace in front by its id, as the launcher does, and wait until a window
+    of it is mapped on the shell: a window it already had, raised, counts as much as a new one.
+    What the app offers is no sign it opened: an app is listed with its `open` row, and with the
+    actions its package declares, before any process of it runs (rb95baefd41, r22dca47ed0: Chat
+    "offered" those and the open was never sent)."""
     deadline = time.monotonic() + patience
     asked = False
-    while not app_rows(ctx, app):
+    while not app_window(ctx, app):
         awake(ctx)
         if time.monotonic() > deadline:
-            raise CheckFailed(f"{app} offers nothing {patience:.0f} s after it was asked for "
-                              f"({'asked' if asked else 'never in the catalogue'}): {app_evidence(ctx, app)}")
+            raise CheckFailed(f"{app} shows no window {patience:.0f} s after it was "
+                              f"{'asked for' if asked else 'looked for in the catalogue'}: "
+                              f"it offers {offered(ctx, app)}; {app_evidence(ctx, app)}")
         if not asked:
             try:
                 ctx.vm.invoke("applications", app)
