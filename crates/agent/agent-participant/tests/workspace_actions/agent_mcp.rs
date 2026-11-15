@@ -18,7 +18,11 @@ async fn ask(server: &McpServer<SessionActions>, request: Value) -> Value {
 }
 
 /// The text a tool call answers, and whether it failed.
-async fn tool(server: &McpServer<SessionActions>, name: &str, arguments: Value) -> (String, bool) {
+pub(super) async fn tool(
+    server: &McpServer<SessionActions>,
+    name: &str,
+    arguments: Value,
+) -> (String, bool) {
     let answer = ask(
         server,
         json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",

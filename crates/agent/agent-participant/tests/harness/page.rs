@@ -258,21 +258,26 @@ impl Page {
         }
     }
 
-    /// Write the workspace's shared layout as a page first writes it: one
-    /// strip and no window yet.
+    /// Write the workspace's shared layout as a page first writes it: the
+    /// workspace by its own id, one strip and no window yet, in the shape a
+    /// page keeps its layout in ([`tilo_desktop_model::desktop_doc`]).
     pub fn put_layout(&mut self) {
         use tilo_desktop_model::{Layout, Strip, StripId, Workspace, WorkspaceId};
-        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Workspace");
+        let id = WorkspaceId::parse(&self.cluster_id).unwrap_or_else(|| WorkspaceId::from_u128(1));
+        let mut workspace = Workspace::new(id, "Workspace");
         workspace.strips = vec![Strip::new(StripId(10), "Main")];
-        let desktop = tilo_desktop_model::ownership::SharedDesktop {
-            tree: Layout {
-                workspaces: vec![workspace],
-                ..Layout::default()
-            },
-            ..tilo_desktop_model::ownership::SharedDesktop::default()
+        let tree = Layout {
+            active: id,
+            workspaces: vec![workspace],
+            ..Layout::default()
         };
         let mut doc = automerge::AutoCommit::new();
-        tilo_desktop_model::shared_record::write(&mut doc, &desktop).unwrap();
+        tilo_desktop_model::desktop_doc::write_shared(
+            &mut doc,
+            &tree,
+            &[],
+            &std::collections::BTreeMap::new(),
+        );
         doc.commit();
         let bytes = doc.save();
         let route = self.layout_route();

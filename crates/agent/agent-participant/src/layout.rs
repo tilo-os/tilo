@@ -52,7 +52,9 @@ pub(crate) fn place_view(
     view: &View<'_>,
 ) -> Option<Vec<u8>> {
     let mut doc = desktop.clone();
-    let mut desktop = shared_record::read(&doc, None).or_else(|| fresh(workspace, name?))?;
+    let held = shared_record::read(&doc, None);
+    let started = held.is_none();
+    let mut desktop = held.or_else(|| fresh(workspace, name?))?;
     if shown_at(&desktop, view.app_id, view.record).is_some()
         || (view.record.is_empty() && opening(&desktop, view.app_id))
     {
@@ -70,6 +72,12 @@ pub(crate) fn place_view(
     }
     let before = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(author.as_bytes()));
+    if started {
+        // Started in the shape every page keeps its layout in, so a page that joins the workspace
+        // after this takes it up as its own: a layout of another shape is one the page's reader
+        // never shows.
+        tilo_desktop_model::desktop_doc::seed(&mut doc, &desktop.tree);
+    }
     shared_record::write(&mut doc, &desktop).ok()?;
     doc.commit();
     Some(doc.save_after(&before))
@@ -420,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_nobody_opened_a_layout_in_gets_one_holding_the_view() {
+    fn a_workspace_nobody_opened_a_layout_in_gets_one_holding_the_view_as_pages_keep_it() {
         let view = View {
             app_id: "so.tilo.files",
             title: "Files",
@@ -434,6 +442,10 @@ mod tests {
             &view,
         )
         .expect("a layout is started");
+        assert!(
+            tilo_desktop_model::desktop_doc::holds(&merged(std::slice::from_ref(&change))),
+            "in the shape a page keeps its layout in, which the page reads"
+        );
         let desktop = read(&[change]);
         let workspace = &desktop.tree.workspaces[0];
         assert_eq!(workspace.name, "Visa");

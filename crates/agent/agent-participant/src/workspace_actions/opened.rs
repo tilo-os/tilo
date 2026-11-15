@@ -79,6 +79,12 @@ impl Workspace {
         if !self.when_opened {
             return false;
         }
+        self.ask_for(workspace_id, needs)
+    }
+
+    /// [`Self::ask`] whether or not the workspace replayed everything it held when this member
+    /// joined: a record made after that is sent to a member only once it asked for it.
+    pub(super) fn ask_for(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
         let (Needs::Read { app_id, record } | Needs::Act { app_id, record }) = needs else {
             return false;
         };
@@ -136,7 +142,10 @@ impl Worker {
                 act: false,
             };
         }
+        // An app's open of the workspace's own provider shows its record on the layout.
+        let on_layout = application_provider(&request.target.provider).is_some();
         match self.opened_record(request) {
+            Some((app_id, record)) if on_layout => Keys::Shown { app_id, record },
             Some((app_id, record)) => Keys::Record {
                 app_id,
                 record,
@@ -144,6 +153,32 @@ impl Worker {
             },
             None => invoke_keys(request),
         }
+    }
+
+    /// Whether the layout of `workspace_id` that `keys` shows a record on has opened here, or the
+    /// workspace's host answered it holds none. The layout is asked for whatever the workspace
+    /// replayed: a page writes it once it opens the workspace, often after this member joined,
+    /// and the host sends a record made since only to a member that asked for it. Then it is
+    /// handed its keys as the record a request reads is ([`Worker::opened`]).
+    pub(super) fn layout_opened(&mut self, workspace_id: WorkspaceId, keys: &Keys) -> bool {
+        if !matches!(keys, Keys::Shown { .. }) {
+            return true;
+        }
+        let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
+            return true;
+        };
+        let Some(cluster_id) = workspace.cluster_id(workspace_id) else {
+            return true;
+        };
+        let layout = crate::participant::desktop_route(&cluster_id);
+        let needs = Needs::Read {
+            app_id: &layout.app_id,
+            record: &layout.record,
+        };
+        if workspace.ask_for(workspace_id, needs) {
+            return false;
+        }
+        self.opened(workspace_id, needs)
     }
 
     /// The app and record an open of an app in `request` shows, when the

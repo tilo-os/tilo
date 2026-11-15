@@ -641,3 +641,112 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+
+/// A visitor's page writes its layout after the host's action service joined the public workspace,
+/// which sends a record only to a device that opened it. Their agent then opens their Notes: the
+/// window lands on the layout the page wrote, beside its strip, in the shape the page reads. The
+/// service once never asked for the layout, started one of its own beside the page's, and the
+/// page, holding its own, never showed the agent's window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agents_window_lands_on_the_layout_a_page_wrote_after_the_service_joined() {
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Owner", 1);
+    let host = enrol(
+        &owner,
+        "lounge-host",
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    let state = crate::support::scratch_dir();
+    let hosted = start(&owner, &host, state.path()).await;
+    let workspaces = hosted.relay.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .publish(
+            &lounge.workspace,
+            &host.cert,
+            Listing {
+                description: "Everyone".into(),
+                default_role: Role::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    let workspace = lounge.workspace.clone();
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Visitor", 2);
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    admit_person(&hosted, &host, &workspace, &browser_device, Role::Editor).await;
+    let mut browser = open_admitted_peer(&hosted, &browser_device, &host, &workspace).await;
+    let mut founded =
+        crate::common::open_in(&workspace, NOTES, "visitor", ReplicaActor::Owner, Seed::New)
+            .unwrap();
+    let notes_record = founded.wire_record().to_owned();
+    crate::support::written(
+        &browser.peer,
+        &DocumentRoute {
+            app_id: NOTES.into(),
+            cluster_id: workspace.clone(),
+            record: notes_record.clone(),
+        },
+        &founded.take_mutation().unwrap().unwrap(),
+    )
+    .await;
+    admit_person(&hosted, &host, &workspace, &computer, Role::Editor).await;
+    let agent = open_admitted_peer(&hosted, &computer, &host, &workspace).await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+    let server = McpServer::new(actions.clone(), workspace.clone(), person.clone())
+        .with_surface(Surface::Agent)
+        .with_agent_run("run-3", "Claude Code");
+    // The service joins the workspace to answer the agent's first look.
+    let (apps, failed) = super::agent_mcp::tool(&server, "tilo_ls", json!({})).await;
+    assert!(!failed, "{apps}");
+
+    // Only then does the page write its layout: the workspace sends it to nobody who did not
+    // open it.
+    browser.put_layout();
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+
+    let windows = tilo_runtime::mcp_windows::AgentWindows::new(actions, person, workspace.clone());
+    windows
+        .changed(
+            vec![tilo_runtime::mcp::ActedRecord {
+                app: NOTES.into(),
+                record: notes_record.clone(),
+            }],
+            None,
+        )
+        .await;
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if let Some(layout) = browser.layout()
+            && layout
+                .records
+                .iter()
+                .any(|(tab, record)| *record == notes_record && layout.tree.tab(*tab).is_some())
+        {
+            let strips: Vec<u64> = layout
+                .tree
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .map(|strip| strip.id.0)
+                .collect();
+            assert!(
+                strips.contains(&10),
+                "on the layout the page wrote, its strip kept: {strips:?}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the agent's Notes never reached the page's layout: {:?}",
+            browser.layout()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

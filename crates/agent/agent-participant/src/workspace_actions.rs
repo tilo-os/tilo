@@ -1438,7 +1438,7 @@ impl Worker {
             // The workspace is in hand before the change is asked for below,
             // so a change that lands in between still wakes this thread.
             drop(self.membership(workspace_id));
-            if !self.ready(workspace_id, keys.needs()) {
+            if !self.ready(workspace_id, &keys) {
                 self.hold(workspace_id, queued, job);
                 return;
             }
@@ -1499,7 +1499,7 @@ impl Worker {
         } in waiting
         {
             let keys = self.keys(&job);
-            if job.workspace() == Some(workspace_id) && !self.ready(workspace_id, keys.needs()) {
+            if job.workspace() == Some(workspace_id) && !self.ready(workspace_id, &keys) {
                 self.joining
                     .entry(workspace_id)
                     .or_default()
@@ -1517,12 +1517,15 @@ impl Worker {
 
     /// Whether a request for `workspace_id` can run now: the workspace is
     /// joined, or it could not be joined at all, which the request reports;
-    /// and what it reads has opened, or the host holds no keys to hand it.
-    fn ready(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
+    /// and what it reads has opened, or the host holds no keys to hand it;
+    /// and for an open that shows a record on the layout, the layout too.
+    fn ready(&mut self, workspace_id: WorkspaceId, keys: &Keys) -> bool {
         if !self.joined(workspace_id) {
             return false;
         }
-        matches!(needs, Needs::Joined) || self.opened(workspace_id, needs)
+        let needs = keys.needs();
+        (matches!(needs, Needs::Joined) || self.opened(workspace_id, needs))
+            && self.layout_opened(workspace_id, keys)
     }
 
     /// Hand this device the host's keys for the records of `workspace_id`
