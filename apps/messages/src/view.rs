@@ -453,15 +453,38 @@ fn workspace_people(cx: &ViewCx<Messages>) -> Vec<WorkspacePerson> {
         .collect()
 }
 
-pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
+/// The services the host that mounts Messages lent it, taken once for the
+/// window: the view is built again when the workspace's people change, and a
+/// rebuild finds them here rather than gone.
+#[derive(Clone, Default)]
+pub(crate) struct Services {
+    pub(crate) history: Option<tilo_messaging::HistoryClient>,
+    pub(crate) enrollment: Option<tilo_messaging::EnrollmentClient>,
+    pub(crate) messaging: Option<tilo_messaging::MessagingClient>,
+}
+
+impl Services {
+    pub(crate) fn lent(cx: &ViewCx<Messages>) -> Self {
+        if !cx.mode().is_live() || cx.is_past() {
+            return Self::default();
+        }
+        Self {
+            history: cx.take_lent(),
+            enrollment: cx.take_lent(),
+            messaging: cx.take_lent(),
+        }
+    }
+}
+
+pub(super) fn build(cx: &ViewCx<Messages>, services: &Services) -> Element {
     let sources = sources(cx);
     let selection = LocalState::new(Selection::default());
     let live = cx.mode().is_live() && !cx.is_past();
-    let (sending, held_drafts) = sending_and_drafts(cx, live, sources.tilo);
+    let (sending, held_drafts) = sending_and_drafts(cx, live, sources.tilo, services);
     let history = crate::history::HistoryView::new(
         sending
             .history()
-            .or_else(|| live.then(|| cx.take_lent()).flatten()),
+            .or_else(|| live.then(|| services.history.clone()).flatten()),
         cx.me(),
         sources.tilo,
     );
@@ -472,7 +495,7 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     }
     let setup = crate::setup::SetupView::new(
         sending.client(),
-        live.then(|| enrollment(cx)).flatten(),
+        live.then(|| enrollment(services)).flatten(),
         cx.me(),
     );
     let groups = crate::groups::GroupsView::new(sending.client());
@@ -563,8 +586,10 @@ fn inherited() -> Option<(
 }
 
 /// Account enrollment: lent by a host, else the messaging service's.
-fn enrollment(cx: &ViewCx<Messages>) -> Option<tilo_messaging::EnrollmentClient> {
-    cx.take_lent()
+fn enrollment(services: &Services) -> Option<tilo_messaging::EnrollmentClient> {
+    services
+        .enrollment
+        .clone()
         .or_else(|| inherited().map(|(enrollment, _)| enrollment))
 }
 
@@ -574,6 +599,7 @@ fn sending_and_drafts(
     cx: &ViewCx<Messages>,
     live: bool,
     direct: bool,
+    services: &Services,
 ) -> (
     crate::sending::Sending,
     Option<PersonRecord<crate::drafts::MessageDrafts>>,
@@ -581,7 +607,9 @@ fn sending_and_drafts(
     let drafts = cx.person::<crate::drafts::MessageDrafts>();
     let sending = crate::sending::Sending::new(
         live.then(|| {
-            cx.take_lent()
+            services
+                .messaging
+                .clone()
                 .or_else(|| inherited().map(|(_, messaging)| messaging))
         })
         .flatten(),

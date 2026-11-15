@@ -277,7 +277,8 @@ impl ResourceApp for MessagesShell {
     }
     fn view(cx: &mut ViewCx<Messages>) -> Element {
         let people = cx.people();
-        cx.switch(&people.revision(), move |cx, _| view::build(cx))
+        let services = view::Services::lent(cx);
+        cx.switch(&people.revision(), move |cx, _| view::build(cx, &services))
     }
     /// Open Contacts, where the people you message are added.
     fn local_operations() -> Vec<ui::tilo_actions::ActionSpec> {
