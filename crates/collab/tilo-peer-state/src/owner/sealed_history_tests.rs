@@ -603,6 +603,106 @@ fn relay(member: &Enrolled, messages: impl IntoIterator<Item = NeighbourMsg>) {
     }
 }
 
+/// A run of relayed documents taken in one owner turn is decided as each would be alone: the
+/// answers come in the documents' order, a document the member refuses changes nothing of those
+/// around it, and the member reads the record as one that took the same documents one at a time
+/// does. The run is committed once and a document taken alone once; a run of none, and one of
+/// nothing the member takes, are not committed at all.
+#[tokio::test]
+async fn a_run_of_relayed_documents_is_decided_as_each_would_be_alone() {
+    let (fixture, mut host, governor_key) = governed_fixture_at(tilo_clock::wall());
+    let alone = enrolled_with(fixture.clone());
+    let together = enrolled_with(fixture);
+    let (_, keys) = rotated_channel();
+    let origin = TransportOrigin::RetainedRelayDelta(governor_key.verifying_key().to_bytes());
+    let mut relayed = written_at(
+        &mut host,
+        &base(&alone.owner, alone.workspace),
+        &keys,
+        &governor_key,
+        alone.now,
+    );
+    // The third write arrives damaged on its way, and then as its author signed it.
+    let mut damaged = relayed[2].clone();
+    let NeighbourMsg::AppDocument { envelope, .. } = &mut damaged else {
+        panic!("a document write");
+    };
+    envelope.signature.0[0] ^= 1;
+    relayed.insert(2, damaged.clone());
+    let generation = |member: &Enrolled| {
+        member
+            .owner
+            .with_current(member.workspace, |view| Ok(view.generation()))
+            .unwrap()
+    };
+    let (before_alone, before_together) = (generation(&alone), generation(&together));
+
+    let none = together
+        .owner
+        .receive_batch(together.workspace, Vec::new(), together.now)
+        .unwrap();
+    assert!(none.is_empty(), "no document, no answer");
+    let refused = together
+        .owner
+        .receive_batch(together.workspace, vec![(origin, damaged)], together.now)
+        .unwrap();
+    assert!(
+        matches!(refused.as_slice(), [Err(_)]),
+        "a damaged document is refused"
+    );
+    assert_eq!(
+        generation(&together),
+        before_together,
+        "a run the member takes nothing of is not committed"
+    );
+
+    let one_by_one: Vec<bool> = relayed
+        .iter()
+        .map(|message| {
+            alone
+                .owner
+                .receive(alone.workspace, origin, message.clone(), alone.now)
+                .is_ok()
+        })
+        .collect();
+    let run = relayed.into_iter().map(|message| (origin, message));
+    let at_once: Vec<bool> = together
+        .owner
+        .receive_batch(together.workspace, run.collect(), together.now)
+        .unwrap()
+        .iter()
+        .map(Result::is_ok)
+        .collect();
+    assert_eq!(
+        one_by_one,
+        [true, true, false, true, true, true],
+        "only the damaged document is refused"
+    );
+    assert_eq!(
+        at_once, one_by_one,
+        "a run is answered document by document, in their order"
+    );
+    assert_eq!(
+        generation(&alone),
+        before_alone.checked_add(5).unwrap(),
+        "each document taken alone is committed alone, the refused one not at all"
+    );
+    assert_eq!(
+        generation(&together),
+        before_together.checked_add(1).unwrap(),
+        "the run is committed once"
+    );
+    let everything: BTreeSet<String> = keys_typed('b', 5).collect();
+    let read = |member: &Enrolled| opened(&member.owner, member.workspace, &keys);
+    converge(
+        [
+            ("the member that took each alone", read(&alone)),
+            ("the member that took the run", read(&together)),
+        ],
+        &everything,
+    );
+}
+
 /// Every one of `documents` holds every change of `everything`, and all are one document.
 fn converge<const N: usize>(documents: [(&str, AutoCommit); N], everything: &BTreeSet<String>) {
     let mut heads = Vec::new();
