@@ -49,7 +49,10 @@ const REFRESH: Duration = Duration::from_millis(16);
 
 /// The panel, as the session starts it.
 fn panel() -> Surface {
-    tilo_session::quick_settings::surface_of(env!("CARGO_BIN_EXE_tilo-quick-settings"))
+    tilo_session::quick_settings::surface_of(tilo_test_env::sibling_binary(
+        "tilo-quick-settings",
+        "tilo-quick-settings",
+    ))
 }
 
 #[test]
