@@ -206,13 +206,15 @@ pub(super) fn pending_or(answer: Result<String>) -> Result<String> {
 
 /// Whether the workspace said it was too slow to answer, rather than that it refused. A step it
 /// does not know (`Unknown or unowned invocation`) never reached it while the connection was
-/// busy: asked again under its same id, it runs once.
+/// busy, and one whose save its host did not confirm in time (`save_unconfirmed`) may or may not
+/// be saved: asked again under its same id, either runs once.
 fn slow(error: &anyhow::Error) -> bool {
     let said = format!("{error:#}");
     said.contains("did not answer within")
         || said.contains("not connected to the host")
         || said.contains("did not answer in time")
         || said.contains("Unknown or unowned invocation")
+        || said.contains("save_unconfirmed")
 }
 
 impl Workspace for Held {
@@ -323,6 +325,7 @@ mod slow_tests {
             "Unknown or unowned invocation",
             "remote actions are unavailable: the device did not answer in time",
             "the host did not answer within 30 s",
+            "failed: save_unconfirmed: the host has not confirmed saving the change within a minute",
         ] {
             assert!(slow(&anyhow::anyhow!(said)), "{said}");
         }
