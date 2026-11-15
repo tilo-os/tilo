@@ -95,11 +95,13 @@ print("branch:", branch.name, "holds:", letter.fields["title"])
 
 # Change the branch: the template stays as it was.
 letter.favorite = True
-print("favorite in the branch:", acme.read("snippets/Welcome letter").fields["favorite"])
-print("favorite in the template:", template.read("snippets/Welcome letter").fields["favorite"])
+assert acme.read("snippets/Welcome letter").fields["favorite"]
+assert not template.read("snippets/Welcome letter").fields["favorite"]
+print("the branch changed, the template did not")
 ```
 
 ```typescript example=branch-workspace
+import assert from "node:assert";
 import { Tilo } from "tilo-sdk";
 
 const tilo = new Tilo();
@@ -118,8 +120,9 @@ console.log("branch:", branch.name, "holds:", letter.fields.title);
 
 // Change the branch: the template stays as it was.
 await letter.edit(["favorite"], true);
-console.log("favorite in the branch:", (await acme.read("snippets/Welcome letter")).fields.favorite);
-console.log("favorite in the template:", (await template.read("snippets/Welcome letter")).fields.favorite);
+assert.ok((await acme.read("snippets/Welcome letter")).fields.favorite);
+assert.ok(!(await template.read("snippets/Welcome letter")).fields.favorite);
+console.log("the branch changed, the template did not");
 ```
 
 A workspace also branches itself: `workspace.branch("Onboarding: Acme")`. A key for the branch is minted
