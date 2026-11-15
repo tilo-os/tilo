@@ -69,6 +69,24 @@ fn a_dev_sessions_apps_are_installed_packages_it_plans_and_seeds_from() {
 /// Every app of the development session is a package the session's store holds, built from
 /// `apps/tl` and installed with its signed manifest.
 fn every_dev_session_app_is_an_installed_package(session: &DevSession) {
+    // What is read below is what the install answered: the session's apps and its shell, so the
+    // readings are of six packages and never of none.
+    for app in tilo_session::seeded_apps::APPS
+        .into_iter()
+        .chain(["so.tilo.shell"])
+    {
+        assert!(
+            session.installed.iter().any(|installed| installed == app),
+            "{app} is an app the install answered: {:?}",
+            session.installed
+        );
+    }
+    assert_eq!(
+        session.installed.len(),
+        6,
+        "the install answered the session's apps and nothing besides: {:?}",
+        session.installed
+    );
     for app in &session.installed {
         let app = app.as_str();
         let found = app_catalogue::apps::read_one_from_env(app)
@@ -202,6 +220,18 @@ fn the_installed_apps_connectors_are_planned_from_their_manifests(session: &DevS
             .as_deref(),
         Some(format!("{part} is not installed here").as_str()),
         "a connector is planned only for an app the store holds"
+    );
+    // And an app the store does hold has no connector planned where no launcher could start it:
+    // the session says which of the two is missing.
+    let unlaunched = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+    assert_eq!(
+        unlaunched
+            .plan_connector("so.tilo.lang.mail", "imap", &workspace)
+            .map(|planned| planned.args)
+            .err()
+            .as_deref(),
+        Some("no tilo-launcher is installed, so no connector can start"),
+        "a session without a launcher plans no connector"
     );
 }
 
