@@ -121,6 +121,14 @@ pub type ReadLoad = Box<dyn Fn(&str) -> Option<HostLoad> + Send + Sync>;
 /// How long a waiting VM counts as demand after it last asked.
 const WAITING_FOR_MS: u64 = 15_000;
 
+/// Asks the host that answers Status at an address one request ([`Request::Branch`],
+/// [`Request::Delete`]), `None` when it does not answer.
+pub type Forward = Box<dyn Fn(&str, &Request) -> Option<Reply> + Send + Sync>;
+
+/// How long a host is given to answer what a placer forwards: a branch of a sleeping VM wakes it,
+/// syncs it and suspends it again.
+const FORWARD_PATIENCE: Duration = Duration::from_secs(600);
+
 /// Places VMs on the hosts [`Scale`] names, and scales them.
 pub struct Placer {
     record_path: PathBuf,
@@ -130,6 +138,7 @@ pub struct Placer {
     scale: Box<dyn Scale>,
     read: ReadLoad,
     clock: super::vm::Clock,
+    forward: Forward,
 }
 
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -162,7 +171,15 @@ impl Placer {
             scale,
             read,
             clock,
+            forward: Box::new(ask_host),
         })
+    }
+
+    /// Forward branches and deletions with `forward` rather than over the network.
+    #[must_use]
+    pub fn with_forward(mut self, forward: Forward) -> Self {
+        self.forward = forward;
+        self
     }
 
     fn views(&self) -> Result<Vec<HostView>, String> {
@@ -270,8 +287,115 @@ impl Placer {
     pub fn handle(&self, request: Request) -> Reply {
         match request {
             Request::Place { vm } => self.place(&vm),
+            Request::Branch { vm, from } => self.branch(&vm, &from),
+            Request::Delete {
+                workspace,
+                environment,
+            } => self.delete(&workspace, &environment),
             _ => Reply::Error("a placer answers Place only".to_owned()),
         }
+    }
+
+    /// Where the host `name` answers, when it is one of the hosts there are.
+    fn address_of(&self, name: &str) -> Result<Option<String>, String> {
+        Ok(self
+            .scale
+            .hosts()?
+            .into_iter()
+            .find(|host| host.name == name)
+            .map(|host| host.status))
+    }
+
+    /// Branch `from`'s VM into `vm` on the host that holds `from`'s ([`Request::Branch`]): a disk
+    /// is copied only inside its host's filesystem, so the branch stays there, and is placed there
+    /// once the host made it.
+    pub fn branch(&self, vm: &VmRequest, from: &str) -> Reply {
+        let id = format!("{}/{}", vm.workspace, vm.environment);
+        let (holder, placed) = {
+            let record = lock(&self.record);
+            (
+                record
+                    .placed
+                    .get(&format!("{from}/{}", vm.environment))
+                    .cloned(),
+                record.placed.get(&id).cloned(),
+            )
+        };
+        let Some(holder) = holder else {
+            return Reply::Error(format!(
+                "workspace {from} has no Linux VM yet, so there is nothing to branch: a new \
+                 workspace's VM starts as every workspace's does, at its first Linux command"
+            ));
+        };
+        if let Some(placed) = placed
+            && placed != holder
+        {
+            return Reply::Error(format!(
+                "workspace {} already has a VM, on {placed}; a branch is made as a new one",
+                vm.workspace
+            ));
+        }
+        let request = Request::Branch {
+            vm: vm.clone(),
+            from: from.to_owned(),
+        };
+        match self.forward_to(&holder, &request) {
+            Reply::Done => {
+                let record = {
+                    let mut record = lock(&self.record);
+                    record.placed.insert(id, holder);
+                    record.clone()
+                };
+                self.save(&record)
+                    .map_or_else(Reply::Error, |()| Reply::Done)
+            }
+            other => other,
+        }
+    }
+
+    /// Delete the VM on the host that holds it and forget where it was ([`Request::Delete`]).
+    /// One placed nowhere is deleted already; one whose host is away stays placed until it answers.
+    pub fn delete(&self, workspace: &str, environment: &str) -> Reply {
+        let id = format!("{workspace}/{environment}");
+        let placed = lock(&self.record).placed.get(&id).cloned();
+        let Some(holder) = placed else {
+            return Reply::Done;
+        };
+        let request = Request::Delete {
+            workspace: workspace.to_owned(),
+            environment: environment.to_owned(),
+        };
+        match self.forward_to(&holder, &request) {
+            Reply::Done => {
+                let record = {
+                    let mut record = lock(&self.record);
+                    record.placed.remove(&id);
+                    record.clone()
+                };
+                self.save(&record)
+                    .map_or_else(Reply::Error, |()| Reply::Done)
+            }
+            other => other,
+        }
+    }
+
+    /// `request` asked of the host `name`, or why it was not.
+    fn forward_to(&self, name: &str, request: &Request) -> Reply {
+        let address = match self.address_of(name) {
+            Ok(Some(address)) => address,
+            Ok(None) => {
+                return Reply::Busy(format!(
+                    "{name}, which holds the VM, is not one of the hosts up now; ask again once it \
+                     is"
+                ));
+            }
+            Err(error) => return Reply::Error(format!("the hosts cannot be counted: {error}")),
+        };
+        (self.forward)(&address, request).unwrap_or_else(|| {
+            Reply::Busy(format!(
+                "{name}, which holds the VM, does not answer; ask again once it is up"
+            ))
+        })
     }
 }
 
@@ -322,6 +446,18 @@ impl Scale for FixedHosts {
         }
         Ok(())
     }
+}
+
+/// `request` asked of the host whose status listener is at `address`, or `None` when it does not
+/// answer.
+#[must_use]
+pub fn ask_host(address: &str, request: &Request) -> Option<Reply> {
+    use std::net::ToSocketAddrs as _;
+    let socket = address.to_socket_addrs().ok()?.next()?;
+    let mut stream = std::net::TcpStream::connect_timeout(&socket, Duration::from_secs(2)).ok()?;
+    stream.set_read_timeout(Some(FORWARD_PATIENCE)).ok()?;
+    control::FRAMING.write_value(&mut stream, request).ok()?;
+    control::FRAMING.read_value::<_, Reply>(&mut stream).ok()?
 }
 
 /// A host's load, read from its status listener at `address`, or `None`
@@ -658,5 +794,158 @@ mod tests {
         for wrong in ["vm-host-0", "=127.0.0.1:7701", "vm-host-0=", ""] {
             assert!(FixedHosts::parse(wrong).is_err(), "{wrong:?} names a host");
         }
+    }
+
+    type Asked = Arc<Mutex<Vec<(String, Request)>>>;
+
+    /// A placer of two hosts whose forwards are recorded and answered with what the test sets: the
+    /// first host full, so `ws1` is placed on the second, and then with room.
+    fn two_hosts(dir: &Path) -> (Placer, Asked, Arc<Mutex<Reply>>) {
+        let loads = Arc::new(Mutex::new(BTreeMap::from([
+            (
+                "addr-0".to_owned(),
+                HostLoad {
+                    budget_mib: Some(12 * GIB),
+                    awake_mib: 12 * GIB,
+                    waiting_mib: 0,
+                },
+            ),
+            (
+                "addr-1".to_owned(),
+                HostLoad {
+                    budget_mib: Some(12 * GIB),
+                    awake_mib: 0,
+                    waiting_mib: 0,
+                },
+            ),
+        ])));
+        let asked: Asked = Arc::default();
+        let answer = Arc::new(Mutex::new(Reply::Done));
+        let reader = Arc::clone(&loads);
+        let (told, answering) = (Arc::clone(&asked), Arc::clone(&answer));
+        let placer = Placer::new(
+            &dir.join("placements.json"),
+            2,
+            Box::new(FixedHosts::parse("vm-host-0=addr-0,vm-host-1=addr-1").unwrap()),
+            Box::new(move |address| reader.lock().unwrap().get(address).copied()),
+            Arc::new(|| 1_000),
+        )
+        .unwrap()
+        .with_forward(Box::new(move |address, request| {
+            told.lock()
+                .unwrap()
+                .push((address.to_owned(), request.clone()));
+            Some(answering.lock().unwrap().clone())
+        }));
+        assert_eq!(placer.place(&vm_request("ws1")), on("vm-host-1"));
+        loads.lock().unwrap().get_mut("addr-0").unwrap().awake_mib = 0;
+        (placer, asked, answer)
+    }
+
+    fn vm_request(workspace: &str) -> VmRequest {
+        VmRequest {
+            workspace: workspace.into(),
+            environment: "default".into(),
+            account: "acct-1".into(),
+            size: VmSize::Small,
+        }
+    }
+
+    fn on(host: &str) -> Reply {
+        Reply::Placed { host: host.into() }
+    }
+
+    fn branch(workspace: &str, from: &str) -> Request {
+        Request::Branch {
+            vm: vm_request(workspace),
+            from: from.into(),
+        }
+    }
+
+    fn delete(workspace: &str) -> Request {
+        Request::Delete {
+            workspace: workspace.into(),
+            environment: "default".into(),
+        }
+    }
+
+    #[test]
+    fn a_branch_is_placed_on_its_sources_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let (placer, asked, answer) = two_hosts(dir.path());
+        let Reply::Error(message) = placer.handle(branch("ws2", "ws-none")) else {
+            panic!("a workspace placed nowhere has no VM to branch");
+        };
+        assert!(
+            message.starts_with("workspace ws-none has no Linux VM yet"),
+            "{message}"
+        );
+        assert!(asked.lock().unwrap().is_empty(), "no host was asked");
+
+        *answer.lock().unwrap() = Reply::Error("no".into());
+        assert_eq!(
+            placer.handle(branch("ws2", "ws1")),
+            Reply::Error("no".into()),
+            "what the host answers is the answer"
+        );
+        assert_eq!(
+            placer.place(&vm_request("ws2")),
+            on("vm-host-0"),
+            "a branch its host refused is placed nowhere"
+        );
+
+        *answer.lock().unwrap() = Reply::Done;
+        assert_eq!(placer.handle(branch("ws3", "ws1")), Reply::Done);
+        assert_eq!(
+            asked.lock().unwrap().last(),
+            Some(&("addr-1".to_owned(), branch("ws3", "ws1"))),
+            "the host holding the source is asked"
+        );
+        assert_eq!(
+            placer.place(&vm_request("ws3")),
+            on("vm-host-1"),
+            "the branch runs where its disk is, though another host has room"
+        );
+        let Reply::Error(message) = placer.handle(branch("ws2", "ws1")) else {
+            panic!("a workspace placed on another host already has its VM there");
+        };
+        assert!(
+            message.contains("ws2 already has a VM, on vm-host-0"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_deleted_vm_is_forgotten_once_its_host_deleted_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (placer, asked, answer) = two_hosts(dir.path());
+        assert_eq!(placer.handle(delete("ws1")), Reply::Done);
+        assert_eq!(
+            asked.lock().unwrap().last(),
+            Some(&("addr-1".to_owned(), delete("ws1")))
+        );
+        assert_eq!(
+            placer.place(&vm_request("ws1")),
+            on("vm-host-0"),
+            "a deleted VM is placed as a new one"
+        );
+        let before = asked.lock().unwrap().len();
+        assert_eq!(placer.handle(delete("ws-none")), Reply::Done);
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            before,
+            "placed nowhere, deleted already"
+        );
+
+        *answer.lock().unwrap() = Reply::Error("busy deleting".into());
+        assert_eq!(
+            placer.handle(delete("ws1")),
+            Reply::Error("busy deleting".into())
+        );
+        assert_eq!(
+            placer.place(&vm_request("ws1")),
+            on("vm-host-0"),
+            "a VM its host did not delete stays where it is"
+        );
     }
 }

@@ -1339,7 +1339,8 @@ impl Service {
 impl Service {
     /// Answer [`Request::Status`] on `listener`, and nothing else: what a
     /// placer reads of this host over the network. Waking, stopping and usage
-    /// stay on the service's own socket.
+    /// stay on the service's own socket. A placer also forwards here the
+    /// branches and deletions it places ([`Request::Branch`], [`Request::Delete`]).
     pub fn serve_status(self: &Arc<Self>, listener: std::net::TcpListener) {
         let service = Arc::clone(self);
         std::thread::spawn(move || {
@@ -1353,6 +1354,9 @@ impl Service {
                     if let Ok(Some(request)) = FRAMING.read_value::<_, Request>(&mut stream) {
                         let reply = match request {
                             Request::Status => service.handle(Request::Status),
+                            request @ (Request::Branch { .. } | Request::Delete { .. }) => {
+                                service.handle(request)
+                            }
                             _ => Reply::Error("this listener answers Status only".to_owned()),
                         };
                         let _ = FRAMING.write_value(&mut stream, &reply);
@@ -2435,6 +2439,69 @@ mod tests {
                 .iter()
                 .all(|vm| vm.vm != "ws1/default"),
             "a restarted host does not find it"
+        );
+    }
+
+    /// The placer and a host as they run: the placer forwards over the host's status listener.
+    #[test]
+    fn a_placer_branches_and_deletes_on_the_host_over_its_status_listener() {
+        use super::super::placement::{FixedHosts, Placer, read_load};
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        with_disk(&config, "ws1", "acct-1", VmSize::Small, b"one", &[]);
+        let service = Arc::new(open_at(&config, 0));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        service.serve_status(listener);
+        let placer = Placer::new(
+            &dir.path().join("placements.json"),
+            1,
+            Box::new(FixedHosts::parse(&format!("vm-host-0={address}")).unwrap()),
+            Box::new(read_load),
+            Arc::new(|| 1_000),
+        )
+        .unwrap();
+        assert_eq!(
+            placer.place(&request("ws1", "acct-1", VmSize::Small)),
+            Reply::Placed {
+                host: "vm-host-0".into()
+            }
+        );
+        assert_eq!(
+            placer.handle(Request::Branch {
+                vm: request("ws2", "acct-1", VmSize::Small),
+                from: "ws1".into(),
+            }),
+            Reply::Done
+        );
+        assert!(config.files("ws2", "default").disk().is_file());
+        assert_eq!(
+            placer.handle(Request::Delete {
+                workspace: "ws2".into(),
+                environment: "default".into(),
+            }),
+            Reply::Done
+        );
+        assert!(!config.files("ws2", "default").state.exists());
+        assert_eq!(
+            held(&service),
+            [("ws1/default".into(), "acct-1".into(), "Off".into())]
+        );
+        let mut stream = std::net::TcpStream::connect(&address).unwrap();
+        FRAMING
+            .write_value(
+                &mut stream,
+                &Request::Stop {
+                    workspace: "ws1".into(),
+                    environment: "default".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            FRAMING.read_value::<_, Reply>(&mut stream).unwrap(),
+            Some(Reply::Error("this listener answers Status only".into())),
+            "the network stops and wakes nothing"
         );
     }
 }

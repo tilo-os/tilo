@@ -48,7 +48,8 @@ usage: tilo-legacy hosted <command>
                          the reserve, the VMs' balloons are asked for memory
                          back before any wake is refused.
                          --status-listen answers Status alone over TCP, for a
-                         placer.
+                         placer, and the branches and deletions a placer
+                         forwards.
                          --relay-endpoint serves the workspaces' Browser in
                          their VMs: ADDR:PORT is where the browser session in a
                          VM reaches the relay, the one address besides the
