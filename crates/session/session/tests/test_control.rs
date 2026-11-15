@@ -544,7 +544,7 @@ fn a_sentence_typed_through_the_socket_reaches_the_canvas_caret_in_order() {
 }
 
 /// A note of the seeded notes app placed on the framed canvas is seen in the snapshot: its
-/// frame's title is drawn where the shell lays it out, not cut off by a canvas with no room.
+/// title is drawn where the shell lays it out, not cut off by a canvas with no room.
 #[test]
 fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     let _settled = ui::motion::testing::settled();
@@ -608,18 +608,11 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     for _ in 0..50 {
         session.step(Duration::from_millis(1)).expect("step");
     }
-    // The frame names its window the way every surface does: the window's own title and its
-    // app's own name, resolved once by the session.
-    let shown = session
-        .layout()
-        .borrow()
-        .reading()
-        .places
-        .iter()
-        .find(|place| place.title == "Groceries")
-        .map(|place| place.name.clone())
-        .expect("the shell holds the note's place");
-    let title = session.shell_control(&shown).expect("the frame's title");
+    // A place drawn as content goes by its own title on the canvas: it is not a window, so its
+    // app's name is not joined to it.
+    let title = session
+        .shell_control("Groceries")
+        .expect("the place's title");
 
     let png = root.path().join("shot.png");
     let answer = ask(
@@ -635,7 +628,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     let shot = image::open(&png).expect("a PNG").into_rgba8();
     assert!(
         written(&shot, title) > 20,
-        "the frame's title is drawn where it is laid out, {title:?}"
+        "the place's title is drawn where it is laid out, {title:?}"
     );
 }
 

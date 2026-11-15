@@ -118,15 +118,19 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
     let root = private_home();
     let mut session = session(root.path());
 
-    // The person's mails on the canvas: the inbox, at its own frame size.
+    // The person's mails on the canvas: the inbox, at the canvas's frame size narrowed to the
+    // room in view right of the click, so all of it stays in view.
     enter_text(&mut session, "my mails");
     let inbox = wait_for(&mut session, "the inbox on the canvas", |session| {
         place_showing(session, "so.tilo.lang.mail")
     });
-    assert_eq!(
-        (inbox.3, inbox.4),
-        (720, 520),
-        "the inbox takes the canvas's frame size: {inbox:?}"
+    let (_, _, canvas_width, _) = on_screen(&session, CANVAS).expect("the canvas");
+    assert!(
+        inbox.4 == 520
+            && inbox.3 <= 720
+            && i32::try_from(inbox.1 + inbox.3).is_ok_and(|right| f64::from(right) <= canvas_width),
+        "the inbox takes the canvas's frame size, as much of it as is in view: {inbox:?} on a \
+         canvas {canvas_width} wide"
     );
 
     // The notes the person keeps, opened beside the inbox.
@@ -208,11 +212,12 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     let inbox = wait_for(&mut session, "the inbox on the canvas", |session| {
         place_showing(session, "so.tilo.lang.mail")
     });
+    // A place drawn as content goes by its own title, not joined to its app's name.
     let inbox_name = layout(&session)
         .places
         .into_iter()
         .find(|place| place.record == inbox.0)
-        .map(|place| place.name)
+        .map(|place| place.title)
         .expect("the inbox stands");
     // The widest box drawn for the place's name is the place itself (its frame's group reads the
     // name too): how wide the place is drawn on the canvas.
@@ -260,21 +265,19 @@ fn the_style_shell_menu_has_no_empty_band_above_its_rows() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
-    until(&mut session, "the style menu", |session| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label == "Showing Frames")
+    // The canvas keeps no switch on its bar: the person's own menu holds the styles.
+    let menu = wait_for(&mut session, "the style menu", |session| {
+        crate::common::person_menu(session)
     });
     // Open the style menu by name, as an assistive technology's user does.
     session
-        .press_action("Showing Frames", TargetAction::Activate)
+        .press_action(&menu, TargetAction::Activate)
         .expect("the style menu opens");
     for _ in 0..4 {
         session.step(Duration::from_millis(16)).expect("step");
     }
     // The menu's first row, Strips, and the button it hangs under.
-    let (_, button_y, _, button_h) = on_screen(&session, "Showing Frames").expect("the button");
+    let (_, button_y, _, button_h) = on_screen(&session, &menu).expect("the button");
     let (_, row_y, _, _) = wait_for(&mut session, "the menu's first row", |session| {
         on_screen(session, "Strips")
     });

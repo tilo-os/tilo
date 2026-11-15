@@ -342,16 +342,24 @@ fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_scree
                 "at {width}x{height} the preset switch {switch:?} and the first strip {first:?} stand apart"
             );
         }
-        // The framed canvas: the switch and the canvas stand apart too.
+        // The framed canvas keeps no switch on its bar: the person's own menu holds the presets,
+        // and it and the canvas stand apart too.
         show_preset(&mut session, "so.tilo.shell:frames");
         until(&mut session, "the canvas", |session| {
             within(session, CANVAS, width, height).is_some()
         });
         let canvas = within(&session, CANVAS, width, height).unwrap();
-        let switch = preset_switch(&session, "Frames");
+        let menu = crate::common::person_menu(&session)
+            .and_then(|menu| within(&session, &menu, width, height))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the person's menu holds the presets: {:?}",
+                    session.accessible_labels()
+                )
+            });
         assert!(
-            !intersects(switch, canvas),
-            "at {width}x{height} the preset switch {switch:?} and the canvas {canvas:?} stand apart"
+            !intersects(menu, canvas),
+            "at {width}x{height} the person's menu {menu:?} and the canvas {canvas:?} stand apart"
         );
     }
 }
@@ -1100,12 +1108,12 @@ fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
         on_screen(session, CANVAS).is_some()
     });
 
-    // A tilolang place stands on the canvas first, as the person's work beside the window does.
+    // A tilolang place stands on the canvas first, as the person's work beside the window does. It
+    // is drawn as content, so it goes by its own title.
     let note = notes.first().expect("a note").clone();
     place(&mut session, &note);
-    let shown = shown_as(&session, NOTE_TITLE);
-    until(&mut session, "the placed note's window", |session| {
-        on_screen(session, &shown).is_some()
+    until(&mut session, "the placed note", |session| {
+        on_screen(session, NOTE_TITLE).is_some()
     });
     // A frame whose menu is shut is no surface over the windows: nothing of the shell's takes the
     // keyboard, so what the person types is the window in front's.

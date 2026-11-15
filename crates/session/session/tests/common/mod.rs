@@ -464,10 +464,30 @@ pub fn person_menu(session: &Session) -> Option<String> {
     })
 }
 
+/// What the canvas is called in the language the session speaks: [`CANVAS`] in English, the
+/// shell's own catalogue's word for it in any other.
+pub fn canvas_word() -> String {
+    use tilolang_tilo::tilolang::messages;
+    let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
+    let locale = ui::i18n::I18nManager::current_locale();
+    let catalogue = std::fs::read_to_string(
+        shell
+            .join(messages::LOCALES_DIR)
+            .join(format!("{locale}.ftl")),
+    )
+    .unwrap_or_default();
+    std::fs::read_to_string(shell.join("app.ids"))
+        .unwrap_or_default()
+        .lines()
+        .find_map(|line| line.strip_prefix("canvas = "))
+        .and_then(|id| messages::word(&catalogue, &messages::key_of(id.trim())))
+        .unwrap_or_else(|| CANVAS.to_owned())
+}
+
 /// Whether the shell shows the Frames canvas: its canvas stands, and its bar carries no preset
 /// switch.
 pub fn canvas_shown(session: &Session) -> bool {
-    on_screen(session, CANVAS).is_some()
+    on_screen(session, &canvas_word()).is_some()
         && !session
             .accessible_labels()
             .iter()
@@ -835,9 +855,7 @@ pub fn seeded_session_at(
     // The shell shows the Frames canvas once it says so: what the canvas's own controls are called
     // is the person's language's, so a fixture reads the style, not their words.
     show_preset(&mut session, FRAMES);
-    until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS).is_some()
-    });
+    until(&mut session, "the canvas", |session| canvas_shown(session));
     session
 }
 
