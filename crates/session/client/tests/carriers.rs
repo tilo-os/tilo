@@ -4,12 +4,6 @@
 //! once per [`Carrier`] against a real host running its own packet relay, so a
 //! feature that works over one carrier and not the other fails here.
 //!
-//! The two certification scenarios walk the carriers against one host: each
-//! carrier certifies devices on keys of its own and leaves the host nothing
-//! that waits, so a host started once serves all three. The scenarios that
-//! write to the person's workspace, its plane or a call keep a host per
-//! carrier.
-//!
 //! The device under test reaches the host over the carrier, and so does
 //! whatever approves it (a root-holding laptop, or a page holding the
 //! person's root); the person's other devices that answer it (the one that
@@ -78,6 +72,8 @@ macro_rules! over_each_carrier {
 }
 
 over_each_carrier!(
+    a_root_holding_device_certifies_a_new_one,
+    the_persons_root_pairs_a_new_device,
     documents_sync_both_ways_until_the_device_is_revoked,
     the_workspace_admits_the_device_and_its_live_plane_carries_it,
     the_device_takes_part_in_a_call,
@@ -184,109 +180,75 @@ fn page(
     )
 }
 
-/// The carriers, in the order a scenario that walks them against one host
-/// takes them.
-const CARRIERS: [Carrier; 3] = [Carrier::Direct, Carrier::Relay, Carrier::WebTransport];
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_root_holding_device_certifies_a_new_one() {
+async fn a_root_holding_device_certifies_a_new_one(carrier: Carrier) {
     let ada = Ada::start().await;
-    for carrier in CARRIERS {
-        // Said before the carrier's turn, so a failure anywhere in it names its carrier.
-        eprintln!("a root-holding device certifies a new one over {carrier:?}");
-        let (key, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
-        assert_eq!(
-            host_cert.device_public_key, ada.host_device.cert.device_public_key,
-            "over {carrier:?}"
-        );
-        assert_eq!(
-            cert.user_public_key,
-            ada.root.verifying_key().to_bytes(),
-            "over {carrier:?}"
-        );
-        assert!(!cert.capabilities.can_admit_devices, "over {carrier:?}");
-        // The certificate is this carrier's own device's, not one an earlier carrier left.
-        assert_eq!(
-            cert.device_public_key,
-            key.verifying_key().to_bytes(),
-            "over {carrier:?}"
-        );
-    }
+    let (_, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
+    assert_eq!(
+        host_cert.device_public_key,
+        ada.host_device.cert.device_public_key
+    );
+    assert_eq!(cert.user_public_key, ada.root.verifying_key().to_bytes());
+    assert!(!cert.capabilities.can_admit_devices);
     ada.host.relay.shutdown().await;
 }
 
 /// What a page holding the person's root runs: over the session it already
 /// holds with the host, it lists the device waiting for it and pairs it, each
 /// command its own root-signed approval, binding no endpoint of its own.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_persons_root_pairs_a_new_device() {
+async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     let ada = Ada::start().await;
+    let host = ada.host.over(carrier);
+    let (page_key, page_cert, host_cert) = ada.certified(&host).await;
+    let session = page(&ada.host, carrier, page_key, &page_cert, &host_cert);
     let user = ada.root.verifying_key().to_bytes();
-    for carrier in CARRIERS {
-        // Said before the carrier's turn, so a failure anywhere in it names its carrier.
-        eprintln!("the person's root pairs a new device over {carrier:?}");
-        let host = ada.host.over(carrier);
-        let (page_key, page_cert, host_cert) = ada.certified(&host).await;
-        let session = page(&ada.host, carrier, page_key, &page_cert, &host_cert);
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
-        let asking = tokio::spawn({
-            let host = host.clone();
-            let key = key.clone();
-            async move {
-                certify(&host, user, "Phone", [0; 16], &key, |code| {
-                    let _ = code_tx.send(code.to_owned());
-                })
-                .await
-            }
-        });
-        let shown = tilo_test_env::within("the pairing code", code_rx)
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
+    let asking = tokio::spawn({
+        let host = host.clone();
+        let key = key.clone();
+        async move {
+            certify(&host, user, "Phone", [0; 16], &key, |code| {
+                let _ = code_tx.send(code.to_owned());
+            })
             .await
-            .unwrap();
-        // Until the session first reaches the host it has no endpoint to ask
-        // from, and says so.
-        let waiting = wait_for("the phone to wait for the root", || async {
-            pending_pairings(&tilo_session_client::member_host(&session), &ada.root)
-                .await
-                .ok()?
-                .pop()
-        })
-        .await;
-        assert_eq!(
-            waiting.pairing_code, shown,
-            "the person compares codes over {carrier:?}"
-        );
-        let issued = answer_pairing(
-            &tilo_session_client::member_host(&session),
-            &ada.root,
-            waiting.request_digest,
-            true,
-        )
+        }
+    });
+    let shown = tilo_test_env::within("the pairing code", code_rx)
         .await
-        .unwrap()
-        .expect("an approval issues a certificate");
-        let (cert, host_cert) = asking.await.unwrap().unwrap();
-        assert_eq!(cert, issued, "over {carrier:?}");
-        assert_eq!(
-            cert.device_public_key,
-            key.verifying_key().to_bytes(),
-            "over {carrier:?}"
-        );
-        assert_eq!(
-            host_cert.device_public_key, ada.host_device.cert.device_public_key,
-            "over {carrier:?}"
-        );
-        // Nothing waits once it is answered: the next carrier's device meets a host that holds
-        // no request of this one's.
-        assert!(
-            pending_pairings(&tilo_session_client::member_host(&session), &ada.root)
-                .await
-                .unwrap()
-                .is_empty(),
-            "over {carrier:?}"
-        );
-        session.close();
-    }
+        .unwrap();
+    // Until the session first reaches the host it has no endpoint to ask
+    // from, and says so.
+    let waiting = wait_for("the phone to wait for the root", || async {
+        pending_pairings(&tilo_session_client::member_host(&session), &ada.root)
+            .await
+            .ok()?
+            .pop()
+    })
+    .await;
+    assert_eq!(waiting.pairing_code, shown, "the person compares codes");
+    let issued = answer_pairing(
+        &tilo_session_client::member_host(&session),
+        &ada.root,
+        waiting.request_digest,
+        true,
+    )
+    .await
+    .unwrap()
+    .expect("an approval issues a certificate");
+    let (cert, host_cert) = asking.await.unwrap().unwrap();
+    assert_eq!(cert, issued);
+    assert_eq!(cert.device_public_key, key.verifying_key().to_bytes());
+    assert_eq!(
+        host_cert.device_public_key,
+        ada.host_device.cert.device_public_key
+    );
+    assert!(
+        pending_pairings(&tilo_session_client::member_host(&session), &ada.root)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    session.close();
     ada.host.relay.shutdown().await;
 }
 
