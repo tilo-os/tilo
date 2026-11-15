@@ -521,6 +521,9 @@ impl Widget for BackgroundLayer {
             && let Some(id) = self.card_at(at)
             && self.card_event(&id, event, ctx)
         {
+            // The card took it: the windows under the card and the press away
+            // from what the shell has open never hear of it.
+            *ctx.handled = true;
             return;
         }
         if let [_, _, area] = ctx.taffy.children(ctx.node_id).unwrap_or_default()[..] {

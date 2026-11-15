@@ -304,11 +304,55 @@ mod tests {
     /// A surface with one card up, which keeps what the shell told it.
     struct CardSurface {
         told: Rc<RefCell<Vec<FloatingSurfaceHostMessage>>>,
+        seen: Rc<RefCell<Vec<&'static str>>>,
+        /// Whether the card is still to be asked for.
+        to_ask: bool,
     }
 
     impl ui::widget::FloatingSurfaceProvider for CardSurface {
         fn on_floating_surface_host_message(&mut self, message: &FloatingSurfaceHostMessage) {
             self.told.borrow_mut().push(message.clone());
+        }
+
+        fn take_floating_surface_request(&mut self) -> Option<FloatingSurfaceRequest> {
+            std::mem::take(&mut self.to_ask).then(request)
+        }
+
+        fn active_floating_surface_ids(&self) -> Vec<String> {
+            vec![request().id]
+        }
+
+        fn floating_surface_event(
+            &mut self,
+            id: &str,
+            event: &WindowEvent,
+            _: &mut EventCtx<'_>,
+        ) -> bool {
+            if id != request().id {
+                return false;
+            }
+            match event {
+                WindowEvent::MouseInput { .. } => self.seen.borrow_mut().push("press"),
+                WindowEvent::CursorMoved { .. } => self.seen.borrow_mut().push("move"),
+                _ => return false,
+            }
+            matches!(event, WindowEvent::MouseInput { .. })
+        }
+    }
+
+    /// The windows of the shell the press test lays out: none is placed.
+    struct Tiles;
+
+    impl tilo_desktop_surface::TileSource for Tiles {
+        fn tile(
+            &mut self,
+            _: &tilo_desktop_model::Workspace,
+            tab: &tilo_desktop_model::Tab,
+        ) -> ui::widget::TileHost {
+            ui::widget::TileHost::new(ui::widget::TileContent::Notice {
+                title: tab.title.clone(),
+                detail: String::new(),
+            })
         }
     }
 
@@ -351,6 +395,8 @@ mod tests {
         let told = Rc::new(RefCell::new(Vec::new()));
         let mut surface = CardSurface {
             told: Rc::clone(&told),
+            seen: Rc::default(),
+            to_ask: true,
         };
         let work = Rect::new(0.0, 48.0, 1280.0, 800.0);
         let bar = Rect::new(0.0, 0.0, 1280.0, 48.0);
@@ -402,5 +448,78 @@ mod tests {
             "a card that has not moved is not told again"
         );
         assert_eq!(told.borrow().len(), 2);
+    }
+
+    /// The shell a page has: one window, the cards of its apps standing over
+    /// it. A press on a card's control is the app's that draws the card, and
+    /// the shell keeps the press from what lies under the card.
+    #[test]
+    fn a_press_on_a_card_the_shell_stands_reaches_the_app_that_draws_it() {
+        use tilo_desktop_model::IdMinter;
+        use ui::synthetic_input::{cursor_moved, mouse_press};
+
+        let told = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let surface = CardSurface {
+            told: Rc::clone(&told),
+            seen: Rc::clone(&seen),
+            to_ask: true,
+        };
+        let mut minter = IdMinter::new(7);
+        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Shell", Vec::new());
+        let handle = tilo_desktop_surface::DesktopSurface::new(tree, 7, Box::new(Tiles)).1;
+        let mut layer = BackgroundLayer::new(
+            Box::new(surface),
+            handle,
+            crate::launchpad::CollaborationLaunchpad::new(),
+            Rc::new(Vec::new),
+            Rc::default(),
+            Vec::new(),
+        )
+        .with_cards();
+        let mut taffy = TaffyTree::new();
+        let mut map = std::collections::HashMap::new();
+        let node = layer.build_layout(&mut taffy, &Theme::default(), &mut map);
+        let available = taffy::Size {
+            width: taffy::AvailableSpace::Definite(1024.0),
+            height: taffy::AvailableSpace::Definite(640.0),
+        };
+        taffy
+            .compute_layout_with_measure(node, available, |_, _, _, _, _| taffy::Size::ZERO)
+            .expect("a layout");
+        layer.apply_layout(&taffy, node, Point::ZERO);
+        layer.follow_cards();
+        let window = layer
+            .cards
+            .shown
+            .first()
+            .expect("the shell stands the card its app presents")
+            .window;
+        assert!(
+            window.area() > 0.0,
+            "the card the app drew has a place on the shell: {window:?}"
+        );
+        // The card is drawn by the app, over the shell, once a frame.
+        ui::widget::DrawChild::draw_child(
+            &mut layer,
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::default(),
+        );
+        let at = window.center();
+        let mut dispatch = ui::testing::Dispatch::new().layout(&taffy, node);
+        dispatch.send(&mut layer, &cursor_moved(at.x, at.y));
+        assert!(
+            dispatch.send(&mut layer, &mouse_press()).handled,
+            "the shell takes a press on the card it stands: {:?}",
+            seen.borrow()
+        );
+        assert!(
+            seen.borrow().contains(&"press"),
+            "the app that draws the card is handed the press: {:?}",
+            seen.borrow()
+        );
     }
 }
