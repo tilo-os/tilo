@@ -81,7 +81,10 @@ pub(crate) struct Peer {
     state: PathBuf,
     /// Whether to mount with FUSE where this user can.
     mount: bool,
-    listed: tokio::sync::Mutex<Option<(Instant, Vec<Listed>)>>,
+    /// The person's workspaces as last listed, when that was, and whether the
+    /// host answered the whole list: a list that did not answer holds only the
+    /// workspace logged into, and nothing may be dropped because of it.
+    listed: tokio::sync::Mutex<Option<(Instant, Vec<Listed>, bool)>>,
     /// Why a workspace is not shown, by workspace.
     failed: std::sync::Mutex<Vec<(String, String)>>,
 }
@@ -123,20 +126,21 @@ impl Peer {
     }
 
     /// The person's workspaces on the host `device` entered, asked again
-    /// once [`LIST_AGAIN`] passed.
-    async fn listed(&self, device: &Entered) -> Vec<Listed> {
+    /// once [`LIST_AGAIN`] passed: what was listed, and whether the host
+    /// answered the whole list.
+    async fn listed(&self, device: &Entered) -> (Vec<Listed>, bool) {
         let mut listed = self.listed.lock().await;
-        if let Some((at, list)) = listed.as_ref()
+        if let Some((at, list, complete)) = listed.as_ref()
             && at.elapsed() < LIST_AGAIN
         {
-            return list.clone();
+            return (list.clone(), *complete);
         }
         let mut list = vec![Listed {
             workspace: device.workspace_id(),
             name: None,
             role: None,
         }];
-        match device
+        let complete = match device
             .personal_list(
                 &tilo_relay_session::workspaces::WorkspaceLabels::new(),
                 None,
@@ -158,20 +162,31 @@ impl Peer {
                         None => list.push(item),
                     }
                 }
+                true
             }
             Err(refusal) => {
                 tracing::warn!(%refusal, "the person's workspaces are not listed; only the one logged into is shown");
+                false
             }
-        }
-        *listed = Some((Instant::now(), list.clone()));
-        list
+        };
+        *listed = Some((Instant::now(), list.clone(), complete));
+        (list, complete)
+    }
+
+    /// Ask the host for the person's workspaces now, remembering the answer:
+    /// what `tilo folders add` and the account commands ask for rather than
+    /// waiting out [`LIST_AGAIN`]. The folders are brought in line with it on
+    /// the peer's next look.
+    pub(crate) async fn refresh(&self, device: &Entered) {
+        *self.listed.lock().await = None;
+        let _ = self.listed(device).await;
     }
 
     /// Show the folders [`folders`] names, and no other: offer a folder to
     /// each workspace that has none yet, then mount, move, pause and remove as
     /// the person set them.
     pub(crate) async fn reconcile(&self, device: &Entered) {
-        let listed = self.listed(device).await;
+        let (listed, complete) = self.listed(device).await;
         let mut wanted = match folders::Folders::load(&self.device_dir) {
             Ok(wanted) => wanted,
             Err(error) => {
@@ -180,6 +195,18 @@ impl Peer {
             }
         };
         let mut changed = false;
+        // A workspace the person's list no longer has is gone, and its folder's
+        // place with it: nothing to show, and nothing `tilo folders` should
+        // name. Only a list the host answered says that; one that answered
+        // nothing means the host could not be reached, not that the rest of
+        // the person's workspaces went.
+        if complete {
+            let ids: Vec<String> = listed
+                .iter()
+                .map(|entry| entry.workspace.to_string())
+                .collect();
+            changed |= wanted.forget_unlisted(&ids);
+        }
         let mut moves = Vec::new();
         for entry in &listed {
             let Some(name) = entry.name.as_deref() else {
@@ -368,23 +395,23 @@ impl Peer {
         mounted
     }
 
-    /// The person's workspaces as last listed: id, name and role.
-    pub(crate) async fn workspaces(&self) -> Vec<serde_json::Value> {
-        self.listed
-            .lock()
-            .await
-            .as_ref()
-            .map_or_else(Vec::new, |(_, list)| {
-                list.iter()
-                    .map(|entry| {
-                        serde_json::json!({
-                            "workspace": entry.workspace.to_string(),
-                            "name": entry.name,
-                            "role": entry.role,
-                        })
+    /// The person's workspaces as last listed: id, name and role, and whether
+    /// the host answered the whole list.
+    pub(crate) async fn workspaces(&self) -> (Vec<serde_json::Value>, bool) {
+        let listed = self.listed.lock().await;
+        let complete = listed.as_ref().is_some_and(|(_, _, complete)| *complete);
+        let rows = listed.as_ref().map_or_else(Vec::new, |(_, list, _)| {
+            list.iter()
+                .map(|entry| {
+                    serde_json::json!({
+                        "workspace": entry.workspace.to_string(),
+                        "name": entry.name,
+                        "role": entry.role,
                     })
-                    .collect()
-            })
+                })
+                .collect()
+        });
+        (rows, complete)
     }
 
     /// Why a workspace is not shown, by workspace.

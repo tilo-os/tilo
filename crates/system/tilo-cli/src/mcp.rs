@@ -321,6 +321,18 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
                 .to_string(),
         );
     }
+    if request.get("method").and_then(Value::as_str) == Some(PEER_LIST_AGAIN) {
+        // Asked by `tilo folders add`, and after a workspace was made or
+        // deleted: the person's workspaces are asked for again now, and the
+        // folders are brought in line, rather than the ask waiting out how
+        // long the peer keeps a list.
+        let id = request.get("id").cloned().unwrap_or(Value::Null);
+        list_again(connection).await;
+        return Some(
+            json!({"jsonrpc": "2.0", "id": id, "result": peer_status(connection).await})
+                .to_string(),
+        );
+    }
     let served = connection.served().await.and_then(|served| {
         // The person stopped this agent: its session ended for good, and every call says so.
         match served.session.stopped() {
@@ -342,6 +354,24 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
 /// whether they are in sync.
 pub(crate) const PEER_STATUS: &str = "tilo/peer";
 
+/// What `tilo folders add` and the account commands ask the peer: ask the
+/// person's host for their workspaces again now, and bring the folders in
+/// line with the answer, answering [`PEER_STATUS`].
+pub(crate) const PEER_LIST_AGAIN: &str = "tilo/peer/list-again";
+
+/// Have the peer ask the host for the person's workspaces again, and show their
+/// folders as the answer says: the workspace just made or deleted is one the
+/// folders know at once, not at the peer's next list.
+async fn list_again<E: Enter>(connection: &Connection<E>) {
+    let Some(peer) = held::PEER.get() else {
+        return;
+    };
+    let session = connection.shared.session.lock().await.clone();
+    if let Some(session) = session {
+        peer.refresh(&session.device).await;
+    }
+}
+
 /// The peer's answer to [`PEER_STATUS`].
 async fn peer_status<E: Enter>(connection: &Connection<E>) -> Value {
     let device = connection.shared.device.as_ref().ok();
@@ -350,13 +380,12 @@ async fn peer_status<E: Enter>(connection: &Connection<E>) -> Value {
         || "entering".to_owned(),
         |session| format!("{:?}", session.device.session().status().phase).to_lowercase(),
     );
-    let (mounted, failed, workspaces) = match held::PEER.get() {
-        Some(peer) => (
-            peer.mounted().await,
-            peer.failures(),
-            peer.workspaces().await,
-        ),
-        None => (Vec::new(), Vec::new(), Vec::new()),
+    let (mounted, failed, workspaces, complete) = match held::PEER.get() {
+        Some(peer) => {
+            let (workspaces, complete) = peer.workspaces().await;
+            (peer.mounted().await, peer.failures(), workspaces, complete)
+        }
+        None => (Vec::new(), Vec::new(), Vec::new(), false),
     };
     let not_in = held::NOT_IN
         .lock()
@@ -371,6 +400,7 @@ async fn peer_status<E: Enter>(connection: &Connection<E>) -> Value {
         "not_in": not_in,
         "mounted": mounted,
         "workspaces": workspaces,
+        "workspaces_complete": complete,
         "failed": failed.into_iter().map(|(workspace, why)| json!({"workspace": workspace, "why": why})).collect::<Vec<_>>(),
     })
 }
@@ -378,6 +408,19 @@ async fn peer_status<E: Enter>(connection: &Connection<E>) -> Value {
 /// Ask the peer this computer runs for its [`PEER_STATUS`]; `None` when none runs (it is not
 /// started for asking).
 pub(crate) fn ask_peer() -> Option<Value> {
+    ask_peer_with(PEER_STATUS)
+}
+
+/// Ask the peer this computer runs to list the person's workspaces again now
+/// and bring the folders in line, answering as [`ask_peer`]; `None` when no
+/// peer runs.
+pub(crate) fn ask_peer_list_again() -> Option<Value> {
+    ask_peer_with(PEER_LIST_AGAIN)
+}
+
+/// The peer's answer to `method`, a request of its control path; `None` when
+/// no peer runs.
+fn ask_peer_with(method: &str) -> Option<Value> {
     use std::io::{BufRead as _, Write as _};
     let (key, _) = crate::login::load(&crate::login::device_dir().ok()?).ok()??;
     let place = held::Place::of(
@@ -390,7 +433,7 @@ pub(crate) fn ask_peer() -> Option<Value> {
     writeln!(
         stream,
         "{}",
-        json!({"jsonrpc": "2.0", "id": 1, "method": PEER_STATUS})
+        json!({"jsonrpc": "2.0", "id": 1, "method": method})
     )
     .ok()?;
     let mut line = String::new();

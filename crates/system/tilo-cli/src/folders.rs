@@ -230,6 +230,21 @@ fn list(dir: &Path, json: bool) -> ExitCode {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    // The workspaces the person's list still has, when the host answered it:
+    // one it no longer has was deleted, and its folder's place goes with it.
+    let listed = peer.get("workspaces").and_then(Value::as_array);
+    let complete = peer
+        .get("workspaces_complete")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let gone = |id: &str| {
+        complete
+            && listed.is_some_and(|listed| {
+                !listed
+                    .iter()
+                    .any(|entry| entry.get("workspace").and_then(Value::as_str) == Some(id))
+            })
+    };
     if mounted.is_empty() && folders.workspaces.is_empty() {
         println!("No workspace has a folder here yet.");
     }
@@ -237,6 +252,9 @@ fn list(dir: &Path, json: bool) -> ExitCode {
         println!("  {}", crate::peer::describe_folder(folder));
     }
     for (id, folder) in &folders.workspaces {
+        if gone(id) {
+            continue;
+        }
         let shown = mounted
             .iter()
             .any(|m| m.get("workspace").and_then(Value::as_str) == Some(id));
@@ -299,9 +317,17 @@ fn add(
         id
     } else {
         {
-            let (id, name) = listed(named).with_context(|| {
-                format!("none of your workspaces is called {named}; `tilo folders` lists them")
-            })?;
+            // A workspace made a moment ago may be one the peer listed before it
+            // existed: ask it to list again now rather than wait out its own
+            // hour of a kept list.
+            let (id, name) = listed(named)
+                .or_else(|| {
+                    crate::mcp::ask_peer_list_again();
+                    listed(named)
+                })
+                .with_context(|| {
+                    format!("none of your workspaces is called {named}; `tilo folders` lists them")
+                })?;
             folders.workspaces.insert(
                 id.clone(),
                 crate::peer::folders::Folder {

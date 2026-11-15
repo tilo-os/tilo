@@ -170,6 +170,17 @@ impl Folders {
             .unwrap_or(plain)
     }
 
+    /// Forget the folders of workspaces the person's list no longer has: a
+    /// workspace it no longer names was deleted, and no folder of it is left
+    /// to show or to bring back. `listed` is the whole list the host answered,
+    /// never one it could not. Whether anything went.
+    pub(crate) fn forget_unlisted(&mut self, listed: &[String]) -> bool {
+        let before = self.workspaces.len();
+        self.workspaces
+            .retain(|id, _| listed.iter().any(|held| held == id));
+        self.workspaces.len() != before
+    }
+
     /// The workspace whose folder is `at` or holds it, or whose id or name is `at`.
     pub(crate) fn find(&self, at: &str) -> Option<String> {
         let path = std::path::absolute(at).ok();
@@ -317,6 +328,26 @@ mod tests {
         assert_eq!(folders.follow_rename("w2", "Acme Inc", home.path()), None);
         assert_eq!(folders.workspaces["w2"].path, elsewhere);
         assert_eq!(folders.workspaces["w2"].name, "Acme Inc");
+    }
+
+    #[test]
+    fn a_folder_whose_workspace_left_the_persons_list_goes_with_it() {
+        let home = tempfile::tempdir().unwrap();
+        let mut folders = Folders::default();
+        assert!(folders.offer("w1", "Acme", true, home.path()));
+        assert!(folders.offer("w2", "Club", true, home.path()));
+        folders.workspaces.get_mut("w1").unwrap().removed = true;
+        // The host answered the person's list: one of the two is gone.
+        assert!(folders.forget_unlisted(&["w2".to_owned()]));
+        assert!(!folders.workspaces.contains_key("w1"));
+        assert!(folders.workspaces.contains_key("w2"));
+        assert!(!folders.forget_unlisted(&["w2".to_owned()]), "nothing left");
+        save_and_reload(&folders, home.path());
+    }
+
+    fn save_and_reload(folders: &Folders, dir: &Path) {
+        folders.save(dir).unwrap();
+        assert_eq!(&Folders::load(dir).unwrap(), folders);
     }
 
     #[test]
