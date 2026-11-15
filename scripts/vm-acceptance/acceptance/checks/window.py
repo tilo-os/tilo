@@ -194,7 +194,7 @@ def workspaces(ctx, res):
         ctx.wait_state(lambda s: core.overlays(s)["overview"] and s["chrome"].get("in_transition") is False,
                        5, "overview open and settled")
         names = [t["name"] for t in ctx.vm.targets()]
-        add = [n for n in names if re.search(r"(new|add)[_-]?workspace", n, re.I)]
+        add = [n for n in names if re.search(r"(new|add)[ _-]?workspace", n, re.I)]
         res.metrics["add_workspace_targets"] = add
         if not add:
             ctx.shot("W10-overview")

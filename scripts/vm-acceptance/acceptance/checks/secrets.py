@@ -16,7 +16,7 @@ from the store, and the same secret is answered again after `tilo-secret-service
 under the running compositor, whose connection must prove itself again.
 
 C02 judges a person's own login: the dev account signs in at seat0's greeter (as R08
-does), goes through first use on its control socket's `onboarding` actions, and its new
+does), goes through first use on its control socket's setup actions, and its new
 identity must name the Secret Service (`secret_ref.backend = secret-service-v1`, which
 Settings > Users shows as "Secret Service + app-scoped signing broker") with no key file
 beside it. A slot's throwaway identity keeps its private share in owner-only files by
@@ -321,13 +321,13 @@ find "$d" -name '*.key' -printf 'KEYFILE %m %u %s %P\n'
 [ -e "$d/secrets" ] && find "$d/secrets" -printf 'SECRETS %y %m %u %s %P\n'
 echo "END"
 """
-# First use, through the onboarding actions a person's clicks reach: acknowledge once,
-# then go forward; a backup is declined with its own acknowledgement, the tour skipped.
-ACKNOWLEDGE = {"onboarding.understood": {"checked": True},
-               "onboarding.backup.skip-acknowledged": {"checked": True}}
-FORWARD = ["onboarding.finish", "onboarding.tour.skip", "onboarding.codecs.skip",
-           "onboarding.codecs.continue", "onboarding.backup.continue", "onboarding.create",
-           "onboarding.begin", "migration.later"]
+# First use, through the setup app's actions, which its buttons drive: acknowledge each page
+# that asks, then take the farthest way forward it offers.
+SETUP = "so.tilo.onboarding"
+ACKNOWLEDGE = {"acknowledge": {"checked": True}}
+FORWARD = (("finish", {}), ("skip", {}), ("continue", {}),
+           ("choose", {"option": "tour"}), ("choose", {"option": "install-codecs"}),
+           ("choose", {"option": "accept-incomplete"}))
 FIRST_USE_STEPS = 24
 
 
@@ -337,7 +337,7 @@ def control(ctx, user: str, *args: str, timeout: float = 60) -> str:
 
 
 def onboarding_rows(ctx, user: str) -> list[dict] | None:
-    """The onboarding provider's rows, or None while the socket does not answer."""
+    """Setup's action rows, or None while the socket does not answer."""
     text = control(ctx, user, "actions", "list", "--json", "--limit", "200")
     start = text.find("{")
     try:
@@ -346,14 +346,19 @@ def onboarding_rows(ctx, user: str) -> list[dict] | None:
         listing = None
     if not isinstance(listing, dict):
         return None
-    return [a for a in listing.get("actions", []) if a.get("provider") == "onboarding"]
+    return [a for a in listing.get("actions", []) if a.get("application") == SETUP]
 
 
-def next_first_use_step(offered: set[str], acknowledged: set[str]) -> str | None:
-    """The onboarding action to invoke next: an acknowledgement not yet given, else the
-    furthest step forward on offer; None when nothing offered is one of them."""
-    return next((i for i in ACKNOWLEDGE if i in offered and i not in acknowledged), None) \
-        or next((i for i in FORWARD if i in offered), None)
+def next_first_use_step(offered: set[str], acknowledged: set[str]):
+    """The setup action to take next, and its arguments: an acknowledgement not yet given,
+    else the furthest way forward on offer; None when nothing offered is one of them."""
+    for step, args in ACKNOWLEDGE.items():
+        if step in offered and step not in acknowledged:
+            return step, args
+    for step, args in FORWARD:
+        if step in offered:
+            return step, args
+    return None, None
 
 
 def go_through_first_use(ctx, user: str) -> list[str]:
@@ -366,15 +371,15 @@ def go_through_first_use(ctx, user: str) -> list[str]:
                             30, interval=1.0)
         if listed is None:
             raise Unobservable(f"{user}'s control socket does not list actions")
-        offered = {r["id"] for r in listed[0]}
-        if not offered:
+        rows = {r.get("operation"): r for r in listed[0] if r.get("operation")}
+        if not rows:
             return done
-        step = next_first_use_step(offered, acknowledged)
+        step, args = next_first_use_step(set(rows), acknowledged)
         if step is None:
             raise CheckFailed(f"first use offers nothing this check knows how to go forward with: "
-                              f"{sorted(offered)} (after {done})")
-        args = ACKNOWLEDGE.get(step)
-        out = control(ctx, user, "actions", "invoke", "onboarding", step,
+                              f"{sorted(rows)} (after {done})")
+        row = rows[step]
+        out = control(ctx, user, "actions", "invoke", row["provider"], row["id"],
                       *(["--args-json", json.dumps(args)] if args else []), timeout=120)
         ctx.write(f"C02-first-use-{len(done):02}-{step}.txt", out)
         if step in ACKNOWLEDGE:

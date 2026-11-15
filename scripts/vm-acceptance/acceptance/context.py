@@ -95,9 +95,7 @@ class Context:
     # -- a known desktop between checks ---------------------------------------
 
     def close_overlays(self) -> None:
-        """Escape until no modal, overlay, prompt or dialog is open (`core.open_surfaces`):
-        overlays and search, and also the Invite composer, portal sheets and the rest the
-        state dump reports outside `overlays`."""
+        """Escape until no surface stands over the windows (`core.open_surfaces`)."""
         for _ in range(3):
             before = core.open_surfaces(self.vm.state())
             if not before:
