@@ -17,6 +17,7 @@ use std::fmt::Write as _;
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::TextRole;
+use tilo_ui::bound_dispatch::BoundNodeMap;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::{OffscreenRenderTiming, OffscreenRenderer};
 use tilo_ui::presence::PresenceCtx;
@@ -815,6 +816,7 @@ struct BenchState<'a> {
     root: &'a mut Box<dyn Widget>,
     taffy: &'a mut TaffyTree<()>,
     node_map: &'a HashMap<NodeId, *mut dyn Widget>,
+    bindings: &'a BoundNodeMap,
     root_node: NodeId,
     text_renderer: &'a mut TextRenderer,
     presence: &'a PresenceCtx,
@@ -973,22 +975,31 @@ fn full_draw(
     let layout_dirty = state.root.is_layout_dirty();
     if layout_dirty {
         clock.pin(|| {
-            let node_map = state.node_map;
-            let text_renderer = &mut *state.text_renderer;
-            let _ = state.taffy.compute_layout_with_measure(
-                state.root_node,
-                Size {
-                    width: AvailableSpace::Definite(canvas_f32(state.canvas_w)),
-                    height: AvailableSpace::Definite(canvas_f32(state.canvas_h)),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = node_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, text_renderer) }
-                    } else {
-                        Size::ZERO
-                    }
-                },
-            );
+            // The toolkit's own solve: it answers each widget's measure
+            // (`Widget::layout_measured`), so a widget that asked for one stops
+            // asking until it changes again. A bare Taffy solve leaves every
+            // asker dirty and damages the whole target on every event.
+            // SAFETY: the bench owns the live tree, its layout and its node map
+            // for the whole loop, and nothing replaces them.
+            let solved = unsafe {
+                tilo_ui::widget::compute_widget_layout(
+                    state.taffy,
+                    state.root_node,
+                    Size {
+                        width: AvailableSpace::Definite(canvas_f32(state.canvas_w)),
+                        height: AvailableSpace::Definite(canvas_f32(state.canvas_h)),
+                    },
+                    state.node_map,
+                    state.bindings,
+                    state.text_renderer,
+                )
+            };
+            if solved.is_err() {
+                println!("layout: the dashboard tree did not solve: {solved:?}");
+            }
+            if let Some(line) = tilo_ui::widget::take_unsettled_report() {
+                println!("{line}");
+            }
             state
                 .root
                 .apply_layout(state.taffy, state.root_node, Point::ZERO);
@@ -1074,6 +1085,14 @@ fn full_draw(
     }
     if tilo_ui::env::var_os("TILO_UI_DASH_DAMAGE").is_some() {
         println!("damage regions: {:?}", state.damage_regions);
+        if layout_dirty {
+            let mut culprits = Vec::new();
+            layout_culprits(state.root.as_ref(), 0, &mut culprits);
+            println!("layout-dirty widgets: {}", culprits.len());
+            for (name, depth, rect) in culprits.iter().rev().take(20).rev() {
+                println!("  {name} (depth {depth}) {rect:?}");
+            }
+        }
     }
     let allocation_before_render = allocation_breakdown
         .as_ref()
@@ -1205,6 +1224,19 @@ fn dirty_culprits(w: &dyn Widget, depth: usize, out: &mut Vec<(String, usize)>) 
     }
     for c in w.children() {
         dirty_culprits(c, depth.saturating_add(1), out);
+    }
+}
+
+fn layout_culprits(
+    w: &dyn Widget,
+    depth: usize,
+    out: &mut Vec<(String, usize, vello::kurbo::Rect)>,
+) {
+    if w.is_layout_dirty() {
+        out.push((w.name().to_string(), depth, w.get_rect()));
+    }
+    for c in w.children() {
+        layout_culprits(c, depth.saturating_add(1), out);
     }
 }
 
@@ -2906,6 +2938,11 @@ pub fn run(_args: &[String]) {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let root_node = clock.pin(|| root.build_layout(&mut taffy, &theme, &mut node_map));
+    // The tree stands for the whole loop, so its admitted nodes are found once.
+    let mut bindings = BoundNodeMap::new();
+    // SAFETY: the root, its layout and its node map above are one live tree
+    // that nothing replaces before the loop ends.
+    unsafe { bindings.rebuild(root.as_ref(), &taffy, root_node, &node_map) };
     let mut scene = Scene::new();
     let mut damage_regions = Vec::with_capacity(8);
 
@@ -2927,6 +2964,7 @@ pub fn run(_args: &[String]) {
         root: &mut root,
         taffy: &mut taffy,
         node_map: &node_map,
+        bindings: &bindings,
         root_node,
         text_renderer: &mut text_renderer,
         presence: &presence,
