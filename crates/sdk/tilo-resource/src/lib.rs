@@ -359,6 +359,9 @@ pub mod __private {
         pub keywords: &'static [&'static str],
         /// Its own picture (`icon = "…"`), by its Lucide name.
         pub icon: Option<&'static str>,
+        /// What it did, in the app's own words (`did = "…"`), read after who
+        /// did it.
+        pub did: Option<&'static str>,
         pub description: &'static str,
         pub kind: ActionKind,
         /// Whether one invocation's kind is decided by its arguments
@@ -530,6 +533,7 @@ pub mod __private {
             .map(|word| (*word).to_owned())
             .collect();
         decl.icon = verb.icon.map(str::to_owned);
+        decl.did = verb.did.map(str::to_owned);
         decl.by_arguments = verb.by_arguments;
         decl.writes = crate::footprint::declared(verb.shape, verb.item_field, verb.writes);
         // What the description says beyond its first line, the label.

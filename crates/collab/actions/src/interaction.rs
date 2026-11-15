@@ -133,6 +133,14 @@ pub struct InteractionAction {
     /// ([`ActionContract::creates`](crate::ActionContract::creates)).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creates: Option<String>,
+    /// What the action did, in the app's own words, said after who did it
+    /// ("renamed", "replaced"): the past-tense form its app declares
+    /// ([`ActionType::did`](crate::ActionType::did)), so a surface says what
+    /// happened where the action's menu label only names the place it acts
+    /// on. Absent where the app declares none; a surface then says the kind
+    /// of step that was taken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
 }
 
 /// One broker-normalized, transient semantic interaction event.
@@ -186,6 +194,9 @@ impl SemanticInteraction {
         }
         validate_id("action.id", &self.action.id)?;
         validate_label("action.label", &self.action.label)?;
+        if let Some(did) = &self.action.did {
+            validate_label("action.did", did)?;
+        }
         validate_resource(&self.resource)?;
         if let Some(app) = &self.action.app {
             validate_id("action.app.id", &app.id)?;
@@ -374,6 +385,7 @@ mod tests {
                 }),
                 step: None,
                 creates: None,
+                did: None,
             },
             resource: ActionResource {
                 id: "sheets.sheet:budget".into(),
@@ -485,6 +497,10 @@ mod tests {
         oversized.phase = InteractionPhase::Committed;
         oversized.resource.label = "x".repeat(MAX_LABEL_BYTES + 1);
         assert_eq!(oversized.validate().unwrap_err().field, "resource.label");
+
+        oversized.resource.label = "Label".into();
+        oversized.action.did = Some("x".repeat(MAX_LABEL_BYTES + 1));
+        assert_eq!(oversized.validate().unwrap_err().field, "action.did");
     }
 
     fn terminal_phases_are_explicit() {

@@ -590,7 +590,6 @@ interaction-agent = Agent
 interaction-collaborator = Mitwirkende Person
 # Was jemand gerade tut: der Name, dann die Handlung im Präsens.
 interaction-editing-field = bearbeitet { $field }
-interaction-added-text = Text hinzugefügt
 interaction-working = arbeitet
 interaction-action-doing = { $name }: { $doing }
 # Dasselbe mit der Phase, wo sie nur ein Mensch klären kann.
@@ -623,6 +622,17 @@ step-running = Führt { $command } aus
 step-running-in = Führt in { $record } aus
 step-working = Arbeitet in { $record }
 step-working-alone = Arbeitet
+# Was ein Schritt getan hat, im Perfekt: das Etikett an den Zeichen, die ein
+# Schreiben hinterlassen hat, sagt, was dort geschah, wo seine Handlung keine
+# eigenen Worte nennt.
+step-did-created = erstellt
+step-did-wrote = geschrieben
+step-did-edited = bearbeitet
+step-did-deleted = gelöscht
+step-did-moved = verschoben
+step-did-read = gelesen
+step-did-ran = ausgeführt
+step-did-worked = gearbeitet
 
 # Was ein Lauf gerade tut, wenn es kein Schritt in einem Datensatz ist: auf
 # seine Person warten, die Apps oder eine davon ansehen, nach Wörtern suchen.

@@ -61,6 +61,24 @@ impl StepKind {
         }
     }
 
+    /// What a step of this kind did, in the past tense, as a catalogue
+    /// message: the word beside the characters a write left says what the
+    /// person saw happen where the action declares no past-tense form of its
+    /// own ([`ActionType::did`](crate::ActionType::did)).
+    #[must_use]
+    pub const fn did_message(self) -> &'static str {
+        match self {
+            Self::Create => DID_CREATED,
+            Self::Write => DID_WROTE,
+            Self::Edit => DID_EDITED,
+            Self::Delete => DID_DELETED,
+            Self::Move => DID_MOVED,
+            Self::Read => DID_READ,
+            Self::Run => DID_RAN,
+            Self::Work => DID_WORKED,
+        }
+    }
+
     /// The kind `word` names.
     #[must_use]
     pub fn of_word(word: &str) -> Option<Self> {
@@ -308,6 +326,16 @@ pub const WORKING: &str = "step-working";
 /// The same where the step names nothing at all.
 pub const WORKING_ALONE: &str = "step-working-alone";
 
+/// What a step of each kind did, in the past tense ([`StepKind::did_message`]).
+pub const DID_CREATED: &str = "step-did-created";
+pub const DID_WROTE: &str = "step-did-wrote";
+pub const DID_EDITED: &str = "step-did-edited";
+pub const DID_DELETED: &str = "step-did-deleted";
+pub const DID_MOVED: &str = "step-did-moved";
+pub const DID_READ: &str = "step-did-read";
+pub const DID_RAN: &str = "step-did-ran";
+pub const DID_WORKED: &str = "step-did-worked";
+
 /// `name` trimmed, unless that leaves nothing to say.
 fn nonempty(name: Option<&str>) -> Option<&str> {
     name.map(str::trim).filter(|name| !name.is_empty())
@@ -345,6 +373,7 @@ mod tests {
                 }),
                 step,
                 creates: None,
+                did: None,
             },
             resource: ActionResource {
                 id: "tasks.tracker".into(),

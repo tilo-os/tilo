@@ -149,6 +149,7 @@ mod tests {
                         app: None,
                         step: None,
                         creates: None,
+                        did: None,
                     },
                     resource: tilo_actions::ActionResource {
                         id: "file:draft".into(),

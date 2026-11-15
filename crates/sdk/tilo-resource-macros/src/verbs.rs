@@ -183,6 +183,9 @@ struct ActionOptions {
     keywords: Vec<String>,
     /// `icon = "folder-plus"`: the action's own picture, by its Lucide name.
     icon: Option<String>,
+    /// `did = "renamed"`: what it did, in the app's own words, read after who
+    /// did it.
+    did: Option<String>,
     field: Option<String>,
     destructive: bool,
     irreversible: bool,
@@ -222,6 +225,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         label: None,
         keywords: Vec::new(),
         icon: None,
+        did: None,
         field: None,
         destructive: false,
         irreversible: false,
@@ -252,6 +256,8 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.keywords = crate::keyword_list(&meta.value()?.parse::<syn::LitStr>()?)?;
         } else if meta.path.is_ident("icon") {
             options.icon = Some(crate::icon_name(&meta.value()?.parse::<syn::LitStr>()?)?);
+        } else if meta.path.is_ident("did") {
+            options.did = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("field") {
             options.field = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("moderation") {
@@ -305,7 +311,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.step = Some(crate::step_option(&meta)?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"`, `by_app`, `step = \"create\"` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `did = \"...\"`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"`, `by_app`, `step = \"create\"` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -1514,6 +1520,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         let description = &verb.description;
         let keywords = &verb.options.keywords;
         let icon = crate::optional_str(verb.options.icon.as_deref());
+        let did = crate::optional_str(verb.options.did.as_deref());
         let field = verb.options.field.as_deref().map_or_else(
             || quote!(::core::option::Option::None),
             |field| {
@@ -1529,6 +1536,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 label: #label_word,
                 keywords: &[#(#keywords),*],
                 icon: #icon,
+                did: #did,
                 description: #description,
                 kind: #krate::ActionKind::#action_kind,
                 by_arguments: #by_arguments,

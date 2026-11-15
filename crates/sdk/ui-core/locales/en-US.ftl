@@ -591,10 +591,6 @@ interaction-agent = Agent
 interaction-collaborator = Collaborator
 # What an actor is doing: its name, then the action in the present tense.
 interaction-editing-field = editing { $field }
-# The text a write put in a note, a page or a field stands there: what the
-# person watching sees happen, where the action's own name only says which
-# place it acts on.
-interaction-added-text = added text
 interaction-working = working
 interaction-action-doing = { $name }: { $doing }
 # The same, with the phase said where only a person can settle it.
@@ -625,6 +621,16 @@ step-running = Running { $command }
 step-running-in = Running in { $record }
 step-working = Working in { $record }
 step-working-alone = Working
+# What a step did, in the past tense: the tag beside the characters a write
+# left says what happened there, where its action declares no words of its own.
+step-did-created = created
+step-did-wrote = wrote
+step-did-edited = edited
+step-did-deleted = deleted
+step-did-moved = moved
+step-did-read = read
+step-did-ran = ran
+step-did-worked = worked
 
 # What a run is at when it is not a step of a record: waiting on its person,
 # looking at the apps or at one of them, searching for words.

@@ -1017,8 +1017,9 @@ fn finish_bound(mut spec: ActionSpec, decl: &Declaration) -> ActionSpec {
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }
-    // On its item it is the same act, in the same picture.
-    spec.type_mut().icon.clone_from(&decl.icon);
+    // On its item it is the same act, in the same picture, said with the same
+    // words.
+    spec = crate::resource::with_declared_words(spec, decl);
     // Offered to whom it is declared for, housekept and undone as declared:
     // `#[action(audience = "people", item = ...)]` is no agent's on its item
     // either. Before `destructive`, which settles its confirmation from what

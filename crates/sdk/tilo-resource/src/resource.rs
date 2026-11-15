@@ -1919,9 +1919,7 @@ pub(crate) fn spec_of_declaration_on(
     if !decl.keywords.is_empty() {
         spec = spec.with_keywords(decl.keywords.iter().cloned());
     }
-    if let Some(icon) = &decl.icon {
-        spec = spec.with_icon(icon.clone());
-    }
+    spec = with_declared_words(spec, decl);
     if decl.destructive {
         spec = spec.destructive();
     }
@@ -1938,6 +1936,14 @@ pub(crate) fn spec_of_declaration_on(
     // A compensated undo arrives as a tag: once it is there, a deletion it
     // takes back is no longer asked about.
     contract.settle_confirmation();
+    spec
+}
+
+/// `spec` carrying the declared action's own picture and the past-tense words
+/// its app says it did, where it declares them.
+pub(crate) fn with_declared_words(mut spec: ActionSpec, decl: &Declaration) -> ActionSpec {
+    spec.type_mut().icon.clone_from(&decl.icon);
+    spec.type_mut().did = decl.did.clone().filter(|did| !did.trim().is_empty());
     spec
 }
 

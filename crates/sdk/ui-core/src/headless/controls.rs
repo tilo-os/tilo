@@ -99,6 +99,7 @@ pub fn agent_acting(resource: &str, action: &str) -> tilo_actions::SemanticInter
             app: None,
             step: None,
             creates: None,
+            did: None,
         },
         resource: tilo_actions::ActionResource {
             id: resource.into(),

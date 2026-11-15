@@ -50,6 +50,7 @@ pub fn frame(narrated: &Narrated<'_>, seq: u64, sent_at_ms: u64) -> Option<Seman
             app: Some(app.clone()),
             step: None,
             creates: None,
+            did: None,
         },
         resource: ActionResource {
             id: narrated.action.resource.clone(),

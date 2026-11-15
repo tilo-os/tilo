@@ -666,18 +666,19 @@ impl PresenceCtx {
     }
 
     /// [`Self::interaction_status_label_doing`] for the characters a write put
-    /// in a text: while they stand there, the chip says what the person sees
-    /// happen ("added text"), never the gerund of the action's menu label,
-    /// which names the place it acts on and reads as a replacement even where
-    /// it only inserted. A phase only a person can settle — waiting, failed,
-    /// cancelled — keeps the action's own words, because then no text of its
-    /// stands to name.
+    /// in a text: while they stand there, the chip says what the action did in
+    /// the past tense — the words its app declares ("renamed", "replaced"),
+    /// else the kind of step it took ("wrote") — never the gerund of the
+    /// action's menu label, which names the place it acts on and reads as a
+    /// replacement even where it only inserted. A phase only a person can
+    /// settle — waiting, failed, cancelled — keeps the action's own words,
+    /// because then no text of its stands to name.
     pub fn interaction_status_label_written(&self, interaction: &SemanticInteraction) -> String {
         let doing = match interaction.phase {
             InteractionPhase::Waiting { .. }
             | InteractionPhase::Failed { .. }
             | InteractionPhase::Cancelled { .. } => step_line(interaction),
-            _ => crate::i18n::widget_format("interaction-added-text", &[]),
+            _ => written_word(interaction),
         };
         self.interaction_status_label_doing(interaction, &doing)
     }
@@ -1140,6 +1141,19 @@ fn step_line(interaction: &SemanticInteraction) -> String {
     crate::step::line(&tilo_actions::Step::of_interaction(interaction))
 }
 
+/// What the characters a write left say about it, in the window's language:
+/// the past-tense words its action declares ("renamed", "replaced"), else the
+/// kind of step it took ("wrote"), on no record because the characters stand
+/// where it landed.
+fn written_word(interaction: &SemanticInteraction) -> String {
+    interaction.action.did.clone().unwrap_or_else(|| {
+        crate::i18n::widget_format(
+            tilo_actions::step::kind(interaction.action.step, &interaction.anchor).did_message(),
+            &[],
+        )
+    })
+}
+
 fn phase_label(phase: &InteractionPhase) -> String {
     match phase {
         InteractionPhase::Locating => crate::i18n::widget_format("interaction-inspecting", &[]),
@@ -1255,6 +1269,7 @@ mod tests {
                 app: None,
                 step: None,
                 creates: None,
+                did: None,
             },
             resource: ActionResource {
                 id: "file:draft".into(),
@@ -2198,6 +2213,7 @@ mod tests {
                 }),
                 step: Some(StepKind::Create),
                 creates: None,
+                did: None,
             };
             made.resource.label = "Issues".into();
             assert_eq!(card_detail(&made, 0), "Creating in Issues");
@@ -2314,27 +2330,53 @@ mod tests {
             }
         }
 
-        phase a_text_write_says_it_added_text;
-        // The chip on the characters a write put in a note says what the person
-        // sees happen there, not the name of the place the menu acts on: "Helper:
-        // added text", where "replace text at a place" named replacement even for
-        // an insertion. A write that failed says the step itself, since none of
-        // its text stands.
+        phase a_write_says_what_the_action_did;
+        // The chip on the characters a write put in a note says what the action
+        // did, not the name of the place the menu acts on: "Helper: renamed"
+        // for a rename whose app declares the word, where "rename" alone names
+        // an edit of the title and "replace text at a place" named replacement
+        // even for an insertion. An action declaring none says the kind of step
+        // it took: an insertion writes. A write that failed says the step
+        // itself, since none of its text stands.
         {
             let mut presence = PresenceCtx::empty();
             presence
                 .names
                 .insert(MemberId::agent("helper"), "Helper".into());
-            let mut write = interaction(95, 1, InteractionPhase::Applying);
-            write.actor = Acting::agent("helper");
-            write.action = InteractionAction {
+            let mut renamed = interaction(94, 1, InteractionPhase::Applying);
+            renamed.actor = Acting::agent("helper");
+            renamed.action = InteractionAction {
+                id: "rename".into(),
+                label: "Rename".into(),
+                app: None,
+                step: Some(StepKind::Edit),
+                creates: None,
+                did: Some("renamed".into()),
+            };
+            renamed.anchor = tilo_actions::InteractionAnchor::Text {
+                region: "title".into(),
+                ranges: vec![tilo_actions::InteractionTextRange {
+                    block: String::new(),
+                    start: 0,
+                    end: 13,
+                }],
+            };
+            assert_eq!(
+                presence.interaction_status_label_written(&renamed),
+                "Helper: renamed"
+            );
+
+            let mut inserted = interaction(95, 1, InteractionPhase::Applying);
+            inserted.actor = Acting::agent("helper");
+            inserted.action = InteractionAction {
                 id: "replace-range".into(),
                 label: "Replace text at a place".into(),
                 app: None,
                 step: None,
                 creates: None,
+                did: None,
             };
-            write.anchor = tilo_actions::InteractionAnchor::Text {
+            inserted.anchor = tilo_actions::InteractionAnchor::Text {
                 region: "body".into(),
                 ranges: vec![tilo_actions::InteractionTextRange {
                     block: "b1".into(),
@@ -2343,10 +2385,10 @@ mod tests {
                 }],
             };
             assert_eq!(
-                presence.interaction_status_label_written(&write),
-                "Helper: added text"
+                presence.interaction_status_label_written(&inserted),
+                "Helper: wrote"
             );
-            let mut failed = write.clone();
+            let mut failed = inserted.clone();
             failed.sequence = 2;
             failed.phase = InteractionPhase::Failed {
                 code: None,

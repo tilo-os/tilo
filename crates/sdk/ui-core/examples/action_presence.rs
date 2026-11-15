@@ -63,6 +63,7 @@ fn capture(out: &Path, theme: Theme, viewport: (u32, u32)) -> CaptureResult<()> 
             app: None,
             step: None,
             creates: None,
+            did: None,
         },
         resource: tilo_actions::ActionResource {
             id: "first".into(),

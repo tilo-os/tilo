@@ -6209,6 +6209,7 @@ fn semantic_text_caret_is_painted_without_a_selection_or_input() {
                 app: None,
                 step: None,
                 creates: None,
+                did: None,
             },
             resource: tilo_actions::ActionResource {
                 id: "word-processor.document".into(),

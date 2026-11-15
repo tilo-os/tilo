@@ -718,6 +718,7 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
             app: None,
             step: None,
             creates: None,
+            did: None,
         },
         resource: tilo_actions::ActionResource {
             id: "documents".to_owned(),

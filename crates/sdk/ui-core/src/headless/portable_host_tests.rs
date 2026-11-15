@@ -1216,7 +1216,7 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
         .collect();
     assert_eq!(
         tags,
-        vec!["Ada: added text".to_owned()],
+        vec!["Ada: wrote".to_owned()],
         "one tag, saying who and what it did to the text"
     );
     // The person typing in that paragraph puts the agent's write away.
@@ -1230,7 +1230,7 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
             .presence()
             .caret_tags()
             .iter()
-            .all(|tag| tag.label != "Ada: added text"),
+            .all(|tag| tag.label != "Ada: wrote"),
         "the agent's write is no longer drawn"
     );
 }

@@ -1018,6 +1018,7 @@ mod tests {
                 app: None,
                 step: None,
                 creates: None,
+                did: descriptor.did.clone(),
             },
             resource: tilo_actions::ActionResource {
                 id: descriptor.address.resource.clone(),

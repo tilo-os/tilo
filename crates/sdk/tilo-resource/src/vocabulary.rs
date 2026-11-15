@@ -170,6 +170,10 @@ pub struct Declaration {
     /// The action's own picture, by its Lucide name
     /// ([`tilo_actions::ActionSpec::icon`]).
     pub icon: Option<String>,
+    /// What the action did, in the app's own words
+    /// (`did = "renamed"`): the past-tense form a record of what was done
+    /// reads ([`tilo_actions::ActionSpec::did`]).
+    pub did: Option<String>,
     pub description: Option<String>,
     pub params: Vec<ActionParam>,
     /// What the action is able to do. See [`tilo_actions::ActionContract::kind`].
@@ -272,6 +276,7 @@ impl Declaration {
             word: None,
             keywords: Vec::new(),
             icon: None,
+            did: None,
             description: None,
             params,
             kind: ActionKind::Undoable,

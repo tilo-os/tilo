@@ -435,6 +435,7 @@ impl ShownActor {
                 // a create makes, so it says that too.
                 step: action.contract.step,
                 creates: action.contract.creates.clone(),
+                did: action.did.clone(),
             },
             anchor: anchor_of(action, &resource, argument),
             resource,
