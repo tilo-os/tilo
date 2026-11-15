@@ -104,8 +104,9 @@ OUTPUT = "1280x800"
 # How long a step that waits on the boxes finding each other may take.
 FIND_S = 180
 # The MCP server sheet's choice and button, as the person reads them (en-US).
-# The name a shell shows the scripted client by: its clientInfo is `claude-code`.
-CLIENT_SHOWN = "Claude Code"
+# The name a shell shows the scripted client by, then its number: its clientInfo name,
+# `claude-code` (r5d40ebffe7 on B: "claude-code #3").
+CLIENT_SHOWN = "claude-code"
 ALLOW_ONCE = "Allow once"
 ALLOW = "Allow"
 DENY = "Deny"
@@ -929,7 +930,7 @@ class Run:
             raise Failed(f"the agent's terminal#run did not go through on B: {ran}")
         if not sessions:
             raise Failed("B seats no agent")
-        # B's shell seats the agent under the name it shows the client by ("Claude Code", then
+        # B's shell seats the agent under the name it shows the client by (its clientInfo name, then
         # its number) and says beside the name the device it came from, as B's door verified it:
         # A's whole key and A's label as the door caps it. The session's key names the agent
         # session, which says nothing of a device. It came in by B's door, by no environment.
