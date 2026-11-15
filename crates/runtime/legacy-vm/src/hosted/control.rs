@@ -296,4 +296,109 @@ mod tests {
         };
         assert_eq!(over_the_socket(&reply), reply);
     }
+
+    fn payload(request: &Request) -> Vec<u8> {
+        let frame = FRAMING.encode_value(request).unwrap();
+        frame.get(wire_frame::PREFIX_BYTES..).unwrap().to_vec()
+    }
+
+    fn bytes(parts: &[&[u8]]) -> Vec<u8> {
+        parts.concat()
+    }
+
+    /// Each request, and what it is on the wire.
+    fn encoded() -> Vec<(Request, Vec<u8>)> {
+        let vm = VmRequest {
+            workspace: "ws".into(),
+            environment: "default".into(),
+            account: "a".into(),
+            size: VmSize::Small,
+        };
+        let vm_bytes: &[u8] = b"\x02ws\x07default\x01a\x00";
+        let named: &[u8] = b"\x02ws\x07default";
+        vec![
+            (
+                Request::Ensure {
+                    vm: vm.clone(),
+                    shares: vec![ShareRequest {
+                        path: "/p".into(),
+                        read_only: true,
+                    }],
+                },
+                bytes(&[b"\x00", vm_bytes, b"\x01\x02/p\x01"]),
+            ),
+            (
+                Request::Suspend {
+                    workspace: "ws".into(),
+                    environment: "default".into(),
+                },
+                bytes(&[b"\x01", named]),
+            ),
+            (
+                Request::Stop {
+                    workspace: "ws".into(),
+                    environment: "default".into(),
+                },
+                bytes(&[b"\x02", named]),
+            ),
+            (Request::Status, b"\x03".to_vec()),
+            (
+                Request::Usage {
+                    account: "a".into(),
+                    from_ms: 1,
+                    to_ms: 300,
+                },
+                b"\x04\x01a\x01\xac\x02".to_vec(),
+            ),
+            (Request::Place { vm }, bytes(&[b"\x05", vm_bytes])),
+            (
+                Request::OpenBrowser {
+                    browser: OpenBrowser {
+                        workspace: "ws".into(),
+                        account: "a".into(),
+                        size: VmSize::Small,
+                        store: Some("/s".into()),
+                        material: "m".into(),
+                    },
+                },
+                b"\x06\x02ws\x01a\x00\x01\x02/s\x01m".to_vec(),
+            ),
+            (
+                Request::StopBrowser {
+                    workspace: "ws".into(),
+                },
+                b"\x07\x02ws".to_vec(),
+            ),
+            (
+                Request::OpenApp {
+                    app: OpenApp {
+                        workspace: "ws".into(),
+                        account: "a".into(),
+                        size: VmSize::Small,
+                        material: "m".into(),
+                        launch: tilo_actions::remote::linux_apps::AppLaunch::new("xterm").unwrap(),
+                    },
+                },
+                b"\x08\x02ws\x01a\x00\x01m\x05xterm".to_vec(),
+            ),
+            (
+                Request::StopApps {
+                    workspace: "ws".into(),
+                },
+                b"\x09\x02ws".to_vec(),
+            ),
+        ]
+    }
+
+    /// A placer, a relay and ush built before a request was added still speak to this host: every
+    /// request they send means here what it meant to them, byte for byte.
+    #[test]
+    fn every_request_keeps_its_encoding() {
+        for (request, expected) in encoded() {
+            assert_eq!(payload(&request), expected, "{request:?}");
+            let frame = FRAMING.encode_value(&request).unwrap();
+            let read: Request = FRAMING.read_value(&mut frame.as_slice()).unwrap().unwrap();
+            assert_eq!(read, request);
+        }
+    }
 }
