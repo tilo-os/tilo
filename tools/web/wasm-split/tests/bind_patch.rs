@@ -2,11 +2,17 @@
 //! full bind writes, and anything else asks for the full bind
 //! (src/bin/bind_patch.rs).
 //!
-//! The fixtures are a small module with locals of two types, calls, an
-//! indirect call and a table, bound by the pinned wasm-bindgen: `bound0` is
-//! its real output for `linked0`, `bound1` the real output for `linked1`,
-//! whose only change is one `i32.const` value in `$e`. They are kept as hex
-//! (the repository takes no new binary blobs) and written out here.
+//! The fixtures are small modules bound by the pinned wasm-bindgen: `bound0`
+//! is its real output for `linked0`, a module with locals of two types, calls,
+//! an indirect call and a table, and `bound1` the real output for `linked1`,
+//! whose only change is one `i32.const` value in `$e`. `linked-import` names
+//! its imports `unused`, `kept` and `later`; the bind drops the two nothing
+//! calls, so `kept` sits at a different index in its output than in the module
+//! it read, as a real bind's dropped imports move every import after them.
+//! `linked-import-edit` grows the body that calls `kept`, and
+//! `linked-import-dropped` calls `later`, which the bind dropped. They are
+//! kept as hex (the repository takes no new binary blobs) and written out
+//! here.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -160,6 +166,44 @@ fn a_function_removed_patches_to_exactly_what_a_fresh_bind_writes() {
     assert!(
         patched == fresh,
         "the patched module is not the module a full bind writes"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A body that changed size is written again with every function index
+/// renumbered, and the imports are not where they were in the module the
+/// bind read: one the bind kept sits at its own index in the bound module,
+/// not the index it had before binding. A body that calls it must call it
+/// there, as a full bind does.
+#[test]
+fn a_changed_body_calls_a_kept_import_where_the_bind_writes_it() {
+    let dir = workspace("import-shift");
+    assert!(record_pair(&dir, "linked-import", "bound-import").success());
+    let out = dir.join("patched.wasm");
+    let status = apply(&dir, "linked-import-edit", &out);
+    assert!(status.success(), "the patch took: {status:?}");
+    let patched = std::fs::read(&out).expect("the patched module");
+    let fresh = std::fs::read(module(&dir, "bound-import-edit")).expect("the fresh bind");
+    assert!(
+        patched == fresh,
+        "the patched module is not the module a full bind writes"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An import the bind dropped has no counterpart to call: a body that starts
+/// calling it asks for a full bind instead of calling whatever function has
+/// its index there.
+#[test]
+fn a_body_that_calls_an_import_the_bind_dropped_asks_for_a_full_bind() {
+    let dir = workspace("import-dropped");
+    assert!(record_pair(&dir, "linked-import", "bound-import").success());
+    let out = dir.join("patched.wasm");
+    let status = apply(&dir, "linked-import-dropped", &out);
+    assert_eq!(status.code(), Some(3), "an import the bind dropped");
+    assert!(
+        !out.exists(),
+        "nothing is written when the map does not fit"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

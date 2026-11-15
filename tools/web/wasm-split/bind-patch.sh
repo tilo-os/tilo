@@ -9,8 +9,8 @@
 # what its functions and types became; `apply` patches the kept bound module
 # for a LINKED module that changed in bodies alone, writing the bound module a
 # full bind would have written. When it cannot (anything but bodies changed,
-# a body changed size or callees, a function it cannot map), it exits 3 and
-# the caller binds fully.
+# a body changed size or callees, a function or import it cannot map), or the
+# module it wrote does not validate, it exits 3 and the caller binds fully.
 #
 # The tool compiles with `cargo`, or with the cargo `$CARGO` names, as
 # split.sh does; it is read from Cargo's own artifact report so a cargo that

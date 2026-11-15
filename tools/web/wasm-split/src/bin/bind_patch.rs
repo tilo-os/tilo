@@ -27,7 +27,10 @@
 //! type, import, function, export, start, element, name and code sections
 //! are written again. Anything else exits `NEEDS_BIND` and the caller binds
 //! fully: this runs in a development loop, where a slower bundle is a
-//! nuisance and a bundle differing from a fresh build is a bug.
+//! nuisance and a bundle differing from a fresh build is a bug. Every module
+//! it writes is validated as a whole first (wasmparser, a fraction of the
+//! patch's own cost): a patch that came out wrong is a reason to bind fully,
+//! never a module to hand on.
 //!
 //! A patch is used only when the bound module it keeps records that this
 //! tool writes every section again exactly (its `record` reconstructs them
@@ -36,15 +39,18 @@
 //! a function a full bind's garbage collector would drop or keep then cannot
 //! make the patched module differ.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use wasm_encoder::reencode::{Error as ReError, Reencode, utils};
-use wasm_encoder::{Encode, Instruction};
 use wasmparser_content as wp;
 use wp::{Operator, Parser, Payload, TypeRef, ValType};
+
+#[path = "bind_patch/translate.rs"]
+mod translate;
+
+use translate::{bound_body_instr_start, renumber_body, translate, unchanged_indices};
 
 /// Exit status saying the caller must bind fully: the module is no body-only
 /// change away from what the kept bound module was made from.
@@ -1127,6 +1133,24 @@ fn copy_glue(cache: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Writes a module this tool wrote, once it validates as a whole.
+///
+/// A patch writes a module from pieces of two others, and a piece naming the
+/// wrong index still reads as a module: validation is what tells a patch that
+/// came out right from one that did not. A module that does not validate is a
+/// patch to fall back from, never one to hand on. Validating the whole module
+/// costs under a second over the 264 MB bundle, against the seconds a bind
+/// spends.
+fn write_module(module: &[u8], out: &Path) -> Result<()> {
+    let features = wp::WasmFeatures::all();
+    if let Err(error) = wp::Validator::new_with_features(features).validate_all(module) {
+        return Err(needs_bind(format!(
+            "the patched module is not valid wasm: {error}"
+        )));
+    }
+    std::fs::write(out, module).with_context(|| format!("writing {}", out.display()))
+}
+
 fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     std::fs::create_dir_all(to).with_context(|| format!("creating {}", to.display()))?;
     for entry in std::fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
@@ -1436,8 +1460,10 @@ fn apply(options: &Options) -> Result<()> {
     let (_, lspans) = code_section(&linked, &lsecs)?;
     if hash_bytes(&linked) == state.linked_hash {
         // Nothing moved: the kept bind is the answer (a build that stopped
-        // after binding, and is run again).
-        std::fs::write(out, &bound).with_context(|| format!("writing {}", out.display()))?;
+        // after binding, and is run again). It was written by a bind or by
+        // this tool, which validates what it writes, but a cache can outlive
+        // the version that wrote it: it is checked as any patch is.
+        write_module(&bound, out)?;
         copy_glue(cache, out)?;
         return Ok(());
     }
@@ -1568,7 +1594,7 @@ fn patch_bodies(update: &Update, changed: &[usize], lbodies: &[BodyMeta]) -> Res
     write_leb(&mut patched, code_bytes.len() as u32);
     patched.extend_from_slice(&code_bytes);
     patched.extend_from_slice(&bound[code.contents.end..]);
-    std::fs::write(out, &patched).with_context(|| format!("writing {}", out.display()))?;
+    write_module(&patched, out)?;
     copy_glue(cache, out)?;
     // The kept state follows the module it now describes: same map (the
     // functions and their order did not move), the changed bodies' new
@@ -1764,9 +1790,17 @@ fn patch_functions(update: &Update) -> Result<()> {
         };
     }
     // The map from the linked module to the bound one, in the new spaces.
+    //
+    // An import keeps its place in the linked module (this patch leaves its
+    // import section as it was), but not in the bound one: the bind drops the
+    // imports nothing calls and writes the rest where it writes them, so a
+    // kept import sits at a different index there. `record` paired them by
+    // name; this follows, and an import the bind dropped stays unresolved,
+    // so a body that calls it asks for a full bind instead of calling
+    // whatever function has its index.
     let mut map = vec![u32::MAX; lmeta.imported as usize + lspans.len()];
     for (index, target) in map.iter_mut().enumerate().take(lmeta.imported as usize) {
-        *target = index as u32;
+        *target = state.map.get(index).copied().unwrap_or(u32::MAX);
     }
     for new in 0..lspans.len() {
         match functions.new_to_old[new] {
@@ -2106,7 +2140,7 @@ fn patch_functions(update: &Update) -> Result<()> {
         step.elapsed().as_secs_f64()
     );
     let step = std::time::Instant::now();
-    std::fs::write(out, &rebuilt).with_context(|| format!("writing {}", out.display()))?;
+    write_module(&rebuilt, out)?;
     copy_glue(cache, out)?;
     // The kept state follows the module it now describes.
     let identity_funcs: Vec<u32> = (0..lmeta.imported + lspans.len() as u32).collect();
@@ -2742,222 +2776,6 @@ fn push_subsection(out: &mut Vec<u8>, id: u8, contents: &[u8]) {
     out.extend_from_slice(contents);
 }
 
-/// Whether every index in `body`'s body already is its new one: the bytes a
-/// full bind writes, kept where they are.
-fn unchanged_indices(body: &RefsOfBody, funcs: &[u32], types: &dyn Fn(u32) -> Result<u32>) -> bool {
-    body.funcs
-        .iter()
-        .all(|function| funcs.get(*function as usize).copied() == Some(*function))
-        && body
-            .types
-            .iter()
-            .all(|ty| types(*ty).is_ok_and(|new| new == *ty))
-}
-
-/// A kept body with its function and type indices renumbered.
-fn renumber_body(body: &[u8], funcs: &[u32], types: &dyn Fn(u32) -> u32) -> Result<Vec<u8>> {
-    let function = wp::FunctionBody::new(wp::BinaryReader::new(body, 0));
-    let mut operators = function.get_operators_reader()?;
-    let header = operators.original_position();
-    let mut out = Vec::with_capacity(body.len());
-    out.extend_from_slice(&body[..header]);
-    let function_index = |index: u32| -> Result<u32> {
-        match funcs.get(index as usize) {
-            Some(target) if *target != u32::MAX => Ok(*target),
-            _ => Err(needs_bind(format!("function {index} is unresolved"))),
-        }
-    };
-    let type_index = |ty: u32| -> Result<u32> {
-        let target = types(ty);
-        if target == u32::MAX {
-            return Err(needs_bind(format!("type {ty} is unresolved")));
-        }
-        Ok(target)
-    };
-    while !operators.eof() {
-        let start = operators.original_position();
-        let operator = operators.read()?;
-        let end = operators.original_position();
-        match &operator {
-            // One opcode byte, then the function's index.
-            Operator::Call {
-                function_index: index,
-            }
-            | Operator::ReturnCall {
-                function_index: index,
-            }
-            | Operator::RefFunc {
-                function_index: index,
-            } => {
-                out.push(body[start]);
-                write_leb(&mut out, function_index(*index)?);
-            }
-            // One opcode byte, then the type's index, then the rest.
-            Operator::CallIndirect { type_index: ty, .. }
-            | Operator::ReturnCallIndirect { type_index: ty, .. } => {
-                out.push(body[start]);
-                let mut at = start + 1;
-                let _old = read_leb(body, &mut at)?;
-                write_leb(&mut out, type_index(*ty)?);
-                out.extend_from_slice(&body[at..end]);
-            }
-            Operator::Block { blockty }
-            | Operator::Loop { blockty }
-            | Operator::If { blockty }
-            | Operator::Try { blockty }
-                if matches!(blockty, wp::BlockType::FuncType(_)) =>
-            {
-                struct Map<'a> {
-                    funcs: &'a [u32],
-                    types: &'a dyn Fn(u32) -> u32,
-                }
-                impl Reencode for Map<'_> {
-                    type Error = String;
-                    fn function_index(&mut self, function: u32) -> Result<u32, ReError<String>> {
-                        match self.funcs.get(function as usize) {
-                            Some(target) if *target != u32::MAX => Ok(*target),
-                            _ => Err(ReError::UserError(format!(
-                                "function {function} is unresolved"
-                            ))),
-                        }
-                    }
-                    fn type_index(&mut self, ty: u32) -> Result<u32, ReError<String>> {
-                        let target = (self.types)(ty);
-                        if target == u32::MAX {
-                            return Err(ReError::UserError(format!("type {ty} is unresolved")));
-                        }
-                        Ok(target)
-                    }
-                }
-                let mut map = Map { funcs, types };
-                let instruction = utils::instruction(&mut map, operator)
-                    .map_err(|error| needs_bind(format!("renumbering a body: {error:?}")))?;
-                instruction.encode(&mut out);
-            }
-            _ => out.extend_from_slice(&body[start..end]),
-        }
-    }
-    Ok(out)
-}
-
-// -------------------------------------------------------------- translation
-
-/// A body translated from the linked module's index space to the bound one.
-///
-/// walrus emits a body's locals as its arguments, then the used non-argument
-/// locals grouped by type in `ValType` order; its instructions canonically,
-/// with function and type indices mapped and local indices renumbered.
-fn translate(
-    linked: &[u8],
-    span: &Range<usize>,
-    lmeta: &Meta,
-    types: &[u32],
-    map: &[u32],
-    local: usize,
-) -> Result<Vec<u8>> {
-    let bytes = &linked[span.clone()];
-    let body = wp::FunctionBody::new(wp::BinaryReader::new(bytes, span.start));
-    let nargs = lmeta.nargs(local);
-    let mut decl = Vec::new();
-    for pair in body.get_locals_reader()? {
-        let (count, ty) = pair?;
-        decl.push((count, ty));
-    }
-    let mut operators = body.get_operators_reader()?;
-    let mut used = HashSet::new();
-    while !operators.eof() {
-        match operators.read()? {
-            Operator::LocalGet { local_index }
-            | Operator::LocalSet { local_index }
-            | Operator::LocalTee { local_index } => {
-                used.insert(local_index);
-            }
-            _ => {}
-        }
-    }
-    // The used locals, grouped by type: each type's locals in declaration
-    // order, and the types in `ValType` order.
-    let mut groups: BTreeMap<ValType, Vec<u32>> = BTreeMap::new();
-    let mut index = nargs;
-    for (count, ty) in &decl {
-        for _ in 0..*count {
-            if used.contains(&index) {
-                groups.entry(*ty).or_default().push(index);
-            }
-            index += 1;
-        }
-    }
-    let mut locals = Vec::new();
-    let mut local_index: HashMap<u32, u32> = (0..nargs).map(|i| (i, i)).collect();
-    let mut next = nargs;
-    for (ty, indices) in &groups {
-        locals.push((indices.len() as u32, wasm_encoder::ValType::try_from(*ty)?));
-        for source in indices {
-            local_index.insert(*source, next);
-            next += 1;
-        }
-    }
-    struct Tr<'a> {
-        types: &'a [u32],
-        map: &'a [u32],
-        locals: &'a HashMap<u32, u32>,
-    }
-    impl Reencode for Tr<'_> {
-        type Error = String;
-        fn function_index(&mut self, function: u32) -> Result<u32, ReError<String>> {
-            match self.map.get(function as usize) {
-                Some(target) if *target != u32::MAX => Ok(*target),
-                _ => Err(ReError::UserError(format!(
-                    "function {function} is unresolved"
-                ))),
-            }
-        }
-        fn type_index(&mut self, ty: u32) -> Result<u32, ReError<String>> {
-            match self.types.get(ty as usize) {
-                Some(target) if *target != u32::MAX => Ok(*target),
-                _ => Err(ReError::UserError(format!("type {ty} is unresolved"))),
-            }
-        }
-    }
-    let mut tr = Tr {
-        types,
-        map,
-        locals: &local_index,
-    };
-    let mut reader = body.get_operators_reader()?;
-    let mut function = wasm_encoder::Function::new(locals);
-    while !reader.eof() {
-        let instruction = utils::parse_instruction(&mut tr, &mut reader)
-            .map_err(|error| needs_bind(format!("translating a body: {error:?}")))?;
-        let instruction = match instruction {
-            Instruction::LocalGet(i) => {
-                Instruction::LocalGet(*tr.locals.get(&i).context("a local is unresolved")?)
-            }
-            Instruction::LocalSet(i) => {
-                Instruction::LocalSet(*tr.locals.get(&i).context("a local is unresolved")?)
-            }
-            Instruction::LocalTee(i) => {
-                Instruction::LocalTee(*tr.locals.get(&i).context("a local is unresolved")?)
-            }
-            other => other,
-        };
-        function.instruction(&instruction);
-    }
-    // `Function::encode` writes the body's size LEB first; the patch writes
-    // its own, so the body is kept as its content alone.
-    let mut out = Vec::new();
-    function.encode(&mut out);
-    let mut at = 0;
-    let _size = read_leb(&out, &mut at)?;
-    Ok(out.split_off(at))
-}
-
-fn bound_body_instr_start(body: &[u8]) -> Result<usize> {
-    Ok(wp::FunctionBody::new(wp::BinaryReader::new(body, 0))
-        .get_operators_reader()?
-        .original_position())
-}
-
 /// What the splitter reads of a patch: what each function of the old bound
 /// module became, what each of the new linked module's functions became, and
 /// the imports of both.
@@ -2987,4 +2805,71 @@ fn write_renumbering(
     let next = cache.join(format!(".renumber.{}.next", std::process::id()));
     std::fs::write(&next, &out).with_context(|| format!("writing {}", next.display()))?;
     std::fs::rename(&next, &path).with_context(|| format!("writing {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_encoder::{
+        CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction,
+        TypeSection, ValType,
+    };
+
+    /// The smallest module whose one exported function is `body`.
+    fn module(body: impl FnOnce(&mut Function)) -> Vec<u8> {
+        let mut types = TypeSection::new();
+        types.ty().function(Vec::<ValType>::new(), [ValType::I32]);
+        let mut functions = FunctionSection::new();
+        functions.function(0);
+        let mut exports = ExportSection::new();
+        exports.export("run", ExportKind::Func, 0);
+        let mut code = CodeSection::new();
+        let mut function = Function::new(Vec::<(u32, ValType)>::new());
+        body(&mut function);
+        code.function(&function);
+        let mut module = wasm_encoder::Module::new();
+        module.section(&types);
+        module.section(&functions);
+        module.section(&exports);
+        module.section(&code);
+        module.finish()
+    }
+
+    fn out(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "wasm-bind-patch-check-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// A patch that named the wrong function writes a module whose `run` says
+    /// it returns an i32 and whose body leaves nothing. It reads as a module
+    /// all the same; only validating it tells.
+    #[test]
+    fn a_module_that_does_not_validate_is_never_written() {
+        let path = out("invalid");
+        let broken = module(|function| {
+            function.instruction(&Instruction::End);
+        });
+        let error = write_module(&broken, &path).expect_err("a module that does not validate");
+        assert!(
+            unusable(&error),
+            "an invalid module asks for a full bind: {error}"
+        );
+        assert!(!path.exists(), "a wrong patch is never handed on");
+    }
+
+    #[test]
+    fn a_module_that_validates_is_written() {
+        let path = out("valid");
+        let good = module(|function| {
+            function.instruction(&Instruction::I32Const(1));
+            function.instruction(&Instruction::End);
+        });
+        write_module(&good, &path).expect("a module that validates");
+        assert_eq!(std::fs::read(&path).expect("the written module"), good);
+        let _ = std::fs::remove_file(&path);
+    }
 }
