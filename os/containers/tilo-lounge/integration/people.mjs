@@ -163,6 +163,7 @@ const snapshot = async tab => {
     chords: (globalThis.__chords ?? []).map(event => ({key: event.key, code: event.code,
       ctrl: event.ctrlKey, meta: event.metaKey, shift: event.shiftKey,
       trusted: event.isTrusted, prevented: event.defaultPrevented})),
+    chordStates: (globalThis.__chordStates ?? []).slice(-10),
     keys: (globalThis.__keys ?? []).slice(-20),
     // The widgets the desktop published this frame, by the name it knows them
     // by: what a page reading the snapshot can tell apart.
@@ -198,6 +199,8 @@ const dump = async (tab, name) => {
   if (names) console.error(`--- ${name} showed: ${names.slice(0, 2000)}`);
   const chords = (shown.chords ?? []).map(chord => `${chord.key}${chord.ctrl ? '+ctrl' : ''}${chord.meta ? '+meta' : ''}${chord.trusted ? '' : ' (untrusted)'}${chord.prevented ? ' (prevented)' : ''}`);
   if (chords.length) console.error(`--- ${name} keys: ${chords.slice(-8).join(', ')}`);
+  const states = (shown.chordStates ?? []);
+  if (states.length) console.error(`--- ${name} chords as they arrived: ${states.slice(-6).map(state => JSON.stringify(state)).join(', ')}`);
   if (shown.call) console.error(`--- ${name} call: ${JSON.stringify(shown.call)}`);
   const shot = await tab.screenshot();
   if (shot) writeFileSync(`${out}/${name}.png`, shot);
@@ -690,8 +693,20 @@ const mounted = async (tab, name) => {
   // what the desktop's own surface was handed.
   await tab.evaluate(`globalThis.__chords = [];
     globalThis.__keys = [];
+    globalThis.__chordStates = [];
     window.addEventListener('keydown', event => {
       if (event.key === 'k' || event.code === 'KeyK') globalThis.__chords.push(event);
+    }, {capture: true});
+    // The desktop's own account as the chord arrives: a page that already
+    // held a search (whose chord closes it) and a shell that was suspended
+    // read differently from one that was listening for the chord.
+    window.addEventListener('keydown', event => {
+      if (event.key !== 'k' && event.code !== 'KeyK') return;
+      const state = globalThis.tiloMount?.state?.() ?? {};
+      globalThis.__chordStates.push({key: event.key, ctrl: !!event.ctrlKey, meta: !!event.metaKey,
+        phase: state.phase ?? null, searchOpen: !!state.searchOpen, scope: state.searchCard?.scope ?? null,
+        focus: document.activeElement?.nodeName ?? null, hasFocus: document.hasFocus(),
+        at: Math.round(performance.now())});
     }, {capture: true});
     globalThis.tiloMount?.canvas?.addEventListener('keydown',
       event => globalThis.__keys.push({key: event.key, code: event.code, prevented: event.defaultPrevented}));`);
