@@ -34,7 +34,7 @@ use crate::widget::control_size::ControlSize;
 use crate::widget::mention_picker::MentionCandidate;
 use crate::widget::text_completion::{CompletionKey, CompletionList, TextCompletion};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
-use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue};
+use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_resource::TextEdit;
 use tilo_resource::text::splice_between;
@@ -286,10 +286,6 @@ pub struct TextInput {
     invalid: bool,
     change: Option<(String, String)>,
     change_before: Option<String>,
-    /// Who wrote each run of the bound text, as its own document records it: byte ranges of
-    /// `text` and the writer's id. Drawn in the writer's colour, one's own runs left plain, the
-    /// marks a body's paragraphs carry ([`crate::widget::BlockEditor`]) in a field.
-    authored: Vec<(std::ops::Range<usize>, String)>,
     is_focused: bool,
     caret_paint_suppressed: bool,
     host_shows_text: bool,
@@ -327,9 +323,6 @@ pub struct TextInput {
     focus_wanted: bool,
     /// The title of the document the window is for ([`Self::as_title`]).
     title: bool,
-    /// What assistive technology addresses the field by, when its owner
-    /// names what it edits ([`Self::set_semantic_target`]).
-    semantic_target: Option<String>,
     on_change: Option<TextChangeCallback>,
     action: Option<ActionEmitter<Edited>>,
     last_notified_text: String,
@@ -375,7 +368,9 @@ pub struct TextInput {
     /// Finds the text object to show in the document each sync reads: a record's text field,
     /// wherever the record keeps it now ([`Self::bound_at`]).
     locate_text: Option<LocateText>,
-    written_at: Option<(String, String)>,
+    /// What the field edits: the field (`title`) of the item that holds it (empty for the
+    /// record's own), as an action's text anchor names it ([`Self::set_edits`]).
+    edits: Option<(String, String)>,
     adopted: Option<preparation::Adopted>,
     local_author: Option<String>,
     align: TextAlign,
@@ -673,7 +668,6 @@ impl TextInput {
             invalid: false,
             change: None,
             change_before: None,
-            authored: Vec::new(),
             is_focused: false,
             caret_paint_suppressed: false,
             host_shows_text: false,
@@ -708,7 +702,6 @@ impl TextInput {
             moved: true,
             focus_wanted: false,
             title: false,
-            semantic_target: None,
             on_change: None,
             action: None,
             last_notified_text: String::new(),
@@ -723,7 +716,7 @@ impl TextInput {
             plain: false,
             bound_text: None,
             locate_text: None,
-            written_at: None,
+            edits: None,
             adopted: None,
             local_author: None,
             align: TextAlign::Left,
@@ -848,20 +841,6 @@ impl TextInput {
     pub fn clear_text_binding(&mut self) {
         self.repaint = true;
         self.bound_text = None;
-        self.authored.clear();
-    }
-
-    pub(crate) fn clear_authored(&mut self) {
-        if !self.authored.is_empty() {
-            self.repaint = true;
-            self.authored.clear();
-        }
-    }
-
-    /// Who wrote each run of the bound text, as byte ranges of it and the writer's id: what the
-    /// field draws in each writer's colour.
-    pub fn authored_runs(&self) -> &[(std::ops::Range<usize>, String)] {
-        &self.authored
     }
 
     pub fn bound_obj(&self) -> Option<&ObjId> {
@@ -893,49 +872,10 @@ impl TextInput {
         if !self.core.has_preedit() {
             self.core.set_selection(anchor, caret);
         }
-        self.adopt_authored(state, &obj, &text);
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
         self.adopted = Some(seen.showing(&self.text));
         Ok(())
-    }
-
-    /// Who wrote each run of the bound text `obj`, as the document records it: the `author`
-    /// marks over it, merged where neighbouring runs name the same person (Automerge splits a
-    /// mark wherever a concurrent edit landed inside it), as byte ranges of `text`.
-    fn adopt_authored(&mut self, state: &AutoCommit, obj: &ObjId, text: &str) {
-        let mut authored: Vec<(std::ops::Range<usize>, String)> = state
-            .marks(obj)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|mark| mark.name.as_str() == AUTHOR_MARK)
-            .filter_map(|mark| {
-                let ScalarValue::Str(author) = &mark.value else {
-                    return None;
-                };
-                let start = byte_of_char(text, mark.start);
-                let end = byte_of_char(text, mark.end);
-                (start < end).then(|| (start..end, author.to_string()))
-            })
-            .collect();
-        authored.sort_by_key(|(range, _)| (range.start, range.end));
-        let mut merged: Vec<(std::ops::Range<usize>, String)> = Vec::with_capacity(authored.len());
-        for (range, author) in authored {
-            let joins = merged.last().is_some_and(|(last, same)| {
-                *same == author
-                    && last.end.partial_cmp(&range.start) != Some(std::cmp::Ordering::Less)
-            });
-            match merged.last_mut() {
-                Some((last, _)) if joins => {
-                    last.end = last.end.max(range.end);
-                }
-                _ => merged.push((range, author)),
-            }
-        }
-        if self.authored != merged {
-            self.repaint = true;
-            self.authored = merged;
-        }
     }
 
     fn adopt_model_text(&mut self, text: String) {
@@ -3647,10 +3587,25 @@ impl TextInput {
             .with_enter_submits(true)
     }
 
-    /// Address the field by `target` (what it edits, such as one note's title), so an action
-    /// sent for a target it no longer edits is refused.
-    pub fn set_semantic_target(&mut self, target: Option<String>) {
-        self.semantic_target = target;
+    /// Name what the field edits: the field `field` of the item `item` (empty for the record's
+    /// own). An action that writes there is drawn where it lands, as the writer's caret and the
+    /// characters it wrote; and assistive technology addresses an item's field by both, so an
+    /// action sent for an item the field no longer shows is refused.
+    pub fn set_edits(&mut self, edits: Option<(String, String)>) {
+        self.repaint |= self.edits != edits;
+        self.edits = edits;
+    }
+
+    #[must_use]
+    pub fn with_edits(mut self, field: impl Into<String>, item: impl Into<String>) -> Self {
+        self.set_edits(Some((field.into(), item.into())));
+        self
+    }
+
+    /// What assistive technology addresses the field by: the item's field it edits.
+    fn semantic_target(&self) -> Option<String> {
+        let (field, item) = self.edits.as_ref()?;
+        (!item.is_empty()).then(|| format!("{field}:{item}"))
     }
 
     /// Set the stable label announced for this field by assistive technology.
@@ -5833,10 +5788,10 @@ impl Widget for TextInput {
                 autofill: self.autofill(),
                 ..Default::default()
             });
-        if let Some(target) = &self.semantic_target {
+        if let Some(target) = self.semantic_target() {
             node = node
                 .with_semantic_key(target.clone())
-                .with_action_target(target.clone());
+                .with_action_target(target);
         } else if !self.id.is_empty() {
             node = node.with_semantic_key(&self.id);
         }
@@ -5892,7 +5847,7 @@ impl Widget for TextInput {
         state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
-        if self.semantic_target.as_deref() == Some(target) {
+        if self.semantic_target().as_deref() == Some(target) {
             return self.perform_action(action, &[], state, root);
         }
         if target != ACCESSORY_TARGET
@@ -6349,11 +6304,3 @@ mod component;
 mod events;
 pub use component::TextInputProps;
 mod completion;
-
-/// `char_index` as a byte offset of `text`: Automerge marks count characters, the field's
-/// geometry counts bytes. Clamps to the end.
-fn byte_of_char(text: &str, char_index: usize) -> usize {
-    text.char_indices()
-        .nth(char_index)
-        .map_or(text.len(), |(byte, _)| byte)
-}

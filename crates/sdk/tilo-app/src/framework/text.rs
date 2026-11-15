@@ -198,7 +198,7 @@ pub(crate) fn bound_field(input: TextInput, path: Vec<Segment>) -> TextInput {
         .with_presence_path(presence)
         .bound_at(move |doc| text_at(doc, &path));
     match region {
-        Some(region) => input.with_written_at(region, block.unwrap_or_default()),
+        Some(region) => input.with_edits(region, block.unwrap_or_default()),
         None => input,
     }
 }

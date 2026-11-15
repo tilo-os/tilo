@@ -17,12 +17,6 @@ impl TextInput {
         self
     }
 
-    #[must_use]
-    pub fn with_written_at(mut self, region: impl Into<String>, block: impl Into<String>) -> Self {
-        self.written_at = Some((region.into(), block.into()));
-        self
-    }
-
     /// The bytes of what the field holds that differ from what it held
     /// before the change, as the text's own offsets: what the change wrote.
     /// An empty range is where it removed text. With nothing known of before,
@@ -64,23 +58,6 @@ impl TextInput {
             return;
         }
         let viewport = transform.transform_rect_bbox(self.rect);
-        for (range, author) in &self.authored {
-            let Some(author) = MemberId::parse(author) else {
-                continue;
-            };
-            if presence.is_own_identity(&author) {
-                continue;
-            }
-            self.draw_authorship_bands(
-                scene,
-                transform,
-                theme,
-                presence,
-                &author,
-                (range.start, range.end),
-                viewport,
-            );
-        }
         self.draw_invocations_written(scene, transform, text_renderer, theme, presence);
         let (Some((identity, _)), Some((start, end))) = (&self.change, self.written_span()) else {
             return;
@@ -136,8 +113,8 @@ impl TextInput {
 }
 
 impl TextInput {
-    /// Paint a person's spans of a field in their colour, inside what the
-    /// field shows: a scrolled document's spans reach past the field, over
+    /// Mark what a person just wrote in a field in their colour, inside what
+    /// the field shows: a scrolled document's spans reach past the field, over
     /// the chrome below it.
     fn draw_authorship_bands(
         &self,
@@ -149,11 +126,12 @@ impl TextInput {
         (start, end): (usize, usize),
         viewport: Rect,
     ) {
-        let bands: Vec<Rect> = self
+        let bands: Vec<(Rect, f32)> = self
             .selection_rects(theme, start, end)
             .into_iter()
             .map(|band| transform.transform_rect_bbox(band))
             .filter(|band| band.overlaps(viewport))
+            .map(|band| (band, 1.0))
             .collect();
         if bands.is_empty() {
             return;
@@ -165,7 +143,7 @@ impl TextInput {
             Affine::IDENTITY,
             &viewport,
         );
-        presence.draw_peer_authorship(scene, theme, author, &bands);
+        presence.draw_peer_typing(scene, theme, author, &bands);
         scene.pop_layer();
     }
 
@@ -177,7 +155,7 @@ impl TextInput {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        let Some((region, block)) = &self.written_at else {
+        let Some((region, block)) = &self.edits else {
             return;
         };
         let now = crate::time::now();

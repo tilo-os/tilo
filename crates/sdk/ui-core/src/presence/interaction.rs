@@ -509,14 +509,17 @@ impl PresenceCtx {
             .members()
             .first()
             .map(|member| (*member).clone());
-        // The tip rests on the control the invocation is bound to: what the
-        // agent would press, fully inside the frame.
+        // The tip rests beside the control the invocation is bound to: what
+        // the agent would press stays readable, framed by its outline.
         let control = control.intersect(viewport);
-        let target = if valid_marker_rect(control) {
-            control.center()
-        } else {
-            visible_locus.center()
-        };
+        let target = beside(
+            if valid_marker_rect(control) {
+                control
+            } else {
+                visible_locus
+            },
+            viewport,
+        );
         let previous = self.interaction_markers.get(&actor);
         let cached_origin = previous.and_then(|previous| {
             if previous.surface != surface
@@ -742,7 +745,7 @@ impl PresenceCtx {
         now: Instant,
         resolved: &[InvocationId],
     ) -> Vec<InteractionCardPlacement> {
-        let entries = self.visible_entries_excluding(now, resolved);
+        let entries = self.card_entries(now, resolved);
         if entries.is_empty() || viewport.width() < 96.0 || viewport.height() < 32.0 {
             return Vec::new();
         }
@@ -783,11 +786,27 @@ impl PresenceCtx {
         now: Instant,
         resolved: &[InvocationId],
     ) {
-        let entries = self.visible_entries_excluding(now, resolved);
+        let entries = self.card_entries(now, resolved);
         let placements = self.interaction_card_layout_excluding(viewport, now, resolved);
         for (entry, placement) in entries.iter().zip(&placements) {
             self.draw_interaction_card(scene, transform, text_renderer, theme, entry, placement);
         }
+    }
+
+    /// The work a card stands for: what is visible and not drawn in place,
+    /// leaving out a read, which changes nothing a person could look at (the
+    /// line beside the agent's face says what it reads).
+    fn card_entries(
+        &self,
+        now: Instant,
+        excluded: &[InvocationId],
+    ) -> Vec<&InteractionPresenceEntry> {
+        let mut entries = self.visible_entries_excluding(now, excluded);
+        entries.retain(|entry| {
+            tilo_actions::step::kind(entry.interaction.action.step, &entry.interaction.anchor)
+                != tilo_actions::StepKind::Read
+        });
+        entries
     }
 
     fn visible_entries(&self, now: Instant) -> Vec<&InteractionPresenceEntry> {
@@ -1021,6 +1040,23 @@ fn marker_entry_is_newer(
         || (candidate.first_received_at == current.first_received_at
             && candidate.interaction.invocation.0.as_bytes()
                 > current.interaction.invocation.0.as_bytes())
+}
+
+/// Where an agent's mark rests by `control`: level with it, just past its right edge, or its left
+/// one where the frame ends first, so the mark never covers the control's glyph. Only a control as
+/// wide as the frame takes the mark inside its right edge.
+fn beside(control: Rect, viewport: Rect) -> Point {
+    // The mark's ring and halo reach this far from its centre, and a gap keeps it off the outline.
+    let radius = super::render::RING_R + 3.0;
+    let reach = radius + 2.0;
+    let x = if control.x1 + reach + radius <= viewport.x1 {
+        control.x1 + reach
+    } else if control.x0 - reach - radius >= viewport.x0 {
+        control.x0 - reach
+    } else {
+        control.x1 - reach
+    };
+    Point::new(x, control.center().y)
 }
 
 fn valid_marker_rect(rect: Rect) -> bool {
@@ -1286,8 +1322,12 @@ mod tests {
             )
             .unwrap();
             assert_eq!(first.tip, Point::new(viewport.x1, 300.0));
-            assert_eq!(first.target, Point::new(600.0, 300.0));
-            assert!(locus.contains(first.target));
+            assert_eq!(
+                first.target,
+                Point::new(653.5, 300.0),
+                "the mark rests beside what it would press, never over it"
+            );
+            assert!(!locus.contains(first.target));
             assert_eq!(first.approach, 0.0);
             assert!(first.pulse > 0.99);
 
@@ -1332,7 +1372,7 @@ mod tests {
                 &theme,
             )
             .unwrap();
-            assert_eq!(settled.tip, Point::new(600.0, 300.0));
+            assert_eq!(settled.tip, Point::new(653.5, 300.0));
             assert_eq!(settled.approach, 1.0);
             assert_eq!(settled.pulse, 0.0);
             assert!(!presence.interaction_animation_demand(settled_at, &theme));
@@ -1410,7 +1450,7 @@ mod tests {
                 &reduced,
             )
             .unwrap();
-            assert_eq!(reduced_frame.tip, Point::new(450.0, 330.0));
+            assert_eq!(reduced_frame.tip, Point::new(513.5, 330.0));
             assert_eq!(reduced_frame.pulse, 0.0);
             assert!(!presence.interaction_animation_demand(second_at, &reduced));
         }
@@ -1472,7 +1512,7 @@ mod tests {
                 let resized = paint_marker(
                     &mut presence,
                     &action,
-                    Rect::new(40.0, 90.0, 100.0, 130.0),
+                    Rect::new(20.0, 90.0, 60.0, 130.0),
                     compact,
                     "writer:1",
                     at + Duration::from_millis(100),
@@ -1782,6 +1822,29 @@ mod tests {
         assert!(
             presence.take_shown().is_empty(),
             "an invocation this surface never saw cannot silence a rail entry"
+        );
+    }
+
+    #[test]
+    fn an_agent_reading_takes_no_card() {
+        let at = crate::time::now();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut presence = PresenceCtx::empty();
+        let mut read = interaction(71, 1, InteractionPhase::Applying);
+        read.action.id = "read".into();
+        read.action.step = Some(StepKind::Read);
+        presence.apply_interaction_at(read, at).unwrap();
+        assert!(
+            presence.interaction_card_layout(viewport, at).is_empty(),
+            "a read changes nothing on the page: no card stands for it"
+        );
+        let mut rename = interaction(72, 1, InteractionPhase::Applying);
+        rename.actor = Acting::agent("other");
+        presence.apply_interaction_at(rename, at).unwrap();
+        assert_eq!(
+            presence.interaction_card_layout(viewport, at).len(),
+            1,
+            "work nothing on the page shows keeps its card"
         );
     }
 

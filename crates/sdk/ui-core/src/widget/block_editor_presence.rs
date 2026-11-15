@@ -1,5 +1,5 @@
-//! What peers and agents do inside a block's text: the runs each author wrote, a live typing glow, and
-//! an agent's write as the marks a person's typing leaves.
+//! What peers and agents do inside a block's text: a live typing glow, and an agent's write as the
+//! marks a person's typing leaves.
 
 use vello::kurbo::{Point, Rect};
 
@@ -7,9 +7,9 @@ use super::{Block, BlockDrawCtx, BlockEditor, transformed};
 use crate::widget::Widget;
 
 impl BlockEditor {
-    /// Peer authorship runs, live-typing glows, what an invocation wrote and
-    /// its caret, then carets and selection bands for one block: drawn after
-    /// every block's own content, so they land on top.
+    /// Live-typing glows, what an invocation wrote and its caret, then carets
+    /// and selection bands for one block: drawn after every block's own
+    /// content, so they land on top.
     pub(super) fn draw_block_presence(
         &self,
         i: usize,
@@ -26,24 +26,6 @@ impl BlockEditor {
         let line = &b.line;
         let brect = line.get_rect();
         let text_right = brect.x1 - line.text_inset(ctx.theme);
-        // Drawn first, under caret/selection: the runs each foreign
-        // author wrote, marker-style in their color, band by band as the
-        // run wraps.
-        for (bs, be, author) in line.author_runs() {
-            if self.local_author.as_deref() == Some(author.as_str()) {
-                continue;
-            }
-            let bands: Vec<Rect> = line
-                .mark_rects(ctx.theme, *bs..*be)
-                .into_iter()
-                .map(|band| ctx.transform.transform_rect_bbox(band))
-                .collect();
-            let Some(user) = crate::permissions::MemberId::parse(author) else {
-                continue;
-            };
-            ctx.presence
-                .draw_peer_authorship(ctx.scene, ctx.theme, &user, &bands);
-        }
         let now = crate::time::now();
         for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
             if self.local_author.as_deref() == Some(user.key().as_str()) {

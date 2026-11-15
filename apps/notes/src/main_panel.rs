@@ -630,8 +630,12 @@ impl MainPanel {
         self.title.set_focus(false);
         self.title.set_text(title);
         title.clone_into(&mut self.title_held);
-        self.title
-            .set_semantic_target(self.page_id.map(|page| format!("notes:page-title:{page}")));
+        // The note's `title`, as the notebook's rename writes it: an agent renaming it is drawn
+        // here, where the title changes.
+        self.title.set_edits(
+            self.page_id
+                .map(|page| ("title".to_owned(), page.to_string())),
+        );
         self.title_edit.borrow_mut().take();
         self.naming_new = false;
         self.measure_title();

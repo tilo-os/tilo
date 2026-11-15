@@ -551,7 +551,6 @@ impl RichTextLine {
     ) -> Result<(), crate::view::ThawError> {
         self.paint_dirty = true;
         self.inner.adopt_bound_text(state)?;
-        self.inner.clear_authored();
         self.align_bound_projection(state);
         self.refresh_attributes();
         Ok(())

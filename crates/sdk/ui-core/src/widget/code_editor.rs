@@ -1428,74 +1428,46 @@ mod tests {
             wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal();
         }
 
-        phase an_embedded_editor_does_not_tint_the_persons_own_writes;
+        phase an_embedded_editor_does_not_tint_who_wrote_its_text;
+        // Who wrote a run is history's to tell: the live page marks only what
+        // someone is writing now, so a run the document records as theirs is
+        // drawn plain.
         {
-            fn own_writes_are_not_tinted() {
-                use crate::permissions::MemberId;
-                use automerge::ObjType;
-                use automerge::marks::{ExpandMark, Mark};
-                use automerge::transaction::Transactable as _;
+            use crate::permissions::MemberId;
+            use automerge::ObjType;
+            use automerge::marks::{ExpandMark, Mark};
+            use automerge::transaction::Transactable as _;
 
-                let theme = Theme::dark();
-                let own = MemberId::person("me");
-                let mut doc = AutoCommit::new();
-                let text = doc
-                    .put_object(&automerge::ROOT, "text", ObjType::Text)
-                    .expect("a text object");
-                doc.splice_text(&text, 0, 0, "the person's own words")
-                    .expect("its words");
-                doc.mark(
-                    &text,
-                    Mark::new("author".to_owned(), automerge::ScalarValue::Str("me".into()), 0, 22),
-                    ExpandMark::None,
-                )
-                .expect("the run is theirs");
-                let mut editor = CodeEditor::local();
-                editor.bind_text(text);
-                editor.pull(&mut doc);
-                editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-                assert_eq!(
-                    editor.inner().authored_runs(),
-                    [(0..22, "me".to_string())],
-                    "the editor knows who wrote the text"
-                );
-
-                let mut mine = PresenceCtx::empty();
-                mine.set_own_identity([own.clone()]);
-                let draw = |editor: &mut CodeEditor, presence: &PresenceCtx| {
-                    let mut renderer = TextRenderer::new();
-                    let mut scene = Scene::new();
-                    editor.draw_embedded(
-                        &mut scene,
-                        Affine::IDENTITY,
-                        &mut renderer,
-                        &theme,
-                        presence,
-                    );
-                    scene
-                };
-                let own_frame = draw(&mut editor, &mine);
-                let peer_frame = draw(&mut editor, &PresenceCtx::empty());
-                let tint = theme
-                    .tokens
-                    .colors
-                    .presence
-                    .of_rgb(mine.color_for(&own))
-                    .multiply_alpha(0.20)
-                    .premultiply()
-                    .to_rgba8()
-                    .to_u32();
-                assert!(
-                    peer_frame.encoding().draw_data.contains(&tint),
-                    "a run of someone the presence does not name is tinted in their colour"
-                );
-                assert!(
-                    !own_frame.encoding().draw_data.contains(&tint),
-                    "the person's own run is not tinted as someone else's"
-                );
-            }
-
-            own_writes_are_not_tinted();
+            let theme = Theme::dark();
+            let writer = MemberId::person("ada");
+            let mut doc = AutoCommit::new();
+            let text = doc
+                .put_object(&automerge::ROOT, "text", ObjType::Text)
+                .expect("a text object");
+            doc.splice_text(&text, 0, 0, "words ada wrote")
+                .expect("its words");
+            doc.mark(
+                &text,
+                Mark::new("author".to_owned(), automerge::ScalarValue::Str("ada".into()), 0, 15),
+                ExpandMark::None,
+            )
+            .expect("the run is hers");
+            let mut editor = CodeEditor::local();
+            editor.bind_text(text);
+            editor.pull(&mut doc);
+            editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+            let presence = PresenceCtx::empty();
+            let mut renderer = TextRenderer::new();
+            let mut scene = Scene::new();
+            editor.draw_embedded(&mut scene, Affine::IDENTITY, &mut renderer, &theme, &presence);
+            let colour = theme.tokens.colors.presence.of_rgb(presence.color_for(&writer));
+            let drawn = &scene.encoding().draw_data;
+            assert!(
+                [0.20, 0.35].iter().all(|alpha| {
+                    !drawn.contains(&colour.multiply_alpha(*alpha).premultiply().to_rgba8().to_u32())
+                }),
+                "a run someone wrote earlier is not tinted in their colour"
+            );
         }
     }
 

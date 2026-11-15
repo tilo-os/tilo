@@ -123,23 +123,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_bound_field_shows_who_wrote_each_run;
-    // The field shows who wrote each run of its text: a collaborator's words are theirs, the
-    // person's own their own.
-    {
-        let mut app = TestApp::<MixerApp>::new().unwrap();
-        app.harness().click_named("name").unwrap();
-        app.harness().type_text("Drums");
-        let runs = app
-            .with_widget(|input: &mut TextInput| input.authored_runs().to_vec())
-            .unwrap();
-        let [(range, author)] = runs.as_slice() else {
-            panic!("one run, the person's own: {runs:?}");
-        };
-        assert_eq!(range.clone(), 0.."Drums".len());
-        assert!(!author.is_empty());
-    }
-
     phase a_text_control_at_a_path_splices_the_field_and_undoes_a_word;
     {
         let mut app = TestApp::<EditorApp>::new().unwrap();

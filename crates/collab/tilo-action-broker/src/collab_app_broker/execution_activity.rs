@@ -344,9 +344,13 @@ fn anchor_of(
 }
 
 /// The item a resource is, when it is one: `<kind>/<field>/<item>` of kind
-/// `<kind>.<field>`, as apps publish the items of a collection. An id and a
-/// kind that do not agree that way name no item.
+/// `<kind>.<field>`, as apps publish the items of a collection, or a window's
+/// alias of one. An id and a kind that do not agree that way name no item.
 fn item_of_resource(resource: &str, kind: &str) -> Option<String> {
+    // A window binds an item under an alias of its own; the item is the
+    // resource the alias stands for.
+    let logical = tilo_actions::logical_resource_id(resource);
+    let resource = logical.as_ref();
     let (record, field) = kind.rsplit_once('.')?;
     let rest = resource.strip_prefix(record)?.strip_prefix('/')?;
     let (named, item) = rest.split_once('/')?;
@@ -922,6 +926,26 @@ mod anchor_tests {
             assert_eq!(
                 text_range(&anchor_of(&on_record, &resource, Some(&renamed_by_id))),
                 ("title".into(), "7d2b".into(), 0, 4),
+            );
+            // Offered on the item under the alias its window bound it as (a note's rename
+            // pressed through its row), the item is the one the alias stands for.
+            let alias = format!(
+                "{}{}:{}:{}",
+                tilo_actions::BOUND_RESOURCE_PREFIX,
+                uuid::Uuid::from_u128(1),
+                uuid::Uuid::from_u128(2),
+                hex::encode("so.tilo.tasks/issues/7d2b"),
+            );
+            let (mut bound, resource) = published(
+                &alias,
+                "so.tilo.tasks.issues",
+                "rename",
+                vec![ActionParam::required_owned("title", ParamType::Text, "Title")],
+            );
+            bound.contract.field = Some("title".into());
+            assert_eq!(
+                text_range(&anchor_of(&bound, &resource, Some(&renamed))),
+                ("title".into(), "7d2b".into(), 0, 14),
             );
             let resource = tilo_actions::ActionResource {
                 id: "so.tilo.tasks/issues/7d2b".into(),

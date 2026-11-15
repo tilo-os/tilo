@@ -145,23 +145,6 @@ impl PresenceCtx {
         });
     }
 
-    /// Draw an authorship "marker": translucent underlay in the author's
-    /// colour behind the runs they wrote, at lower alpha than a selection.
-    /// What is drawn comes from the text's stored author marks, not from
-    /// presence, so it outlasts everyone closing the document.
-    pub fn draw_peer_authorship(
-        &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        user: &MemberId,
-        rects: &[Rect],
-    ) {
-        let color = color_for(self, user, theme).with_alpha_factor(0.20);
-        for r in rects {
-            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, r);
-        }
-    }
-
     /// Draw a soft "indicative mist" glow over `rect` in the peer's colour —
     /// wayfinding to where a peer currently is. Two translucent fills
     /// approximate a radial glow without an actual gradient.
@@ -512,7 +495,7 @@ pub(crate) const OUTLINE_FILL: f32 = 0.18;
 const DOT_R: f64 = 6.5;
 /// Outer edge including the contrast ring — the clearance pill placement
 /// uses.
-const RING_R: f64 = 8.5;
+pub(super) const RING_R: f64 = 8.5;
 /// Gap between the dot and its pill, and between two pills.
 const PILL_GAP: f64 = 4.0;
 /// Distance from its pointer past which a pill gets a tether line.

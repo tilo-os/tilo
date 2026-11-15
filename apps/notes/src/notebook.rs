@@ -414,7 +414,7 @@ impl Notebook {
     /// Rename note
     ///
     /// Give the note a new title; every link to it reads the new title.
-    #[action(keywords = "change title, retitle", item = pages, icon = "pencil")]
+    #[action(keywords = "change title, retitle", item = pages, field = "title", step = "edit", icon = "pencil")]
     pub fn rename(
         &mut self,
         page: &Id,

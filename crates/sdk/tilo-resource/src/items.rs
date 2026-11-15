@@ -1031,6 +1031,9 @@ fn finish_bound(mut spec: ActionSpec, decl: &Declaration) -> ActionSpec {
     if decl.destructive {
         spec = spec.destructive();
     }
+    // On its item it is the same kind of step, making the same thing.
+    let contract = &mut spec.type_mut().contract;
+    (contract.step, contract.creates) = (decl.step, decl.creates.map(str::to_owned));
     // An item verb that answers answers on its item too.
     if let Some(result) = &decl.result {
         spec.type_mut().contract.result = result.clone();

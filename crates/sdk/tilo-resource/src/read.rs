@@ -97,6 +97,7 @@ fn spec_on(record: Option<&str>, item: Option<&str>) -> tilo_actions::ActionSpec
     spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
     };
+    spec.type_mut().contract.step = Some(tilo_actions::StepKind::Read);
     spec.reads_document()
 }
 

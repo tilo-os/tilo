@@ -1039,10 +1039,12 @@ mod locus_tests {
         let marker = markers.first().expect("the agent's mark is painted");
         let [x0, y0, x1, y1] = marker.marker;
         let mark = vello::kurbo::Rect::new(x0, y0, x1, y1);
-        let tip = check.center();
+        let centre = check.center();
+        // Its mark starts past the box's middle and within a mark's width of its edge.
+        let beside = mark.x0 > centre.x && mark.x0 < check.x1 + 16.0;
         assert!(
-            mark.contains(tip) && locus.contains(tip),
-            "the pointer rests on the row's check box: {mark:?} vs {check:?} in {locus:?}"
+            beside && locus.contains(centre) && mark.y0 < centre.y,
+            "the pointer rests beside the row's check box, clear of it: {mark:?} vs {check:?} in {locus:?}"
         );
         let tags = presence.caret_tags();
         let [tag] = tags.as_slice() else {
