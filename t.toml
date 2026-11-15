@@ -2933,6 +2933,11 @@ on = ["idle"]
 # narrowed run still fails on a finding the allow-list does not name.
 [[check]]
 name = "layout-check/{size}"
+# Heavy: every app of apps/tl laid out at this size, strict, about 1.4 core-hours a size, which
+# heads of main paid 3.9 core-hours for in 60 of 100 (2026-11-14/15). On main's newest head with
+# the room main's heads leave (`idle`), keyed on every commit, so a failure is still bisected to the
+# commit that broke it and told to its pusher.
+on = ["idle"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh bash tools/ci/layout-check.sh {size}"
 env = { TILO_TEST_NTFS_FIXTURES = "0" }
