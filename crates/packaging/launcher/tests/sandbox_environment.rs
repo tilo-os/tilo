@@ -178,6 +178,7 @@ tilo_test_env::scenario! {
                     launcher::gpu::VK_DRIVER_FILES_ENV,
                     launcher::gpu::VK_ICD_FILENAMES_ENV,
                     launcher::gpu::EGL_VENDOR_ENV,
+                    launcher::gpu::NO_DEVICE_SELECT_ENV,
                 ]
                 .map(str::to_string),
             );
