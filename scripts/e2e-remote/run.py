@@ -1703,6 +1703,15 @@ class Run:
                     box.vm.shot(self.out / f"shot-watch-{box.letter}.png")
                 except VmError as exc:
                     res.facts[f"shot_{box.letter}"] = str(exc)[:200]
+            # A Browser window is shared as its page and never as pictures of it, which show
+            # what the page masks: B's row for the window says which of the two goes out
+            # (`as_page`), whatever A's screen holds.
+            as_pictures = [shared for shared in seen["sharing_on_b"]
+                           if str(shared.get("tab")) == str(tab) and shared.get("as_page") is False]
+            if as_pictures:
+                raise Failed("B shares its Browser window as pictures of it, not as its page: "
+                             f"{json.dumps(as_pictures, ensure_ascii=False)[:300]}; A received "
+                             f"{res.facts['received_on_a'][:300]}")
             if not pictured or not seen["hosted_tab_on_a"]:
                 res.facts["windows_on_a"] = a.vm.raw({"op": "windows"})
                 viewers = [viewer for shared in seen["sharing_on_b"]
@@ -1721,7 +1730,13 @@ class Run:
                                      in (seen["live_on_b"] or {}).get("asked_for") or []]
                 # The first thing that did not happen, in the order a share travels.
                 if seen["starting_on_b"] and not seen["sharing_on_b"]:
-                    why = f"B's share waits to start: {res.facts['starting_on_b'][:300]}"
+                    # A share of a window whose app draws its page waits for the page
+                    # (`awaits_page`) and sends no picture meanwhile.
+                    waits = next((start for start in seen["starting_on_b"]
+                                  if str(start.get("tab")) == str(tab)), {})
+                    what = ("for Browser to offer the window's page" if waits.get("awaits_page")
+                            else "to start")
+                    why = f"B's share waits {what}: {res.facts['starting_on_b'][:300]}"
                 elif not seen["governed_on_b"]:
                     why = "B's workspace does not say the window is shared"
                 elif not seen["governed_on_a"]:
@@ -2158,6 +2173,12 @@ class Run:
                     box.vm.shot(self.out / f"shot-watch-host-{box.letter}.png")
                 except VmError as exc:
                     res.facts[f"shot_{box.letter}"] = str(exc)[:200]
+            as_pictures = [shared for shared in seen["sharing_on_a"]
+                           if str(shared.get("tab")) == str(tab) and shared.get("as_page") is False]
+            if as_pictures:
+                raise Failed("A shares its Browser window as pictures of it, not as its page: "
+                             f"{json.dumps(as_pictures, ensure_ascii=False)[:300]}; B received "
+                             f"{res.facts['received_on_b'][:300]}")
             if not pictured or not seen["hosted_tab_on_b"]:
                 closed = next(((letter, stands) for letter, stands
                                in (("A", seen["live_on_a"]), ("B", seen["live_on_b"]))
@@ -2165,7 +2186,11 @@ class Run:
                 sent = row_for(on_a, "sharing") or {}
                 # The first thing that did not happen, in the order a share travels.
                 if seen["starting_on_a"] and not seen["sharing_on_a"]:
-                    why = f"A's share waits to start: {res.facts['starting_on_a'][:300]}"
+                    waits = next((start for start in seen["starting_on_a"]
+                                  if str(start.get("tab")) == str(tab)), {})
+                    what = ("for Browser to offer the window's page" if waits.get("awaits_page")
+                            else "to start")
+                    why = f"A's share waits {what}: {res.facts['starting_on_a'][:300]}"
                 elif not seen["governed_on_a"]:
                     why = "A's workspace does not say the window is shared"
                 elif not seen["governed_on_b"]:
