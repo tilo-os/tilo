@@ -20,18 +20,7 @@ fn host() -> PathBuf {
 }
 
 fn installer() -> PathBuf {
-    let path = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("tilo-install");
-    assert!(
-        path.is_file(),
-        "Build the actual tilo-install binary before this integration test"
-    );
-    path
+    tilo_test_env::sibling_binary("install", "tilo-install")
 }
 
 fn isolated_command(binary: &Path, root: &Path) -> Command {
