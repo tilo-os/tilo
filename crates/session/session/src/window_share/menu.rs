@@ -89,7 +89,8 @@ pub(crate) fn follow_asks(shell: &DesktopHandle) -> Vec<Invocation> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::super::{Asked, Paged, Starting};
+    use super::super::paged::Paged;
+    use super::super::{Asked, Starting};
     use super::*;
 
     const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
@@ -117,6 +118,7 @@ mod tests {
             workspace: WORKSPACE.to_owned(),
             waiting_for: String::new(),
             controlled: BTreeSet::new(),
+            page: false,
         });
         assert_eq!(
             shares.share_of(7),

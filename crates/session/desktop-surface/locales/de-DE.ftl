@@ -1140,6 +1140,7 @@ session-window-share-page-unsent = Wartet darauf, dass die Seite des Fensters an
 session-window-share-page-withheld = Die App des Fensters wurde nach dessen Seite gefragt und hat sie nicht übergeben
 session-window-share-page-overdue = Das Gerät, auf dem das Fenster läuft, wurde nach dessen Seite gefragt und hat sie nicht gesendet
 session-window-share-page-too-large = Die Seite des Fensters ist zu groß, um sie an die Geräte zu senden, die es zeigen
+session-window-share-page-unoffered = Wartet darauf, dass die App des Fensters dessen Seite anbietet: Das Fenster wird als seine Seite geteilt, nie als Bilder davon
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = Bildschirmanzeige

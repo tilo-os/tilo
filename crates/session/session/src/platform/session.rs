@@ -829,6 +829,11 @@ impl Session {
             options.salt,
             hosted_browser,
         );
+        // A window that is its page, as its app's package says, is never shared as pictures:
+        // the shares read that of the package before the app said anything.
+        window_shares
+            .borrow_mut()
+            .pages_declared_by(crate::apps::window_is_its_page);
         handle.set_peer_picture_wake(Some(options.wake.handle()));
         // A window's menu offers its share with the workspace as these shares read it, and asks
         // them for it.

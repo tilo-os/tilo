@@ -27,6 +27,12 @@
 //! showing the window says the same from its side: it waits for the page's first frame, and once
 //! that is overdue, that the device running the window was asked for it and sent none.
 //!
+//! A window goes out as its page or as pictures of it, and the reading says which (`as_page`). A
+//! window whose app draws its page is never the second: a share of it that was asked for before
+//! its app offered the page stands among the ones that wait (`starting`), says that it waits for
+//! the page (`awaits_page`, and in words in `waiting_for`), and sends nothing meanwhile
+//! ([`super::paged`]).
+//!
 //! A window that runs only on its device stands on every other shell whether or not it is shared,
 //! and its tab there says why it holds no picture. The reading says the same of each (`hosted`):
 //! `shown` while a share of it stands in the tab, and until then `not-shared`, `awaited` with what
@@ -178,6 +184,8 @@ impl WindowShares {
                     // Whether a member's shell asks the plane for the window now, so it is
                     // captured and sent.
                     "streaming": self.goes_out(*tab),
+                    // Pictures of the window are what goes out.
+                    "as_page": false,
                     "waiting_for": self.waiting_for(&hosted.workspace),
                 })
             })
@@ -218,6 +226,8 @@ impl WindowShares {
                     "input_allowed": false,
                     "viewers": viewers,
                     "streaming": streaming,
+                    // The page its app draws is what goes out, and no picture of the window.
+                    "as_page": true,
                     "waiting_for": waiting_for,
                 }));
             }
@@ -237,6 +247,9 @@ impl WindowShares {
                     "window": start.window,
                     "app_id": start.app_id,
                     "workspace": start.workspace,
+                    // Whether it waits for its app to offer the window's page: such a window
+                    // is not shared as pictures meanwhile.
+                    "awaits_page": start.page,
                     "waiting_for": start.waiting_for,
                 })
             })

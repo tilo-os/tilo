@@ -1101,6 +1101,7 @@ session-window-share-page-unsent = Waiting for the window's page to go out to th
 session-window-share-page-withheld = The window's app was asked for its page and has not handed it over
 session-window-share-page-overdue = The device that runs the window was asked for its page and has not sent it
 session-window-share-page-too-large = The window's page is too large to send to the devices showing it
+session-window-share-page-unoffered = Waiting for the window's app to offer its page: the window is shared as its page, never as pictures of it
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = On-screen readout
