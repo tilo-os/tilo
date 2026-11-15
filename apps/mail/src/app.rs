@@ -2721,9 +2721,17 @@ impl MailApp {
             account: account.email.clone(),
             server: None,
         };
+        let files =
+            match crate::attachment_store::materialize_files(&self.content, &draft.attachments) {
+                Ok(files) => files,
+                Err(reason) => {
+                    done(Err(reason));
+                    return;
+                }
+            };
         let posted = self
             .state()
-            .post_engine(EngineRequest::send(account, Box::new(draft)));
+            .post_engine(EngineRequest::send(account, Box::new(draft), files));
         match posted {
             Some(request_id) => {
                 self.state().pending_send.insert(

@@ -33,9 +33,9 @@ pub fn parse_addr_list(s: &str) -> Vec<Addr> {
 /// Returns `Err` if serialisation fails or any portable attachment cannot be
 /// materialized and re-verified. In particular, it never silently omits a
 /// missing attachment and then reports a successful send.
-/// Whether this build can send `draft` itself: a device writes and checks
-/// the message, while a page leaves that to the host that keeps the account,
-/// which is handed no files.
+/// Whether this build can send `draft`: a device writes the message and
+/// checks it, while a page hands the host that keeps the account the files'
+/// bytes, which the host writes the message from.
 ///
 /// # Errors
 /// What stopped the message being prepared here.
@@ -50,9 +50,12 @@ pub fn check_sendable(
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (content, from);
-        if !draft.attachments.is_empty() || draft.calendar_ics.is_some() {
-            return Err(crate::i18n::t("mail-status-send-files-here"));
+        // A page builds no MIME — the host it sends through does, with a
+        // clock this page has not — but what it would carry is read here
+        // first, so a file that is not here stops the send before it starts.
+        let _ = from;
+        for attachment in &draft.attachments {
+            crate::attachment_store::materialize(content, attachment)?;
         }
     }
     Ok(())
@@ -62,6 +65,28 @@ pub fn build_mime(
     content: &tilo_content::ContentStore,
     from: &Addr,
     draft: &Draft,
+) -> Result<Vec<u8>, String> {
+    let files = draft
+        .attachments
+        .iter()
+        .map(|attachment| {
+            let bytes = crate::attachment_store::materialize(content, attachment)?;
+            Ok(crate::model::SendFile {
+                attachment: attachment.clone(),
+                bytes,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    build_mime_from(from, draft, &files)
+}
+
+/// Build the message from `draft` and the bytes `files` already carry:
+/// the send path of whatever read them, so a page hands the host the bytes
+/// it kept and never builds MIME itself.
+pub fn build_mime_from(
+    from: &Addr,
+    draft: &Draft,
+    files: &[crate::model::SendFile],
 ) -> Result<Vec<u8>, String> {
     let to = parse_addr_list(&draft.to);
     let cc = parse_addr_list(&draft.cc);
@@ -105,9 +130,12 @@ pub fn build_mime(
     // Blind recipients belong only in the SMTP envelope. A Bcc header here
     // would disclose them to every recipient of these shared wire bytes.
 
-    for attachment in &draft.attachments {
-        let bytes = crate::attachment_store::materialize(content, attachment)?;
-        builder = builder.attachment(attachment.mime.clone(), attachment.filename.clone(), bytes);
+    for file in files {
+        builder = builder.attachment(
+            file.attachment.mime.clone(),
+            file.attachment.filename.clone(),
+            file.bytes.clone(),
+        );
     }
     if let Some(calendar_ics) = &draft.calendar_ics {
         builder = builder.attachment(

@@ -154,7 +154,7 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         body: "This travels through the engine.".into(),
         ..Default::default()
     };
-    let send = EngineRequest::send(loaded.clone(), Box::new(draft.clone()));
+    let send = EngineRequest::send(loaded.clone(), Box::new(draft.clone()), Vec::new());
     let send_id = send.request_id();
     tx.send(send).unwrap();
     assert!(matches!(

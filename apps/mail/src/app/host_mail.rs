@@ -13,11 +13,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use ui::tilo_actions::remote::{
     InvokeArgument, person_accounts,
-    person_accounts::{FetchMail, FetchedMail, MailAccount, MailAccounts, MarkMail, SendMail},
+    person_accounts::{
+        BeginSend, FetchMail, FetchedMail, MAX_SEND_PIECE_BYTES, MailAccount, MailAccounts,
+        MarkMail, PieceKept, SendFile as WireFile, SendId, SendMail, SendPiece, StartedSend,
+    },
 };
 use ui::{Arrival, InvocationCall, RemoteActions};
 
-use super::{EngineEvent, EngineHandle, EngineRequest};
+use super::{EngineEvent, EngineHandle, EngineRequest, EngineRequestId, EngineRequestKind};
 use crate::model::{Addr, Attachment, Folder, Message, MessageId, ServerPlace};
 use crate::sync::Synced;
 
@@ -29,6 +32,54 @@ const ACCOUNTS_FRESH: std::time::Duration = std::time::Duration::from_secs(30);
 struct Asked {
     request: EngineRequest,
     call: InvocationCall,
+}
+
+/// A message the window sent, as the host takes it: begun under the host's
+/// id, its files' bytes handed over a piece at a time, then sent.
+enum Staging {
+    Beginning {
+        request_id: EngineRequestId,
+        files: Vec<crate::model::SendFile>,
+        call: InvocationCall,
+    },
+    Piece {
+        request_id: EngineRequestId,
+        send: String,
+        files: Vec<crate::model::SendFile>,
+        file: usize,
+        offset: u64,
+        call: InvocationCall,
+    },
+    Sending {
+        request_id: EngineRequestId,
+        call: InvocationCall,
+    },
+}
+
+impl Staging {
+    fn request_id(&self) -> EngineRequestId {
+        match self {
+            Self::Beginning { request_id, .. }
+            | Self::Piece { request_id, .. }
+            | Self::Sending { request_id, .. } => *request_id,
+        }
+    }
+
+    fn call(&self) -> &InvocationCall {
+        match self {
+            Self::Beginning { call, .. }
+            | Self::Piece { call, .. }
+            | Self::Sending { call, .. } => call,
+        }
+    }
+}
+
+/// The bytes of the file at `offset` up to where its next piece ends: what
+/// it hands the host this time.
+fn piece_end(file: &crate::model::SendFile, offset: u64) -> u64 {
+    offset
+        .saturating_add(MAX_SEND_PIECE_BYTES as u64)
+        .min(file.bytes.len() as u64)
 }
 
 /// The page's end of the host's mail session.
@@ -49,6 +100,8 @@ pub(crate) struct HostMail {
     adding: Option<InvocationCall>,
     /// Why the host would not keep the account, once it would not.
     add_error: Option<String>,
+    /// The message the window sent, while the host takes it.
+    staging: Option<Staging>,
 }
 
 /// A window with the host's mail session as its engine: what the window
@@ -66,6 +119,7 @@ pub(super) fn engine() -> (EngineHandle, HostMail) {
         listed_at: None,
         adding: None,
         add_error: None,
+        staging: None,
     };
     (EngineHandle { tx, rx }, host)
 }
@@ -142,6 +196,19 @@ impl HostMail {
         let mut changed = false;
         while let Ok(request) = self.requests.try_recv() {
             changed = true;
+            // A send is the host's in several calls: begun, its files handed
+            // over a piece at a time, then sent. Nothing of it is asked in
+            // the one call the other requests make.
+            if let EngineRequest::Send {
+                request_id,
+                account,
+                draft,
+                files,
+            } = request
+            {
+                self.begin_send(request_id, &account, &draft, files);
+                continue;
+            }
             if let Some((target, argument)) = asking(&request) {
                 let remote = self.remote();
                 let call = remote.invoke(target, argument, None);
@@ -205,6 +272,17 @@ impl HostMail {
             }
         }
         self.asking = still;
+        if self.staging.is_some() {
+            changed |= self.advance_staging();
+        }
+        changed |= self.poll_accounts();
+        changed
+    }
+
+    /// Take the host's answer to an account it was asked to keep, and
+    /// read the accounts again when they are due. Whether anything moved.
+    fn poll_accounts(&mut self) -> bool {
+        let mut changed = false;
         if let Some(adding) = &self.adding
             && let Some(outcome) = answered(adding)
         {
@@ -238,6 +316,216 @@ impl HostMail {
             self.ask_for_accounts();
         }
         changed
+    }
+
+    /// Ask the host to begin the message the window sent: what it says, whom
+    /// it goes to, its invitation and the files whose bytes follow.
+    fn begin_send(
+        &mut self,
+        request_id: EngineRequestId,
+        account: &crate::model::AccountConfig,
+        draft: &crate::model::Draft,
+        files: Vec<crate::model::SendFile>,
+    ) {
+        let beginning = BeginSend {
+            message: SendMail {
+                account: account.email.clone(),
+                from_name: Some(account.display_name.clone()).filter(|name| !name.is_empty()),
+                from_address: draft
+                    .sender
+                    .as_ref()
+                    .map(|sender| sender.email.clone())
+                    .filter(|email| !email.is_empty())
+                    .unwrap_or_else(|| account.email.clone()),
+                to: draft.to.clone(),
+                cc: draft.cc.clone(),
+                bcc: draft.bcc.clone(),
+                subject: draft.subject.clone(),
+                body: draft.body.clone(),
+                html_body: draft.html_body.clone(),
+                message_id: draft.wire.message_id.clone(),
+                in_reply_to: draft.wire.in_reply_to.clone(),
+                references: draft.wire.references.clone(),
+            },
+            calendar_ics: draft.calendar_ics.clone(),
+            files: files
+                .iter()
+                .map(|file| WireFile {
+                    filename: file.attachment.filename.clone(),
+                    mime: file.attachment.mime.clone(),
+                    size: file.bytes.len() as u64,
+                })
+                .collect(),
+        };
+        let Some(argument) = map(&beginning) else {
+            self.fail_send(request_id, "the message could not be asked for".into());
+            return;
+        };
+        let remote = self.remote();
+        let call = remote.invoke(
+            person_accounts::target(person_accounts::BEGIN_SEND),
+            argument,
+            None,
+        );
+        self.staging = Some(Staging::Beginning {
+            request_id,
+            files,
+            call,
+        });
+    }
+
+    /// Take the host's answer to the step in flight and ask the next: the
+    /// begun message, each file's pieces in order, then the send. Whether
+    /// anything moved.
+    fn advance_staging(&mut self) -> bool {
+        let Some(outcome) = self
+            .staging
+            .as_ref()
+            .and_then(|stage| answered(stage.call()))
+        else {
+            return false;
+        };
+        let Some(stage) = self.staging.take() else {
+            return false;
+        };
+        let request_id = stage.request_id();
+        match (stage, outcome) {
+            (
+                Staging::Beginning {
+                    files, request_id, ..
+                },
+                Ok(value),
+            ) => match serde_json::from_value::<StartedSend>(value) {
+                Ok(started) => self.send_from_file(request_id, started.send, files, 0),
+                Err(error) => self.fail_send(
+                    request_id,
+                    format!("the host's answer was not a begun message: {error}"),
+                ),
+            },
+            (
+                Staging::Piece {
+                    send,
+                    files,
+                    file,
+                    offset,
+                    ..
+                },
+                Ok(value),
+            ) => match serde_json::from_value::<PieceKept>(value) {
+                Ok(kept) => {
+                    let Some(this) = files.get(file) else {
+                        self.fail_send(request_id, "that message carries no such file".into());
+                        return true;
+                    };
+                    let end = piece_end(this, offset);
+                    if kept.written != end {
+                        self.fail_send(
+                            request_id,
+                            format!("the host holds {} bytes of that file", kept.written),
+                        );
+                    } else if end >= this.bytes.len() as u64 {
+                        self.send_from_file(request_id, send, files, file + 1);
+                    } else {
+                        self.send_piece(request_id, send, files, file, end);
+                    }
+                }
+                Err(error) => self.fail_send(
+                    request_id,
+                    format!("the host's answer was not a piece: {error}"),
+                ),
+            },
+            (Staging::Sending { .. }, Ok(_)) => {
+                let _ = self.events.send(EngineEvent::Sent {
+                    request_id,
+                    wire_bytes: 0,
+                });
+            }
+            (_, Err(reason)) => self.fail_send(request_id, reason),
+        }
+        true
+    }
+
+    /// Hand the file at `file` over, or send the message once every file is
+    /// the host's.
+    fn send_from_file(
+        &mut self,
+        request_id: EngineRequestId,
+        send: String,
+        files: Vec<crate::model::SendFile>,
+        file: usize,
+    ) {
+        if file >= files.len() {
+            let remote = self.remote();
+            let call = remote.invoke(
+                person_accounts::target(person_accounts::SEND),
+                map(&SendId { send }).unwrap_or(InvokeArgument::None),
+                None,
+            );
+            self.staging = Some(Staging::Sending { request_id, call });
+        } else if files.get(file).is_some_and(|file| file.bytes.is_empty()) {
+            self.send_from_file(request_id, send, files, file + 1);
+        } else {
+            self.send_piece(request_id, send, files, file, 0);
+        }
+    }
+
+    /// Hand over the piece of the file at `file` that starts at `offset`.
+    fn send_piece(
+        &mut self,
+        request_id: EngineRequestId,
+        send: String,
+        files: Vec<crate::model::SendFile>,
+        file_index: usize,
+        offset: u64,
+    ) {
+        let Some(file) = files.get(file_index) else {
+            self.fail_send(request_id, "that message carries no such file".into());
+            return;
+        };
+        let end = piece_end(file, offset);
+        let Some(bytes) = file
+            .bytes
+            .get(offset as usize..end as usize)
+            .map(hex::encode)
+        else {
+            self.fail_send(request_id, "that file has no bytes there".into());
+            return;
+        };
+        let piece = SendPiece {
+            send: send.clone(),
+            file: file_index as u32,
+            offset,
+            bytes,
+        };
+        let Some(argument) = map(&piece) else {
+            self.fail_send(request_id, "the piece could not be asked for".into());
+            return;
+        };
+        let remote = self.remote();
+        let call = remote.invoke(
+            person_accounts::target(person_accounts::SEND_PIECE),
+            argument,
+            None,
+        );
+        self.staging = Some(Staging::Piece {
+            request_id,
+            send,
+            files,
+            file: file_index,
+            offset,
+            call,
+        });
+    }
+
+    /// Say why the message the window sent did not leave it.
+    fn fail_send(&self, request_id: EngineRequestId, reason: String) {
+        tracing::warn!(%reason, "mail: the host would not take the message");
+        let _ = self.events.send(EngineEvent::Error {
+            request_id,
+            kind: EngineRequestKind::Send,
+            context: "host".into(),
+            message: reason,
+        });
     }
 
     /// Answer one request with what the host said.
@@ -293,11 +581,15 @@ fn asking(
     request: &EngineRequest,
 ) -> Option<(tilo_actions::remote::RemoteActionTarget, InvokeArgument)> {
     let (action, argument) = match request {
+        // A send is not asked in one call: [`HostMail::poll`] asks the host
+        // to begin it, hands its files over a piece at a time, and then
+        // sends it.
         EngineRequest::Connect { .. }
         | EngineRequest::Watch { .. }
         | EngineRequest::SaveDraft { .. }
         | EngineRequest::Search { .. }
-        | EngineRequest::OAuthAuthorize { .. } => return None,
+        | EngineRequest::OAuthAuthorize { .. }
+        | EngineRequest::Send { .. } => return None,
         EngineRequest::Fetch {
             account,
             folder,
@@ -364,31 +656,6 @@ fn asking(
                 ..MarkMail::default()
             };
             (person_accounts::MARK, map(&marking)?)
-        }
-        EngineRequest::Send { account, draft, .. } => {
-            if !draft.attachments.is_empty() {
-                return None;
-            }
-            let sending = SendMail {
-                account: account.email.clone(),
-                from_name: Some(account.display_name.clone()).filter(|name| !name.is_empty()),
-                from_address: draft
-                    .sender
-                    .as_ref()
-                    .map(|sender| sender.email.clone())
-                    .filter(|email| !email.is_empty())
-                    .unwrap_or_else(|| account.email.clone()),
-                to: draft.to.clone(),
-                cc: draft.cc.clone(),
-                bcc: draft.bcc.clone(),
-                subject: draft.subject.clone(),
-                body: draft.body.clone(),
-                html_body: draft.html_body.clone(),
-                message_id: draft.wire.message_id.clone(),
-                in_reply_to: draft.wire.in_reply_to.clone(),
-                references: draft.wire.references.clone(),
-            };
-            (person_accounts::SEND, map(&sending)?)
         }
     };
     Some((person_accounts::target(action), argument))
@@ -540,7 +807,7 @@ mod tests {
     use serde_json::json;
     use ui::tilo_actions::ActionOutput;
     use ui::tilo_actions::remote::{
-        Caller, InvocationReceipt, Pending as HostPending, ReceiptStatus, TestHost,
+        ActionHostError, Caller, InvocationReceipt, Pending as HostPending, ReceiptStatus, TestHost,
     };
 
     use super::*;
@@ -582,6 +849,20 @@ mod tests {
                     }],
                     "flags": []
                 }),
+                person_accounts::BEGIN_SEND => json!({ "send": "test-send" }),
+                person_accounts::SEND_PIECE => {
+                    let InvokeArgument::Json(argument) = &request.argument else {
+                        return HostPending::ready(Err(ActionHostError::InvalidRequest {
+                            reason: "a piece is a map".into(),
+                        }));
+                    };
+                    let offset = argument["offset"].as_u64().unwrap_or(0);
+                    let bytes = argument["bytes"]
+                        .as_str()
+                        .and_then(|hex| hex::decode(hex).ok())
+                        .unwrap_or_default();
+                    json!({ "written": offset + bytes.len() as u64 })
+                }
                 _ => serde_json::Value::Null,
             };
             HostPending::ready(Ok(InvocationReceipt {
@@ -687,29 +968,110 @@ mod tests {
         );
     }
 
-    /// A send written in the page names the account and whom it goes to,
-    /// and carries no secret: the host signs in with the one it keeps.
+    /// A send written in the page is begun with the host that keeps the
+    /// account, its file's bytes handed over a piece at a time, and sent,
+    /// carrying no secret: the host signs in with the one it keeps.
     #[test]
-    fn a_send_names_its_account_and_never_a_secret() {
-        let (target, argument) = asking(&EngineRequest::Send {
-            request_id: uuid::Uuid::new_v4(),
-            account: crate::model::AccountConfig {
-                email: "ada@example.test".into(),
-                ..crate::model::AccountConfig::default()
+    fn a_send_hands_its_files_to_the_host_a_piece_at_a_time() {
+        let serving = Arc::new(host());
+        let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
+        let (handle, mut mail) = engine();
+        let file = |name: &str, bytes: &[u8]| crate::model::SendFile {
+            attachment: crate::model::DraftAttachment {
+                content_id: format!("mail-attachment:blake3:{}", "0".repeat(64)),
+                filename: name.into(),
+                mime: "application/pdf".into(),
+                size: bytes.len() as u64,
             },
-            draft: Box::new(crate::model::Draft {
-                to: "bob@example.test".into(),
-                subject: "Hello".into(),
-                body: "Hi".into(),
-                ..crate::model::Draft::default()
-            }),
-        })
-        .expect("a send is the host's");
-        assert_eq!(target.address.action, person_accounts::SEND);
-        let InvokeArgument::Json(map) = argument else {
-            panic!("a send's arguments are a map");
+            bytes: bytes.to_vec(),
         };
-        assert!(!map.contains_key("password"), "{map:?}");
-        assert_eq!(map["to"], json!("bob@example.test"));
+        let bytes = vec![7u8; MAX_SEND_PIECE_BYTES + 10];
+        handle
+            .tx
+            .send(EngineRequest::send(
+                crate::model::AccountConfig {
+                    email: "ada@example.test".into(),
+                    ..crate::model::AccountConfig::default()
+                },
+                Box::new(crate::model::Draft {
+                    to: "bob@example.test".into(),
+                    subject: "Contract".into(),
+                    body: "Attached.".into(),
+                    calendar_ics: Some("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n".into()),
+                    attachments: vec![file("contract.pdf", &bytes).attachment],
+                    ..crate::model::Draft::default()
+                }),
+                vec![file("contract.pdf", &bytes)],
+            ))
+            .unwrap();
+
+        let mut sent = false;
+        for _ in 0..40 {
+            mail.poll();
+            while let Ok(event) = handle.rx.try_recv() {
+                assert!(!matches!(event, EngineEvent::Error { .. }), "{event:?}");
+                sent |= matches!(event, EngineEvent::Sent { .. });
+            }
+            if sent {
+                break;
+            }
+        }
+        assert!(sent, "the host's send answers the window");
+
+        let asked = serving.asked();
+        let steps: Vec<&ui::tilo_actions::remote::InvokeRequest> = asked
+            .iter()
+            .filter(|request| {
+                matches!(
+                    request.target.address.action.as_str(),
+                    person_accounts::BEGIN_SEND
+                        | person_accounts::SEND_PIECE
+                        | person_accounts::SEND
+                )
+            })
+            .collect();
+        let actions: Vec<&str> = steps
+            .iter()
+            .map(|request| request.target.address.action.as_str())
+            .collect();
+        assert_eq!(
+            actions,
+            [
+                person_accounts::BEGIN_SEND,
+                person_accounts::SEND_PIECE,
+                person_accounts::SEND_PIECE,
+                person_accounts::SEND,
+            ],
+            "the message is begun, then its file's pieces, then sent"
+        );
+        for request in &steps {
+            let InvokeArgument::Json(argument) = &request.argument else {
+                panic!("every step is a map");
+            };
+            assert!(
+                !format!("{argument:?}").contains("password"),
+                "{argument:?}"
+            );
+        }
+        let InvokeArgument::Json(beginning) = &steps[0].argument else {
+            panic!("a beginning is a map");
+        };
+        assert_eq!(beginning["message"]["to"], json!("bob@example.test"));
+        assert_eq!(
+            beginning["files"][0]["size"],
+            json!((MAX_SEND_PIECE_BYTES + 10) as u64)
+        );
+        assert_eq!(
+            beginning["calendarIcs"],
+            json!("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+        );
+        let InvokeArgument::Json(first) = &steps[1].argument else {
+            panic!("a piece is a map");
+        };
+        assert_eq!(first["offset"], json!(0));
+        let InvokeArgument::Json(second) = &steps[2].argument else {
+            panic!("a piece is a map");
+        };
+        assert_eq!(second["offset"], json!(MAX_SEND_PIECE_BYTES as u64));
     }
 }

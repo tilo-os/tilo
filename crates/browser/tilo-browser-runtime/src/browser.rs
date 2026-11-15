@@ -1227,6 +1227,7 @@ pub fn close(id: u64) -> Result<JsValue, JsValue> {
             .map_err(|_| error("the runtime is busy (an owned mount callback)"))?;
         REQUESTS.with_borrow_mut(|r| r.remove(&id));
         DESKTOPS.with_borrow_mut(|desktops| desktops.remove(&id));
+        crate::host_services::stop_serving_settings_links(id);
         attention::forget(id);
         let Some(lease) = lease.as_mut() else { return Ok(js_sys::Array::new().into()); };
         let mut mount = lease.take_mount().map_err(|_| error("closed mount"))?;
@@ -1862,6 +1863,15 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         tree_root_rect: std::cell::Cell::new([0.0; 4]),
         cursor: winit::window::CursorIcon::Default,
     };
+    // A `settings:` link an app opens shows Settings in this page's own
+    // window: the desktop carries the links there, as its card's own opens do.
+    crate::host_services::serve_settings_links(
+        id,
+        mount
+            .desktop
+            .as_ref()
+            .map(|desktop| Rc::clone(&desktop.requests)),
+    );
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
     if dom::presenting() {
         // Shown as HTML: no surface to wait for.

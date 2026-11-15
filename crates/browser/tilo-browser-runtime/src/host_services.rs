@@ -416,6 +416,68 @@ thread_local! {
     /// The browser's notifications themselves, beside the desktop's: what the page tells the
     /// person directly while they are elsewhere.
     static BROWSER: RefCell<Option<Arc<dyn ui::notify::Notifier>>> = const { RefCell::new(None) };
+    /// The request queues of the desktops this page shows, by mount: where a
+    /// `settings:` link an app opens lands, so the page shows the page it
+    /// names in a window of its own ([`crate::shell::HostRequest::ShowInApp`]).
+    static DESKTOP_REQUESTS: RefCell<std::collections::BTreeMap<u64, crate::shell::HostRequests>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// Where a `settings:` link opened on this page lands: the requests of the
+/// desktop the page shows under `mount`, or nowhere when it shows one
+/// application alone (which has no Settings to open).
+pub(crate) fn serve_settings_links(mount: u64, requests: Option<crate::shell::HostRequests>) {
+    DESKTOP_REQUESTS.with_borrow_mut(|by_mount| match requests {
+        Some(requests) => {
+            by_mount.insert(mount, requests);
+        }
+        None => {
+            by_mount.remove(&mount);
+        }
+    });
+}
+
+/// The page closed the mount `mount`: its links land nowhere.
+pub(crate) fn stop_serving_settings_links(mount: u64) {
+    DESKTOP_REQUESTS.with_borrow_mut(|by_mount| {
+        by_mount.remove(&mount);
+    });
+}
+
+/// Show `uri`'s Settings page in this page's own window, through the session
+/// as a notice's choice is: the app's `open` of the pane, anchored on it.
+/// Whether a desktop was here to show it.
+fn show_settings(uri: &str) -> bool {
+    let Some((app, resource)) = crate::settings_link::show_in_app(uri) else {
+        return false;
+    };
+    let request = crate::shell::HostRequest::ShowInApp {
+        app: app.to_owned(),
+        resource,
+    };
+    DESKTOP_REQUESTS.with_borrow(|by_mount| {
+        let Some(requests) = by_mount.values().next() else {
+            return false;
+        };
+        requests.borrow_mut().push(request);
+        true
+    })
+}
+
+/// The page's URI opener: a `settings:` link an app opens shows Settings in a
+/// window of this page, as it does on the desktop; every other link is the
+/// browser's, which has no apps of its own to hand one to.
+struct PageOpener {
+    elsewhere: Arc<dyn ui::host::UriOpener>,
+}
+
+impl ui::host::UriOpener for PageOpener {
+    fn open(&self, uri: &str) -> std::io::Result<()> {
+        if uri.starts_with("settings:") && show_settings(uri) {
+            return Ok(());
+        }
+        self.elsewhere.open(uri)
+    }
 }
 
 /// Install the page's services as the process default. `wake` schedules
@@ -430,8 +492,12 @@ pub fn install(wake: Arc<dyn Fn() + Send + Sync>) {
         wake,
     ));
     NOTIFIER.with_borrow_mut(|slot| *slot = Some(Arc::clone(&notifier)));
+    let opener: Arc<dyn ui::host::UriOpener> = Arc::new(PageOpener {
+        elsewhere: Arc::clone(&system.opener),
+    });
     ui::host::install_default(ui::host::HostServices {
         notifications: notifier,
+        opener,
         ..system
     });
 }

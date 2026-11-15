@@ -20,9 +20,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_account_probe::{AccountTester, LiveAccountTester, LiveMailSession};
-use tilo_actions::remote::person_accounts::{AddMailAccount, MailAccount, MailAccounts};
-use tilo_actions::remote::person_accounts::{FetchMail, FetchedMail, MarkMail, SendMail};
+use tilo_account_probe::{AccountTester, Attachment, LiveAccountTester, LiveMailSession};
+use tilo_actions::remote::person_accounts::{
+    AddMailAccount, BeginSend, MAX_SEND_FILE_BYTES, MAX_SEND_FILES, MAX_SEND_PIECE_BYTES,
+    MAX_SEND_TOTAL_BYTES, MailAccount, MailAccounts, PieceKept, SendId, SendMail, SendPiece,
+    StartedSend,
+};
+use tilo_actions::remote::person_accounts::{FetchMail, FetchedMail, MarkMail};
 use tilo_actions::remote::person_models::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
 };
@@ -91,13 +95,21 @@ impl Workspaces {
                 answer(&fetch_mail(&root, asking).await)
             }
             person_accounts::SEND => {
-                let sending: person_accounts::SendMail = argument(request, "a message to send")?;
-                answer(&send_mail(&root, sending).await)
+                let sending: SendId = argument(request, "a message to send")?;
+                answer(&send_staged(&root, sending).await)
             }
             person_accounts::MARK => {
                 let marking: person_accounts::MarkMail =
                     argument(request, "what changed about a message")?;
                 answer(&mark_mail(&root, marking).await)
+            }
+            person_accounts::BEGIN_SEND => {
+                let beginning: BeginSend = argument(request, "a message to begin")?;
+                answer(&begin_send(&root, &beginning))
+            }
+            person_accounts::SEND_PIECE => {
+                let piece: SendPiece = argument(request, "a piece of a message's file")?;
+                answer(&send_piece(&root, &piece))
             }
             _ => Err(ActionHostError::UnknownAction),
         }
@@ -359,9 +371,188 @@ async fn fetch_mail(root: &Path, asking: FetchMail) -> Result<FetchedMail, Strin
     fetch_with(Arc::new(LiveMailSession::default()), root, asking).await
 }
 
-/// Hand one message to its account's server.
-async fn send_mail(root: &Path, sending: SendMail) -> Result<(), String> {
-    send_with(Arc::new(LiveMailSession::default()), root, sending).await
+/// Where a begun message waits between its pieces and its send: one
+/// directory per message, holding what it says, whom it goes to and the
+/// files' bytes as they arrive. It is gone once the message is sent.
+fn sends_root(root: &Path) -> PathBuf {
+    root.join("sends")
+}
+
+/// How long a begun message waits for its pieces before it is forgotten: a
+/// send is a page's errand of a minute, and a page that went away leaves
+/// nothing behind.
+const SEND_WAIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Forget every begun message older than [`SEND_WAIT`], under `root`.
+fn forget_old_sends(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(sends_root(root)) else {
+        return;
+    };
+    let now = tilo_clock::wall();
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|written| now.duration_since(written).ok())
+            .is_some_and(|age| age > SEND_WAIT);
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Why `beginning` is no message a host begins, if it is not.
+fn check_beginning(beginning: &BeginSend) -> Result<(), String> {
+    if beginning.files.len() > MAX_SEND_FILES {
+        return Err(format!(
+            "a message carries at most {MAX_SEND_FILES} files; this one names {}",
+            beginning.files.len()
+        ));
+    }
+    let mut total = 0u64;
+    for file in &beginning.files {
+        let usable = |text: &str, allow: &[char]| {
+            !text.is_empty() && !text.chars().any(char::is_control) && !text.contains(allow)
+        };
+        if !usable(&file.filename, &['/', '\\']) {
+            return Err(format!("{:?} is no name to attach", file.filename));
+        }
+        if !file.mime.contains('/') || !usable(&file.mime, &['"', '\\']) {
+            return Err(format!("{:?} is no type to attach", file.mime));
+        }
+        if file.size > MAX_SEND_FILE_BYTES {
+            return Err(format!(
+                "{} is larger than the {MAX_SEND_FILE_BYTES} bytes one file may be",
+                file.filename
+            ));
+        }
+        total = total
+            .checked_add(file.size)
+            .ok_or_else(|| "the message's files are too large".to_string())?;
+    }
+    if total > MAX_SEND_TOTAL_BYTES {
+        return Err(format!(
+            "the message's files are larger than the {MAX_SEND_TOTAL_BYTES} bytes one message may carry"
+        ));
+    }
+    if beginning
+        .calendar_ics
+        .as_ref()
+        .is_some_and(|ics| u64::try_from(ics.len()).map_or(true, |size| size > MAX_SEND_FILE_BYTES))
+    {
+        return Err("the calendar invitation is too large".into());
+    }
+    Ok(())
+}
+
+/// The begun message called `send` under `root`, as it was begun.
+fn begun_send(root: &Path, send: &str) -> Result<(PathBuf, BeginSend), String> {
+    if send.is_empty() || !send.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("That message is no longer being sent".into());
+    }
+    let dir = sends_root(root).join(send);
+    let meta = std::fs::read(dir.join("meta.json"))
+        .map_err(|_| "That message is no longer being sent".to_owned())?;
+    let beginning: BeginSend = serde_json::from_slice(&meta)
+        .map_err(|_| "That message is no longer being sent".to_owned())?;
+    Ok((dir, beginning))
+}
+
+/// Begin `beginning` under `root`, answering the id its pieces and its send
+/// name it by.
+fn begin_send(root: &Path, beginning: &BeginSend) -> Result<StartedSend, String> {
+    check_beginning(beginning)?;
+    forget_old_sends(root);
+    let send = uuid::Uuid::new_v4().simple().to_string();
+    let dir = sends_root(root).join(&send);
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("could not begin the message: {error}"))?;
+    let meta = serde_json::to_vec(beginning)
+        .map_err(|error| format!("could not begin the message: {error}"))?;
+    std::fs::write(dir.join("meta.json"), meta)
+        .map_err(|error| format!("could not begin the message: {error}"))?;
+    for index in 0..beginning.files.len() {
+        std::fs::write(dir.join(format!("file-{index}")), b"")
+            .map_err(|error| format!("could not begin the message: {error}"))?;
+    }
+    Ok(StartedSend { send })
+}
+
+/// Take `piece` of a begun message's file, answering the bytes the host then
+/// holds of it.
+fn send_piece(root: &Path, piece: &SendPiece) -> Result<PieceKept, String> {
+    let (dir, beginning) = begun_send(root, &piece.send)?;
+    let file = beginning
+        .files
+        .get(piece.file as usize)
+        .ok_or_else(|| "That message carries no such file".to_string())?;
+    let bytes = hex::decode(&piece.bytes).map_err(|_| "A piece is not readable".to_string())?;
+    if bytes.len() > MAX_SEND_PIECE_BYTES {
+        return Err(format!(
+            "a piece carries at most {MAX_SEND_PIECE_BYTES} bytes"
+        ));
+    }
+    let path = dir.join(format!("file-{}", piece.file));
+    let held = std::fs::metadata(&path).map_or(0, |metadata| metadata.len());
+    if piece.offset != held {
+        return Err(format!(
+            "the host holds {held} bytes of that file: append at offset {held}"
+        ));
+    }
+    let end = held
+        .checked_add(bytes.len() as u64)
+        .filter(|end| *end <= file.size)
+        .ok_or_else(|| format!("{} holds only {} bytes", file.filename, file.size))?;
+    let mut open = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .map_err(|error| format!("could not take the piece: {error}"))?;
+    std::io::Write::write_all(&mut open, &bytes)
+        .map_err(|error| format!("could not take the piece: {error}"))?;
+    Ok(PieceKept { written: end })
+}
+
+/// Send the message begun under `sending`'s id: the files its pieces made,
+/// its invitation, and what it says.
+async fn send_staged(root: &Path, sending: SendId) -> Result<(), String> {
+    send_staged_with(Arc::new(LiveMailSession::default()), root, sending).await
+}
+
+/// [`send_staged`] through `session`, so a test sends to a server it stands
+/// in for.
+async fn send_staged_with(session: Session, root: &Path, sending: SendId) -> Result<(), String> {
+    let (dir, beginning) = begun_send(root, &sending.send)?;
+    let mut files = Vec::with_capacity(beginning.files.len());
+    for (index, file) in beginning.files.iter().enumerate() {
+        let bytes = std::fs::read(dir.join(format!("file-{index}")))
+            .map_err(|_| format!("{} did not arrive", file.filename))?;
+        if bytes.len() as u64 != file.size {
+            return Err(format!(
+                "{} arrived incomplete: {} of {} bytes",
+                file.filename,
+                bytes.len(),
+                file.size
+            ));
+        }
+        files.push(Attachment {
+            filename: file.filename.clone(),
+            mime: file.mime.clone(),
+            bytes,
+        });
+    }
+    let outcome = send_with(
+        session,
+        root,
+        beginning.message,
+        files,
+        beginning.calendar_ics,
+    )
+    .await;
+    if outcome.is_ok() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    outcome
 }
 
 /// Tell one message's server what changed about it.
@@ -384,11 +575,19 @@ async fn fetch_with(
         .map_err(|_| "the mail session did not finish".to_string())?
 }
 
-async fn send_with(session: Session, root: &Path, sending: SendMail) -> Result<(), String> {
+async fn send_with(
+    session: Session,
+    root: &Path,
+    sending: SendMail,
+    files: Vec<Attachment>,
+    invitation: Option<String>,
+) -> Result<(), String> {
     let (account, secret) = account_with_secret(root, &sending.account)?;
-    tokio::task::spawn_blocking(move || session.send(&account, &secret, &sending))
-        .await
-        .map_err(|_| "the mail session did not finish".to_string())?
+    tokio::task::spawn_blocking(move || {
+        session.send(&account, &secret, &sending, &files, invitation.as_deref())
+    })
+    .await
+    .map_err(|_| "the mail session did not finish".to_string())?
 }
 
 async fn mark_with(session: Session, root: &Path, marking: MarkMail) -> Result<(), String> {
@@ -791,6 +990,8 @@ mod mail_session_tests {
     #[derive(Default)]
     struct Fixture {
         asked: Mutex<Vec<String>>,
+        carried: Mutex<Vec<(String, Vec<u8>)>>,
+        invitation: Mutex<Option<String>>,
     }
 
     impl tilo_account_probe::MailSession for Fixture {
@@ -820,11 +1021,24 @@ mod mail_session_tests {
             account: &accounts::Account,
             secret: &accounts::Secret,
             sending: &SendMail,
+            files: &[Attachment],
+            invitation: Option<&str>,
         ) -> Result<(), String> {
             self.asked.lock().unwrap().push(format!(
-                "send {} to {} with {}",
-                account.id, sending.to, secret.password
+                "send {} to {} with {} carrying {} files and invitation {:?}",
+                account.id,
+                sending.to,
+                secret.password,
+                files.len(),
+                invitation.is_some()
             ));
+            for file in files {
+                self.carried
+                    .lock()
+                    .unwrap()
+                    .push((file.filename.clone(), file.bytes.clone()));
+            }
+            *self.invitation.lock().unwrap() = invitation.map(str::to_owned);
             Ok(())
         }
 
@@ -917,6 +1131,8 @@ mod mail_session_tests {
                     to: "bob@example.test".into(),
                     ..SendMail::default()
                 },
+                Vec::new(),
+                None,
             ))
             .unwrap();
         runtime
@@ -939,7 +1155,7 @@ mod mail_session_tests {
             asked,
             vec![
                 "fetch ada@example.test inbox with fixture-password",
-                "send ada@example.test to bob@example.test with fixture-password",
+                "send ada@example.test to bob@example.test with fixture-password carrying 0 files and invitation false",
                 "mark ada@example.test 42 with fixture-password",
             ]
         );
@@ -958,12 +1174,121 @@ mod mail_session_tests {
         assert!(unknown.contains("not kept here"), "{unknown}");
     }
 
+    /// An account and its sign-in, as a test keeps them: the files the host
+    /// reads to send for a page.
+    fn account_with_sign_in(root: &Path) {
+        let mut account = accounts::Account::new(
+            accounts::AccountId::from("ada@example.test"),
+            accounts::email::TYPE_ID,
+        );
+        account.config = serde_json::json!({
+            "email": "ada@example.test",
+            "username": "ada@example.test",
+            "imap_host": "imap.example.test",
+            "imap_port": 993,
+            "smtp_host": "smtp.example.test",
+            "smtp_port": 465
+        });
+        let mut store = accounts::AccountStore::load_in(root);
+        store.upsert(account);
+        store.save_in(root).unwrap();
+        let mut vault = accounts::AccountCredentials::open_in(root).unwrap();
+        vault.put(
+            &accounts::AccountId::from("ada@example.test"),
+            &accounts::Secret::password("fixture-password"),
+        );
+        vault.try_save().unwrap();
+    }
+
+    /// A page begins the message, hands its file over in pieces, and sends
+    /// it: the host builds the message the pieces made, with the invitation,
+    /// and forgets what it staged.
+    #[test]
+    fn a_page_hands_a_messages_files_over_in_pieces() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        account_with_sign_in(root);
+        let fixture = Arc::new(Fixture::default());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let began = begin_send(
+            root,
+            &BeginSend {
+                message: SendMail {
+                    account: "ada@example.test".into(),
+                    to: "bob@example.test".into(),
+                    subject: "Contract".into(),
+                    body: "Attached.".into(),
+                    ..SendMail::default()
+                },
+                calendar_ics: Some("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n".into()),
+                files: vec![tilo_actions::remote::person_accounts::SendFile {
+                    filename: "contract.pdf".into(),
+                    mime: "application/pdf".into(),
+                    size: 5,
+                }],
+            },
+        )
+        .unwrap();
+        let kept = send_piece(
+            root,
+            &SendPiece {
+                send: began.send.clone(),
+                file: 0,
+                offset: 0,
+                bytes: hex::encode(b"%PDF-"),
+            },
+        )
+        .unwrap();
+        assert_eq!(kept.written, 5);
+
+        // A piece out of order is refused, naming the offset to resume at.
+        let refused = send_piece(
+            root,
+            &SendPiece {
+                send: began.send.clone(),
+                file: 0,
+                offset: 3,
+                bytes: hex::encode(b"x"),
+            },
+        )
+        .unwrap_err();
+        assert!(refused.contains("offset 5"), "{refused}");
+
+        let session: Session = fixture.clone();
+        runtime
+            .block_on(send_staged_with(
+                session,
+                root,
+                SendId {
+                    send: began.send.clone(),
+                },
+            ))
+            .unwrap();
+        assert_eq!(
+            fixture.carried.lock().unwrap().clone(),
+            vec![("contract.pdf".to_owned(), b"%PDF-".to_vec())]
+        );
+        assert!(fixture.invitation.lock().unwrap().is_some());
+        assert!(
+            !sends_root(root).join(&began.send).exists(),
+            "a sent message leaves nothing staged"
+        );
+
+        // A message no longer staged is refused, never sent twice.
+        let session: Session = fixture;
+        let again = runtime.block_on(send_staged_with(session, root, SendId { send: began.send }));
+        assert!(again.is_err(), "a sent message is gone");
+    }
+
     /// A tester that accepts every sign-in, and counts what it was asked.
     #[derive(Default)]
     struct Accepting {
         asked: Mutex<Vec<String>>,
     }
-
     impl AccountTester for Accepting {
         fn test(
             &self,

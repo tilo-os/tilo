@@ -42,7 +42,8 @@ pub trait MailSession: Send + Sync {
         asking: &FetchMail,
     ) -> Result<FetchedMail, String>;
 
-    /// Hand `sending` to its server.
+    /// Hand `sending` to its server, with the `files` it carries and the
+    /// calendar `invitation` it brings.
     ///
     /// # Errors
     /// The server could not be reached, refused the sign-in or the message.
@@ -51,6 +52,8 @@ pub trait MailSession: Send + Sync {
         account: &accounts::Account,
         secret: &accounts::Secret,
         sending: &SendMail,
+        files: &[Attachment],
+        invitation: Option<&str>,
     ) -> Result<(), String>;
 
     /// Tell `marking`'s server what changed about one message.
@@ -63,6 +66,15 @@ pub trait MailSession: Send + Sync {
         secret: &accounts::Secret,
         marking: &MarkMail,
     ) -> Result<(), String>;
+}
+
+/// A file a message carries: the bytes the host holds of it and the name and
+/// type it is written under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attachment {
+    pub filename: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
 }
 
 /// The session a host opens with the servers of the accounts it keeps.
@@ -109,8 +121,17 @@ impl MailSession for LiveMailSession {
         account: &accounts::Account,
         secret: &accounts::Secret,
         sending: &SendMail,
+        files: &[Attachment],
+        invitation: Option<&str>,
     ) -> Result<(), String> {
-        Self::block(send_message(account, secret, sending, &self.smtp_trust))
+        Self::block(send_message(
+            account,
+            secret,
+            sending,
+            files,
+            invitation,
+            &self.smtp_trust,
+        ))
     }
 
     fn mark(
@@ -643,6 +664,8 @@ async fn send_message(
     account: &accounts::Account,
     secret: &accounts::Secret,
     sending: &SendMail,
+    files: &[Attachment],
+    invitation: Option<&str>,
     trust: &[rustls::pki_types::CertificateDer<'static>],
 ) -> Result<(), String> {
     use lettre::AsyncTransport as _;
@@ -660,7 +683,7 @@ async fn send_message(
     if secret.password.is_empty() {
         return Err("account has no saved password".into());
     }
-    let mime = write_mime(sending)?;
+    let mime = write_mime(sending, files, invitation)?;
     let envelope = envelope(sending)?;
     let mut builder = TlsParameters::builder(host.clone());
     for certificate in trust {
@@ -690,8 +713,13 @@ async fn send_message(
         .map_err(|error| format!("the message could not be sent: {error}"))
 }
 
-/// The MIME of a message as it goes on the wire.
-fn write_mime(sending: &SendMail) -> Result<Vec<u8>, String> {
+/// The MIME of a message as it goes on the wire: its text and HTML bodies,
+/// the files it carries, and a calendar invitation as its own part.
+fn write_mime(
+    sending: &SendMail,
+    files: &[Attachment],
+    invitation: Option<&str>,
+) -> Result<Vec<u8>, String> {
     let from = (
         sending.from_name.clone().unwrap_or_default(),
         sending.from_address.clone(),
@@ -719,6 +747,16 @@ fn write_mime(sending: &SendMail) -> Result<Vec<u8>, String> {
     }
     if !cc.is_empty() {
         builder = builder.cc(cc);
+    }
+    for file in files {
+        builder = builder.attachment(file.mime.clone(), file.filename.clone(), file.bytes.clone());
+    }
+    if let Some(invitation) = invitation {
+        builder = builder.attachment(
+            "text/calendar; method=REQUEST",
+            "invitation.ics",
+            invitation.as_bytes().to_vec(),
+        );
     }
     // Blind recipients belong only in the envelope; a header here would
     // show them to every other recipient.
@@ -841,12 +879,44 @@ mod tests {
         let envelope = envelope(&sending).unwrap();
         let recipients: Vec<String> = envelope.to().iter().map(ToString::to_string).collect();
         assert_eq!(recipients, vec!["bob@example.test", "hidden@example.test"]);
-        let mime = String::from_utf8_lossy(&write_mime(&sending).unwrap()).to_string();
+        let mime = String::from_utf8_lossy(&write_mime(&sending, &[], None).unwrap()).to_string();
         assert!(mime.contains("bob@example.test"), "{mime}");
         assert!(
             !mime.to_ascii_lowercase().contains("hidden@example.test"),
             "{mime}"
         );
+    }
+
+    /// The files a message carries are its parts, as is a calendar
+    /// invitation: the host writes them into the MIME it builds, so the page
+    /// that sent them never builds one.
+    #[test]
+    fn files_and_an_invitation_are_written_as_parts() {
+        let sending = SendMail {
+            account: "ada@example.test".into(),
+            from_name: Some("Ada".into()),
+            from_address: "ada@example.test".into(),
+            to: "bob@example.test".into(),
+            subject: "Contract".into(),
+            body: "Attached.".into(),
+            ..SendMail::default()
+        };
+        let files = [Attachment {
+            filename: "contract.pdf".into(),
+            mime: "application/pdf".into(),
+            bytes: b"%PDF-1.4 fixture".to_vec(),
+        }];
+        let invitation = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n";
+        let mime =
+            String::from_utf8_lossy(&write_mime(&sending, &files, Some(invitation)).unwrap())
+                .to_string();
+        let lowered = mime.to_ascii_lowercase();
+        assert!(lowered.contains("multipart/mixed"), "{mime}");
+        assert!(lowered.contains("contract.pdf"), "{mime}");
+        assert!(lowered.contains("application/pdf"), "{mime}");
+        assert!(lowered.contains("invitation.ics"), "{mime}");
+        assert!(lowered.contains("text/calendar"), "{mime}");
+        assert!(mime.contains("method=REQUEST"), "{mime}");
     }
 
     /// A fetched message is read into what a reader shows, never into how

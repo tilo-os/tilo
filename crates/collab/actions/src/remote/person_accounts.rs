@@ -8,10 +8,12 @@
 //! and its servers, never its password.
 //!
 //! A page that reaches no mail server reads and sends its mail through the
-//! same host: [`FETCH`] answers a folder as the server holds it, [`SEND`]
-//! hands a message to its server, and [`MARK`] tells a server what the
-//! reader changed about a message. The host opens each session with the
-//! secret its vault keeps, so nothing in this vocabulary carries one.
+//! same host: [`FETCH`] answers a folder as the server holds it, a message
+//! is begun ([`BEGIN_SEND`]), its files' bytes follow in pieces
+//! ([`SEND_PIECE`]) — a page holds no MIME builder, so the host writes the
+//! message — and [`SEND`] hands it to its server; [`MARK`] tells a server
+//! what the reader changed about a message. The host opens each session with
+//! the secret its vault keeps, so nothing in this vocabulary carries one.
 //!
 //! The same actions answer a device that keeps its own accounts, so the page
 //! and the device read and change accounts through one vocabulary.
@@ -35,7 +37,13 @@ pub const REMOVE: &str = "remove";
 /// Fetch one folder of one account ([`FetchMail`]), answering what the
 /// server holds as a [`FetchedMail`].
 pub const FETCH: &str = "fetch";
-/// Send a message through an account ([`SendMail`]), answering nothing: the
+/// Begin a message to send ([`BeginSend`]), answering the id [`SEND`] sends
+/// it by ([`StartedSend`]).
+pub const BEGIN_SEND: &str = "begin-send";
+/// One piece of a begun message's file ([`SendPiece`]), answering the bytes
+/// the host holds of that file ([`PieceKept`]).
+pub const SEND_PIECE: &str = "send-piece";
+/// Send the message begun under an id ([`SendId`]), answering nothing: the
 /// message left, or the reason it did not.
 pub const SEND: &str = "send";
 /// Tell one account's server what changed about a message ([`MarkMail`]):
@@ -261,6 +269,76 @@ pub struct SendMail {
     pub references: Vec<String>,
 }
 
+/// The most files one message carries.
+pub const MAX_SEND_FILES: usize = 16;
+/// The most one file may be.
+pub const MAX_SEND_FILE_BYTES: u64 = 32 * 1024 * 1024;
+/// The most a message's files may be together.
+pub const MAX_SEND_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
+/// The most raw bytes one [`SEND_PIECE`] carries: what an action frame holds
+/// beside the rest of the request.
+pub const MAX_SEND_PIECE_BYTES: usize = 256 * 1024;
+
+/// A message to begin sending: what it says and whom it goes to, its files,
+/// and the calendar invitation it carries. The host writes the message as
+/// mail — a page has no clock to make a MIME boundary with — and hands it to
+/// the account's server once [`SEND`] says so.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BeginSend {
+    pub message: SendMail,
+    /// Bounded RFC 5545 `METHOD:REQUEST` payload for a calendar invitation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_ics: Option<String>,
+    #[serde(default)]
+    pub files: Vec<SendFile>,
+}
+
+/// A file a begun message carries. Its bytes follow in [`SEND_PIECE`]s, in
+/// order, until the host holds `size` of them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SendFile {
+    pub filename: String,
+    pub mime: String,
+    pub size: u64,
+}
+
+/// What [`BEGIN_SEND`] answers: the id [`SEND`] and [`SEND_PIECE`] name the
+/// message by.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartedSend {
+    pub send: String,
+}
+
+/// One piece of one of a begun message's files: its bytes at `offset`,
+/// hex-encoded so the frame stays self-describing text.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SendPiece {
+    pub send: String,
+    /// The file's place in the message's `files`.
+    pub file: u32,
+    pub offset: u64,
+    pub bytes: String,
+}
+
+/// What [`SEND_PIECE`] answers: the bytes the host holds of that file, so a
+/// piece that went astray resumes where it got to.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PieceKept {
+    pub written: u64,
+}
+
+/// The message [`SEND`] sends.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SendId {
+    pub send: String,
+}
+
 /// What one message's server is told.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -415,5 +493,43 @@ mod tests {
         assert!(sending.references.is_empty());
         let printed = format!("{sending:?}");
         assert!(printed.contains("ada@example.com"), "{printed}");
+    }
+
+    /// A message begins with the files it carries and the invitation it
+    /// brings, and each piece names the file it adds to and where.
+    #[test]
+    fn a_begun_message_names_its_files_and_their_pieces() {
+        let beginning: BeginSend = serde_json::from_value(serde_json::json!({
+            "message": {
+                "account": "ada@example.com",
+                "fromAddress": "ada@example.com",
+                "to": "bob@example.com",
+                "subject": "Contract",
+                "body": "Attached.",
+            },
+            "calendarIcs": "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n",
+            "files": [{
+                "filename": "contract.pdf",
+                "mime": "application/pdf",
+                "size": 1024,
+            }],
+        }))
+        .unwrap();
+        assert_eq!(beginning.files[0].filename, "contract.pdf");
+
+        let piece = SendPiece {
+            send: "abc".into(),
+            file: 0,
+            offset: 512,
+            bytes: "00ff".into(),
+        };
+        let printed = serde_json::to_value(&piece).unwrap();
+        assert_eq!(printed["offset"], serde_json::json!(512));
+        assert_eq!(printed["file"], serde_json::json!(0));
+        let kept = PieceKept { written: 514 };
+        assert_eq!(
+            serde_json::to_value(&kept).unwrap()["written"],
+            serde_json::json!(514)
+        );
     }
 }

@@ -295,6 +295,9 @@ mod disk_key;
 mod semantics_status;
 #[cfg(target_arch = "wasm32")]
 mod settings;
+// Where a `settings:` link goes on a page: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod settings_link;
 // The person's settings sections the page keeps: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod kept_settings;

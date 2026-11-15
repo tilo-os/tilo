@@ -9,7 +9,7 @@
 //! session there ([`mail`]): what a page's Mail reads, sends and changes.
 
 mod mail;
-pub use mail::{LiveMailSession, MailSession};
+pub use mail::{Attachment, LiveMailSession, MailSession};
 
 use std::sync::Arc;
 use web_time::{Duration, Instant};

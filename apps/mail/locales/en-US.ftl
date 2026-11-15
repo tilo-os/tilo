@@ -165,7 +165,6 @@ mail-a11y-cancel-sending = Cancel sending to { $to }
 mail-a11y-outbox-row = To { $to }: { $subject }
 mail-a11y-no-messages = No messages in { $folder }
 mail-status-send-failed = Couldn’t send the message: { $error }
-mail-status-send-files-here = This page sends a message with no files attached: send it from a computer, or remove its attachments.
 mail-purge-body = { $count ->
     [one] One message in Trash will be deleted from this mailbox and the server. This can’t be undone.
    *[other] { $count } messages in Trash will be deleted from this mailbox and the server. This can’t be undone.

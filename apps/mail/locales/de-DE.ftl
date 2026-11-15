@@ -162,7 +162,6 @@ mail-a11y-cancel-sending = Senden an { $to } abbrechen
 mail-a11y-outbox-row = An { $to }: { $subject }
 mail-a11y-no-messages = Keine Nachrichten in { $folder }
 mail-status-send-failed = Die Nachricht ließ sich nicht senden: { $error }
-mail-status-send-files-here = Diese Seite sendet keine Nachricht mit Anhängen: Sende sie von einem Rechner aus oder entferne die Anhänge.
 mail-purge-body = { $count ->
     [one] Eine Nachricht im Papierkorb wird aus diesem Postfach und auf dem Server gelöscht. Das lässt sich nicht rückgängig machen.
    *[other] { $count } Nachrichten im Papierkorb werden aus diesem Postfach und auf dem Server gelöscht. Das lässt sich nicht rückgängig machen.

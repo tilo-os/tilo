@@ -13,7 +13,7 @@ use tilo_content::ContentStore;
 
 use crate::model::{AccountConfig, Draft, Folder, Message};
 use crate::oauth::OAuthProvider;
-use crate::transport::build_mime;
+use crate::transport::build_mime_from;
 
 pub type EngineRequestId = uuid::Uuid;
 
@@ -61,6 +61,9 @@ pub enum EngineRequest {
         request_id: EngineRequestId,
         account: AccountConfig,
         draft: Box<Draft>,
+        /// The draft's attachments with their bytes, read where the draft is
+        /// kept: what the message is written from.
+        files: Vec<crate::model::SendFile>,
     },
     Search {
         request_id: EngineRequestId,
@@ -127,11 +130,16 @@ impl EngineRequest {
             draft,
         }
     }
-    pub fn send(account: AccountConfig, draft: Box<Draft>) -> Self {
+    pub fn send(
+        account: AccountConfig,
+        draft: Box<Draft>,
+        files: Vec<crate::model::SendFile>,
+    ) -> Self {
         Self::Send {
             request_id: next_request_id(),
             account,
             draft,
+            files,
         }
     }
     pub fn search(account: AccountConfig, text: String) -> Self {
@@ -305,13 +313,13 @@ fn report_engine_error(
     }
 }
 
-pub struct StubEngine {
-    content: ContentStore,
-}
+/// The engine a build without the live backend runs: it reaches no server,
+/// and keeps no content — a send it is handed carries its files' bytes.
+pub struct StubEngine {}
 
 impl StubEngine {
-    pub fn new(content: ContentStore) -> Self {
-        Self { content }
+    pub fn new(_content: ContentStore) -> Self {
+        Self {}
     }
 }
 
@@ -369,9 +377,14 @@ impl MailEngine for StubEngine {
                     message: format!("OAuth sign-in for {account_id} requires the live build"),
                 });
             }
-            EngineRequest::Send { account, draft, .. } => {
+            EngineRequest::Send {
+                account,
+                draft,
+                files,
+                ..
+            } => {
                 let from = crate::model::Addr::new(account.display_name.clone(), account.email);
-                match build_mime(&self.content, &from, &draft) {
+                match build_mime_from(&from, &draft, &files) {
                     Ok(bytes) => {
                         let _ = out.send(EngineEvent::Error {
                             request_id,
@@ -468,13 +481,13 @@ pub mod live {
 
     use super::{
         AccountConfig, Draft, EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind,
-        Folder, MailEngine, Message, Sender, build_mime,
+        Folder, MailEngine, Message, Sender,
     };
-    // AccountConfig / Draft / Folder / Message / Sender / build_mime come via
-    // `super::*`; these are the names the parent doesn't already bring in.
+    // AccountConfig / Draft / Folder / Message / Sender come via `super::*`;
+    // these are the names the parent doesn't already bring in.
     use crate::model::{Addr, AuthMethod};
     use crate::oauth;
-    use crate::transport::parse_fetched;
+    use crate::transport::{build_mime, build_mime_from, parse_fetched};
     use crate::validate::classify_conn_failure;
 
     pub struct LiveEngine {
@@ -750,10 +763,11 @@ pub mod live {
             &self,
             account: &AccountConfig,
             draft: &Draft,
+            files: &[crate::model::SendFile],
         ) -> Result<usize, SmtpFailure> {
             let creds = resolve_auth(&self.custodian, account).map_err(SmtpFailure::Failed)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
-            let bytes = build_mime(&self.content, &from, draft).map_err(SmtpFailure::Failed)?;
+            let bytes = build_mime_from(&from, draft, files).map_err(SmtpFailure::Failed)?;
             let tls = if self.trusts_test_servers {
                 Some(
                     lettre::transport::smtp::client::TlsParameters::builder(
@@ -815,9 +829,10 @@ pub mod live {
             kind: EngineRequestKind,
             account: &AccountConfig,
             draft: &Draft,
+            files: &[crate::model::SendFile],
             out: &Sender<EngineEvent>,
         ) {
-            match self.handle_send(account, draft) {
+            match self.handle_send(account, draft, files) {
                 Ok(wire_bytes) => {
                     let _ = out.send(EngineEvent::Sent {
                         request_id,
@@ -909,8 +924,13 @@ pub mod live {
                     let (context, result) = self.handle_write(write);
                     super::report_engine_error(out, request_id, kind, context, result);
                 }
-                EngineRequest::Send { account, draft, .. } => {
-                    self.process_send(request_id, kind, &account, &draft, out);
+                EngineRequest::Send {
+                    account,
+                    draft,
+                    files,
+                    ..
+                } => {
+                    self.process_send(request_id, kind, &account, &draft, &files, out);
                 }
                 EngineRequest::Watch { account, .. } => {
                     self.start_watch(request_id, account, out);
@@ -2060,7 +2080,7 @@ mod tests {
                 body: "Body".into(),
                 ..Default::default()
             };
-            tx.send(EngineRequest::send(account, Box::new(draft)))
+            tx.send(EngineRequest::send(account, Box::new(draft), Vec::new()))
                 .unwrap();
             let evt = rx.recv_timeout(ui::testing::hang_bound()).unwrap();
             assert!(matches!(evt, EngineEvent::Error { context, message, .. }

@@ -418,6 +418,15 @@ pub struct DraftAttachment {
     pub size: u64,
 }
 
+/// An attachment with the bytes it carries, read from the window's content
+/// store when the message is sent: a page hands them to the host that sends
+/// for it, and a device writes them into the message it hands its server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SendFile {
+    pub attachment: DraftAttachment,
+    pub bytes: Vec<u8>,
+}
+
 tilo_resource::json_model!(DraftSender, DraftAttachment);
 
 #[derive(Clone, Debug)]
