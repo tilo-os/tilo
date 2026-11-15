@@ -1170,20 +1170,26 @@ impl MainPanel {
             && drawing.track == presented.track
             && drawing.transform == presented.transform
             && (drawing.scroll_y - presented.scroll_y).abs() > f64::EPSILON)
-            .then(|| ScrollCopy {
-                clip: drawing.clip,
-                delta: Vec2::new(0.0, presented.scroll_y - drawing.scroll_y),
-                overlays: std::iter::once(drawing.track).chain(drawing.rule).collect(),
-                transform: drawing.transform,
+            .then(|| {
                 // The thumb moved within its track, the pinned title's rule
-                // went or moved, and what the blocks paint for the pointer is
-                // where it is and no longer where it was (the host carries
-                // that).
-                damage: std::iter::once(drawing.track)
-                    .chain(presented.rule.filter(|_| drawing.rule != presented.rule))
-                    .chain(drawing.pointer_chrome.iter().copied())
-                    .chain(presented.pointer_chrome.iter().copied())
-                    .collect(),
+                // came, went or moved (its line stands above the body's clip,
+                // which no copy touches), and what the blocks paint for the
+                // pointer is where it is and no longer where it was (the host
+                // carries that).
+                let mut damage = vec![drawing.track];
+                if drawing.rule != presented.rule {
+                    damage.extend(drawing.rule);
+                    damage.extend(presented.rule);
+                }
+                damage.extend(drawing.pointer_chrome.iter().copied());
+                damage.extend(presented.pointer_chrome.iter().copied());
+                ScrollCopy {
+                    clip: drawing.clip,
+                    delta: Vec2::new(0.0, presented.scroll_y - drawing.scroll_y),
+                    overlays: std::iter::once(drawing.track).chain(drawing.rule).collect(),
+                    transform: drawing.transform,
+                    damage,
+                }
             })
     }
 
