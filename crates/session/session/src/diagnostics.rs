@@ -172,66 +172,70 @@ fn profile_start(arguments: &Map<String, Value>) -> Result<Value, DoorError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_resource_offers_the_profiler_and_reports_what_the_session_knows_of_its_cost() {
-        let mut served = Served;
-        let resources = served.resources();
-        assert_eq!(resources.len(), 1);
-        let resource = &resources[0];
-        assert_eq!(resource.id.0, RESOURCE);
-        let actions: Vec<&str> = resource
-            .actions
-            .iter()
-            .map(|spec| spec.id.as_str())
-            .collect();
-        assert_eq!(actions, ["profile-start", "profile-stop", "profile-status"]);
-        // The reading: the profiler's state and the heap trim's, whether or not a trim ever ran in
-        // this process.
-        let reading = reading();
-        assert_eq!(reading["profile"]["state"], "idle");
-        assert!(reading["heap_trim"]["pending"].is_boolean());
-        assert!(reading["heap_trim"]["trims"].is_u64());
-        assert!(reading["heap_trim"]["startup_trimmed"].is_boolean());
-        let status = served
-            .invoke(
-                &ActionAddress::new(RESOURCE, "profile-status"),
-                &Map::new(),
-                &mut tilo_session_core::door::Look::none(),
-            )
-            .expect("the reading");
-        let ResourceOperationStart::Completed(output) = status else {
-            panic!("a reading answers at once");
-        };
-        assert_eq!(output.value.expect("a value")["profile"]["state"], "idle");
-    }
+    tilo_test_env::scenario! {
+        fn the_diagnostics_resource_offers_a_bounded_profiler;
 
-    #[test]
-    fn a_profiles_length_is_one_to_ten_minutes() {
-        for seconds in [json!(0), json!(601), json!("ten"), json!(-1)] {
-            let arguments = json!({ "seconds": seconds });
-            assert!(
-                matches!(
-                    profile_start(arguments.as_object().unwrap()),
-                    Err(DoorError::InvalidArguments(_))
-                ),
-                "{seconds}"
-            );
+        phase the_resource_offers_the_profiler_and_reports_what_the_session_knows_of_its_cost;
+        {
+            let mut served = Served;
+            let resources = served.resources();
+            assert_eq!(resources.len(), 1);
+            let resource = &resources[0];
+            assert_eq!(resource.id.0, RESOURCE);
+            let actions: Vec<&str> = resource
+                .actions
+                .iter()
+                .map(|spec| spec.id.as_str())
+                .collect();
+            assert_eq!(actions, ["profile-start", "profile-stop", "profile-status"]);
+            // The reading: the profiler's state and the heap trim's, whether or not a trim ever ran in
+            // this process.
+            let reading = reading();
+            assert_eq!(reading["profile"]["state"], "idle");
+            assert!(reading["heap_trim"]["pending"].is_boolean());
+            assert!(reading["heap_trim"]["trims"].is_u64());
+            assert!(reading["heap_trim"]["startup_trimmed"].is_boolean());
+            let status = served
+                .invoke(
+                    &ActionAddress::new(RESOURCE, "profile-status"),
+                    &Map::new(),
+                    &mut tilo_session_core::door::Look::none(),
+                )
+                .expect("the reading");
+            let ResourceOperationStart::Completed(output) = status else {
+                panic!("a reading answers at once");
+            };
+            assert_eq!(output.value.expect("a value")["profile"]["state"], "idle");
         }
-        assert!(matches!(
-            Served.invoke(
-                &ActionAddress::new(RESOURCE, "profile-elsewhere"),
-                &Map::new(),
-                &mut tilo_session_core::door::Look::none()
-            ),
-            Err(DoorError::Unknown(_))
-        ));
-        assert!(matches!(
-            Served.invoke(
-                &ActionAddress::new("session:devices", "profile-stop"),
-                &Map::new(),
-                &mut tilo_session_core::door::Look::none()
-            ),
-            Err(DoorError::Unknown(_))
-        ));
+
+        phase a_profiles_length_is_one_to_ten_minutes;
+        {
+            for seconds in [json!(0), json!(601), json!("ten"), json!(-1)] {
+                let arguments = json!({ "seconds": seconds });
+                assert!(
+                    matches!(
+                        profile_start(arguments.as_object().unwrap()),
+                        Err(DoorError::InvalidArguments(_))
+                    ),
+                    "{seconds}"
+                );
+            }
+            assert!(matches!(
+                Served.invoke(
+                    &ActionAddress::new(RESOURCE, "profile-elsewhere"),
+                    &Map::new(),
+                    &mut tilo_session_core::door::Look::none()
+                ),
+                Err(DoorError::Unknown(_))
+            ));
+            assert!(matches!(
+                Served.invoke(
+                    &ActionAddress::new("session:devices", "profile-stop"),
+                    &Map::new(),
+                    &mut tilo_session_core::door::Look::none()
+                ),
+                Err(DoorError::Unknown(_))
+            ));
+        }
     }
 }

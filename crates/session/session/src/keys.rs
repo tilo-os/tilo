@@ -895,337 +895,470 @@ mod tests {
         }
     }
 
-    #[test]
-    fn alt_tab_opens_the_walk_and_shift_walks_it_back() {
-        let (mut keys, _walk) = with_walk();
-        let tab = key(keysyms::Tab, None, held("a"));
-        assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::TakeRepeating);
-        keys.key(&tab);
-        assert_eq!(
-            asked(&keys),
-            vec![
-                surfaces("walk-switcher")
-                    .with("steps", 1)
-                    .with("scope", "workspace")
-            ],
-            "Alt+Tab walks the workspace's windows on from the one in front"
-        );
+    tilo_test_env::scenario! {
+        fn the_alt_walk_opens_steps_and_settles_by_its_own_keys;
 
-        let backwards = key(keysyms::Tab, None, held("as"));
-        keys.key(&backwards);
-        assert_eq!(
-            asked(&keys),
-            vec![
-                surfaces("walk-switcher")
-                    .with("steps", -1)
-                    .with("scope", "workspace")
-            ],
-            "Shift walks the other way"
-        );
-    }
-
-    #[test]
-    fn alt_and_the_key_above_tab_walk_the_front_apps_windows() {
-        let (mut keys, _walk) = with_walk();
-        let grave = key(keysyms::grave, Some('`'), held("a"));
-        assert_eq!(
-            keys.claim_key(&grave, false, false),
-            KeyClaim::TakeRepeating
-        );
-        keys.key(&grave);
-        assert_eq!(
-            asked(&keys),
-            vec![
-                surfaces("walk-switcher")
-                    .with("steps", 1)
-                    .with("scope", "app")
-            ]
-        );
-        // The chord a text field types is nobody's walk: Ctrl or Super with the key above Tab.
-        for other in [
-            KeyModifiers {
-                ctrl: true,
-                ..held("a")
-            },
-            KeyModifiers {
-                logo: true,
-                ..held("a")
-            },
-        ] {
-            let chord = key(keysyms::grave, Some('`'), other);
-            assert_ne!(
-                keys.claim_key(&chord, false, false),
-                KeyClaim::TakeRepeating,
-                "{other:?} is no walk"
-            );
-            keys.key(&chord);
-            assert!(asked(&keys).is_empty(), "{other:?} is no walk");
-        }
-    }
-
-    #[test]
-    fn a_lone_alt_is_no_walk_and_a_locked_session_opens_none() {
-        let (mut keys, _walk) = with_walk();
-        let alone = key(keysyms::Alt_L, None, held("a"));
-        assert_eq!(keys.claim_key(&alone, false, false), KeyClaim::Pass);
-        keys.key(&alone);
-        assert!(
-            asked(&keys).is_empty(),
-            "a modifier on its own reaches the window"
-        );
-
-        let tab = key(keysyms::Tab, None, held("a"));
-        assert_eq!(
-            keys.claim_key(&tab, true, false),
-            KeyClaim::Pass,
-            "the lock takes no chord that walks the windows behind it"
-        );
-        assert_eq!(
-            keys.claim_key(&tab, false, true),
-            KeyClaim::Pass,
-            "a client that holds the shortcuts opens no walk"
-        );
-    }
-
-    /// A question over the shell holds the keys: no chord of the sessiontop's opens anything beneath
-    /// it, and once it is answered the chords act again.
-    #[test]
-    fn a_question_over_the_shell_holds_the_desktop_chords() {
-        let question = tilo_sheets::Presentation::default();
-        let mut keys = NativeKeys::new(
-            SessionKeys::new(
-                Rc::default(),
-                Presses::default(),
-                Rc::default(),
-                ShellKeys::new(Fold::default(), Overlays::new()),
-                SheetKeys {
-                    displays: None,
-                    modal: vec![question.clone()],
-                },
-                ControllerKeys::default(),
-                Rc::default(),
-            ),
-            None,
-            Rc::default(),
-        );
-        let tab = key(keysyms::Tab, None, held("a"));
-        let overview = key(keysyms::Tab, None, held("l"));
-        question.open(false);
-        assert_eq!(
-            keys.claim_key(&tab, false, false),
-            KeyClaim::Pass,
-            "the question takes the chord, and nothing opens beneath it"
-        );
-        assert_eq!(
-            keys.claim_key(&overview, false, false),
-            KeyClaim::Take,
-            "a chord under Super is held back, not typed into the question"
-        );
-        keys.key(&overview);
-        assert!(asked(&keys).is_empty());
-        question.close();
-        question.gone();
-        assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::TakeRepeating);
-    }
-
-    #[test]
-    fn the_walk_is_modal_while_it_is_up() {
-        let (mut keys, walk) = with_walk();
-        walk.walk(SwitcherScope::Workspace, 1);
-        let letter = key(keysyms::a, Some('a'), held("a"));
-        assert_eq!(
-            keys.claim_key(&letter, false, false),
-            KeyClaim::Take,
-            "while the walk is up no key reaches the window behind it"
-        );
-        keys.key(&letter);
-        assert!(
-            asked(&keys).is_empty(),
-            "an unbound key holds the walk where it is"
-        );
-        // Locked or not, a walk that is up hears its own keys: it is over the lock too.
-        for locked in [false, true] {
-            assert_eq!(keys.claim_key(&letter, locked, false), KeyClaim::Take);
-        }
-    }
-
-    #[test]
-    fn letting_alt_go_goes_to_the_window_the_walk_reached() {
-        let (mut keys, walk) = with_walk();
-        walk.walk(SwitcherScope::Workspace, 1);
-        let let_go = released(keysyms::Alt_L, KeyModifiers::default());
-        assert_eq!(keys.claim_key(&let_go, false, false), KeyClaim::Take);
-        keys.key(&let_go);
-        assert_eq!(asked(&keys), vec![surfaces("commit-switcher")]);
-
-        // Any other key released with Alt still down is the walk's and does nothing.
-        let tab = released(keysyms::Tab, held("a"));
-        keys.key(&tab);
-        assert!(asked(&keys).is_empty(), "releasing Tab is no answer");
-        // A key released once Alt came up commits too: Alt's own release was lost.
-        let stray = released(keysyms::a, KeyModifiers::default());
-        keys.key(&stray);
-        assert_eq!(asked(&keys), vec![surfaces("commit-switcher")]);
-    }
-
-    #[test]
-    fn escape_closes_the_walk_and_enter_goes_to_it() {
-        let (mut keys, walk) = with_walk();
-        walk.walk(SwitcherScope::Workspace, 1);
-        let escape = key(keysyms::Escape, None, held("a"));
-        assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Take);
-        keys.key(&escape);
-        assert_eq!(
-            asked(&keys),
-            vec![surfaces("close-surface").with("slot", "switcher")]
-        );
-
-        for commit in [keysyms::Return, keysyms::KP_Enter, keysyms::space] {
-            let key = key(commit, None, held("a"));
-            keys.key(&key);
-            assert_eq!(
-                asked(&keys),
-                vec![surfaces("commit-switcher")],
-                "{commit:#x}"
-            );
-        }
-    }
-
-    #[test]
-    fn escape_asks_the_panel_to_go_back_before_it_closes_it() {
-        // The panel's app draws the quick settings on this device: Escape is its own pages' first,
-        // and the session waits for its answer.
-        let asks = Rc::new(RefCell::new(Vec::new()));
-        let overlays = Overlays::new();
-        overlays.open(Slot::QuickSettings, None);
-        let mut keys = over(
-            ShellKeys::new(Fold::default(), overlays.clone()).with_panel(Some(Rc::clone(&asks))),
-        );
-        let escape = key(keysyms::Escape, None, KeyModifiers::default());
-        keys.key(&escape);
-        assert_eq!(*asks.borrow(), ["back"], "the panel goes back a page");
-        assert!(
-            asked(&keys).is_empty(),
-            "nothing closes until the panel says it has nowhere left to go"
-        );
-
-        // A device whose shell draws the quick settings has no panel app to ask: Escape closes the
-        // surface itself.
-        let mut shell = over(ShellKeys::new(Fold::default(), overlays));
-        shell.key(&escape);
-        assert_eq!(
-            asked(&shell),
-            vec![Invocation::new(OVERLAYS, "close-surface").with("slot", "quick-settings")]
-        );
-    }
-
-    #[test]
-    fn home_end_and_the_arrows_move_inside_the_walk() {
-        let (mut keys, walk) = with_walk();
-        walk.walk(SwitcherScope::Workspace, 1);
-        let home = key(keysyms::Home, None, held("a"));
-        keys.key(&home);
-        assert_eq!(
-            asked(&keys),
-            vec![surfaces("select-switcher").with("at", 0)]
-        );
-        let end = key(keysyms::End, None, held("a"));
-        keys.key(&end);
-        assert_eq!(
-            asked(&keys),
-            vec![surfaces("select-switcher").with("at", -1)]
-        );
-        for (arrow, steps) in [
-            (keysyms::Left, -1),
-            (keysyms::Up, -1),
-            (keysyms::Right, 1),
-            (keysyms::Down, 1),
-        ] {
-            let arrow = key(arrow, None, held("a"));
-            keys.key(&arrow);
+        phase alt_tab_opens_the_walk_and_shift_walks_it_back;
+        {
+            let (mut keys, _walk) = with_walk();
+            let tab = key(keysyms::Tab, None, held("a"));
+            assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::TakeRepeating);
+            keys.key(&tab);
             assert_eq!(
                 asked(&keys),
                 vec![
                     surfaces("walk-switcher")
-                        .with("steps", steps)
+                        .with("steps", 1)
                         .with("scope", "workspace")
                 ],
-                "an arrow steps the walk: {steps}"
+                "Alt+Tab walks the workspace's windows on from the one in front"
+            );
+
+            let backwards = key(keysyms::Tab, None, held("as"));
+            keys.key(&backwards);
+            assert_eq!(
+                asked(&keys),
+                vec![
+                    surfaces("walk-switcher")
+                        .with("steps", -1)
+                        .with("scope", "workspace")
+                ],
+                "Shift walks the other way"
             );
         }
-    }
 
-    #[test]
-    fn a_walk_going_keeps_its_scope_and_the_other_chord_starts_it_again() {
-        let (mut keys, walk) = with_walk();
-        // A walk in the app's scope: Tab and the key above Tab both step inside it.
-        walk.walk(SwitcherScope::App, 1);
-        for keysym in [keysyms::Tab, keysyms::grave] {
-            let step = key(keysym, None, held("a"));
-            keys.key(&step);
+        phase alt_and_the_key_above_tab_walk_the_front_apps_windows;
+        {
+            let (mut keys, _walk) = with_walk();
+            let grave = key(keysyms::grave, Some('`'), held("a"));
+            assert_eq!(
+                keys.claim_key(&grave, false, false),
+                KeyClaim::TakeRepeating
+            );
+            keys.key(&grave);
             assert_eq!(
                 asked(&keys),
                 vec![
                     surfaces("walk-switcher")
                         .with("steps", 1)
                         .with("scope", "app")
-                ],
-                "a walk going keeps the windows it crosses: {keysym:#x}"
+                ]
+            );
+            // The chord a text field types is nobody's walk: Ctrl or Super with the key above Tab.
+            for other in [
+                KeyModifiers {
+                    ctrl: true,
+                    ..held("a")
+                },
+                KeyModifiers {
+                    logo: true,
+                    ..held("a")
+                },
+            ] {
+                let chord = key(keysyms::grave, Some('`'), other);
+                assert_ne!(
+                    keys.claim_key(&chord, false, false),
+                    KeyClaim::TakeRepeating,
+                    "{other:?} is no walk"
+                );
+                keys.key(&chord);
+                assert!(asked(&keys).is_empty(), "{other:?} is no walk");
+            }
+        }
+
+        phase a_lone_alt_is_no_walk_and_a_locked_session_opens_none;
+        {
+            let (mut keys, _walk) = with_walk();
+            let alone = key(keysyms::Alt_L, None, held("a"));
+            assert_eq!(keys.claim_key(&alone, false, false), KeyClaim::Pass);
+            keys.key(&alone);
+            assert!(
+                asked(&keys).is_empty(),
+                "a modifier on its own reaches the window"
+            );
+
+            let tab = key(keysyms::Tab, None, held("a"));
+            assert_eq!(
+                keys.claim_key(&tab, true, false),
+                KeyClaim::Pass,
+                "the lock takes no chord that walks the windows behind it"
+            );
+            assert_eq!(
+                keys.claim_key(&tab, false, true),
+                KeyClaim::Pass,
+                "a client that holds the shortcuts opens no walk"
             );
         }
-        // The other chord does not cross to the other scope in a walk going: it steps, as it always
-        // has. The scope is the chord that opened the walk.
-        let (mut keys, walk) = with_walk();
-        walk.walk(SwitcherScope::Workspace, 1);
-        let grave = key(keysyms::grave, Some('`'), held("a"));
-        keys.key(&grave);
-        assert_eq!(
-            asked(&keys),
-            vec![
-                surfaces("walk-switcher")
-                    .with("steps", 1)
-                    .with("scope", "workspace")
-            ]
-        );
-        // Alt let go and pressed again with the key above Tab opens the app's walk.
-        walk.hide(Overlay::Switcher);
-        walk.forget_walk();
-        keys.key(&grave);
-        assert_eq!(
-            asked(&keys),
-            vec![
-                surfaces("walk-switcher")
-                    .with("steps", 1)
-                    .with("scope", "app")
-            ]
-        );
+
+        phase the_walk_is_modal_while_it_is_up;
+        {
+            let (mut keys, walk) = with_walk();
+            walk.walk(SwitcherScope::Workspace, 1);
+            let letter = key(keysyms::a, Some('a'), held("a"));
+            assert_eq!(
+                keys.claim_key(&letter, false, false),
+                KeyClaim::Take,
+                "while the walk is up no key reaches the window behind it"
+            );
+            keys.key(&letter);
+            assert!(
+                asked(&keys).is_empty(),
+                "an unbound key holds the walk where it is"
+            );
+            // Locked or not, a walk that is up hears its own keys: it is over the lock too.
+            for locked in [false, true] {
+                assert_eq!(keys.claim_key(&letter, locked, false), KeyClaim::Take);
+            }
+        }
+
+        phase letting_alt_go_goes_to_the_window_the_walk_reached;
+        {
+            let (mut keys, walk) = with_walk();
+            walk.walk(SwitcherScope::Workspace, 1);
+            let let_go = released(keysyms::Alt_L, KeyModifiers::default());
+            assert_eq!(keys.claim_key(&let_go, false, false), KeyClaim::Take);
+            keys.key(&let_go);
+            assert_eq!(asked(&keys), vec![surfaces("commit-switcher")]);
+
+            // Any other key released with Alt still down is the walk's and does nothing.
+            let tab = released(keysyms::Tab, held("a"));
+            keys.key(&tab);
+            assert!(asked(&keys).is_empty(), "releasing Tab is no answer");
+            // A key released once Alt came up commits too: Alt's own release was lost.
+            let stray = released(keysyms::a, KeyModifiers::default());
+            keys.key(&stray);
+            assert_eq!(asked(&keys), vec![surfaces("commit-switcher")]);
+        }
+
+        phase escape_closes_the_walk_and_enter_goes_to_it;
+        {
+            let (mut keys, walk) = with_walk();
+            walk.walk(SwitcherScope::Workspace, 1);
+            let escape = key(keysyms::Escape, None, held("a"));
+            assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Take);
+            keys.key(&escape);
+            assert_eq!(
+                asked(&keys),
+                vec![surfaces("close-surface").with("slot", "switcher")]
+            );
+
+            for commit in [keysyms::Return, keysyms::KP_Enter, keysyms::space] {
+                let key = key(commit, None, held("a"));
+                keys.key(&key);
+                assert_eq!(
+                    asked(&keys),
+                    vec![surfaces("commit-switcher")],
+                    "{commit:#x}"
+                );
+            }
+        }
+
+        phase home_end_and_the_arrows_move_inside_the_walk;
+        {
+            let (mut keys, walk) = with_walk();
+            walk.walk(SwitcherScope::Workspace, 1);
+            let home = key(keysyms::Home, None, held("a"));
+            keys.key(&home);
+            assert_eq!(
+                asked(&keys),
+                vec![surfaces("select-switcher").with("at", 0)]
+            );
+            let end = key(keysyms::End, None, held("a"));
+            keys.key(&end);
+            assert_eq!(
+                asked(&keys),
+                vec![surfaces("select-switcher").with("at", -1)]
+            );
+            for (arrow, steps) in [
+                (keysyms::Left, -1),
+                (keysyms::Up, -1),
+                (keysyms::Right, 1),
+                (keysyms::Down, 1),
+            ] {
+                let arrow = key(arrow, None, held("a"));
+                keys.key(&arrow);
+                assert_eq!(
+                    asked(&keys),
+                    vec![
+                        surfaces("walk-switcher")
+                            .with("steps", steps)
+                            .with("scope", "workspace")
+                    ],
+                    "an arrow steps the walk: {steps}"
+                );
+            }
+        }
+
+        phase a_walk_going_keeps_its_scope_and_the_other_chord_starts_it_again;
+        {
+            let (mut keys, walk) = with_walk();
+            // A walk in the app's scope: Tab and the key above Tab both step inside it.
+            walk.walk(SwitcherScope::App, 1);
+            for keysym in [keysyms::Tab, keysyms::grave] {
+                let step = key(keysym, None, held("a"));
+                keys.key(&step);
+                assert_eq!(
+                    asked(&keys),
+                    vec![
+                        surfaces("walk-switcher")
+                            .with("steps", 1)
+                            .with("scope", "app")
+                    ],
+                    "a walk going keeps the windows it crosses: {keysym:#x}"
+                );
+            }
+            // The other chord does not cross to the other scope in a walk going: it steps, as it always
+            // has. The scope is the chord that opened the walk.
+            let (mut keys, walk) = with_walk();
+            walk.walk(SwitcherScope::Workspace, 1);
+            let grave = key(keysyms::grave, Some('`'), held("a"));
+            keys.key(&grave);
+            assert_eq!(
+                asked(&keys),
+                vec![
+                    surfaces("walk-switcher")
+                        .with("steps", 1)
+                        .with("scope", "workspace")
+                ]
+            );
+            // Alt let go and pressed again with the key above Tab opens the app's walk.
+            walk.hide(Overlay::Switcher);
+            walk.forget_walk();
+            keys.key(&grave);
+            assert_eq!(
+                asked(&keys),
+                vec![
+                    surfaces("walk-switcher")
+                        .with("steps", 1)
+                        .with("scope", "app")
+                ]
+            );
+        }
+
+        phase a_press_without_alt_settles_the_walk_and_its_repeats_do_not;
+        {
+            let (mut keys, walk) = with_walk();
+            walk.walk(SwitcherScope::Workspace, 1);
+            let typing = key(keysyms::a, Some('a'), KeyModifiers::default());
+            assert_eq!(keys.claim_key(&typing, false, false), KeyClaim::Take);
+            keys.key(&typing);
+            assert_eq!(
+                asked(&keys),
+                vec![surfaces("commit-switcher")],
+                "Alt came up without the walk hearing it: the press settles the walk"
+            );
+
+            let (mut keys, walk) = with_walk();
+            walk.walk(SwitcherScope::Workspace, 1);
+            let repeat = HostKey {
+                repeat: true,
+                ..key(keysyms::a, Some('a'), KeyModifiers::default())
+            };
+            assert_eq!(keys.claim_key(&repeat, false, false), KeyClaim::Take);
+            keys.key(&repeat);
+            assert!(
+                asked(&keys).is_empty(),
+                "a key still repeating as Alt comes up does not choose another window"
+            );
+        }
     }
 
-    #[test]
-    fn a_press_without_alt_settles_the_walk_and_its_repeats_do_not() {
-        let (mut keys, walk) = with_walk();
-        walk.walk(SwitcherScope::Workspace, 1);
-        let typing = key(keysyms::a, Some('a'), KeyModifiers::default());
-        assert_eq!(keys.claim_key(&typing, false, false), KeyClaim::Take);
-        keys.key(&typing);
-        assert_eq!(
-            asked(&keys),
-            vec![surfaces("commit-switcher")],
-            "Alt came up without the walk hearing it: the press settles the walk"
-        );
+    tilo_test_env::scenario! {
+        fn what_is_up_over_the_desktop_holds_or_takes_its_chords;
 
-        let (mut keys, walk) = with_walk();
-        walk.walk(SwitcherScope::Workspace, 1);
-        let repeat = HostKey {
-            repeat: true,
-            ..key(keysyms::a, Some('a'), KeyModifiers::default())
-        };
-        assert_eq!(keys.claim_key(&repeat, false, false), KeyClaim::Take);
-        keys.key(&repeat);
-        assert!(
-            asked(&keys).is_empty(),
-            "a key still repeating as Alt comes up does not choose another window"
-        );
+        phase a_question_over_the_shell_holds_the_desktop_chords;
+        // A question over the shell holds the keys: no chord of the sessiontop's opens anything beneath
+        // it, and once it is answered the chords act again.
+        {
+            let question = tilo_sheets::Presentation::default();
+            let mut keys = NativeKeys::new(
+                SessionKeys::new(
+                    Rc::default(),
+                    Presses::default(),
+                    Rc::default(),
+                    ShellKeys::new(Fold::default(), Overlays::new()),
+                    SheetKeys {
+                        displays: None,
+                        modal: vec![question.clone()],
+                    },
+                    ControllerKeys::default(),
+                    Rc::default(),
+                ),
+                None,
+                Rc::default(),
+            );
+            let tab = key(keysyms::Tab, None, held("a"));
+            let overview = key(keysyms::Tab, None, held("l"));
+            question.open(false);
+            assert_eq!(
+                keys.claim_key(&tab, false, false),
+                KeyClaim::Pass,
+                "the question takes the chord, and nothing opens beneath it"
+            );
+            assert_eq!(
+                keys.claim_key(&overview, false, false),
+                KeyClaim::Take,
+                "a chord under Super is held back, not typed into the question"
+            );
+            keys.key(&overview);
+            assert!(asked(&keys).is_empty());
+            question.close();
+            question.gone();
+            assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::TakeRepeating);
+        }
+
+        phase escape_asks_the_panel_to_go_back_before_it_closes_it;
+        {
+            // The panel's app draws the quick settings on this device: Escape is its own pages' first,
+            // and the session waits for its answer.
+            let asks = Rc::new(RefCell::new(Vec::new()));
+            let overlays = Overlays::new();
+            overlays.open(Slot::QuickSettings, None);
+            let mut keys = over(
+                ShellKeys::new(Fold::default(), overlays.clone()).with_panel(Some(Rc::clone(&asks))),
+            );
+            let escape = key(keysyms::Escape, None, KeyModifiers::default());
+            keys.key(&escape);
+            assert_eq!(*asks.borrow(), ["back"], "the panel goes back a page");
+            assert!(
+                asked(&keys).is_empty(),
+                "nothing closes until the panel says it has nowhere left to go"
+            );
+
+            // A device whose shell draws the quick settings has no panel app to ask: Escape closes the
+            // surface itself.
+            let mut shell = over(ShellKeys::new(Fold::default(), overlays));
+            shell.key(&escape);
+            assert_eq!(
+                asked(&shell),
+                vec![Invocation::new(OVERLAYS, "close-surface").with("slot", "quick-settings")]
+            );
+        }
+
+        phase the_shortcut_guide_holds_back_the_desktops_chords_while_it_is_up;
+        {
+            let (mut keys, guide) = with_guide();
+            let logo = held("l");
+            let space = key(keysyms::space, Some(' '), logo);
+            assert_eq!(keys.claim_key(&space, false, false), KeyClaim::Take);
+            keys.key(&space);
+            assert!(
+                keys.keys.invocations.borrow().is_empty(),
+                "search must not open on the guide: {:?}",
+                keys.keys.invocations.borrow()
+            );
+            // The guide's own key still reaches the desktop, which closes it.
+            let f1 = key(keysyms::F1, None, KeyModifiers::default());
+            assert_eq!(keys.claim_key(&f1, false, false), KeyClaim::Take);
+            keys.key(&f1);
+            assert_eq!(
+                keys.keys.invocations.borrow().as_slice(),
+                [Invocation::shortcut(ShortcutAction::ShortcutHelp)]
+            );
+            // A key that answers nothing at all is not the guide's to take: the sheet behind it moves
+            // its focus with Tab.
+            let tab = key(keysyms::Tab, None, KeyModifiers::default());
+            assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::Pass);
+            // A hardware key changes a level whatever is on screen.
+            let volume = key(
+                keysyms::XF86_AudioRaiseVolume,
+                None,
+                KeyModifiers::default(),
+            );
+            assert_eq!(
+                keys.claim_key(&volume, false, false),
+                KeyClaim::TakeRepeating
+            );
+            keys.keys.invocations.borrow_mut().clear();
+            keys.key(&volume);
+            assert_eq!(
+                keys.keys.invocations.borrow().as_slice(),
+                [Invocation::new(SOUND, "volume-up").showing(OsdKind::Volume)]
+            );
+            assert_eq!(guide.take_caught(), []);
+        }
+
+        phase the_shortcut_guide_takes_the_next_chord_while_it_waits;
+        {
+            let (mut keys, guide) = with_guide();
+            guide.listen_for("search");
+            let control = held("c");
+            let j = key(keysyms::j, Some('j'), control);
+            assert_eq!(keys.claim_key(&j, false, false), KeyClaim::Take);
+            keys.key(&j);
+            assert_eq!(
+                guide.take_caught(),
+                [Caught::Chord(KeyChord::parse("Ctrl+J").expect("a chord"))]
+            );
+            assert!(
+                keys.keys.invocations.borrow().is_empty(),
+                "the chord is the guide's, not the desktop's"
+            );
+            // A modifier on its own is no chord.
+            let shift = key(keysyms::Shift_L, None, held("s"));
+            keys.key(&shift);
+            assert_eq!(guide.take_caught(), []);
+            // Escape leaves the waiting to the guide, which stays up.
+            let escape = key(keysyms::Escape, None, KeyModifiers::default());
+            assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Take);
+            keys.key(&escape);
+            assert_eq!(guide.take_caught(), [Caught::Cancelled]);
+            assert_eq!(guide.listening(), None);
+            assert!(guide.up(), "the guide itself stays up");
+        }
+
+        phase a_client_holding_the_shortcuts_keeps_the_chords_but_not_the_way_to_lock;
+        {
+            let mut keys = keys();
+            let logo = held("l");
+            let tab = key(keysyms::Tab, None, logo);
+            assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::Take);
+            assert_eq!(
+                keys.claim_key(&tab, false, true),
+                KeyClaim::Pass,
+                "the virtual machine answers its own Tab"
+            );
+            // Locking the session stays the desktop's: a machine that could hold that chord could hide
+            // the way out of itself.
+            let lock = key(keysyms::l, Some('l'), logo);
+            assert_eq!(keys.claim_key(&lock, false, false), KeyClaim::Take);
+            assert_eq!(keys.claim_key(&lock, false, true), KeyClaim::Take);
+            keys.keys.invocations.borrow_mut().clear();
+            keys.key(&lock);
+            assert_eq!(
+                keys.keys.invocations.borrow().as_slice(),
+                [Invocation::shortcut(ShortcutAction::Lock)]
+            );
+            // A hardware key changes a level whatever a client holds.
+            let volume = key(
+                keysyms::XF86_AudioRaiseVolume,
+                None,
+                KeyModifiers::default(),
+            );
+            assert_eq!(
+                keys.claim_key(&volume, false, true),
+                KeyClaim::TakeRepeating
+            );
+        }
+
+        phase escape_folds_the_card_a_widget_has_open_and_nothing_behind_it_hears_it;
+        {
+            let fold = Fold::default();
+            let mut keys = over(ShellKeys::new(fold.clone(), Overlays::new()));
+            let escape = key(keysyms::Escape, None, KeyModifiers::default());
+            // Folded cards want no key: Escape goes on to whatever is up.
+            assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Pass);
+
+            fold.set_open(true);
+            assert_eq!(
+                keys.claim_key(&escape, false, false),
+                KeyClaim::Take,
+                "an open card folds on Escape before anything else hears it"
+            );
+            keys.key(&escape);
+            assert!(fold.take_asked(), "the key asks the session to fold");
+            assert!(!fold.take_asked(), "and asks once");
+        }
     }
 
     #[test]
@@ -1237,400 +1370,280 @@ mod tests {
         );
     }
 
-    /// The device's keys and F1, unlocked and locked: a level key repeats and works on the lock
-    /// screen, a key that opens something or takes the screen waits for the unlock; the sleep key
-    /// sleeps whatever the power button is set to; Print opens the studio, or with Shift takes the
-    /// whole display and with Alt the window in front, as the studio's own actions take them.
-    #[test]
-    fn the_device_keys_run_their_actions_and_the_lock_keeps_what_it_hides() {
-        let keys = keys();
-        let none = KeyModifiers::default();
-        let take = |invocation: Invocation| Some((invocation, KeyClaim::Take));
-        let volume = Invocation::new(SOUND, "volume-up").showing(OsdKind::Volume);
-        let airplane =
-            Invocation::new(NETWORK, "toggle-airplane-mode").showing(OsdKind::AirplaneMode);
-        let play = Invocation::new(MEDIA, "play-pause").showing(OsdKind::Play);
-        let calculator = Invocation::new(CHROME_RESOURCE, "open-app").with("app", CALCULATOR);
-        let studio = Invocation::new(CAPTURE_STUDIO, "open").with(
-            "mode",
-            serde_json::to_value(ui::floating_surface::CaptureStudioProtocolMode::Screenshot)
-                .unwrap_or_default(),
-        );
-        let screenshot = |source: &str| {
-            Invocation::new(CAPTURE_STUDIO, "screenshot").with("source", source.to_owned())
-        };
-        let help = Invocation::shortcut(ShortcutAction::ShortcutHelp);
-        assert_eq!(help.arguments["action"], "shortcut_help");
-        let sleep = take(Invocation::new(SLEEP, "sleep"));
-        let repeating = Some((volume, KeyClaim::TakeRepeating));
-        for (name, keysym, held, unlocked, locked) in [
-            (
-                "volume",
-                keysyms::XF86_AudioRaiseVolume,
-                none,
-                repeating.clone(),
-                repeating,
-            ),
-            ("airplane", KEY_XF86_RFKILL, none, take(airplane), None),
-            (
-                "play",
-                keysyms::XF86_AudioPlay,
-                none,
-                take(play.clone()),
-                take(play),
-            ),
-            (
-                "calculator",
-                keysyms::XF86_Calculator,
-                none,
-                take(calculator),
-                None,
-            ),
-            ("sleep", keysyms::XF86_Sleep, none, sleep.clone(), None),
-            ("suspend", keysyms::XF86_Suspend, none, sleep.clone(), None),
-            ("standby", keysyms::XF86_Standby, none, sleep, None),
-            ("print", keysyms::Print, none, take(studio), None),
-            (
-                "shift+print",
-                keysyms::Print,
-                held("s"),
-                take(screenshot("display")),
-                None,
-            ),
-            (
-                "alt+print",
-                keysyms::Print,
-                held("a"),
-                take(screenshot("window")),
-                None,
-            ),
-            ("F1", keysyms::F1, none, take(help), None),
-        ] {
-            let press = key(keysym, None, held);
-            assert_eq!(keys.resolve(&press, false, false), unlocked, "{name}");
-            assert_eq!(keys.resolve(&press, true, false), locked, "{name} locked");
+    tilo_test_env::scenario! {
+        fn a_chord_resolves_to_the_action_it_names;
+
+        phase the_device_keys_run_their_actions_and_the_lock_keeps_what_it_hides;
+        // The device's keys and F1, unlocked and locked: a level key repeats and works on the lock
+        // screen, a key that opens something or takes the screen waits for the unlock; the sleep key
+        // sleeps whatever the power button is set to; Print opens the studio, or with Shift takes the
+        // whole display and with Alt the window in front, as the studio's own actions take them.
+        {
+            let keys = keys();
+            let none = KeyModifiers::default();
+            let take = |invocation: Invocation| Some((invocation, KeyClaim::Take));
+            let volume = Invocation::new(SOUND, "volume-up").showing(OsdKind::Volume);
+            let airplane =
+                Invocation::new(NETWORK, "toggle-airplane-mode").showing(OsdKind::AirplaneMode);
+            let play = Invocation::new(MEDIA, "play-pause").showing(OsdKind::Play);
+            let calculator = Invocation::new(CHROME_RESOURCE, "open-app").with("app", CALCULATOR);
+            let studio = Invocation::new(CAPTURE_STUDIO, "open").with(
+                "mode",
+                serde_json::to_value(ui::floating_surface::CaptureStudioProtocolMode::Screenshot)
+                    .unwrap_or_default(),
+            );
+            let screenshot = |source: &str| {
+                Invocation::new(CAPTURE_STUDIO, "screenshot").with("source", source.to_owned())
+            };
+            let help = Invocation::shortcut(ShortcutAction::ShortcutHelp);
+            assert_eq!(help.arguments["action"], "shortcut_help");
+            let sleep = take(Invocation::new(SLEEP, "sleep"));
+            let repeating = Some((volume, KeyClaim::TakeRepeating));
+            for (name, keysym, held, unlocked, locked) in [
+                (
+                    "volume",
+                    keysyms::XF86_AudioRaiseVolume,
+                    none,
+                    repeating.clone(),
+                    repeating,
+                ),
+                ("airplane", KEY_XF86_RFKILL, none, take(airplane), None),
+                (
+                    "play",
+                    keysyms::XF86_AudioPlay,
+                    none,
+                    take(play.clone()),
+                    take(play),
+                ),
+                (
+                    "calculator",
+                    keysyms::XF86_Calculator,
+                    none,
+                    take(calculator),
+                    None,
+                ),
+                ("sleep", keysyms::XF86_Sleep, none, sleep.clone(), None),
+                ("suspend", keysyms::XF86_Suspend, none, sleep.clone(), None),
+                ("standby", keysyms::XF86_Standby, none, sleep, None),
+                ("print", keysyms::Print, none, take(studio), None),
+                (
+                    "shift+print",
+                    keysyms::Print,
+                    held("s"),
+                    take(screenshot("display")),
+                    None,
+                ),
+                (
+                    "alt+print",
+                    keysyms::Print,
+                    held("a"),
+                    take(screenshot("window")),
+                    None,
+                ),
+                ("F1", keysyms::F1, none, take(help), None),
+            ] {
+                let press = key(keysym, None, held);
+                assert_eq!(keys.resolve(&press, false, false), unlocked, "{name}");
+                assert_eq!(keys.resolve(&press, true, false), locked, "{name} locked");
+            }
         }
-    }
 
-    #[test]
-    fn a_chord_on_a_cyrillic_layout_is_the_latin_key_of_that_key() {
-        let keys = keys();
-        let logo = held("l");
-        // The key a US keyboard labels L types `д` on a Russian layout; the chord is the Latin
-        // letter the same key carries on US.
-        let mut cyrillic = key(keysyms::Cyrillic_de, Some('д'), logo);
-        cyrillic.latin_keysym = u32::from('l');
-        assert_eq!(
-            keys.resolve(&cyrillic, false, false),
-            Some((Invocation::shortcut(ShortcutAction::Lock), KeyClaim::Take))
-        );
-        // Without the Latin key on that layout, it is no chord at all.
-        cyrillic.latin_keysym = keysyms::Cyrillic_de;
-        assert_eq!(keys.resolve(&cyrillic, false, false), None);
-    }
-
-    #[test]
-    fn chords_of_the_shortcut_table_become_the_chromes_shortcut_action() {
-        let keys = keys();
-        let logo = held("l");
-        let tab = key(keysyms::Tab, None, logo);
-        assert_eq!(
-            keys.resolve(&tab, false, false),
-            Some((
-                Invocation::shortcut(ShortcutAction::WorkspaceOverview),
-                KeyClaim::Take
-            ))
-        );
-        assert_eq!(
-            Invocation::shortcut(ShortcutAction::WorkspaceOverview).arguments["action"],
-            "workspace_overview"
-        );
-        // Chords wait while the session is locked; plain typing is never one.
-        assert_eq!(keys.resolve(&tab, true, false), None);
-        let a = key(keysyms::a, Some('a'), KeyModifiers::default());
-        assert_eq!(keys.resolve(&a, false, false), None);
-    }
-
-    #[test]
-    fn the_fixed_chords_run_the_chrome_verb_their_menu_rows_name() {
-        let keys = keys();
-        let logo = held("l");
-        let shift_logo = KeyModifiers {
-            shift: true,
-            ..logo
-        };
-        let alt = held("a");
-        let fixed = |id: &str| {
-            Some((
-                Invocation::new(CHROME_RESOURCE, "fixed-shortcut").with("action", id),
-                KeyClaim::Take,
-            ))
-        };
-        for (pressed, id) in [
-            (key(keysyms::w, Some('w'), logo), "fixed-close-tab"),
-            (key(keysyms::F4, None, alt), "fixed-close-tab"),
-            (key(keysyms::n, Some('n'), logo), "fixed-new-window"),
-            (key(keysyms::t, Some('t'), logo), "fixed-duplicate-tab"),
-            (key(keysyms::Return, None, logo), "fixed-open-terminal"),
-            (key(keysyms::s, Some('s'), logo), "fixed-strip-switcher"),
-            (
-                key(keysyms::s, Some('S'), shift_logo),
-                "fixed-capture-screenshot",
-            ),
-            (
-                key(keysyms::p, Some('P'), shift_logo),
-                "fixed-picture-in-picture",
-            ),
-            (
-                key(keysyms::r, Some('R'), shift_logo),
-                "fixed-save-recent-replay",
-            ),
-            (key(keysyms::h, Some('h'), logo), "fixed-workspace-history"),
-            (
-                key(keysyms::h, Some('H'), shift_logo),
-                "fixed-explore-workspace-history",
-            ),
-            (key(keysyms::Escape, None, logo), "fixed-stop-remote-input"),
-        ] {
-            assert_eq!(keys.resolve(&pressed, false, false), fixed(id), "{id}");
+        phase a_chord_on_a_cyrillic_layout_is_the_latin_key_of_that_key;
+        {
+            let keys = keys();
+            let logo = held("l");
+            // The key a US keyboard labels L types `д` on a Russian layout; the chord is the Latin
+            // letter the same key carries on US.
+            let mut cyrillic = key(keysyms::Cyrillic_de, Some('д'), logo);
+            cyrillic.latin_keysym = u32::from('l');
+            assert_eq!(
+                keys.resolve(&cyrillic, false, false),
+                Some((Invocation::shortcut(ShortcutAction::Lock), KeyClaim::Take))
+            );
+            // Without the Latin key on that layout, it is no chord at all.
+            cyrillic.latin_keysym = keysyms::Cyrillic_de;
+            assert_eq!(keys.resolve(&cyrillic, false, false), None);
         }
-        // The chords the keys answer where they resolve keep that answer: the window walk, the
-        // workspace steps, the display sheet and Print.
-        for answered_before in [
-            key(keysyms::Tab, None, held("a")),
-            key(keysyms::Page_Up, None, logo),
-            key(keysyms::p, Some('p'), logo),
-            key(keysyms::Print, None, KeyModifiers::default()),
-        ] {
-            let resolved = keys.resolve(&answered_before, false, false);
+
+        phase chords_of_the_shortcut_table_become_the_chromes_shortcut_action;
+        {
+            let keys = keys();
+            let logo = held("l");
+            let tab = key(keysyms::Tab, None, logo);
+            assert_eq!(
+                keys.resolve(&tab, false, false),
+                Some((
+                    Invocation::shortcut(ShortcutAction::WorkspaceOverview),
+                    KeyClaim::Take
+                ))
+            );
+            assert_eq!(
+                Invocation::shortcut(ShortcutAction::WorkspaceOverview).arguments["action"],
+                "workspace_overview"
+            );
+            // Chords wait while the session is locked; plain typing is never one.
+            assert_eq!(keys.resolve(&tab, true, false), None);
+            let a = key(keysyms::a, Some('a'), KeyModifiers::default());
+            assert_eq!(keys.resolve(&a, false, false), None);
+        }
+
+        phase the_fixed_chords_run_the_chrome_verb_their_menu_rows_name;
+        {
+            let keys = keys();
+            let logo = held("l");
+            let shift_logo = KeyModifiers {
+                shift: true,
+                ..logo
+            };
+            let alt = held("a");
+            let fixed = |id: &str| {
+                Some((
+                    Invocation::new(CHROME_RESOURCE, "fixed-shortcut").with("action", id),
+                    KeyClaim::Take,
+                ))
+            };
+            for (pressed, id) in [
+                (key(keysyms::w, Some('w'), logo), "fixed-close-tab"),
+                (key(keysyms::F4, None, alt), "fixed-close-tab"),
+                (key(keysyms::n, Some('n'), logo), "fixed-new-window"),
+                (key(keysyms::t, Some('t'), logo), "fixed-duplicate-tab"),
+                (key(keysyms::Return, None, logo), "fixed-open-terminal"),
+                (key(keysyms::s, Some('s'), logo), "fixed-strip-switcher"),
+                (
+                    key(keysyms::s, Some('S'), shift_logo),
+                    "fixed-capture-screenshot",
+                ),
+                (
+                    key(keysyms::p, Some('P'), shift_logo),
+                    "fixed-picture-in-picture",
+                ),
+                (
+                    key(keysyms::r, Some('R'), shift_logo),
+                    "fixed-save-recent-replay",
+                ),
+                (key(keysyms::h, Some('h'), logo), "fixed-workspace-history"),
+                (
+                    key(keysyms::h, Some('H'), shift_logo),
+                    "fixed-explore-workspace-history",
+                ),
+                (key(keysyms::Escape, None, logo), "fixed-stop-remote-input"),
+            ] {
+                assert_eq!(keys.resolve(&pressed, false, false), fixed(id), "{id}");
+            }
+            // The chords the keys answer where they resolve keep that answer: the window walk, the
+            // workspace steps, the display sheet and Print.
+            for answered_before in [
+                key(keysyms::Tab, None, held("a")),
+                key(keysyms::Page_Up, None, logo),
+                key(keysyms::p, Some('p'), logo),
+                key(keysyms::Print, None, KeyModifiers::default()),
+            ] {
+                let resolved = keys.resolve(&answered_before, false, false);
+                assert!(
+                    resolved
+                        .as_ref()
+                        .is_none_or(|(invocation, _)| invocation.address.action != "fixed-shortcut"),
+                    "{resolved:?}"
+                );
+            }
+        }
+
+        phase a_shortcuts_chord_is_claimed_and_handed_to_the_automation_host;
+        {
+            let shortcuts = Rc::new(RefCell::new(ShortcutConfig::default()));
+            let triggered = PressedChords::default();
+            let mut keys = on_this_device(
+                ShellKeys::default(),
+                Rc::default(),
+                Rc::clone(&shortcuts),
+                Presses {
+                    invocations: Invocations::default(),
+                    triggered: Rc::clone(&triggered),
+                },
+                Rc::default(),
+            );
+            let chord = KeyChord::parse("ctrl+alt+j").expect("a chord");
+            // Nothing armed: the chord is nobody's, and types into what is up.
+            assert_eq!(
+                keys.claim_key(&key(keysyms::j, Some('j'), held("ca")), false, false),
+                KeyClaim::Pass
+            );
+            // The automation armed a shortcut on that chord: the session answers it, and hands the
+            // press on once.
+            let mut table = shortcuts.borrow().clone();
+            assert!(tilo_action_broker::automation::replace_trigger_chords(
+                &mut table,
+                vec![settings_store::hardware::ActionChord {
+                    chord: chord.clone(),
+                    target: tilo_action_broker::automation::chord_target("workspace", "tidy"),
+                    label: "Run Tidy".into(),
+                }],
+            ));
+            *shortcuts.borrow_mut() = table;
+            let press = key(keysyms::j, Some('j'), held("ca"));
+            assert_eq!(keys.claim_key(&press, false, false), KeyClaim::Take);
+            assert_eq!(
+                keys.claim_key(&press, true, false),
+                KeyClaim::Pass,
+                "a locked session runs no shortcut"
+            );
+            keys.key(&press);
+            assert_eq!(triggered.borrow().as_slice(), [chord]);
             assert!(
-                resolved
-                    .as_ref()
-                    .is_none_or(|(invocation, _)| invocation.address.action != "fixed-shortcut"),
-                "{resolved:?}"
+                keys.keys.invocations.borrow().is_empty(),
+                "the shortcut starts on the automation host, not as a desktop action"
             );
         }
-    }
 
-    #[test]
-    fn the_shortcut_guide_holds_back_the_desktops_chords_while_it_is_up() {
-        let (mut keys, guide) = with_guide();
-        let logo = held("l");
-        let space = key(keysyms::space, Some(' '), logo);
-        assert_eq!(keys.claim_key(&space, false, false), KeyClaim::Take);
-        keys.key(&space);
-        assert!(
-            keys.keys.invocations.borrow().is_empty(),
-            "search must not open on the guide: {:?}",
-            keys.keys.invocations.borrow()
-        );
-        // The guide's own key still reaches the desktop, which closes it.
-        let f1 = key(keysyms::F1, None, KeyModifiers::default());
-        assert_eq!(keys.claim_key(&f1, false, false), KeyClaim::Take);
-        keys.key(&f1);
-        assert_eq!(
-            keys.keys.invocations.borrow().as_slice(),
-            [Invocation::shortcut(ShortcutAction::ShortcutHelp)]
-        );
-        // A key that answers nothing at all is not the guide's to take: the sheet behind it moves
-        // its focus with Tab.
-        let tab = key(keysyms::Tab, None, KeyModifiers::default());
-        assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::Pass);
-        // A hardware key changes a level whatever is on screen.
-        let volume = key(
-            keysyms::XF86_AudioRaiseVolume,
-            None,
-            KeyModifiers::default(),
-        );
-        assert_eq!(
-            keys.claim_key(&volume, false, false),
-            KeyClaim::TakeRepeating
-        );
-        keys.keys.invocations.borrow_mut().clear();
-        keys.key(&volume);
-        assert_eq!(
-            keys.keys.invocations.borrow().as_slice(),
-            [Invocation::new(SOUND, "volume-up").showing(OsdKind::Volume)]
-        );
-        assert_eq!(guide.take_caught(), []);
-    }
-
-    #[test]
-    fn the_shortcut_guide_takes_the_next_chord_while_it_waits() {
-        let (mut keys, guide) = with_guide();
-        guide.listen_for("search");
-        let control = held("c");
-        let j = key(keysyms::j, Some('j'), control);
-        assert_eq!(keys.claim_key(&j, false, false), KeyClaim::Take);
-        keys.key(&j);
-        assert_eq!(
-            guide.take_caught(),
-            [Caught::Chord(KeyChord::parse("Ctrl+J").expect("a chord"))]
-        );
-        assert!(
-            keys.keys.invocations.borrow().is_empty(),
-            "the chord is the guide's, not the desktop's"
-        );
-        // A modifier on its own is no chord.
-        let shift = key(keysyms::Shift_L, None, held("s"));
-        keys.key(&shift);
-        assert_eq!(guide.take_caught(), []);
-        // Escape leaves the waiting to the guide, which stays up.
-        let escape = key(keysyms::Escape, None, KeyModifiers::default());
-        assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Take);
-        keys.key(&escape);
-        assert_eq!(guide.take_caught(), [Caught::Cancelled]);
-        assert_eq!(guide.listening(), None);
-        assert!(guide.up(), "the guide itself stays up");
-    }
-
-    #[test]
-    fn a_client_holding_the_shortcuts_keeps_the_chords_but_not_the_way_to_lock() {
-        let mut keys = keys();
-        let logo = held("l");
-        let tab = key(keysyms::Tab, None, logo);
-        assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::Take);
-        assert_eq!(
-            keys.claim_key(&tab, false, true),
-            KeyClaim::Pass,
-            "the virtual machine answers its own Tab"
-        );
-        // Locking the session stays the desktop's: a machine that could hold that chord could hide
-        // the way out of itself.
-        let lock = key(keysyms::l, Some('l'), logo);
-        assert_eq!(keys.claim_key(&lock, false, false), KeyClaim::Take);
-        assert_eq!(keys.claim_key(&lock, false, true), KeyClaim::Take);
-        keys.keys.invocations.borrow_mut().clear();
-        keys.key(&lock);
-        assert_eq!(
-            keys.keys.invocations.borrow().as_slice(),
-            [Invocation::shortcut(ShortcutAction::Lock)]
-        );
-        // A hardware key changes a level whatever a client holds.
-        let volume = key(
-            keysyms::XF86_AudioRaiseVolume,
-            None,
-            KeyModifiers::default(),
-        );
-        assert_eq!(
-            keys.claim_key(&volume, false, true),
-            KeyClaim::TakeRepeating
-        );
-    }
-
-    #[test]
-    fn a_shortcuts_chord_is_claimed_and_handed_to_the_automation_host() {
-        let shortcuts = Rc::new(RefCell::new(ShortcutConfig::default()));
-        let triggered = PressedChords::default();
-        let mut keys = on_this_device(
-            ShellKeys::default(),
-            Rc::default(),
-            Rc::clone(&shortcuts),
-            Presses {
-                invocations: Invocations::default(),
-                triggered: Rc::clone(&triggered),
-            },
-            Rc::default(),
-        );
-        let chord = KeyChord::parse("ctrl+alt+j").expect("a chord");
-        // Nothing armed: the chord is nobody's, and types into what is up.
-        assert_eq!(
-            keys.claim_key(&key(keysyms::j, Some('j'), held("ca")), false, false),
-            KeyClaim::Pass
-        );
-        // The automation armed a shortcut on that chord: the session answers it, and hands the
-        // press on once.
-        let mut table = shortcuts.borrow().clone();
-        assert!(tilo_action_broker::automation::replace_trigger_chords(
-            &mut table,
-            vec![settings_store::hardware::ActionChord {
-                chord: chord.clone(),
-                target: tilo_action_broker::automation::chord_target("workspace", "tidy"),
-                label: "Run Tidy".into(),
-            }],
-        ));
-        *shortcuts.borrow_mut() = table;
-        let press = key(keysyms::j, Some('j'), held("ca"));
-        assert_eq!(keys.claim_key(&press, false, false), KeyClaim::Take);
-        assert_eq!(
-            keys.claim_key(&press, true, false),
-            KeyClaim::Pass,
-            "a locked session runs no shortcut"
-        );
-        keys.key(&press);
-        assert_eq!(triggered.borrow().as_slice(), [chord]);
-        assert!(
-            keys.keys.invocations.borrow().is_empty(),
-            "the shortcut starts on the automation host, not as a desktop action"
-        );
-    }
-
-    #[test]
-    fn escape_folds_the_card_a_widget_has_open_and_nothing_behind_it_hears_it() {
-        let fold = Fold::default();
-        let mut keys = over(ShellKeys::new(fold.clone(), Overlays::new()));
-        let escape = key(keysyms::Escape, None, KeyModifiers::default());
-        // Folded cards want no key: Escape goes on to whatever is up.
-        assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Pass);
-
-        fold.set_open(true);
-        assert_eq!(
-            keys.claim_key(&escape, false, false),
-            KeyClaim::Take,
-            "an open card folds on Escape before anything else hears it"
-        );
-        keys.key(&escape);
-        assert!(fold.take_asked(), "the key asks the session to fold");
-        assert!(!fold.take_asked(), "and asks once");
-    }
-    /// Ctrl+Alt+F3 asks the session to leave for the third virtual terminal,
-    /// and a locked session takes no such chord: the way out of a desktop that
-    /// cannot give the machine back is not a way around the lock.
-    #[test]
-    fn control_alt_function_keys_ask_for_a_virtual_terminal() {
-        let commands = Rc::new(RefCell::new(Vec::new()));
-        let mut keys = on_this_device(
-            ShellKeys::default(),
-            Rc::default(),
-            Rc::default(),
-            Presses::default(),
-            Rc::clone(&commands),
-        );
-        let chord = held("ca");
-        assert_eq!(
-            keys.claim_key(&key(keysyms::F3, None, chord), false, false),
-            KeyClaim::Take
-        );
-        assert_eq!(
-            commands.borrow().as_slice(),
-            [SessionCommand::SwitchVt { vt: 3 }]
-        );
-        // A layout that types another character on that key still names the terminal: the chord is
-        // the key the US keyboard calls F4.
-        let mut other = key(keysyms::Cyrillic_ze, Some('з'), chord);
-        other.latin_keysym = keysyms::F4;
-        assert_eq!(keys.claim_key(&other, false, false), KeyClaim::Take);
-        assert_eq!(
-            commands.borrow().as_slice(),
-            [
-                SessionCommand::SwitchVt { vt: 3 },
-                SessionCommand::SwitchVt { vt: 4 }
-            ]
-        );
-        // The same keys without Alt, or on a locked session, are not the session's to take.
-        let plain = held("c");
-        assert_eq!(
-            keys.claim_key(&key(keysyms::F3, None, plain), false, false),
-            KeyClaim::Pass
-        );
-        assert_eq!(
-            keys.claim_key(&key(keysyms::F3, None, chord), true, false),
-            KeyClaim::Pass
-        );
-        assert_eq!(
-            commands.borrow().len(),
-            2,
-            "only the chords the person pressed left the session"
-        );
+        phase control_alt_function_keys_ask_for_a_virtual_terminal;
+        // Ctrl+Alt+F3 asks the session to leave for the third virtual terminal,
+        // and a locked session takes no such chord: the way out of a desktop that
+        // cannot give the machine back is not a way around the lock.
+        {
+            let commands = Rc::new(RefCell::new(Vec::new()));
+            let mut keys = on_this_device(
+                ShellKeys::default(),
+                Rc::default(),
+                Rc::default(),
+                Presses::default(),
+                Rc::clone(&commands),
+            );
+            let chord = held("ca");
+            assert_eq!(
+                keys.claim_key(&key(keysyms::F3, None, chord), false, false),
+                KeyClaim::Take
+            );
+            assert_eq!(
+                commands.borrow().as_slice(),
+                [SessionCommand::SwitchVt { vt: 3 }]
+            );
+            // A layout that types another character on that key still names the terminal: the chord is
+            // the key the US keyboard calls F4.
+            let mut other = key(keysyms::Cyrillic_ze, Some('з'), chord);
+            other.latin_keysym = keysyms::F4;
+            assert_eq!(keys.claim_key(&other, false, false), KeyClaim::Take);
+            assert_eq!(
+                commands.borrow().as_slice(),
+                [
+                    SessionCommand::SwitchVt { vt: 3 },
+                    SessionCommand::SwitchVt { vt: 4 }
+                ]
+            );
+            // The same keys without Alt, or on a locked session, are not the session's to take.
+            let plain = held("c");
+            assert_eq!(
+                keys.claim_key(&key(keysyms::F3, None, plain), false, false),
+                KeyClaim::Pass
+            );
+            assert_eq!(
+                keys.claim_key(&key(keysyms::F3, None, chord), true, false),
+                KeyClaim::Pass
+            );
+            assert_eq!(
+                commands.borrow().len(),
+                2,
+                "only the chords the person pressed left the session"
+            );
+        }
     }
 }

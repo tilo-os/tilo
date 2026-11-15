@@ -587,248 +587,251 @@ mod tests {
     #[cfg(target_os = "linux")]
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// A window's own connection is spent by the one connection naming its app, workspace and
-    /// instance, and only the session's own process makes one: nothing else is admitted by it, and
-    /// nothing is left for a second.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn a_window_connection_is_spent_once_by_the_window_it_names() {
-        let launches = Launches::default();
-        let app = "so.tilo.code.window";
-        let workspace = "workspace-window";
-        let session = std::process::id();
-        launches.window(app, workspace, 42, None);
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn a_connection_is_admitted_as_the_launch_or_window_it_names_while_that_runs;
 
-        assert!(
-            launches
-                .authenticated_launch(session, app, "other-workspace", Some(42))
-                .unwrap()
-                .is_none(),
-            "a window of another workspace"
-        );
-        assert!(
-            launches
-                .authenticated_launch(session, app, workspace, Some(41))
-                .unwrap()
-                .is_none(),
-            "another window"
-        );
-        assert!(
-            launches
-                .authenticated_launch(u32::MAX, app, workspace, Some(42))
-                .unwrap()
-                .is_none(),
-            "only the session connects a window"
-        );
+        phase a_window_connection_is_spent_once_by_the_window_it_names;
+        // A window's own connection is spent by the one connection naming its app, workspace and
+        // instance, and only the session's own process makes one: nothing else is admitted by it, and
+        // nothing is left for a second.
+        {
+            let launches = Launches::default();
+            let app = "so.tilo.code.window";
+            let workspace = "workspace-window";
+            let session = std::process::id();
+            launches.window(app, workspace, 42, None);
 
-        let bound = launches
-            .authenticated_launch(session, app, workspace, Some(42))
-            .unwrap()
-            .expect("the window's own connection");
-        assert_eq!(bound.continuation_instance, Some(42));
-        assert!(
-            launches
+            assert!(
+                launches
+                    .authenticated_launch(session, app, "other-workspace", Some(42))
+                    .unwrap()
+                    .is_none(),
+                "a window of another workspace"
+            );
+            assert!(
+                launches
+                    .authenticated_launch(session, app, workspace, Some(41))
+                    .unwrap()
+                    .is_none(),
+                "another window"
+            );
+            assert!(
+                launches
+                    .authenticated_launch(u32::MAX, app, workspace, Some(42))
+                    .unwrap()
+                    .is_none(),
+                "only the session connects a window"
+            );
+
+            let bound = launches
                 .authenticated_launch(session, app, workspace, Some(42))
                 .unwrap()
-                .is_none(),
-            "spent by its connection"
-        );
-    }
+                .expect("the window's own connection");
+            assert_eq!(bound.continuation_instance, Some(42));
+            assert!(
+                launches
+                    .authenticated_launch(session, app, workspace, Some(42))
+                    .unwrap()
+                    .is_none(),
+                "spent by its connection"
+            );
+        }
 
-    /// An app started with no window is admitted as such in its own workspace alone, is no app
-    /// the person opened, and shows a window once the shell asks its process for one.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn a_windowless_launch_is_admitted_as_one_until_it_shows_a_window() {
-        let launches = Launches::default();
-        let (app, workspace) = ("so.tilo.chat", "workspace-windowless");
-        let process = std::process::id();
-        launches.started_windowless(process, app, workspace);
+        phase a_windowless_launch_is_admitted_as_one_until_it_shows_a_window;
+        // An app started with no window is admitted as such in its own workspace alone, is no app
+        // the person opened, and shows a window once the shell asks its process for one.
+        {
+            let launches = Launches::default();
+            let (app, workspace) = ("so.tilo.chat", "workspace-windowless");
+            let process = std::process::id();
+            launches.started_windowless(process, app, workspace);
 
-        let admitted = |workspace| launches.authenticated_launch(process, app, workspace, None);
-        assert!(admitted(workspace).unwrap().expect("its launch").windowless);
-        assert!(admitted("another-workspace").unwrap().is_none());
-        assert!(
-            launches.running_apps().is_empty(),
-            "no app the person opened"
-        );
+            let admitted = |workspace| launches.authenticated_launch(process, app, workspace, None);
+            assert!(admitted(workspace).unwrap().expect("its launch").windowless);
+            assert!(admitted("another-workspace").unwrap().is_none());
+            assert!(
+                launches.running_apps().is_empty(),
+                "no app the person opened"
+            );
 
-        launches.window(app, workspace, 7, Some(process));
-        assert!(!admitted(workspace).unwrap().expect("its launch").windowless);
-        assert!(launches.running_apps().contains(app));
-    }
+            launches.window(app, workspace, 7, Some(process));
+            assert!(!admitted(workspace).unwrap().expect("its launch").windowless);
+            assert!(launches.running_apps().contains(app));
+        }
 
-    /// The session gave the connection up before the broker saw it: the record ends with it, and
-    /// nothing is admitted for that window.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn a_withdrawn_window_connection_admits_nothing() {
-        let launches = Launches::default();
-        let app = "so.tilo.code.withdrawn";
-        let workspace = "workspace-withdrawn";
-        let session = std::process::id();
-        launches.window(app, workspace, 9, None);
-        launches.window_withdrawn(app, workspace, 9);
-        assert!(
-            launches
-                .authenticated_launch(session, app, workspace, Some(9))
-                .unwrap()
-                .is_none()
-        );
-    }
+        phase a_withdrawn_window_connection_admits_nothing;
+        // The session gave the connection up before the broker saw it: the record ends with it, and
+        // nothing is admitted for that window.
+        {
+            let launches = Launches::default();
+            let app = "so.tilo.code.withdrawn";
+            let workspace = "workspace-withdrawn";
+            let session = std::process::id();
+            launches.window(app, workspace, 9, None);
+            launches.window_withdrawn(app, workspace, 9);
+            assert!(
+                launches
+                    .authenticated_launch(session, app, workspace, Some(9))
+                    .unwrap()
+                    .is_none()
+            );
+        }
 
-    /// A window of a launch runs in that launch's process: once the process is over its windows are
-    /// too, and their connections are nobody's.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn a_window_of_an_ended_launch_is_not_admitted() {
-        let launches = Launches::default();
-        let app = "so.tilo.code.ended";
-        let workspace = "workspace-ended";
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn_locked()
-            .expect("a process to launch");
-        launches.started(child.id(), app, workspace, true);
-        launches.window(app, workspace, 7, Some(child.id()));
-        child.kill().ok();
-        child.wait().ok();
+        phase a_window_of_an_ended_launch_is_not_admitted;
+        // A window of a launch runs in that launch's process: once the process is over its windows are
+        // too, and their connections are nobody's.
+        {
+            let launches = Launches::default();
+            let app = "so.tilo.code.ended";
+            let workspace = "workspace-ended";
+            let mut child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn_locked()
+                .expect("a process to launch");
+            launches.started(child.id(), app, workspace, true);
+            launches.window(app, workspace, 7, Some(child.id()));
+            child.kill().ok();
+            child.wait().ok();
 
-        assert!(
-            launches
-                .authenticated_launch(std::process::id(), app, workspace, Some(7))
-                .unwrap()
-                .is_none(),
-            "the launch that made the window is over"
-        );
-    }
+            assert!(
+                launches
+                    .authenticated_launch(std::process::id(), app, workspace, Some(7))
+                    .unwrap()
+                    .is_none(),
+                "the launch that made the window is over"
+            );
+        }
 
-    /// Only a launch that bound the store into its app, and still runs,
-    /// makes that app one whose files are answered with store paths: an app
-    /// the launch bound no store into has none, and neither has one whose
-    /// sandbox is over.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn a_sandboxed_app_is_one_whose_sandboxed_launch_runs() {
-        let launches = Launches::default();
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn_locked()
-            .expect("a process to launch");
-        launches.started(child.id(), "so.tilo.sandboxed", "workspace-sandboxed", true);
-        launches.started(
-            std::process::id(),
-            "so.tilo.host",
-            "workspace-sandboxed",
-            false,
-        );
+        phase a_windowless_endpoint_is_admitted_as_its_app_and_says_so;
+        // An endpoint the login runs with no window is admitted as its app in its workspace, and says
+        // so: the broker hands it the app's actions on its records and never an `open`. It is neither
+        // another app's, another workspace's, nor a later process that reused its pid.
+        {
+            let launches = Launches::default();
+            let app = "so.tilo.file-explorer";
+            let workspace = "workspace-files";
+            let mut child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn_locked()
+                .expect("a process to launch");
+            launches.endpoint(child.id(), app, workspace);
 
-        assert_eq!(launches.sandboxed_apps(), ["so.tilo.sandboxed".to_owned()]);
-
-        child.kill().ok();
-        child.wait().ok();
-        assert!(
-            launches.sandboxed_apps().is_empty(),
-            "the sandbox that was bound is over"
-        );
-    }
-
-    /// A program's app is the launch it descends from, while that launch runs: the terminal that
-    /// started it, not any other launch of the session.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn a_program_s_app_is_the_launch_it_descends_from() {
-        let launches = Launches::default();
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn_locked()
-            .expect("a process to launch");
-        assert_eq!(launches.app_of_descendant(child.id()), None, "no launch");
-
-        launches.started(
-            std::process::id(),
-            "so.tilo.terminal",
-            "workspace-shell",
-            false,
-        );
-        assert_eq!(
-            launches.app_of_descendant(std::process::id()).as_deref(),
-            Some("so.tilo.terminal"),
-            "the app of a process the session started"
-        );
-        assert_eq!(
-            launches.app_of_descendant(child.id()).as_deref(),
-            Some("so.tilo.terminal"),
-            "the app of a program running under it"
-        );
-
-        child.kill().ok();
-        child.wait().ok();
-        assert_eq!(
-            launches.app_of_descendant(std::process::id()).as_deref(),
-            Some("so.tilo.terminal"),
-            "the launch still runs"
-        );
-    }
-
-    /// An endpoint the login runs with no window is admitted as its app in its workspace, and says
-    /// so: the broker hands it the app's actions on its records and never an `open`. It is neither
-    /// another app's, another workspace's, nor a later process that reused its pid.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn a_windowless_endpoint_is_admitted_as_its_app_and_says_so() {
-        let launches = Launches::default();
-        let app = "so.tilo.file-explorer";
-        let workspace = "workspace-files";
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn_locked()
-            .expect("a process to launch");
-        launches.endpoint(child.id(), app, workspace);
-
-        assert!(
-            launches
-                .authenticated_launch(std::process::id(), app, workspace, None)
-                .unwrap()
-                .is_none(),
-            "another process is not the endpoint"
-        );
-        assert!(
-            launches
-                .authenticated_launch(child.id(), "so.tilo.notes", workspace, None)
-                .unwrap()
-                .is_none(),
-            "another app"
-        );
-        assert!(
-            launches
-                .authenticated_launch(child.id(), app, "another-workspace", None)
-                .unwrap()
-                .is_some(),
-            "the endpoint serves every workspace the session holds"
-        );
-        let admitted = launches
-            .authenticated_launch(child.id(), app, workspace, None)
-            .unwrap()
-            .expect("the endpoint's connection");
-        assert!(admitted.windowless, "it takes actions and never an open");
-        assert!(
-            launches
+            assert!(
+                launches
+                    .authenticated_launch(std::process::id(), app, workspace, None)
+                    .unwrap()
+                    .is_none(),
+                "another process is not the endpoint"
+            );
+            assert!(
+                launches
+                    .authenticated_launch(child.id(), "so.tilo.notes", workspace, None)
+                    .unwrap()
+                    .is_none(),
+                "another app"
+            );
+            assert!(
+                launches
+                    .authenticated_launch(child.id(), app, "another-workspace", None)
+                    .unwrap()
+                    .is_some(),
+                "the endpoint serves every workspace the session holds"
+            );
+            let admitted = launches
                 .authenticated_launch(child.id(), app, workspace, None)
                 .unwrap()
-                .is_some(),
-            "an endpoint's record stays for its whole life, as a launch's does"
-        );
+                .expect("the endpoint's connection");
+            assert!(admitted.windowless, "it takes actions and never an open");
+            assert!(
+                launches
+                    .authenticated_launch(child.id(), app, workspace, None)
+                    .unwrap()
+                    .is_some(),
+                "an endpoint's record stays for its whole life, as a launch's does"
+            );
 
-        child.kill().ok();
-        child.wait().ok();
-        assert!(
-            launches
-                .authenticated_launch(child.id(), app, workspace, None)
-                .unwrap()
-                .is_none(),
-            "the endpoint is over"
-        );
+            child.kill().ok();
+            child.wait().ok();
+            assert!(
+                launches
+                    .authenticated_launch(child.id(), app, workspace, None)
+                    .unwrap()
+                    .is_none(),
+                "the endpoint is over"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn an_app_is_known_by_the_launch_that_still_runs;
+
+        phase a_sandboxed_app_is_one_whose_sandboxed_launch_runs;
+        // Only a launch that bound the store into its app, and still runs,
+        // makes that app one whose files are answered with store paths: an app
+        // the launch bound no store into has none, and neither has one whose
+        // sandbox is over.
+        {
+            let launches = Launches::default();
+            let mut child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn_locked()
+                .expect("a process to launch");
+            launches.started(child.id(), "so.tilo.sandboxed", "workspace-sandboxed", true);
+            launches.started(
+                std::process::id(),
+                "so.tilo.host",
+                "workspace-sandboxed",
+                false,
+            );
+
+            assert_eq!(launches.sandboxed_apps(), ["so.tilo.sandboxed".to_owned()]);
+
+            child.kill().ok();
+            child.wait().ok();
+            assert!(
+                launches.sandboxed_apps().is_empty(),
+                "the sandbox that was bound is over"
+            );
+        }
+
+        phase a_program_s_app_is_the_launch_it_descends_from;
+        // A program's app is the launch it descends from, while that launch runs: the terminal that
+        // started it, not any other launch of the session.
+        {
+            let launches = Launches::default();
+            let mut child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn_locked()
+                .expect("a process to launch");
+            assert_eq!(launches.app_of_descendant(child.id()), None, "no launch");
+
+            launches.started(
+                std::process::id(),
+                "so.tilo.terminal",
+                "workspace-shell",
+                false,
+            );
+            assert_eq!(
+                launches.app_of_descendant(std::process::id()).as_deref(),
+                Some("so.tilo.terminal"),
+                "the app of a process the session started"
+            );
+            assert_eq!(
+                launches.app_of_descendant(child.id()).as_deref(),
+                Some("so.tilo.terminal"),
+                "the app of a program running under it"
+            );
+
+            child.kill().ok();
+            child.wait().ok();
+            assert_eq!(
+                launches.app_of_descendant(std::process::id()).as_deref(),
+                Some("so.tilo.terminal"),
+                "the launch still runs"
+            );
+        }
     }
 
     /// The shell-ui service learns which launch a window connection from the session's own process

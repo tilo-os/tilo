@@ -470,64 +470,68 @@ mod tests {
         }
     }
 
-    /// What the resource's actions ask is carried out on the session's pass, where the compositor
-    /// is: the resource only says what was asked.
-    #[test]
-    fn the_keyboard_s_actions_are_asked_of_the_session() {
-        let keyboard = Keyboard::default();
-        let mut service = KeyboardService::new(keyboard.clone());
-        service
-            .invoke(
-                KEYBOARD,
-                "set-visible",
-                &arguments(serde_json::json!({ "visible": false })),
-            )
-            .expect("the keyboard shows nothing");
-        service
-            .invoke(
-                KEYBOARD,
-                "type",
-                &arguments(serde_json::json!({ "text": "hi" })),
-            )
-            .expect("the keyboard types");
-        assert_eq!(
-            keyboard.take_asks(),
-            [Ask::SetVisible(false), Ask::Type("hi".into())],
-            "both wait for the loop that has the compositor"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_keyboards_actions_and_the_persons_word_are_kept_for_the_session;
 
-    /// The person's word stands while the field it was said over is there, and the automatic rule
-    /// decides again once they leave it or reach one.
-    #[test]
-    fn the_persons_word_on_the_keyboard_stands_over_that_field() {
-        let keyboard = Keyboard::default();
-        assert_eq!(keyboard.asked(), None, "the rule decides until they say");
-        keyboard.say(false, true);
-        assert_eq!(keyboard.asked(), Some(false));
-        keyboard.forget_ask_when_the_field_moved(true);
-        assert_eq!(
-            keyboard.asked(),
-            Some(false),
-            "the same field keeps their word"
-        );
-        keyboard.forget_ask_when_the_field_moved(false);
-        assert_eq!(
-            keyboard.asked(),
-            None,
-            "the field they were in is left: the rule decides again"
-        );
-    }
-
-    /// The keyboard reads what it shows, and only that: an action of another resource is refused.
-    #[test]
-    fn another_resource_s_action_is_refused() {
-        let mut service = KeyboardService::new(Keyboard::default());
-        assert!(
+        phase the_keyboard_s_actions_are_asked_of_the_session;
+        // What the resource's actions ask is carried out on the session's pass, where the compositor
+        // is: the resource only says what was asked.
+        {
+            let keyboard = Keyboard::default();
+            let mut service = KeyboardService::new(keyboard.clone());
             service
-                .invoke("session:input", "type", &serde_json::Map::new())
-                .is_err(),
-            "the input resource has no keyboard action"
-        );
+                .invoke(
+                    KEYBOARD,
+                    "set-visible",
+                    &arguments(serde_json::json!({ "visible": false })),
+                )
+                .expect("the keyboard shows nothing");
+            service
+                .invoke(
+                    KEYBOARD,
+                    "type",
+                    &arguments(serde_json::json!({ "text": "hi" })),
+                )
+                .expect("the keyboard types");
+            assert_eq!(
+                keyboard.take_asks(),
+                [Ask::SetVisible(false), Ask::Type("hi".into())],
+                "both wait for the loop that has the compositor"
+            );
+        }
+
+        phase the_persons_word_on_the_keyboard_stands_over_that_field;
+        // The person's word stands while the field it was said over is there, and the automatic rule
+        // decides again once they leave it or reach one.
+        {
+            let keyboard = Keyboard::default();
+            assert_eq!(keyboard.asked(), None, "the rule decides until they say");
+            keyboard.say(false, true);
+            assert_eq!(keyboard.asked(), Some(false));
+            keyboard.forget_ask_when_the_field_moved(true);
+            assert_eq!(
+                keyboard.asked(),
+                Some(false),
+                "the same field keeps their word"
+            );
+            keyboard.forget_ask_when_the_field_moved(false);
+            assert_eq!(
+                keyboard.asked(),
+                None,
+                "the field they were in is left: the rule decides again"
+            );
+        }
+
+        phase another_resource_s_action_is_refused;
+        // The keyboard reads what it shows, and only that: an action of another resource is refused.
+        {
+            let mut service = KeyboardService::new(Keyboard::default());
+            assert!(
+                service
+                    .invoke("session:input", "type", &serde_json::Map::new())
+                    .is_err(),
+                "the input resource has no keyboard action"
+            );
+        }
     }
 }

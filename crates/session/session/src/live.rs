@@ -1370,57 +1370,201 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_device_serving_the_workspace_relays() {
-        let devices = vec![device([1; 32], None), device([2; 32], None)];
-        assert_eq!(relay_of(&devices, Some([2; 32]), 10), Some([2; 32]));
-        assert!(
-            relay_of(&devices, None, 10).is_none(),
-            "a workspace nobody serves has no live plane"
-        );
-        assert!(
-            relay_of(&devices, Some([7; 32]), 10).is_none(),
-            "a device that is no member relays nothing"
-        );
-        let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
-        assert!(relay_of(&devices, Some([1; 32]), 10).is_none());
-    }
+    tilo_test_env::scenario! {
+        fn a_relay_admits_the_devices_its_certificates_and_grants_name;
 
-    #[test]
-    fn an_ordinary_device_hosting_the_workspace_admits_its_devices() {
-        let workspace = WorkspaceId::new();
-        let mine = cert([1; 32], None);
-        let other = cert([2; 32], None);
-        let devices = vec![
-            Device {
+        phase the_device_serving_the_workspace_relays;
+        {
+            let devices = vec![device([1; 32], None), device([2; 32], None)];
+            assert_eq!(relay_of(&devices, Some([2; 32]), 10), Some([2; 32]));
+            assert!(
+                relay_of(&devices, None, 10).is_none(),
+                "a workspace nobody serves has no live plane"
+            );
+            assert!(
+                relay_of(&devices, Some([7; 32]), 10).is_none(),
+                "a device that is no member relays nothing"
+            );
+            let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
+            assert!(relay_of(&devices, Some([1; 32]), 10).is_none());
+        }
+
+        phase an_ordinary_device_hosting_the_workspace_admits_its_devices;
+        {
+            let workspace = WorkspaceId::new();
+            let mine = cert([1; 32], None);
+            let other = cert([2; 32], None);
+            let devices = vec![
+                Device {
+                    device: [1; 32],
+                    cert: mine,
+                },
+                Device {
+                    device: [2; 32],
+                    cert: other.clone(),
+                },
+            ];
+            let asked = grant(workspace, &other);
+            assert!(
+                bind(Peer([2; 32]), &asked, &devices, Some([1; 32]), [1; 32], 10).is_ok(),
+                "the device hosting the workspace relays it"
+            );
+            assert!(
+                bind(Peer([2; 32]), &asked, &devices, Some([2; 32]), [1; 32], 10).is_err(),
+                "a device that hosts nothing here and may not host relays nothing"
+            );
+        }
+
+        phase an_expired_certificate_relays_nothing;
+        {
+            let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
+            assert_eq!(relay_of(&devices, Some([2; 32]), 10), Some([2; 32]));
+            let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
+            assert!(
+                relay_of(&devices, Some([1; 32]), 10).is_none(),
+                "a serving device whose certificate expired relays nothing"
+            );
+        }
+
+        phase a_grant_is_admitted_only_for_the_handshakes_own_device;
+        {
+            let workspace = WorkspaceId::new();
+            let mine = cert([1; 32], None);
+            let other = cert([2; 32], None);
+            let devices = vec![
+                Device {
+                    device: [1; 32],
+                    cert: mine.clone(),
+                },
+                Device {
+                    device: [2; 32],
+                    cert: other.clone(),
+                },
+            ];
+            assert!(
+                admits([1; 32], &grant(workspace, &mine), &devices, [1; 32], 10),
+                "the relay admits the device whose certificate it holds"
+            );
+            assert!(
+                !admits([2; 32], &grant(workspace, &mine), &devices, [1; 32], 10),
+                "a device presenting another's certificate is refused"
+            );
+            assert!(
+                !admits([3; 32], &grant(workspace, &other), &devices, [1; 32], 10),
+                "a device that is not on the roster is refused"
+            );
+        }
+
+        phase a_delegated_transport_is_admitted_as_its_device_only_while_it_lasts;
+        // A page keeps its device key unextractable, so it dials under a key of its own and presents
+        // the device's signature for it: the relay admits that endpoint as the device, and refuses an
+        // endpoint the device never signed for or whose delegation ran out.
+        {
+            let workspace = WorkspaceId::new();
+            let device_key = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+            let page_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let page = page_key.verifying_key().to_bytes();
+            let mine = cert(device_key.verifying_key().to_bytes(), None);
+            let devices = vec![Device {
+                device: mine.device_public_key,
+                cert: mine.clone(),
+            }];
+            let delegation = tilo_user_identity::sign_endpoint_delegation(
+                &device_key,
+                page,
+                100,
+                60 * 60 * 1_000_000_000,
+            )
+            .unwrap();
+            let mut delegated = grant(workspace, &mine);
+            delegated.delegation = serde_json::to_vec(&delegation).unwrap();
+            assert!(
+                admits(page, &delegated, &devices, mine.device_public_key, 200),
+                "the page's endpoint speaks for the device that signed for it"
+            );
+            assert!(
+                !admits(
+                    page,
+                    &grant(workspace, &mine),
+                    &devices,
+                    mine.device_public_key,
+                    200
+                ),
+                "without the device's signature the endpoint is somebody else"
+            );
+            let later = 100 + 60 * 60 * 1_000_000_000;
+            assert!(
+                !admits(page, &delegated, &devices, mine.device_public_key, later),
+                "an expired delegation admits nobody"
+            );
+            let mut anyone = delegated;
+            anyone.delegation = serde_json::to_vec(
+                &tilo_user_identity::sign_endpoint_delegation(&page_key, page, 100, 1000).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                !admits(page, &anyone, &devices, mine.device_public_key, 200),
+                "an endpoint cannot vouch for itself"
+            );
+        }
+
+        phase a_grant_must_name_a_relay_of_this_workspace_and_this_scope;
+        {
+            let workspace = WorkspaceId::new();
+            let mine = cert([2; 32], None);
+            let lower = cert([1; 32], None);
+            let devices = vec![
+                Device {
+                    device: [2; 32],
+                    cert: mine.clone(),
+                },
+                Device {
+                    device: [1; 32],
+                    cert: lower,
+                },
+            ];
+            assert!(
+                admits([2; 32], &grant(workspace, &mine), &devices, [2; 32], 10),
+                "the device serving the workspace admits"
+            );
+            let mut elsewhere = grant(workspace, &mine);
+            elsewhere.scope = Scope::record(workspace.to_string(), "elsewhere").id();
+            assert!(
+                !admits([2; 32], &elsewhere, &devices, [2; 32], 10),
+                "a scope this session carries no plane for is refused"
+            );
+        }
+
+        phase a_relay_is_named_as_its_certificate_names_it;
+        // A relay is named by what its person called it, as the workspace's certificate of it says,
+        // and a device they never named by nothing.
+        {
+            let devices = vec![device([1; 32], None), device([2; 32], None)];
+            assert_eq!(
+                relayer(&devices, [2; 32], [1; 32]),
+                Relayer {
+                    device: [2; 32],
+                    name: "device 2".to_owned(),
+                    here: false
+                }
+            );
+            assert!(relayer(&devices, [1; 32], [1; 32]).here);
+            assert_eq!(relayer(&devices, [7; 32], [1; 32]).name, "");
+        }
+
+        phase an_expired_certificate_is_refused_at_the_preface;
+        {
+            let workspace = WorkspaceId::new();
+            let expired = cert([1; 32], Some(5));
+            let devices = vec![Device {
                 device: [1; 32],
-                cert: mine,
-            },
-            Device {
-                device: [2; 32],
-                cert: other.clone(),
-            },
-        ];
-        let asked = grant(workspace, &other);
-        assert!(
-            bind(Peer([2; 32]), &asked, &devices, Some([1; 32]), [1; 32], 10).is_ok(),
-            "the device hosting the workspace relays it"
-        );
-        assert!(
-            bind(Peer([2; 32]), &asked, &devices, Some([2; 32]), [1; 32], 10).is_err(),
-            "a device that hosts nothing here and may not host relays nothing"
-        );
-    }
-
-    #[test]
-    fn an_expired_certificate_relays_nothing() {
-        let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
-        assert_eq!(relay_of(&devices, Some([2; 32]), 10), Some([2; 32]));
-        let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
-        assert!(
-            relay_of(&devices, Some([1; 32]), 10).is_none(),
-            "a serving device whose certificate expired relays nothing"
-        );
+                cert: expired.clone(),
+            }];
+            assert!(
+                !admits([1; 32], &grant(workspace, &expired), &devices, [1; 32], 5),
+                "an expired certificate relays nothing and admits nothing"
+            );
+        }
     }
 
     /// Whether a relay that is `own`, in a workspace nobody hosts here, admits `grant` from the
@@ -1446,368 +1590,236 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn a_grant_is_admitted_only_for_the_handshakes_own_device() {
-        let workspace = WorkspaceId::new();
-        let mine = cert([1; 32], None);
-        let other = cert([2; 32], None);
-        let devices = vec![
-            Device {
-                device: [1; 32],
-                cert: mine.clone(),
-            },
-            Device {
-                device: [2; 32],
-                cert: other.clone(),
-            },
-        ];
-        assert!(
-            admits([1; 32], &grant(workspace, &mine), &devices, [1; 32], 10),
-            "the relay admits the device whose certificate it holds"
-        );
-        assert!(
-            !admits([2; 32], &grant(workspace, &mine), &devices, [1; 32], 10),
-            "a device presenting another's certificate is refused"
-        );
-        assert!(
-            !admits([3; 32], &grant(workspace, &other), &devices, [1; 32], 10),
-            "a device that is not on the roster is refused"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_relay_that_did_not_admit_says_why_and_is_asked_again;
 
-    /// A page keeps its device key unextractable, so it dials under a key of its own and presents
-    /// the device's signature for it: the relay admits that endpoint as the device, and refuses an
-    /// endpoint the device never signed for or whose delegation ran out.
-    #[test]
-    fn a_delegated_transport_is_admitted_as_its_device_only_while_it_lasts() {
-        let workspace = WorkspaceId::new();
-        let device_key = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-        let page_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let page = page_key.verifying_key().to_bytes();
-        let mine = cert(device_key.verifying_key().to_bytes(), None);
-        let devices = vec![Device {
-            device: mine.device_public_key,
-            cert: mine.clone(),
-        }];
-        let delegation = tilo_user_identity::sign_endpoint_delegation(
-            &device_key,
-            page,
-            100,
-            60 * 60 * 1_000_000_000,
-        )
-        .unwrap();
-        let mut delegated = grant(workspace, &mine);
-        delegated.delegation = serde_json::to_vec(&delegation).unwrap();
-        assert!(
-            admits(page, &delegated, &devices, mine.device_public_key, 200),
-            "the page's endpoint speaks for the device that signed for it"
-        );
-        assert!(
-            !admits(
-                page,
-                &grant(workspace, &mine),
-                &devices,
-                mine.device_public_key,
-                200
-            ),
-            "without the device's signature the endpoint is somebody else"
-        );
-        let later = 100 + 60 * 60 * 1_000_000_000;
-        assert!(
-            !admits(page, &delegated, &devices, mine.device_public_key, later),
-            "an expired delegation admits nobody"
-        );
-        let mut anyone = delegated;
-        anyone.delegation = serde_json::to_vec(
-            &tilo_user_identity::sign_endpoint_delegation(&page_key, page, 100, 1000).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            !admits(page, &anyone, &devices, mine.device_public_key, 200),
-            "an endpoint cannot vouch for itself"
-        );
-    }
-
-    #[test]
-    fn a_grant_must_name_a_relay_of_this_workspace_and_this_scope() {
-        let workspace = WorkspaceId::new();
-        let mine = cert([2; 32], None);
-        let lower = cert([1; 32], None);
-        let devices = vec![
-            Device {
-                device: [2; 32],
-                cert: mine.clone(),
-            },
-            Device {
-                device: [1; 32],
-                cert: lower,
-            },
-        ];
-        assert!(
-            admits([2; 32], &grant(workspace, &mine), &devices, [2; 32], 10),
-            "the device serving the workspace admits"
-        );
-        let mut elsewhere = grant(workspace, &mine);
-        elsewhere.scope = Scope::record(workspace.to_string(), "elsewhere").id();
-        assert!(
-            !admits([2; 32], &elsewhere, &devices, [2; 32], 10),
-            "a scope this session carries no plane for is refused"
-        );
-    }
-
-    /// A relay that answers and refuses this device is told apart from one that was not reached:
-    /// waiting reaches the one, and changes nothing about the other. A relay that was admitting as
-    /// many devices as it takes at once is neither: it judged nobody, so it is no refusal.
-    #[test]
-    fn a_relay_that_refuses_is_told_apart_from_one_that_is_away() {
-        assert_eq!(
-            Missed::of([2; 32], &PlaneError::Denied),
-            Missed {
-                relay: [2; 32],
-                refused: true,
-                busy: false
-            }
-        );
-        assert_eq!(
-            Missed::of([1; 32], &PlaneError::Unavailable),
-            Missed {
-                relay: [1; 32],
-                refused: false,
-                busy: false
-            },
-            "the relay that was away is the one the plane waits to reach"
-        );
-        assert_eq!(
-            Missed::of([3; 32], &PlaneError::Busy),
-            Missed {
-                relay: [3; 32],
-                refused: false,
-                busy: true
-            },
-            "a relay that had no room judged nobody: it is asked again, and refused nobody"
-        );
-    }
-
-    /// A relay is named by what its person called it, as the workspace's certificate of it says,
-    /// and a device they never named by nothing.
-    #[test]
-    fn a_relay_is_named_as_its_certificate_names_it() {
-        let devices = vec![device([1; 32], None), device([2; 32], None)];
-        assert_eq!(
-            relayer(&devices, [2; 32], [1; 32]),
-            Relayer {
-                device: [2; 32],
-                name: "device 2".to_owned(),
-                here: false
-            }
-        );
-        assert!(relayer(&devices, [1; 32], [1; 32]).here);
-        assert_eq!(relayer(&devices, [7; 32], [1; 32]).name, "");
-    }
-
-    /// A workspace whose relay did not take this device in asks it again soon, then ever less
-    /// often, and never stops asking: the relay it waits for may come back at any time.
-    #[test]
-    fn a_relay_that_was_missed_is_asked_again_ever_less_often_and_always() {
-        assert_eq!(retry_schedule(1), RETRY_FIRST);
-        assert_eq!(retry_schedule(2), RETRY_FIRST * 2);
-        assert_eq!(retry_schedule(3), RETRY_FIRST * 4);
-        let waits: Vec<Duration> = (1..40).map(retry_schedule).collect();
-        assert!(waits.windows(2).all(|pair| pair[0] <= pair[1]), "{waits:?}");
-        assert_eq!(waits.last(), Some(&RETRY_LONGEST));
-        assert_eq!(retry_schedule(u32::MAX), RETRY_LONGEST);
-        assert_eq!(retry_schedule(0), RETRY_FIRST);
-    }
-
-    /// The devices of a workspace that missed its relay in one moment do not ask it again in one
-    /// moment: each takes up to a quarter off the schedule's wait, by its own key. The schedule
-    /// keeps its shape for every one of them: each wait is longer than the one before it, until
-    /// the longest, and none is longer than the schedule's.
-    #[test]
-    fn devices_that_missed_a_relay_together_do_not_ask_it_again_together() {
-        let workspace = WorkspaceId::new();
-        for missed in 1..=6 {
-            let schedule = retry_schedule(missed);
-            let waits: BTreeSet<Duration> = (0..64_u8)
-                .map(|device| retry_wait([device; 32], workspace, missed))
-                .collect();
-            assert!(
-                waits
-                    .iter()
-                    .all(|wait| *wait <= schedule
-                        && *wait >= schedule.saturating_sub(schedule / 4)),
-                "after {missed} misses every device waits within a quarter of {schedule:?}: \
-                 {waits:?}"
-            );
-            assert!(
-                waits.len() > 56,
-                "sixty-four devices wait {} different times after {missed} misses",
-                waits.len()
-            );
-        }
-        for device in 0..64_u8 {
-            let waits: Vec<Duration> = (1..=5)
-                .map(|missed| retry_wait([device; 32], workspace, missed))
-                .collect();
-            assert!(
-                waits.windows(2).all(|pair| pair[0] < pair[1]),
-                "a device waits longer each time: {waits:?}"
+        phase a_relay_that_refuses_is_told_apart_from_one_that_is_away;
+        // A relay that answers and refuses this device is told apart from one that was not reached:
+        // waiting reaches the one, and changes nothing about the other. A relay that was admitting as
+        // many devices as it takes at once is neither: it judged nobody, so it is no refusal.
+        {
+            assert_eq!(
+                Missed::of([2; 32], &PlaneError::Denied),
+                Missed {
+                    relay: [2; 32],
+                    refused: true,
+                    busy: false
+                }
             );
             assert_eq!(
-                waits,
-                (1..=5)
-                    .map(|missed| retry_wait([device; 32], workspace, missed))
-                    .collect::<Vec<_>>(),
-                "a device's own waits are the same whenever it is asked"
+                Missed::of([1; 32], &PlaneError::Unavailable),
+                Missed {
+                    relay: [1; 32],
+                    refused: false,
+                    busy: false
+                },
+                "the relay that was away is the one the plane waits to reach"
+            );
+            assert_eq!(
+                Missed::of([3; 32], &PlaneError::Busy),
+                Missed {
+                    relay: [3; 32],
+                    refused: false,
+                    busy: true
+                },
+                "a relay that had no room judged nobody: it is asked again, and refused nobody"
             );
         }
-        // One device in two workspaces asks each at a time of its own.
-        assert_ne!(
-            retry_wait([1; 32], workspace, 1),
-            retry_wait([1; 32], WorkspaceId::new(), 1)
-        );
-    }
 
-    /// A relay that had no room stands as busy, by name, and never as refused or as not reached:
-    /// the three are told apart from the relay's answer alone.
-    #[test]
-    fn a_busy_relay_stands_as_busy_and_never_as_a_refusal() {
-        let relay = Relayer {
-            device: [3; 32],
-            name: "device 3".to_owned(),
-            here: false,
-        };
-        assert_eq!(
-            Missed::of([3; 32], &PlaneError::Busy).standing(relay.clone(), 4),
-            Standing::Busy {
-                relay: relay.clone()
-            }
-        );
-        assert_eq!(
-            Missed::of([3; 32], &PlaneError::Unavailable).standing(relay.clone(), 4),
-            Standing::Unreached {
-                relay: relay.clone()
-            }
-        );
-        assert_eq!(
-            Missed::of([3; 32], &PlaneError::Denied).standing(relay.clone(), 4),
-            Standing::Refused { relay, epoch: 4 }
-        );
-    }
-
-    /// A relay that turns a device away says why, each case by its own word: a device that is not
-    /// in the workspace, one presenting a certificate the workspace does not hold for it, an
-    /// endpoint that is not the device, a scope this relay does not carry, and a device that does
-    /// not serve the workspace.
-    #[test]
-    fn a_relay_that_turns_a_device_away_says_why() {
-        let workspace = WorkspaceId::new();
-        let mine = cert([1; 32], None);
-        let other = cert([2; 32], None);
-        let devices = vec![
-            Device {
-                device: [1; 32],
-                cert: mine.clone(),
-            },
-            Device {
-                device: [2; 32],
-                cert: other.clone(),
-            },
-        ];
-        // The first device serves the workspace.
-        let why = |peer: [u8; 32], grant: &grant::Native, own: [u8; 32]| {
-            bind(Peer(peer), grant, &devices, Some([1; 32]), own, 10)
-                .err()
-                .map(|refusal| refusal.word())
-        };
-        assert_eq!(why([2; 32], &grant(workspace, &other), [1; 32]), None);
-        let stranger = cert([3; 32], None);
-        assert_eq!(
-            why([3; 32], &grant(workspace, &stranger), [1; 32]),
-            Some("not-a-member")
-        );
-        let mut renamed = other.clone();
-        renamed.device_label = "Another name".to_owned();
-        assert_eq!(
-            why([2; 32], &grant(workspace, &renamed), [1; 32]),
-            Some("certificate-differs")
-        );
-        assert_eq!(
-            why([3; 32], &grant(workspace, &other), [1; 32]),
-            Some("endpoint-not-the-device")
-        );
-        let mut elsewhere = grant(workspace, &other);
-        elsewhere.scope = Scope::record(workspace.to_string(), "elsewhere").id();
-        assert_eq!(why([2; 32], &elsewhere, [1; 32]), Some("scope-not-carried"));
-        assert_eq!(
-            why([1; 32], &grant(workspace, &mine), [2; 32]),
-            Some("not-relayed-here")
-        );
-    }
-
-    /// A device whose keys are behind the relay's is turned away with both epochs, and one at the
-    /// relay's epoch or past it is not: the relay follows the keys later than the device did.
-    #[test]
-    fn a_device_behind_the_relays_keys_is_turned_away_with_both_epochs() {
-        assert_eq!(
-            keys_current(3, 4),
-            Err(Refusal::KeysBehind {
-                presented: 3,
-                newest: 4
-            })
-        );
-        assert_eq!(keys_current(4, 4), Ok(()));
-        assert_eq!(keys_current(5, 4), Ok(()));
-    }
-
-    /// What a relay keeps of the endpoints it turned away is bounded, counts how often each asked,
-    /// and says only a new reason as news.
-    #[test]
-    fn what_a_relay_keeps_of_the_devices_it_turned_away_is_bounded() {
-        let mut turned = BTreeMap::new();
-        let behind = Refusal::KeysBehind {
-            presented: 3,
-            newest: 4,
-        };
-        assert!(note_turned_away(
-            &mut turned,
-            [1; 32],
-            "Ada's laptop".to_owned(),
-            behind
-        ));
-        assert!(!note_turned_away(
-            &mut turned,
-            [1; 32],
-            "Ada's laptop".to_owned(),
-            Refusal::KeysBehind {
-                presented: 3,
-                newest: 5
-            }
-        ));
-        assert!(note_turned_away(
-            &mut turned,
-            [1; 32],
-            "Ada's laptop".to_owned(),
-            Refusal::NotAMember
-        ));
-        assert_eq!(turned.get(&[1; 32]).map(|turned| turned.times), Some(3));
-        for peer in 2..=20_u8 {
-            note_turned_away(&mut turned, [peer; 32], String::new(), Refusal::NotAMember);
+        phase a_relay_that_was_missed_is_asked_again_ever_less_often_and_always;
+        // A workspace whose relay did not take this device in asks it again soon, then ever less
+        // often, and never stops asking: the relay it waits for may come back at any time.
+        {
+            assert_eq!(retry_schedule(1), RETRY_FIRST);
+            assert_eq!(retry_schedule(2), RETRY_FIRST * 2);
+            assert_eq!(retry_schedule(3), RETRY_FIRST * 4);
+            let waits: Vec<Duration> = (1..40).map(retry_schedule).collect();
+            assert!(waits.windows(2).all(|pair| pair[0] <= pair[1]), "{waits:?}");
+            assert_eq!(waits.last(), Some(&RETRY_LONGEST));
+            assert_eq!(retry_schedule(u32::MAX), RETRY_LONGEST);
+            assert_eq!(retry_schedule(0), RETRY_FIRST);
         }
-        assert_eq!(turned.len(), TURNED_AWAY_KEPT);
-    }
 
-    #[test]
-    fn an_expired_certificate_is_refused_at_the_preface() {
-        let workspace = WorkspaceId::new();
-        let expired = cert([1; 32], Some(5));
-        let devices = vec![Device {
-            device: [1; 32],
-            cert: expired.clone(),
-        }];
-        assert!(
-            !admits([1; 32], &grant(workspace, &expired), &devices, [1; 32], 5),
-            "an expired certificate relays nothing and admits nothing"
-        );
+        phase devices_that_missed_a_relay_together_do_not_ask_it_again_together;
+        // The devices of a workspace that missed its relay in one moment do not ask it again in one
+        // moment: each takes up to a quarter off the schedule's wait, by its own key. The schedule
+        // keeps its shape for every one of them: each wait is longer than the one before it, until
+        // the longest, and none is longer than the schedule's.
+        {
+            let workspace = WorkspaceId::new();
+            for missed in 1..=6 {
+                let schedule = retry_schedule(missed);
+                let waits: BTreeSet<Duration> = (0..64_u8)
+                    .map(|device| retry_wait([device; 32], workspace, missed))
+                    .collect();
+                assert!(
+                    waits
+                        .iter()
+                        .all(|wait| *wait <= schedule
+                            && *wait >= schedule.saturating_sub(schedule / 4)),
+                    "after {missed} misses every device waits within a quarter of {schedule:?}: \
+                 {waits:?}"
+                );
+                assert!(
+                    waits.len() > 56,
+                    "sixty-four devices wait {} different times after {missed} misses",
+                    waits.len()
+                );
+            }
+            for device in 0..64_u8 {
+                let waits: Vec<Duration> = (1..=5)
+                    .map(|missed| retry_wait([device; 32], workspace, missed))
+                    .collect();
+                assert!(
+                    waits.windows(2).all(|pair| pair[0] < pair[1]),
+                    "a device waits longer each time: {waits:?}"
+                );
+                assert_eq!(
+                    waits,
+                    (1..=5)
+                        .map(|missed| retry_wait([device; 32], workspace, missed))
+                        .collect::<Vec<_>>(),
+                    "a device's own waits are the same whenever it is asked"
+                );
+            }
+            // One device in two workspaces asks each at a time of its own.
+            assert_ne!(
+                retry_wait([1; 32], workspace, 1),
+                retry_wait([1; 32], WorkspaceId::new(), 1)
+            );
+        }
+
+        phase a_busy_relay_stands_as_busy_and_never_as_a_refusal;
+        // A relay that had no room stands as busy, by name, and never as refused or as not reached:
+        // the three are told apart from the relay's answer alone.
+        {
+            let relay = Relayer {
+                device: [3; 32],
+                name: "device 3".to_owned(),
+                here: false,
+            };
+            assert_eq!(
+                Missed::of([3; 32], &PlaneError::Busy).standing(relay.clone(), 4),
+                Standing::Busy {
+                    relay: relay.clone()
+                }
+            );
+            assert_eq!(
+                Missed::of([3; 32], &PlaneError::Unavailable).standing(relay.clone(), 4),
+                Standing::Unreached {
+                    relay: relay.clone()
+                }
+            );
+            assert_eq!(
+                Missed::of([3; 32], &PlaneError::Denied).standing(relay.clone(), 4),
+                Standing::Refused { relay, epoch: 4 }
+            );
+        }
+
+        phase a_relay_that_turns_a_device_away_says_why;
+        // A relay that turns a device away says why, each case by its own word: a device that is not
+        // in the workspace, one presenting a certificate the workspace does not hold for it, an
+        // endpoint that is not the device, a scope this relay does not carry, and a device that does
+        // not serve the workspace.
+        {
+            let workspace = WorkspaceId::new();
+            let mine = cert([1; 32], None);
+            let other = cert([2; 32], None);
+            let devices = vec![
+                Device {
+                    device: [1; 32],
+                    cert: mine.clone(),
+                },
+                Device {
+                    device: [2; 32],
+                    cert: other.clone(),
+                },
+            ];
+            // The first device serves the workspace.
+            let why = |peer: [u8; 32], grant: &grant::Native, own: [u8; 32]| {
+                bind(Peer(peer), grant, &devices, Some([1; 32]), own, 10)
+                    .err()
+                    .map(|refusal| refusal.word())
+            };
+            assert_eq!(why([2; 32], &grant(workspace, &other), [1; 32]), None);
+            let stranger = cert([3; 32], None);
+            assert_eq!(
+                why([3; 32], &grant(workspace, &stranger), [1; 32]),
+                Some("not-a-member")
+            );
+            let mut renamed = other.clone();
+            renamed.device_label = "Another name".to_owned();
+            assert_eq!(
+                why([2; 32], &grant(workspace, &renamed), [1; 32]),
+                Some("certificate-differs")
+            );
+            assert_eq!(
+                why([3; 32], &grant(workspace, &other), [1; 32]),
+                Some("endpoint-not-the-device")
+            );
+            let mut elsewhere = grant(workspace, &other);
+            elsewhere.scope = Scope::record(workspace.to_string(), "elsewhere").id();
+            assert_eq!(why([2; 32], &elsewhere, [1; 32]), Some("scope-not-carried"));
+            assert_eq!(
+                why([1; 32], &grant(workspace, &mine), [2; 32]),
+                Some("not-relayed-here")
+            );
+        }
+
+        phase a_device_behind_the_relays_keys_is_turned_away_with_both_epochs;
+        // A device whose keys are behind the relay's is turned away with both epochs, and one at the
+        // relay's epoch or past it is not: the relay follows the keys later than the device did.
+        {
+            assert_eq!(
+                keys_current(3, 4),
+                Err(Refusal::KeysBehind {
+                    presented: 3,
+                    newest: 4
+                })
+            );
+            assert_eq!(keys_current(4, 4), Ok(()));
+            assert_eq!(keys_current(5, 4), Ok(()));
+        }
+
+        phase what_a_relay_keeps_of_the_devices_it_turned_away_is_bounded;
+        // What a relay keeps of the endpoints it turned away is bounded, counts how often each asked,
+        // and says only a new reason as news.
+        {
+            let mut turned = BTreeMap::new();
+            let behind = Refusal::KeysBehind {
+                presented: 3,
+                newest: 4,
+            };
+            assert!(note_turned_away(
+                &mut turned,
+                [1; 32],
+                "Ada's laptop".to_owned(),
+                behind
+            ));
+            assert!(!note_turned_away(
+                &mut turned,
+                [1; 32],
+                "Ada's laptop".to_owned(),
+                Refusal::KeysBehind {
+                    presented: 3,
+                    newest: 5
+                }
+            ));
+            assert!(note_turned_away(
+                &mut turned,
+                [1; 32],
+                "Ada's laptop".to_owned(),
+                Refusal::NotAMember
+            ));
+            assert_eq!(turned.get(&[1; 32]).map(|turned| turned.times), Some(3));
+            for peer in 2..=20_u8 {
+                note_turned_away(&mut turned, [peer; 32], String::new(), Refusal::NotAMember);
+            }
+            assert_eq!(turned.len(), TURNED_AWAY_KEPT);
+        }
     }
 }

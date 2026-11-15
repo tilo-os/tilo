@@ -937,94 +937,158 @@ mod tests {
         board.show(app, Some(serde_json::to_value(published).expect("JSON")));
     }
 
-    /// A running timer is the bar's pill, and its card floats because Clocks asks for it.
-    #[test]
-    fn a_floating_timer_is_the_bars_pill_and_its_card() {
-        let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
-        let mut published = Published::of(timer("timer-1", "Tea", 90));
-        published.overlay = true;
-        publish(&board, CLOCKS_APP, published);
+    tilo_test_env::scenario! {
+        fn the_floating_layer_shows_activities_as_the_bars_pills_and_cards;
 
-        let summaries = activities.summaries();
-        assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].0, CLOCKS_APP);
-        assert_eq!(summaries[0].1.title, "Tea");
-        let cards = activities.cards();
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].app, CLOCKS_APP);
-        assert_eq!(cards[0].summary.id, "timer-1");
+        phase a_floating_timer_is_the_bars_pill_and_its_card;
+        // A running timer is the bar's pill, and its card floats because Clocks asks for it.
+        {
+            let board = Arc::new(runtime_collab::LiveActivities::default());
+            let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
+            let mut published = Published::of(timer("timer-1", "Tea", 90));
+            published.overlay = true;
+            publish(&board, CLOCKS_APP, published);
 
-        // An activity that does not ask to float is the pill's only.
-        let mut quiet = Published::of(timer("timer-2", "Bread", 600));
-        quiet.overlay = false;
-        publish(&board, CLOCKS_APP, quiet);
-        assert_eq!(activities.summaries().len(), 1);
-        assert!(activities.cards().is_empty());
-    }
+            let summaries = activities.summaries();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].0, CLOCKS_APP);
+            assert_eq!(summaries[0].1.title, "Tea");
+            let cards = activities.cards();
+            assert_eq!(cards.len(), 1);
+            assert_eq!(cards[0].app, CLOCKS_APP);
+            assert_eq!(cards[0].summary.id, "timer-1");
 
-    /// A call's card stands where its app's presentation put it, and the layer paints the summary
-    /// there until the app's own window is up: a card appears, and the screen never shows a blank
-    /// card or two of them.
-    #[test]
-    fn a_call_card_is_the_layers_until_the_apps_own_window_is_up() {
-        const CHAT_APP: &str = "so.tilo.chat";
-        let board = Arc::new(runtime_collab::LiveActivities::default());
-        let cards = crate::cards::Cards::new();
-        let activities = Activities::new(Arc::clone(&board), cards.clone());
-        let mut published = Published::of(
-            Summary::new(Kind::Call, "Ada", "0:12")
-                .with_id("chat-call:voice")
-                .with_icon("phone"),
-        );
-        published.overlay = true;
-        publish(&board, CHAT_APP, published);
+            // An activity that does not ask to float is the pill's only.
+            let mut quiet = Published::of(timer("timer-2", "Bread", 600));
+            quiet.overlay = false;
+            publish(&board, CLOCKS_APP, quiet);
+            assert_eq!(activities.summaries().len(), 1);
+            assert!(activities.cards().is_empty());
+        }
 
-        // The call is the layer's own card until its app presents one.
-        let layer_drawn = activities.cards();
-        assert_eq!(layer_drawn.len(), 1);
-        assert!(layer_drawn[0].size.is_none() && !layer_drawn[0].rich);
+        phase a_call_card_is_the_layers_until_the_apps_own_window_is_up;
+        // A call's card stands where its app's presentation put it, and the layer paints the summary
+        // there until the app's own window is up: a card appears, and the screen never shows a blank
+        // card or two of them.
+        {
+            const CHAT_APP: &str = "so.tilo.chat";
+            let board = Arc::new(runtime_collab::LiveActivities::default());
+            let cards = crate::cards::Cards::new();
+            let activities = Activities::new(Arc::clone(&board), cards.clone());
+            let mut published = Published::of(
+                Summary::new(Kind::Call, "Ada", "0:12")
+                    .with_id("chat-call:voice")
+                    .with_icon("phone"),
+            );
+            published.overlay = true;
+            publish(&board, CHAT_APP, published);
 
-        let request = ui::floating_surface::FloatingSurfaceProtocolRequest {
-            id: "chat-call:voice".into(),
-            title: "Ada".into(),
-            role: ui::floating_surface::FloatingSurfaceProtocolRole::ActiveCall,
-            source: ui::floating_surface::FloatingSurfaceProtocolSource::AppRegion {
-                app_id: CHAT_APP.into(),
-                region: [0.0, 0.0, 360.0, 240.0],
-            },
-            preferred_size: [360.0, 240.0],
-            aspect_ratio: None,
-            initial_rect: Some([40.0, 60.0, 400.0, 300.0]),
-            presentation_rect: Some([32.0, 52.0, 408.0, 308.0]),
-        };
-        cards.present(CHAT_APP, 1, &request).expect("a card");
-        let card = cards.presented().remove(0);
+            // The call is the layer's own card until its app presents one.
+            let layer_drawn = activities.cards();
+            assert_eq!(layer_drawn.len(), 1);
+            assert!(layer_drawn[0].size.is_none() && !layer_drawn[0].rich);
 
-        // Its place is held for the app's body, and the summary stands in until that body's window
-        // is up.
-        let waiting = activities.cards();
-        assert_eq!(waiting.len(), 1);
-        assert_eq!(
-            waiting[0].size,
-            Some(ui::vello::kurbo::Size::new(376.0, 256.0))
-        );
-        assert!(!waiting[0].rich, "the summary is the card until then");
+            let request = ui::floating_surface::FloatingSurfaceProtocolRequest {
+                id: "chat-call:voice".into(),
+                title: "Ada".into(),
+                role: ui::floating_surface::FloatingSurfaceProtocolRole::ActiveCall,
+                source: ui::floating_surface::FloatingSurfaceProtocolSource::AppRegion {
+                    app_id: CHAT_APP.into(),
+                    region: [0.0, 0.0, 360.0, 240.0],
+                },
+                preferred_size: [360.0, 240.0],
+                aspect_ratio: None,
+                initial_rect: Some([40.0, 60.0, 400.0, 300.0]),
+                presentation_rect: Some([32.0, 52.0, 408.0, 308.0]),
+            };
+            cards.present(CHAT_APP, 1, &request).expect("a card");
+            let card = cards.presented().remove(0);
 
-        cards.placements().place(
-            &card.token,
-            (376, 256),
-            Some(Rect::new(100.0, 100.0, 476.0, 356.0)),
-        );
-        cards.placements().mapped(&card.token, 3);
-        assert!(activities.cards()[0].rich, "the app draws it now");
+            // Its place is held for the app's body, and the summary stands in until that body's window
+            // is up.
+            let waiting = activities.cards();
+            assert_eq!(waiting.len(), 1);
+            assert_eq!(
+                waiting[0].size,
+                Some(ui::vello::kurbo::Size::new(376.0, 256.0))
+            );
+            assert!(!waiting[0].rich, "the summary is the card until then");
 
-        // Chat's own window comes on screen: the call is drawn there, and no card stands on the
-        // shell at all.
-        cards.see(CHAT_APP, "chat-call:voice", true);
-        assert!(activities.cards().is_empty());
-        cards.see(CHAT_APP, "chat-call:voice", false);
-        assert_eq!(activities.cards().len(), 1, "and it comes back");
+            cards.placements().place(
+                &card.token,
+                (376, 256),
+                Some(Rect::new(100.0, 100.0, 476.0, 356.0)),
+            );
+            cards.placements().mapped(&card.token, 3);
+            assert!(activities.cards()[0].rich, "the app draws it now");
+
+            // Chat's own window comes on screen: the call is drawn there, and no card stands on the
+            // shell at all.
+            cards.see(CHAT_APP, "chat-call:voice", true);
+            assert!(activities.cards().is_empty());
+            cards.see(CHAT_APP, "chat-call:voice", false);
+            assert_eq!(activities.cards().len(), 1, "and it comes back");
+        }
+
+        phase at_most_three_cards_keep_the_most_recently_touched;
+        // At most three cards stand at once: the least recently touched folds into the bar's pill.
+        {
+            let board = Arc::new(runtime_collab::LiveActivities::default());
+            let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
+            for (app, id) in [
+                ("so.tilo.maps", "route-1"),
+                ("so.tilo.music", "track-1"),
+                (CLOCKS_APP, "timer-1"),
+                ("so.tilo.chat", "call-1"),
+            ] {
+                let mut published = Published::of(Summary::new(Kind::Other, app, "").with_id(id));
+                published.overlay = true;
+                publish(&board, app, published);
+                activities.press(app, id, "noop");
+            }
+            let cards = activities.cards();
+            assert_eq!(cards.len(), ui::floating_layer::MAX_CARDS);
+            let kept: Vec<&str> = cards.iter().map(|card| card.summary.id.as_str()).collect();
+            assert!(
+                kept.contains(&"call-1"),
+                "the newest keeps its card: {kept:?}"
+            );
+            assert!(kept.contains(&"timer-1"), "{kept:?}");
+            assert!(kept.contains(&"track-1"), "{kept:?}");
+            assert!(
+                !kept.contains(&"route-1"),
+                "the least recent folded: {kept:?}"
+            );
+            // Every one of them is still in the pill.
+            assert_eq!(activities.summaries().len(), 4);
+        }
+
+        phase collapse_and_expand_move_an_activity_between_the_bar_and_a_card;
+        // Collapsing a card folds it into the bar; pulling an activity out brings its card back,
+        // however it asked.
+        {
+            let board = Arc::new(runtime_collab::LiveActivities::default());
+            let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
+            let mut published = Published::of(timer("timer-1", "Tea", 90));
+            published.overlay = true;
+            publish(&board, CLOCKS_APP, published);
+
+            activities.collapse(CLOCKS_APP, "timer-1");
+            assert!(activities.cards().is_empty(), "folded into the bar");
+            assert_eq!(activities.summaries().len(), 1, "the pill still names it");
+
+            // An activity's id is its own app's: another app that names the same id is not the activity
+            // the pill named.
+            activities.expand("so.tilo.other", "timer-1");
+            assert!(
+                activities.cards().is_empty(),
+                "another app's activity of that id stays folded"
+            );
+
+            activities.expand(CLOCKS_APP, "timer-1");
+            assert_eq!(activities.cards().len(), 1, "pulled out");
+            assert_eq!(activities.cards()[0].summary.tone, Tone::Neutral);
+        }
     }
 
     /// Ending an activity that offers a close asks its app to end it; one that cannot be stopped
@@ -1094,66 +1158,6 @@ mod tests {
             controls,
             serde_json::json!([{ "command": "add-minute", "activity_id": "timer-1" }])
         );
-    }
-
-    /// At most three cards stand at once: the least recently touched folds into the bar's pill.
-    #[test]
-    fn at_most_three_cards_keep_the_most_recently_touched() {
-        let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
-        for (app, id) in [
-            ("so.tilo.maps", "route-1"),
-            ("so.tilo.music", "track-1"),
-            (CLOCKS_APP, "timer-1"),
-            ("so.tilo.chat", "call-1"),
-        ] {
-            let mut published = Published::of(Summary::new(Kind::Other, app, "").with_id(id));
-            published.overlay = true;
-            publish(&board, app, published);
-            activities.press(app, id, "noop");
-        }
-        let cards = activities.cards();
-        assert_eq!(cards.len(), ui::floating_layer::MAX_CARDS);
-        let kept: Vec<&str> = cards.iter().map(|card| card.summary.id.as_str()).collect();
-        assert!(
-            kept.contains(&"call-1"),
-            "the newest keeps its card: {kept:?}"
-        );
-        assert!(kept.contains(&"timer-1"), "{kept:?}");
-        assert!(kept.contains(&"track-1"), "{kept:?}");
-        assert!(
-            !kept.contains(&"route-1"),
-            "the least recent folded: {kept:?}"
-        );
-        // Every one of them is still in the pill.
-        assert_eq!(activities.summaries().len(), 4);
-    }
-
-    /// Collapsing a card folds it into the bar; pulling an activity out brings its card back,
-    /// however it asked.
-    #[test]
-    fn collapse_and_expand_move_an_activity_between_the_bar_and_a_card() {
-        let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
-        let mut published = Published::of(timer("timer-1", "Tea", 90));
-        published.overlay = true;
-        publish(&board, CLOCKS_APP, published);
-
-        activities.collapse(CLOCKS_APP, "timer-1");
-        assert!(activities.cards().is_empty(), "folded into the bar");
-        assert_eq!(activities.summaries().len(), 1, "the pill still names it");
-
-        // An activity's id is its own app's: another app that names the same id is not the activity
-        // the pill named.
-        activities.expand("so.tilo.other", "timer-1");
-        assert!(
-            activities.cards().is_empty(),
-            "another app's activity of that id stays folded"
-        );
-
-        activities.expand(CLOCKS_APP, "timer-1");
-        assert_eq!(activities.cards().len(), 1, "pulled out");
-        assert_eq!(activities.cards()[0].summary.tone, Tone::Neutral);
     }
 
     /// A due event is announced once, in the app's own words when it has them and in the desktop's

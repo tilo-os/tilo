@@ -1339,131 +1339,135 @@ mod tests {
         ))
     }
 
-    /// The holds the window publishes are read off its catalogue: each one's
-    /// id, and what leaves. Nothing else the page publishes is a hold.
-    #[test]
-    fn the_window_reports_the_departures_it_publishes() {
-        let page = CataloguePage {
-            rows: [
-                page_row(
-                    SEND_HELD,
-                    "Let it leave: POST https://orders.example",
-                    Some(4),
-                ),
-                page_row("back", "Back", None),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
-            ..CataloguePage::default()
-        };
-        let held = published_holds(&page);
-        assert_eq!(held.len(), 1, "one departure waits on the person");
-        assert_eq!(held[0].id, 4);
-        assert!(
-            held[0].describing.contains("orders.example"),
-            "the person is told what leaves: {}",
-            held[0].describing
-        );
-        assert_eq!(
-            held[0].facts,
-            [
-                ("page".to_owned(), "https://orders.example".to_owned()),
-                ("kind".to_owned(), "submit".to_owned()),
-                ("method".to_owned(), "POST".to_owned()),
-                (
-                    "destination".to_owned(),
-                    "https://orders.example".to_owned()
-                ),
-                ("picture".to_owned(), "tilo.content:5f2b".to_owned()),
-            ],
-            "and every fact the window states about it"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_departure_the_window_holds_is_reported_and_answered_by_its_own_number;
 
-    /// The window numbers what it holds itself, one number to a hold: a
-    /// request and a download the engine gave the same number are published
-    /// side by side under two. Each is read with its own number and is
-    /// answered by it, so the person's allow of one never reaches the other.
-    #[test]
-    fn two_departures_published_side_by_side_are_each_answered_by_their_own_number() {
-        let page = CataloguePage {
-            rows: [
-                page_row(
-                    SEND_HELD,
-                    "Let it leave: POST https://orders.example",
-                    Some(1),
-                ),
-                page_row(
-                    SEND_HELD,
-                    "Let it leave: download from https://files.example (return.pdf)",
-                    Some(2),
-                ),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
-            ..CataloguePage::default()
-        };
-        let held = published_holds(&page);
-        assert_eq!(
-            held.iter().map(|held| held.id).collect::<Vec<_>>(),
-            [1, 2],
-            "each departure is read under the number the window gave it"
-        );
-        assert!(held[1].describing.contains("return.pdf"));
-        for held in &held {
-            let request = answer(held.id, 42, &held.describing, &held.facts, SEND_HELD);
-            assert_eq!(
-                request.argument,
-                InvokeArgument::Json(serde_json::Map::from_iter([(
-                    "id".to_owned(),
-                    held.id.to_string().into()
-                )])),
-                "and answered by that number and no other"
+        phase the_window_reports_the_departures_it_publishes;
+        // The holds the window publishes are read off its catalogue: each one's
+        // id, and what leaves. Nothing else the page publishes is a hold.
+        {
+            let page = CataloguePage {
+                rows: [
+                    page_row(
+                        SEND_HELD,
+                        "Let it leave: POST https://orders.example",
+                        Some(4),
+                    ),
+                    page_row("back", "Back", None),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+                ..CataloguePage::default()
+            };
+            let held = published_holds(&page);
+            assert_eq!(held.len(), 1, "one departure waits on the person");
+            assert_eq!(held[0].id, 4);
+            assert!(
+                held[0].describing.contains("orders.example"),
+                "the person is told what leaves: {}",
+                held[0].describing
             );
             assert_eq!(
-                request.context.and_then(|context| context.purpose),
-                Some(held.describing.clone())
+                held[0].facts,
+                [
+                    ("page".to_owned(), "https://orders.example".to_owned()),
+                    ("kind".to_owned(), "submit".to_owned()),
+                    ("method".to_owned(), "POST".to_owned()),
+                    (
+                        "destination".to_owned(),
+                        "https://orders.example".to_owned()
+                    ),
+                    ("picture".to_owned(), "tilo.content:5f2b".to_owned()),
+                ],
+                "and every fact the window states about it"
             );
         }
-    }
 
-    /// The invocation reported for a hold names the window, the action and
-    /// the id the window published it with: what the host asks the person
-    /// about and their answer runs. Kept instead, it names the same request
-    /// and needs nobody's word.
-    #[test]
-    fn a_reported_hold_names_the_one_request_it_answers() {
-        let request = answer(
-            7,
-            42,
-            "POST https://orders.example",
-            &[("method".to_owned(), "POST".to_owned())],
-            SEND_HELD,
-        );
-        assert_eq!(request.target.provider, "42");
-        assert_eq!(request.target.address.resource, PAGE_RESOURCE);
-        assert_eq!(request.target.address.action, SEND_HELD);
-        assert_eq!(
-            request.argument,
-            InvokeArgument::Json(serde_json::Map::from_iter([("id".to_owned(), "7".into())]))
-        );
-        assert_eq!(
-            request
-                .context
-                .as_ref()
-                .and_then(|context| context.purpose.clone()),
-            Some("POST https://orders.example".to_owned()),
-            "the person is told what leaves"
-        );
-        assert_eq!(
-            tilo_actions::remote::browser::departure_facts(request.context.as_ref()),
-            [("method".to_owned(), "POST".to_owned())],
-            "and what the window stated about the page it leaves from"
-        );
-        let kept = keep(request);
-        assert_eq!(kept.target.address.action, KEEP_HELD);
-        assert_eq!(kept.confirmation, None);
+        phase two_departures_published_side_by_side_are_each_answered_by_their_own_number;
+        // The window numbers what it holds itself, one number to a hold: a
+        // request and a download the engine gave the same number are published
+        // side by side under two. Each is read with its own number and is
+        // answered by it, so the person's allow of one never reaches the other.
+        {
+            let page = CataloguePage {
+                rows: [
+                    page_row(
+                        SEND_HELD,
+                        "Let it leave: POST https://orders.example",
+                        Some(1),
+                    ),
+                    page_row(
+                        SEND_HELD,
+                        "Let it leave: download from https://files.example (return.pdf)",
+                        Some(2),
+                    ),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+                ..CataloguePage::default()
+            };
+            let held = published_holds(&page);
+            assert_eq!(
+                held.iter().map(|held| held.id).collect::<Vec<_>>(),
+                [1, 2],
+                "each departure is read under the number the window gave it"
+            );
+            assert!(held[1].describing.contains("return.pdf"));
+            for held in &held {
+                let request = answer(held.id, 42, &held.describing, &held.facts, SEND_HELD);
+                assert_eq!(
+                    request.argument,
+                    InvokeArgument::Json(serde_json::Map::from_iter([(
+                        "id".to_owned(),
+                        held.id.to_string().into()
+                    )])),
+                    "and answered by that number and no other"
+                );
+                assert_eq!(
+                    request.context.and_then(|context| context.purpose),
+                    Some(held.describing.clone())
+                );
+            }
+        }
+
+        phase a_reported_hold_names_the_one_request_it_answers;
+        // The invocation reported for a hold names the window, the action and
+        // the id the window published it with: what the host asks the person
+        // about and their answer runs. Kept instead, it names the same request
+        // and needs nobody's word.
+        {
+            let request = answer(
+                7,
+                42,
+                "POST https://orders.example",
+                &[("method".to_owned(), "POST".to_owned())],
+                SEND_HELD,
+            );
+            assert_eq!(request.target.provider, "42");
+            assert_eq!(request.target.address.resource, PAGE_RESOURCE);
+            assert_eq!(request.target.address.action, SEND_HELD);
+            assert_eq!(
+                request.argument,
+                InvokeArgument::Json(serde_json::Map::from_iter([("id".to_owned(), "7".into())]))
+            );
+            assert_eq!(
+                request
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.purpose.clone()),
+                Some("POST https://orders.example".to_owned()),
+                "the person is told what leaves"
+            );
+            assert_eq!(
+                tilo_actions::remote::browser::departure_facts(request.context.as_ref()),
+                [("method".to_owned(), "POST".to_owned())],
+                "and what the window stated about the page it leaves from"
+            );
+            let kept = keep(request);
+            assert_eq!(kept.target.address.action, KEEP_HELD);
+            assert_eq!(kept.confirmation, None);
+        }
     }
 }

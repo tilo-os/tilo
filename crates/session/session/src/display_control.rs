@@ -241,146 +241,154 @@ mod tests {
         control.answer("the-workspace", root, device, &bytes)
     }
 
-    /// Reading the displays needs nothing beyond the connection the broker admitted: the reply is
-    /// the compositor's state and the committed configuration, and the app changes nothing.
-    #[test]
-    fn a_settings_worker_reads_the_displays_it_stands_on() {
-        let reply: Value = serde_json::from_slice(
-            &asked(
-                &control(Device {
-                    enrolled: true,
-                    governs: true,
-                }),
-                ROOT,
-                DEVICE,
-                &DisplayCommand::Inspect,
-            )
-            .expect("the reply"),
-        )
-        .expect("a display reply");
-        assert_eq!(
-            reply["observed"]["outputs"][0]["descriptor"]["connector"],
-            "DP-1"
-        );
-        assert_eq!(reply["committed"]["outputs"], json!({}));
-        assert!(reply["transaction"].is_null(), "nothing was changed");
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_settings_workers_display_request_is_read_admitted_and_bounded;
 
-    /// A change is taken only from the device this workspace's identity enrolled, and only for a
-    /// person who may govern the workspace.
-    #[test]
-    fn a_display_change_requires_this_devices_certificate_and_governing_policy() {
-        let allowed = control(Device {
-            enrolled: true,
-            governs: true,
-        });
-        assert_eq!(
-            asked(&allowed, ROOT, [9; 32], &larger_mode())
-                .expect_err("another device changes nothing"),
-            "The Settings worker is not on this accepted owner device."
-        );
-        assert_eq!(
-            asked(&allowed, [4; 32], DEVICE, &larger_mode())
-                .expect_err("another person changes nothing"),
-            "The Settings worker is not on this accepted owner device."
-        );
-
-        let editor = control(Device {
-            enrolled: true,
-            governs: false,
-        });
-        assert_eq!(
-            asked(&editor, ROOT, DEVICE, &larger_mode()).expect_err("an editor changes nothing"),
-            "The current workspace policy does not permit display changes."
-        );
-        assert!(
-            asked(&editor, ROOT, DEVICE, &DisplayCommand::Inspect).is_ok(),
-            "reading the displays is open to every admitted Settings worker"
-        );
-    }
-
-    /// Intent that cannot be a display transaction is refused as such, never run as something else.
-    #[test]
-    fn a_display_request_is_bounded_and_typed() {
-        let displays = control(Device {
-            enrolled: true,
-            governs: true,
-        });
-        assert_eq!(
-            displays
-                .answer("the-workspace", ROOT, DEVICE, b"not json")
-                .expect_err("invalid intent"),
-            "The display request is invalid."
-        );
-        assert_eq!(
-            displays
-                .answer(
-                    "the-workspace",
+        phase a_settings_worker_reads_the_displays_it_stands_on;
+        // Reading the displays needs nothing beyond the connection the broker admitted: the reply is
+        // the compositor's state and the committed configuration, and the app changes nothing.
+        {
+            let reply: Value = serde_json::from_slice(
+                &asked(
+                    &control(Device {
+                        enrolled: true,
+                        governs: true,
+                    }),
                     ROOT,
                     DEVICE,
-                    &vec![b' '; MAX_DISPLAY_CONTROL_BYTES + 1],
+                    &DisplayCommand::Inspect,
                 )
-                .expect_err("oversized intent"),
-            "The display request exceeds its wire bound."
-        );
-        let unavailable = DisplayControl {
-            observed: Arc::new(|| None),
-            ..control(Device {
+                .expect("the reply"),
+            )
+            .expect("a display reply");
+            assert_eq!(
+                reply["observed"]["outputs"][0]["descriptor"]["connector"],
+                "DP-1"
+            );
+            assert_eq!(reply["committed"]["outputs"], json!({}));
+            assert!(reply["transaction"].is_null(), "nothing was changed");
+        }
+
+        phase a_display_change_requires_this_devices_certificate_and_governing_policy;
+        // A change is taken only from the device this workspace's identity enrolled, and only for a
+        // person who may govern the workspace.
+        {
+            let allowed = control(Device {
                 enrolled: true,
                 governs: true,
-            })
-        };
-        assert_eq!(
-            asked(&unavailable, ROOT, DEVICE, &DisplayCommand::Inspect)
-                .expect_err("no compositor state to answer from"),
-            "The current compositor display state is unavailable."
-        );
-    }
+            });
+            assert_eq!(
+                asked(&allowed, ROOT, [9; 32], &larger_mode())
+                    .expect_err("another device changes nothing"),
+                "The Settings worker is not on this accepted owner device."
+            );
+            assert_eq!(
+                asked(&allowed, [4; 32], DEVICE, &larger_mode())
+                    .expect_err("another person changes nothing"),
+                "The Settings worker is not on this accepted owner device."
+            );
 
-    /// An admitted change becomes the transaction the app must keep or revert, kept in this
-    /// session's settings document; reverting it is written there too.
-    #[test]
-    fn an_admitted_change_lands_in_the_sessions_settings_document() {
-        let source = document();
-        let displays = DisplayControl {
-            source: Arc::clone(&source),
-            ..control(Device {
+            let editor = control(Device {
+                enrolled: true,
+                governs: false,
+            });
+            assert_eq!(
+                asked(&editor, ROOT, DEVICE, &larger_mode()).expect_err("an editor changes nothing"),
+                "The current workspace policy does not permit display changes."
+            );
+            assert!(
+                asked(&editor, ROOT, DEVICE, &DisplayCommand::Inspect).is_ok(),
+                "reading the displays is open to every admitted Settings worker"
+            );
+        }
+
+        phase a_display_request_is_bounded_and_typed;
+        // Intent that cannot be a display transaction is refused as such, never run as something else.
+        {
+            let displays = control(Device {
                 enrolled: true,
                 governs: true,
-            })
-        };
-        let reply: Value = serde_json::from_slice(
-            &asked(&displays, ROOT, DEVICE, &larger_mode()).expect("the change is applied"),
-        )
-        .expect("a display reply");
-        let id = reply["transaction"]["id"]
-            .as_u64()
-            .expect("a preview transaction");
-        assert_eq!(
-            source
-                .load()
-                .get("display_transaction")
-                .and_then(|value| value.get("id"))
-                .and_then(Value::as_u64),
-            Some(id),
-            "the session keeps the transaction it started"
-        );
+            });
+            assert_eq!(
+                displays
+                    .answer("the-workspace", ROOT, DEVICE, b"not json")
+                    .expect_err("invalid intent"),
+                "The display request is invalid."
+            );
+            assert_eq!(
+                displays
+                    .answer(
+                        "the-workspace",
+                        ROOT,
+                        DEVICE,
+                        &vec![b' '; MAX_DISPLAY_CONTROL_BYTES + 1],
+                    )
+                    .expect_err("oversized intent"),
+                "The display request exceeds its wire bound."
+            );
+            let unavailable = DisplayControl {
+                observed: Arc::new(|| None),
+                ..control(Device {
+                    enrolled: true,
+                    governs: true,
+                })
+            };
+            assert_eq!(
+                asked(&unavailable, ROOT, DEVICE, &DisplayCommand::Inspect)
+                    .expect_err("no compositor state to answer from"),
+                "The current compositor display state is unavailable."
+            );
+        }
 
-        asked(
-            &displays,
-            ROOT,
-            DEVICE,
-            &DisplayCommand::Revert { transaction: id },
-        )
-        .expect("the change is reverted");
-        assert_eq!(
-            source
-                .load()
-                .get("display_transaction")
-                .and_then(|value| value.get("state"))
-                .and_then(Value::as_str),
-            Some("revert_requested"),
-            "and the person's answer is the transaction's next state"
-        );
+        phase an_admitted_change_lands_in_the_sessions_settings_document;
+        // An admitted change becomes the transaction the app must keep or revert, kept in this
+        // session's settings document; reverting it is written there too.
+        {
+            let source = document();
+            let displays = DisplayControl {
+                source: Arc::clone(&source),
+                ..control(Device {
+                    enrolled: true,
+                    governs: true,
+                })
+            };
+            let reply: Value = serde_json::from_slice(
+                &asked(&displays, ROOT, DEVICE, &larger_mode()).expect("the change is applied"),
+            )
+            .expect("a display reply");
+            let id = reply["transaction"]["id"]
+                .as_u64()
+                .expect("a preview transaction");
+            assert_eq!(
+                source
+                    .load()
+                    .get("display_transaction")
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_u64),
+                Some(id),
+                "the session keeps the transaction it started"
+            );
+
+            asked(
+                &displays,
+                ROOT,
+                DEVICE,
+                &DisplayCommand::Revert { transaction: id },
+            )
+            .expect("the change is reverted");
+            assert_eq!(
+                source
+                    .load()
+                    .get("display_transaction")
+                    .and_then(|value| value.get("state"))
+                    .and_then(Value::as_str),
+                Some("revert_requested"),
+                "and the person's answer is the transaction's next state"
+            );
+        }
     }
 }

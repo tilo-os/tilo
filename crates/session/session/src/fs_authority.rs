@@ -443,102 +443,106 @@ mod tests {
         ) == collab_types::CapDecision::Allow
     }
 
-    #[test]
-    fn a_members_role_decides_whether_they_write_the_workspace_files() {
-        const MEMBER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
-        const NOTE: &str = "/var/workspace/brief/plan.md";
-        let member = Acting::person(MEMBER);
-        let mut tree = tree_with(app_folder_grant());
-        tree.workspaces[0].admit(MEMBER, Role::Viewer);
-        let read_only = list(&tree, PERSON, None);
-        assert!(
-            may_read(&read_only, &member, NOTE),
-            "a member reads the workspace's files"
-        );
-        assert!(
-            !may_write(&read_only, &member, NOTE),
-            "a member with a read-only role cannot write them"
-        );
+    tilo_test_env::scenario! {
+        fn the_list_the_session_publishes_grants_what_the_workspace_grants_now;
 
-        tree.workspaces[0].admit(MEMBER, Role::Editor);
-        let editing = list(&tree, PERSON, None);
-        assert!(may_write(&editing, &member, NOTE), "an editor writes them");
-        assert_ne!(
-            editing.capabilities, read_only.capabilities,
-            "a role change is a new list, so the daemon is handed it"
-        );
+        phase a_members_role_decides_whether_they_write_the_workspace_files;
+        {
+            const MEMBER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+            const NOTE: &str = "/var/workspace/brief/plan.md";
+            let member = Acting::person(MEMBER);
+            let mut tree = tree_with(app_folder_grant());
+            tree.workspaces[0].admit(MEMBER, Role::Viewer);
+            let read_only = list(&tree, PERSON, None);
+            assert!(
+                may_read(&read_only, &member, NOTE),
+                "a member reads the workspace's files"
+            );
+            assert!(
+                !may_write(&read_only, &member, NOTE),
+                "a member with a read-only role cannot write them"
+            );
 
-        tree.workspaces[0].policy.members.remove(MEMBER);
-        let removed = list(&tree, PERSON, None);
-        assert!(
-            !may_read(&removed, &member, NOTE),
-            "a removed member reads nothing"
-        );
-        assert!(!may_write(&removed, &member, NOTE));
-    }
+            tree.workspaces[0].admit(MEMBER, Role::Editor);
+            let editing = list(&tree, PERSON, None);
+            assert!(may_write(&editing, &member, NOTE), "an editor writes them");
+            assert_ne!(
+                editing.capabilities, read_only.capabilities,
+                "a role change is a new list, so the daemon is handed it"
+            );
 
-    #[test]
-    fn a_revoked_folder_is_refused_at_the_next_open_and_the_app_keeps_running() {
-        let device = Some([9u8; 32]);
-        let grant = CapOverride::grant(
-            Grantee::person(PERSON),
-            Scope::FsPath(FOLDER.into()),
-            Access::Read,
-        )
-        .with_id("brief");
-        let keeps = CapOverride::grant(
-            Grantee::person(PERSON),
-            Scope::FsPath("/var/workspace/notes".into()),
-            Access::Read,
-        )
-        .with_id("notes");
-        let mut tree = tree_with(grant);
-        tree.workspaces[0].sandbox.push(keeps);
-        let actor = Acting::person(PERSON);
-        let published = list(&tree, PERSON, device);
-        assert!(may_read(&published, &actor, &format!("{FOLDER}/plan.md")));
-        // The device key the mount authenticates as holds the same grant.
-        assert!(may_read(
-            &published,
-            &Acting::person(hex::encode([9u8; 32])),
-            &format!("{FOLDER}/plan.md")
-        ));
+            tree.workspaces[0].policy.members.remove(MEMBER);
+            let removed = list(&tree, PERSON, None);
+            assert!(
+                !may_read(&removed, &member, NOTE),
+                "a removed member reads nothing"
+            );
+            assert!(!may_write(&removed, &member, NOTE));
+        }
 
-        // The person takes the folder back while an app has it open.
-        assert!(tree.workspaces[0].revoke_sandbox("brief"));
-        let now = list(&tree, PERSON, device);
-        assert!(
-            !may_read(&now, &actor, &format!("{FOLDER}/plan.md")),
-            "the next open is refused"
-        );
-        assert!(
-            may_read(&now, &actor, "/var/workspace/notes/today.md"),
-            "everything else the app reaches still works: it is not restarted"
-        );
-    }
+        phase a_revoked_folder_is_refused_at_the_next_open_and_the_app_keeps_running;
+        {
+            let device = Some([9u8; 32]);
+            let grant = CapOverride::grant(
+                Grantee::person(PERSON),
+                Scope::FsPath(FOLDER.into()),
+                Access::Read,
+            )
+            .with_id("brief");
+            let keeps = CapOverride::grant(
+                Grantee::person(PERSON),
+                Scope::FsPath("/var/workspace/notes".into()),
+                Access::Read,
+            )
+            .with_id("notes");
+            let mut tree = tree_with(grant);
+            tree.workspaces[0].sandbox.push(keeps);
+            let actor = Acting::person(PERSON);
+            let published = list(&tree, PERSON, device);
+            assert!(may_read(&published, &actor, &format!("{FOLDER}/plan.md")));
+            // The device key the mount authenticates as holds the same grant.
+            assert!(may_read(
+                &published,
+                &Acting::person(hex::encode([9u8; 32])),
+                &format!("{FOLDER}/plan.md")
+            ));
 
-    #[test]
-    fn only_durable_file_capabilities_are_published() {
-        let transient = CapOverride::grant(
-            Grantee::person(PERSON),
-            Scope::FsPath("/var/workspace/scratch".into()),
-            Access::Read,
-        )
-        .through("so.tilo.notes")
-        .expiring(Expiry::EndOfSession);
-        let device_only = CapOverride::grant(
-            Grantee::person(PERSON),
-            Scope::Device("camera".into()),
-            Access::Read,
-        )
-        .through("so.tilo.notes");
-        let mut tree = tree_with(app_folder_grant());
-        tree.workspaces[0].sandbox.push(transient);
-        tree.workspaces[0].sandbox.push(device_only);
-        let published = list(&tree, PERSON, None);
-        assert_eq!(published.capabilities.len(), 1);
-        assert!(matches!(published.capabilities[0].scope, Scope::FsPath(_)));
-        assert_eq!(published.capabilities[0].effect, Effect::Grant);
+            // The person takes the folder back while an app has it open.
+            assert!(tree.workspaces[0].revoke_sandbox("brief"));
+            let now = list(&tree, PERSON, device);
+            assert!(
+                !may_read(&now, &actor, &format!("{FOLDER}/plan.md")),
+                "the next open is refused"
+            );
+            assert!(
+                may_read(&now, &actor, "/var/workspace/notes/today.md"),
+                "everything else the app reaches still works: it is not restarted"
+            );
+        }
+
+        phase only_durable_file_capabilities_are_published;
+        {
+            let transient = CapOverride::grant(
+                Grantee::person(PERSON),
+                Scope::FsPath("/var/workspace/scratch".into()),
+                Access::Read,
+            )
+            .through("so.tilo.notes")
+            .expiring(Expiry::EndOfSession);
+            let device_only = CapOverride::grant(
+                Grantee::person(PERSON),
+                Scope::Device("camera".into()),
+                Access::Read,
+            )
+            .through("so.tilo.notes");
+            let mut tree = tree_with(app_folder_grant());
+            tree.workspaces[0].sandbox.push(transient);
+            tree.workspaces[0].sandbox.push(device_only);
+            let published = list(&tree, PERSON, None);
+            assert_eq!(published.capabilities.len(), 1);
+            assert!(matches!(published.capabilities[0].scope, Scope::FsPath(_)));
+            assert_eq!(published.capabilities[0].effect, Effect::Grant);
+        }
     }
 
     /// A stand-in for the Files daemon: records each publication and copies the list it was handed,

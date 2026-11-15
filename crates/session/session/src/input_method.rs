@@ -469,83 +469,87 @@ mod tests {
         body
     }
 
-    #[test]
-    fn the_engine_runs_on_its_own_display_with_the_active_engine() {
-        let launch = launch(
-            InputMethodEngine::Hangul,
-            "de",
-            Path::new("/run/user/1000/tilo-surface-3"),
-            Path::new("/run/user/1000/tilo-session/input-method"),
-        );
-        assert_eq!(launch.program, Path::new(PROGRAM));
-        assert_eq!(launch.args.first().map(String::as_str), Some("--replace"));
-        let disabled = launch
-            .args
-            .iter()
-            .skip_while(|arg| *arg != "--disable")
-            .nth(1)
-            .expect("disabled addons");
-        assert!(disabled.split(',').any(|addon| addon == "clipboard"));
-        assert!(
-            !disabled.split(',').any(|addon| addon == "xim"),
-            "X11 apps compose through XIM"
-        );
-        assert!(launch.env.contains(&(
-            "WAYLAND_DISPLAY".into(),
-            "/run/user/1000/tilo-surface-3".into()
-        )));
-        assert!(launch.env.contains(&(
-            "XDG_CONFIG_HOME".into(),
-            "/run/user/1000/tilo-session/input-method".into()
-        )));
-        assert!(
-            !launch.env.iter().any(|(name, _)| name == "DISPLAY"),
-            "the engine composes on the display it was given, not the one around a nested session"
-        );
-        assert!(
-            launch.inherit.contains(&"DBUS_SESSION_BUS_ADDRESS"),
-            "the engine serves X11 displays over the session bus"
-        );
+    tilo_test_env::scenario! {
+        fn the_input_method_engine_is_set_up_from_the_persons_sources;
 
-        let profile = profile_of(&launch.files);
-        assert!(profile.contains("DefaultIM=hangul"), "{profile}");
-        assert!(profile.contains("Default Layout=de"), "{profile}");
-        assert!(profile.contains("Name=keyboard-de"), "{profile}");
-        assert!(profile.contains("Name=hangul"), "{profile}");
-        let config = config_of(&launch.files);
-        assert!(
-            config.contains("[Hotkey/AltTriggerKeys]\n0=Shift_L"),
-            "{config}"
-        );
-        assert!(
-            config.contains("[Hotkey/EnumerateForwardKeys]\n\n"),
-            "Super+Space stays the session's search"
-        );
-    }
+        phase the_engine_runs_on_its_own_display_with_the_active_engine;
+        {
+            let launch = launch(
+                InputMethodEngine::Hangul,
+                "de",
+                Path::new("/run/user/1000/tilo-surface-3"),
+                Path::new("/run/user/1000/tilo-session/input-method"),
+            );
+            assert_eq!(launch.program, Path::new(PROGRAM));
+            assert_eq!(launch.args.first().map(String::as_str), Some("--replace"));
+            let disabled = launch
+                .args
+                .iter()
+                .skip_while(|arg| *arg != "--disable")
+                .nth(1)
+                .expect("disabled addons");
+            assert!(disabled.split(',').any(|addon| addon == "clipboard"));
+            assert!(
+                !disabled.split(',').any(|addon| addon == "xim"),
+                "X11 apps compose through XIM"
+            );
+            assert!(launch.env.contains(&(
+                "WAYLAND_DISPLAY".into(),
+                "/run/user/1000/tilo-surface-3".into()
+            )));
+            assert!(launch.env.contains(&(
+                "XDG_CONFIG_HOME".into(),
+                "/run/user/1000/tilo-session/input-method".into()
+            )));
+            assert!(
+                !launch.env.iter().any(|(name, _)| name == "DISPLAY"),
+                "the engine composes on the display it was given, not the one around a nested session"
+            );
+            assert!(
+                launch.inherit.contains(&"DBUS_SESSION_BUS_ADDRESS"),
+                "the engine serves X11 displays over the session bus"
+            );
 
-    #[test]
-    fn the_primary_layout_of_the_source_list_is_the_engine_s_layout() {
-        let sources = Sources {
-            ids: vec!["ime/rime".into(), "us:intl".into(), "de".into()],
-            active: "ime/rime".into(),
-            model: "pc105".into(),
-            options: String::new(),
-        };
-        assert_eq!(layout(&sources), "us");
-        let sources = Sources {
-            ids: vec!["de".into()],
-            active: "de".into(),
-            model: "pc105".into(),
-            options: String::new(),
-        };
-        assert_eq!(layout(&sources), "de");
-    }
+            let profile = profile_of(&launch.files);
+            assert!(profile.contains("DefaultIM=hangul"), "{profile}");
+            assert!(profile.contains("Default Layout=de"), "{profile}");
+            assert!(profile.contains("Name=keyboard-de"), "{profile}");
+            assert!(profile.contains("Name=hangul"), "{profile}");
+            let config = config_of(&launch.files);
+            assert!(
+                config.contains("[Hotkey/AltTriggerKeys]\n0=Shift_L"),
+                "{config}"
+            );
+            assert!(
+                config.contains("[Hotkey/EnumerateForwardKeys]\n\n"),
+                "Super+Space stays the session's search"
+            );
+        }
 
-    #[test]
-    fn a_layout_is_not_an_engine_and_an_unknown_source_composes_nothing() {
-        assert!(!composes("de"));
-        assert!(!composes("us:intl"));
-        assert!(!composes("ime/unknown"));
-        assert!(!composes(""));
+        phase the_primary_layout_of_the_source_list_is_the_engine_s_layout;
+        {
+            let sources = Sources {
+                ids: vec!["ime/rime".into(), "us:intl".into(), "de".into()],
+                active: "ime/rime".into(),
+                model: "pc105".into(),
+                options: String::new(),
+            };
+            assert_eq!(layout(&sources), "us");
+            let sources = Sources {
+                ids: vec!["de".into()],
+                active: "de".into(),
+                model: "pc105".into(),
+                options: String::new(),
+            };
+            assert_eq!(layout(&sources), "de");
+        }
+
+        phase a_layout_is_not_an_engine_and_an_unknown_source_composes_nothing;
+        {
+            assert!(!composes("de"));
+            assert!(!composes("us:intl"));
+            assert!(!composes("ime/unknown"));
+            assert!(!composes(""));
+        }
     }
 }

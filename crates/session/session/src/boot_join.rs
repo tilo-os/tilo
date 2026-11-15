@@ -212,68 +212,76 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_session_the_host_administers_waits_for_that_before_it_serves_agents() {
-        let now = Instant::now();
-        let mut join = waiting(now);
-        assert!(join.waiting(), "agents wait while it is on its way");
-        join.follow(now + Duration::from_secs(1), |workspace| {
-            assert_eq!(
-                workspace, "ws-1",
-                "the workspace it joined is the one asked about"
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_boot_join_waits_for_its_host_only_as_long_as_it_must;
+
+        phase a_session_the_host_administers_waits_for_that_before_it_serves_agents;
+        {
+            let now = Instant::now();
+            let mut join = waiting(now);
+            assert!(join.waiting(), "agents wait while it is on its way");
+            join.follow(now + Duration::from_secs(1), |workspace| {
+                assert_eq!(
+                    workspace, "ws-1",
+                    "the workspace it joined is the one asked about"
+                );
+                false
+            });
+            assert!(join.waiting());
+            join.follow(now + Duration::from_secs(2), |_| true);
+            assert!(
+                !join.waiting(),
+                "served once it may administer the workspace"
             );
-            false
-        });
-        assert!(join.waiting());
-        join.follow(now + Duration::from_secs(2), |_| true);
-        assert!(
-            !join.waiting(),
-            "served once it may administer the workspace"
-        );
-    }
+        }
 
-    #[test]
-    fn the_host_that_never_grants_it_does_not_withhold_agents_for_good() {
-        let now = Instant::now();
-        let mut join = waiting(now);
-        join.follow(now + ADMIN_DEADLINE, |_| false);
-        assert!(!join.waiting(), "the wait ends on its own");
-    }
+        phase the_host_that_never_grants_it_does_not_withhold_agents_for_good;
+        {
+            let now = Instant::now();
+            let mut join = waiting(now);
+            join.follow(now + ADMIN_DEADLINE, |_| false);
+            assert!(!join.waiting(), "the wait ends on its own");
+        }
 
-    #[test]
-    fn a_short_links_workspace_is_asked_about_once_the_join_names_it() {
-        let now = Instant::now();
-        // The link carries where its invitation waits, not what it grants: the session waits
-        // without a workspace to ask about.
-        let mut join = BootJoin {
-            workspace: None,
-            grant: Grant::Waiting {
-                until: now.checked_add(ADMIN_DEADLINE).unwrap_or(now),
-            },
-        };
-        let mut asked = 0;
-        join.follow(now + Duration::from_secs(1), |_| {
-            asked += 1;
-            true
-        });
-        assert_eq!(asked, 0, "no workspace is asked about before the join");
-        assert!(
-            join.waiting(),
-            "and the host's authority is still waited for"
-        );
-        join.joined("ws-2");
-        join.follow(now + Duration::from_secs(2), |workspace| {
-            assert_eq!(workspace, "ws-2", "the workspace the join landed in");
-            true
-        });
-        assert!(!join.waiting(), "served once the host granted it");
-    }
+        phase a_short_links_workspace_is_asked_about_once_the_join_names_it;
+        {
+            let now = Instant::now();
+            // The link carries where its invitation waits, not what it grants: the session waits
+            // without a workspace to ask about.
+            let mut join = BootJoin {
+                workspace: None,
+                grant: Grant::Waiting {
+                    until: now.checked_add(ADMIN_DEADLINE).unwrap_or(now),
+                },
+            };
+            let mut asked = 0;
+            join.follow(now + Duration::from_secs(1), |_| {
+                asked += 1;
+                true
+            });
+            assert_eq!(asked, 0, "no workspace is asked about before the join");
+            assert!(
+                join.waiting(),
+                "and the host's authority is still waited for"
+            );
+            join.joined("ws-2");
+            join.follow(now + Duration::from_secs(2), |workspace| {
+                assert_eq!(workspace, "ws-2", "the workspace the join landed in");
+                true
+            });
+            assert!(!join.waiting(), "served once the host granted it");
+        }
 
-    #[test]
-    fn a_session_the_host_set_nothing_up_for_serves_its_agents_at_once() {
-        let mut join = BootJoin::none();
-        assert!(!join.waiting());
-        join.follow(Instant::now(), |_| false);
-        assert!(!join.waiting());
+        phase a_session_the_host_set_nothing_up_for_serves_its_agents_at_once;
+        {
+            let mut join = BootJoin::none();
+            assert!(!join.waiting());
+            join.follow(Instant::now(), |_| false);
+            assert!(!join.waiting());
+        }
     }
 }

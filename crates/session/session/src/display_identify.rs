@@ -150,61 +150,65 @@ mod tests {
         }
     }
 
-    #[test]
-    fn settings_number_and_name_reach_the_display_that_carries_them() {
-        let hardware = snapshot(vec![hardware("DP-2", false), hardware("eDP-1", true)]);
-        // The shell follows a display by its monitor, not its connector.
-        let outputs = vec![
-            shown("eDP-1", "edp-monitor", true),
-            shown("DP-2", "dp-monitor", true),
-            shown("HDMI-A-1", "hdmi-monitor", true),
-        ];
-        let labels = labels_of(Some(&hardware), &outputs);
-        assert_eq!(
-            labels.len(),
-            2,
-            "one card per display the compositor published: {labels:?}"
-        );
-        let builtin = labels
-            .iter()
-            .find(|label| label.monitor == "edp-monitor")
-            .expect("the panel says which one it is");
-        assert_eq!(
-            (builtin.number, builtin.name.as_str()),
-            (1, "Built-in display"),
-            "the panel is one and by the name Settings gives it"
-        );
-        let external = labels
-            .iter()
-            .find(|label| label.monitor == "dp-monitor")
-            .expect("the monitor says which one it is");
-        assert_eq!(
-            (external.number, external.name.as_str()),
-            (2, "External display"),
-            "the external display is two, as on the canvas"
-        );
-        assert!(
-            !labels.iter().any(|label| label.monitor == "hdmi-monitor"),
-            "a monitor only the shell knows gets no card"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn each_display_shown_is_identified_by_the_number_and_name_settings_gives_it;
 
-    #[test]
-    fn a_display_the_shell_shows_nothing_on_gets_no_card() {
-        let hardware = snapshot(vec![hardware("eDP-1", true), hardware("DP-2", false)]);
-        let outputs = vec![
-            shown("eDP-1", "edp-monitor", true),
-            shown("DP-2", "dp-monitor", false),
-        ];
-        let labels = labels_of(Some(&hardware), &outputs);
-        assert_eq!(labels.len(), 1);
-        assert_eq!(labels[0].monitor, "edp-monitor");
-    }
+        phase settings_number_and_name_reach_the_display_that_carries_them;
+        {
+            let hardware = snapshot(vec![hardware("DP-2", false), hardware("eDP-1", true)]);
+            // The shell follows a display by its monitor, not its connector.
+            let outputs = vec![
+                shown("eDP-1", "edp-monitor", true),
+                shown("DP-2", "dp-monitor", true),
+                shown("HDMI-A-1", "hdmi-monitor", true),
+            ];
+            let labels = labels_of(Some(&hardware), &outputs);
+            assert_eq!(
+                labels.len(),
+                2,
+                "one card per display the compositor published: {labels:?}"
+            );
+            let builtin = labels
+                .iter()
+                .find(|label| label.monitor == "edp-monitor")
+                .expect("the panel says which one it is");
+            assert_eq!(
+                (builtin.number, builtin.name.as_str()),
+                (1, "Built-in display"),
+                "the panel is one and by the name Settings gives it"
+            );
+            let external = labels
+                .iter()
+                .find(|label| label.monitor == "dp-monitor")
+                .expect("the monitor says which one it is");
+            assert_eq!(
+                (external.number, external.name.as_str()),
+                (2, "External display"),
+                "the external display is two, as on the canvas"
+            );
+            assert!(
+                !labels.iter().any(|label| label.monitor == "hdmi-monitor"),
+                "a monitor only the shell knows gets no card"
+            );
+        }
 
-    #[test]
-    fn nothing_is_named_before_the_compositor_published_its_displays() {
-        let outputs = vec![shown("eDP-1", "edp-monitor", true)];
-        assert!(labels_of(None, &outputs).is_empty());
-        assert!(labels_of(None, &[]).is_empty());
+        phase a_display_the_shell_shows_nothing_on_gets_no_card;
+        {
+            let hardware = snapshot(vec![hardware("eDP-1", true), hardware("DP-2", false)]);
+            let outputs = vec![
+                shown("eDP-1", "edp-monitor", true),
+                shown("DP-2", "dp-monitor", false),
+            ];
+            let labels = labels_of(Some(&hardware), &outputs);
+            assert_eq!(labels.len(), 1);
+            assert_eq!(labels[0].monitor, "edp-monitor");
+        }
+
+        phase nothing_is_named_before_the_compositor_published_its_displays;
+        {
+            let outputs = vec![shown("eDP-1", "edp-monitor", true)];
+            assert!(labels_of(None, &outputs).is_empty());
+            assert!(labels_of(None, &[]).is_empty());
+        }
     }
 }

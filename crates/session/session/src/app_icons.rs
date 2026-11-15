@@ -598,20 +598,68 @@ mod tests {
     }
     const SQUARE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#ff0000"/></svg>"##;
 
-    #[test]
-    fn an_icons_pixels_are_rasterised_at_the_size_asked_for() {
-        let png = rasterize_png(&png(), 64).expect("the png decodes");
-        assert_eq!((png.width, png.height), (2, 1));
-        assert_eq!(png.rgba.get(..4), Some([255, 0, 0, 255].as_slice()));
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn an_icon_is_rasterised_and_picked_at_the_size_asked_for;
 
-        let svg = rasterize_svg(SQUARE, 32).expect("the svg rasterises");
-        assert_eq!((svg.width, svg.height), (32, 32));
-        assert_eq!(svg.rgba.get(..4), Some([255, 0, 0, 255].as_slice()));
+        phase an_icons_pixels_are_rasterised_at_the_size_asked_for;
+        {
+            let png = rasterize_png(&png(), 64).expect("the png decodes");
+            assert_eq!((png.width, png.height), (2, 1));
+            assert_eq!(png.rgba.get(..4), Some([255, 0, 0, 255].as_slice()));
 
-        let wide =
-            br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#00ff00"/></svg>"##;
-        let kept = rasterize_svg(wide, 20).expect("its shape is kept");
-        assert_eq!((kept.width, kept.height), (20, 10));
+            let svg = rasterize_svg(SQUARE, 32).expect("the svg rasterises");
+            assert_eq!((svg.width, svg.height), (32, 32));
+            assert_eq!(svg.rgba.get(..4), Some([255, 0, 0, 255].as_slice()));
+
+            let wide =
+                br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#00ff00"/></svg>"##;
+            let kept = rasterize_svg(wide, 20).expect("its shape is kept");
+            assert_eq!((kept.width, kept.height), (20, 10));
+        }
+
+        phase a_windows_icon_is_shown_at_the_size_that_fills_its_slot;
+        // The pixels a window hands over come in several sizes: the one that fills the slot is shown,
+        // so the artwork is never stretched.
+        {
+            let images: Vec<ui::peniko::ImageData> = [16, 32, 48]
+                .into_iter()
+                .map(|edge| {
+                    let bytes = usize::try_from(edge * edge * 4).unwrap_or_default();
+                    ui::raster::rgba8_premultiplied(vec![0; bytes], edge, edge)
+                })
+                .collect();
+            let width = |device_px| pick(&images, device_px).map(|image| image.width);
+            assert_eq!(width(20), Some(32));
+            assert_eq!(width(16), Some(16));
+            assert_eq!(width(64), Some(48), "the largest there is, never stretched");
+            assert_eq!(pick(&[], 16).map(|image| image.width), None);
+        }
+
+        phase a_named_tray_icon_comes_back_as_rgba_pixels;
+        // An icon an application names for its tray item is read the way a notification's is:
+        // straight-alpha RGBA at the size asked for, and nothing at all for one that cannot be
+        // decoded.
+        {
+            let dir = tempfile::tempdir().expect("a theme");
+            let icon = dir.path().join("tray-icon.png");
+            std::fs::write(&icon, png()).expect("the icon");
+            let name = icon.to_str().expect("a path");
+            let (width, height, rgba) = tray_raster(name, None, 16).expect("the icon's pixels");
+            assert_eq!((width, height), (2, 1));
+            assert_eq!(rgba.get(..4), Some([255, 0, 0, 255].as_slice()));
+
+            let broken = dir.path().join("broken.png");
+            std::fs::write(&broken, b"not a png").expect("the file");
+            assert_eq!(
+                tray_raster(broken.to_str().expect("a path"), None, 16),
+                None
+            );
+            assert_eq!(tray_raster("no-such-icon-anywhere", None, 16), None);
+        }
     }
 
     #[test]
@@ -643,24 +691,6 @@ mod tests {
         }
         let pixels = artwork.pixels(64).expect("its pixels");
         assert_eq!((pixels.width, pixels.height), (2, 1));
-    }
-
-    /// The pixels a window hands over come in several sizes: the one that fills the slot is shown,
-    /// so the artwork is never stretched.
-    #[test]
-    fn a_windows_icon_is_shown_at_the_size_that_fills_its_slot() {
-        let images: Vec<ui::peniko::ImageData> = [16, 32, 48]
-            .into_iter()
-            .map(|edge| {
-                let bytes = usize::try_from(edge * edge * 4).unwrap_or_default();
-                ui::raster::rgba8_premultiplied(vec![0; bytes], edge, edge)
-            })
-            .collect();
-        let width = |device_px| pick(&images, device_px).map(|image| image.width);
-        assert_eq!(width(20), Some(32));
-        assert_eq!(width(16), Some(16));
-        assert_eq!(width(64), Some(48), "the largest there is, never stretched");
-        assert_eq!(pick(&[], 16).map(|image| image.width), None);
     }
 
     /// An app's own icon is what every surface that lists it paints, asked of the toolkit's one
@@ -798,27 +828,5 @@ mod tests {
             "no app answers for that name: the sender's own icon shows"
         );
         assert_eq!(layers(None), vec![Some("dialog-information".to_string())]);
-    }
-
-    /// An icon an application names for its tray item is read the way a notification's is:
-    /// straight-alpha RGBA at the size asked for, and nothing at all for one that cannot be
-    /// decoded.
-    #[test]
-    fn a_named_tray_icon_comes_back_as_rgba_pixels() {
-        let dir = tempfile::tempdir().expect("a theme");
-        let icon = dir.path().join("tray-icon.png");
-        std::fs::write(&icon, png()).expect("the icon");
-        let name = icon.to_str().expect("a path");
-        let (width, height, rgba) = tray_raster(name, None, 16).expect("the icon's pixels");
-        assert_eq!((width, height), (2, 1));
-        assert_eq!(rgba.get(..4), Some([255, 0, 0, 255].as_slice()));
-
-        let broken = dir.path().join("broken.png");
-        std::fs::write(&broken, b"not a png").expect("the file");
-        assert_eq!(
-            tray_raster(broken.to_str().expect("a path"), None, 16),
-            None
-        );
-        assert_eq!(tray_raster("no-such-icon-anywhere", None, 16), None);
     }
 }

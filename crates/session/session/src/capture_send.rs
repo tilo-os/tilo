@@ -386,326 +386,334 @@ mod tests {
         Sends::new(Some(nearby), workspace, wake)
     }
 
-    #[test]
-    fn the_picker_lists_the_other_devices_that_are_here() {
-        let (dir, _shot, fake) = fixture();
-        let (wake, _woken) = waking();
-        let sends = sending(
-            Some(Arc::clone(&fake) as SharedLink),
-            Some(dir.path().join("spool")),
-            None,
-            wake,
-        );
-        assert_eq!(
-            sends
-                .nearby
-                .as_ref()
-                .map(|nearby| nearby.devices())
-                .unwrap_or_default(),
-            vec![ui::widget::ScreenshotSendDevice {
-                id: "device-phone".into(),
-                label: "Ada's phone".into(),
-            }],
-            "this device is never offered itself"
-        );
+    tilo_test_env::scenario! {
+        fn a_screenshot_is_sent_to_a_device_that_is_here_or_refused_saying_why;
+
+        phase the_picker_lists_the_other_devices_that_are_here;
+        {
+            let (dir, _shot, fake) = fixture();
+            let (wake, _woken) = waking();
+            let sends = sending(
+                Some(Arc::clone(&fake) as SharedLink),
+                Some(dir.path().join("spool")),
+                None,
+                wake,
+            );
+            assert_eq!(
+                sends
+                    .nearby
+                    .as_ref()
+                    .map(|nearby| nearby.devices())
+                    .unwrap_or_default(),
+                vec![ui::widget::ScreenshotSendDevice {
+                    id: "device-phone".into(),
+                    label: "Ada's phone".into(),
+                }],
+                "this device is never offered itself"
+            );
+        }
+
+        phase a_screenshot_is_offered_to_the_device_and_streamed_from_the_spool;
+        {
+            let (dir, shot, fake) = fixture();
+            let spool = dir.path().join("spool");
+            let link: SharedLink = Arc::clone(&fake) as SharedLink;
+            let (wake, woken) = waking();
+            let sends = sending(Some(link), Some(spool), None, wake);
+            assert_eq!(
+                sends.send("device-phone", shot.clone()),
+                None,
+                "taken to be staged off the session's pass"
+            );
+            woken
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the send is answered");
+            assert_eq!(sends.take(), Some(Sent::offered("Ada's phone".into())));
+
+            let actions = fake.actions();
+            assert_eq!(actions.len(), 1, "one offer, and nothing else: {actions:?}");
+            let (target, offer) = actions.into_iter().next().expect("the offer");
+            assert_eq!(target.as_str(), "device-phone");
+            let PersonalFabricAction::NearbyTransferOffer {
+                transfer_id,
+                name,
+                kind,
+                total_bytes,
+                content_hash,
+            } = offer
+            else {
+                panic!("a Nearby offer");
+            };
+            assert_eq!(name, "Screenshot 1.png");
+            assert_eq!(kind, TransferKind::File);
+            assert_eq!(
+                total_bytes,
+                std::fs::metadata(&shot).expect("the screenshot").len(),
+                "the screenshot's own bytes"
+            );
+            assert_eq!(
+                content_hash,
+                *blake3::hash(b"the screenshot's bytes").as_bytes()
+            );
+            let streams = fake.streams();
+            assert_eq!(
+                streams.get(&transfer_id).map(Vec::as_slice),
+                Some(b"the screenshot's bytes".as_slice()),
+                "what leaves is what the studio wrote"
+            );
+        }
+
+        phase a_device_that_left_is_refused_with_nothing_staged;
+        {
+            let (dir, shot, fake) = fixture();
+            let spool = dir.path().join("spool");
+            let link: SharedLink = fake.clone();
+            let (wake, _woken) = waking();
+            let sends = sending(Some(link), Some(spool.clone()), None, wake);
+            assert_eq!(
+                sends.send("device-gone", shot),
+                Some(Sent::refused("device-gone".into(), Refusal::Offline)),
+                "the picker's id is never trusted"
+            );
+            assert!(fake.actions().is_empty(), "nothing was offered");
+            assert!(!spool.exists(), "nothing was staged");
+        }
+
+        phase a_capture_that_is_gone_is_refused_and_nothing_stays_staged;
+        {
+            let (dir, _shot, fake) = fixture();
+            let spool = dir.path().join("spool");
+            let link: SharedLink = fake.clone();
+            let (wake, woken) = waking();
+            let sends = sending(Some(link), Some(spool), None, wake);
+            let gone = dir.path().join("Screenshot 2.png");
+            assert_eq!(sends.send("device-phone", gone.clone()), None);
+            woken
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the send is answered");
+            assert_eq!(
+                sends.take(),
+                Some(Sent::refused(
+                    "Ada's phone".into(),
+                    Refusal::Gone { path: gone }
+                ))
+            );
+            assert!(fake.actions().is_empty(), "nothing was offered");
+            assert!(fake.streams().is_empty(), "nothing was streamed");
+        }
+
+        phase a_session_with_no_fabric_says_so_instead_of_sending;
+        {
+            let (dir, shot, _fake) = fixture();
+            let (wake, _woken) = waking();
+            let sends = Sends::new(None, None, wake);
+            assert_eq!(
+                sends.send("device-phone", shot),
+                Some(Sent::refused("device-phone".into(), Refusal::SyncOff))
+            );
+            assert!(
+                !dir.path().join("spool").exists(),
+                "a session with no engine stages nothing"
+            );
+        }
+
+        phase a_session_whose_files_do_not_leave_says_so;
+        {
+            let (dir, shot, fake) = fixture();
+            let link: SharedLink = fake.clone();
+            let (wake, _woken) = waking();
+            let nearby = NearbyTransfer::open(
+                Some(link),
+                Some(dir.path().join("spool")),
+                Continuity::default(),
+                Arc::clone(&wake),
+            )
+            .expect("a transfer engine");
+            let sends = Sends::new(Some(nearby), None, wake);
+            assert_eq!(
+                sends.send("device-phone", shot),
+                Some(Sent::refused("Ada's phone".into(), Refusal::SyncOff)),
+                "the person turned file transfer off"
+            );
+            assert!(fake.actions().is_empty(), "nothing was offered");
+        }
     }
 
-    #[test]
-    fn a_screenshot_is_offered_to_the_device_and_streamed_from_the_spool() {
-        let (dir, shot, fake) = fixture();
-        let spool = dir.path().join("spool");
-        let link: SharedLink = Arc::clone(&fake) as SharedLink;
-        let (wake, woken) = waking();
-        let sends = sending(Some(link), Some(spool), None, wake);
-        assert_eq!(
-            sends.send("device-phone", shot.clone()),
-            None,
-            "taken to be staged off the session's pass"
-        );
-        woken
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the send is answered");
-        assert_eq!(sends.take(), Some(Sent::offered("Ada's phone".into())));
+    tilo_test_env::scenario! {
+        fn a_screenshot_is_saved_into_the_workspace_or_not_saved_saying_why;
 
-        let actions = fake.actions();
-        assert_eq!(actions.len(), 1, "one offer, and nothing else: {actions:?}");
-        let (target, offer) = actions.into_iter().next().expect("the offer");
-        assert_eq!(target.as_str(), "device-phone");
-        let PersonalFabricAction::NearbyTransferOffer {
-            transfer_id,
-            name,
-            kind,
-            total_bytes,
-            content_hash,
-        } = offer
-        else {
-            panic!("a Nearby offer");
-        };
-        assert_eq!(name, "Screenshot 1.png");
-        assert_eq!(kind, TransferKind::File);
-        assert_eq!(
-            total_bytes,
-            std::fs::metadata(&shot).expect("the screenshot").len(),
-            "the screenshot's own bytes"
-        );
-        assert_eq!(
-            content_hash,
-            *blake3::hash(b"the screenshot's bytes").as_bytes()
-        );
-        let streams = fake.streams();
-        assert_eq!(
-            streams.get(&transfer_id).map(Vec::as_slice),
-            Some(b"the screenshot's bytes".as_slice()),
-            "what leaves is what the studio wrote"
-        );
-    }
-
-    #[test]
-    fn a_device_that_left_is_refused_with_nothing_staged() {
-        let (dir, shot, fake) = fixture();
-        let spool = dir.path().join("spool");
-        let link: SharedLink = fake.clone();
-        let (wake, _woken) = waking();
-        let sends = sending(Some(link), Some(spool.clone()), None, wake);
-        assert_eq!(
-            sends.send("device-gone", shot),
-            Some(Sent::refused("device-gone".into(), Refusal::Offline)),
-            "the picker's id is never trusted"
-        );
-        assert!(fake.actions().is_empty(), "nothing was offered");
-        assert!(!spool.exists(), "nothing was staged");
-    }
-
-    #[test]
-    fn a_capture_that_is_gone_is_refused_and_nothing_stays_staged() {
-        let (dir, _shot, fake) = fixture();
-        let spool = dir.path().join("spool");
-        let link: SharedLink = fake.clone();
-        let (wake, woken) = waking();
-        let sends = sending(Some(link), Some(spool), None, wake);
-        let gone = dir.path().join("Screenshot 2.png");
-        assert_eq!(sends.send("device-phone", gone.clone()), None);
-        woken
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the send is answered");
-        assert_eq!(
-            sends.take(),
-            Some(Sent::refused(
-                "Ada's phone".into(),
-                Refusal::Gone { path: gone }
-            ))
-        );
-        assert!(fake.actions().is_empty(), "nothing was offered");
-        assert!(fake.streams().is_empty(), "nothing was streamed");
-    }
-
-    #[test]
-    fn a_session_with_no_fabric_says_so_instead_of_sending() {
-        let (dir, shot, _fake) = fixture();
-        let (wake, _woken) = waking();
-        let sends = Sends::new(None, None, wake);
-        assert_eq!(
-            sends.send("device-phone", shot),
-            Some(Sent::refused("device-phone".into(), Refusal::SyncOff))
-        );
-        assert!(
-            !dir.path().join("spool").exists(),
-            "a session with no engine stages nothing"
-        );
-    }
-
-    #[test]
-    fn a_session_whose_files_do_not_leave_says_so() {
-        let (dir, shot, fake) = fixture();
-        let link: SharedLink = fake.clone();
-        let (wake, _woken) = waking();
-        let nearby = NearbyTransfer::open(
-            Some(link),
-            Some(dir.path().join("spool")),
-            Continuity::default(),
-            Arc::clone(&wake),
-        )
-        .expect("a transfer engine");
-        let sends = Sends::new(Some(nearby), None, wake);
-        assert_eq!(
-            sends.send("device-phone", shot),
-            Some(Sent::refused("Ada's phone".into(), Refusal::SyncOff)),
-            "the person turned file transfer off"
-        );
-        assert!(fake.actions().is_empty(), "nothing was offered");
-    }
-
-    #[test]
-    fn a_screenshot_is_copied_into_the_workspace_under_its_own_name() {
-        let (_dir, shot, _fake) = fixture();
-        let workspace = tempfile::tempdir().expect("a workspace");
-        let (wake, woken) = waking();
-        let sends = Sends::new(
-            None,
-            Some(workspace.path().to_path_buf()),
-            Arc::clone(&wake),
-        );
-        assert_eq!(
-            sends.send_to_workspace(shot.clone()),
-            None,
-            "copied off the session's pass: the mount may be remote"
-        );
-        woken
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the save is answered");
-        assert_eq!(sends.take(), Some(Sent::saved("Screenshot 1.png".into())));
-        let saved = workspace
-            .path()
-            .join("Screenshots")
-            .join("Screenshot 1.png");
-        assert_eq!(
-            std::fs::read(&saved).expect("the copy"),
-            b"the screenshot's bytes",
-            "what lands is what the studio wrote"
-        );
-
-        // A second send of a file of the same name is a second screenshot: it lands beside the
-        // first instead of replacing it.
-        let sends = Sends::new(
-            None,
-            Some(workspace.path().to_path_buf()),
-            Arc::clone(&wake),
-        );
-        assert_eq!(sends.send_to_workspace(shot), None);
-        woken
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the second save is answered");
-        assert_eq!(sends.take(), Some(Sent::saved("Screenshot 1 2.png".into())));
-        assert_eq!(
-            std::fs::read(&saved).expect("the first copy"),
-            b"the screenshot's bytes",
-            "the first copy is untouched"
-        );
-        assert!(
-            workspace
+        phase a_screenshot_is_copied_into_the_workspace_under_its_own_name;
+        {
+            let (_dir, shot, _fake) = fixture();
+            let workspace = tempfile::tempdir().expect("a workspace");
+            let (wake, woken) = waking();
+            let sends = Sends::new(
+                None,
+                Some(workspace.path().to_path_buf()),
+                Arc::clone(&wake),
+            );
+            assert_eq!(
+                sends.send_to_workspace(shot.clone()),
+                None,
+                "copied off the session's pass: the mount may be remote"
+            );
+            woken
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the save is answered");
+            assert_eq!(sends.take(), Some(Sent::saved("Screenshot 1.png".into())));
+            let saved = workspace
                 .path()
                 .join("Screenshots")
-                .join("Screenshot 1 2.png")
-                .is_file()
-        );
-        let mut names: Vec<String> = std::fs::read_dir(workspace.path().join("Screenshots"))
-            .expect("the folder")
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        assert_eq!(
-            names,
-            vec![
-                "Screenshot 1 2.png".to_owned(),
-                "Screenshot 1.png".to_owned()
-            ],
-            "nothing is left staged beside the copies"
-        );
-    }
+                .join("Screenshot 1.png");
+            assert_eq!(
+                std::fs::read(&saved).expect("the copy"),
+                b"the screenshot's bytes",
+                "what lands is what the studio wrote"
+            );
 
-    #[test]
-    fn a_send_whose_predecessor_was_cut_off_still_lands_whole() {
-        let (_dir, shot, _fake) = fixture();
-        let workspace = tempfile::tempdir().expect("a workspace");
-        let folder = workspace.path().join("Screenshots");
-        std::fs::create_dir_all(folder.join(".tilo-transfer-cut-off")).expect("a cut-off staging");
-        std::fs::write(
-            folder.join(".tilo-transfer-cut-off/payload"),
-            b"half a screenshot",
-        )
-        .expect("a half copy");
-        let (wake, woken) = waking();
-        let sends = Sends::new(
-            None,
-            Some(workspace.path().to_path_buf()),
-            Arc::clone(&wake),
-        );
-        assert_eq!(sends.send_to_workspace(shot), None);
-        woken
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the save is answered");
-        assert_eq!(sends.take(), Some(Sent::saved("Screenshot 1.png".into())));
-        assert_eq!(
-            std::fs::read(folder.join("Screenshot 1.png")).expect("the copy"),
-            b"the screenshot's bytes"
-        );
-        assert_eq!(
-            std::fs::read(folder.join(".tilo-transfer-cut-off/payload")).expect("the half copy"),
-            b"half a screenshot",
-            "a copy cut off part-way is never published"
-        );
-    }
+            // A second send of a file of the same name is a second screenshot: it lands beside the
+            // first instead of replacing it.
+            let sends = Sends::new(
+                None,
+                Some(workspace.path().to_path_buf()),
+                Arc::clone(&wake),
+            );
+            assert_eq!(sends.send_to_workspace(shot), None);
+            woken
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the second save is answered");
+            assert_eq!(sends.take(), Some(Sent::saved("Screenshot 1 2.png".into())));
+            assert_eq!(
+                std::fs::read(&saved).expect("the first copy"),
+                b"the screenshot's bytes",
+                "the first copy is untouched"
+            );
+            assert!(
+                workspace
+                    .path()
+                    .join("Screenshots")
+                    .join("Screenshot 1 2.png")
+                    .is_file()
+            );
+            let mut names: Vec<String> = std::fs::read_dir(workspace.path().join("Screenshots"))
+                .expect("the folder")
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            assert_eq!(
+                names,
+                vec![
+                    "Screenshot 1 2.png".to_owned(),
+                    "Screenshot 1.png".to_owned()
+                ],
+                "nothing is left staged beside the copies"
+            );
+        }
 
-    #[test]
-    fn a_screenshot_is_not_saved_when_its_folder_cannot_be_made() {
-        let (_dir, shot, _fake) = fixture();
-        let workspace = tempfile::tempdir().expect("a workspace");
-        std::fs::write(workspace.path().join("Screenshots"), b"in the way").expect("a file");
-        let (wake, woken) = waking();
-        let sends = Sends::new(
-            None,
-            Some(workspace.path().to_path_buf()),
-            Arc::clone(&wake),
-        );
-        assert_eq!(sends.send_to_workspace(shot), None);
-        woken
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the save is answered");
-        assert!(
-            matches!(
+        phase a_send_whose_predecessor_was_cut_off_still_lands_whole;
+        {
+            let (_dir, shot, _fake) = fixture();
+            let workspace = tempfile::tempdir().expect("a workspace");
+            let folder = workspace.path().join("Screenshots");
+            std::fs::create_dir_all(folder.join(".tilo-transfer-cut-off")).expect("a cut-off staging");
+            std::fs::write(
+                folder.join(".tilo-transfer-cut-off/payload"),
+                b"half a screenshot",
+            )
+            .expect("a half copy");
+            let (wake, woken) = waking();
+            let sends = Sends::new(
+                None,
+                Some(workspace.path().to_path_buf()),
+                Arc::clone(&wake),
+            );
+            assert_eq!(sends.send_to_workspace(shot), None);
+            woken
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the save is answered");
+            assert_eq!(sends.take(), Some(Sent::saved("Screenshot 1.png".into())));
+            assert_eq!(
+                std::fs::read(folder.join("Screenshot 1.png")).expect("the copy"),
+                b"the screenshot's bytes"
+            );
+            assert_eq!(
+                std::fs::read(folder.join(".tilo-transfer-cut-off/payload")).expect("the half copy"),
+                b"half a screenshot",
+                "a copy cut off part-way is never published"
+            );
+        }
+
+        phase a_screenshot_is_not_saved_when_its_folder_cannot_be_made;
+        {
+            let (_dir, shot, _fake) = fixture();
+            let workspace = tempfile::tempdir().expect("a workspace");
+            std::fs::write(workspace.path().join("Screenshots"), b"in the way").expect("a file");
+            let (wake, woken) = waking();
+            let sends = Sends::new(
+                None,
+                Some(workspace.path().to_path_buf()),
+                Arc::clone(&wake),
+            );
+            assert_eq!(sends.send_to_workspace(shot), None);
+            woken
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the save is answered");
+            assert!(
+                matches!(
+                    sends.take(),
+                    Some(Sent::NotSaved {
+                        why: Refusal::CreateFailed { .. }
+                    })
+                ),
+                "the folder cannot be made"
+            );
+            assert_eq!(
+                std::fs::read(workspace.path().join("Screenshots")).expect("the file"),
+                b"in the way",
+                "nothing was written through it"
+            );
+        }
+
+        phase a_session_with_no_workspace_says_so_and_writes_nothing;
+        {
+            let (dir, shot, _fake) = fixture();
+            let (wake, _woken) = waking();
+            let sends = Sends::new(None, None, wake);
+            assert_eq!(
+                sends.send_to_workspace(shot),
+                Some(Sent::not_saved(Refusal::NoWorkspace)),
+                "there is no workspace to save into"
+            );
+            assert!(
+                !dir.path().join("Screenshots").exists(),
+                "nothing was written"
+            );
+        }
+
+        phase a_screenshot_that_is_gone_is_not_saved;
+        {
+            let (_dir, _shot, _fake) = fixture();
+            let workspace = tempfile::tempdir().expect("a workspace");
+            let gone = workspace.path().join("Screenshot 7.png");
+            let (wake, woken) = waking();
+            let sends = Sends::new(
+                None,
+                Some(workspace.path().to_path_buf()),
+                Arc::clone(&wake),
+            );
+            assert_eq!(sends.send_to_workspace(gone.clone()), None);
+            woken
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the save is answered");
+            assert_eq!(
                 sends.take(),
-                Some(Sent::NotSaved {
-                    why: Refusal::CreateFailed { .. }
-                })
-            ),
-            "the folder cannot be made"
-        );
-        assert_eq!(
-            std::fs::read(workspace.path().join("Screenshots")).expect("the file"),
-            b"in the way",
-            "nothing was written through it"
-        );
-    }
-
-    #[test]
-    fn a_session_with_no_workspace_says_so_and_writes_nothing() {
-        let (dir, shot, _fake) = fixture();
-        let (wake, _woken) = waking();
-        let sends = Sends::new(None, None, wake);
-        assert_eq!(
-            sends.send_to_workspace(shot),
-            Some(Sent::not_saved(Refusal::NoWorkspace)),
-            "there is no workspace to save into"
-        );
-        assert!(
-            !dir.path().join("Screenshots").exists(),
-            "nothing was written"
-        );
-    }
-
-    #[test]
-    fn a_screenshot_that_is_gone_is_not_saved() {
-        let (_dir, _shot, _fake) = fixture();
-        let workspace = tempfile::tempdir().expect("a workspace");
-        let gone = workspace.path().join("Screenshot 7.png");
-        let (wake, woken) = waking();
-        let sends = Sends::new(
-            None,
-            Some(workspace.path().to_path_buf()),
-            Arc::clone(&wake),
-        );
-        assert_eq!(sends.send_to_workspace(gone.clone()), None);
-        woken
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the save is answered");
-        assert_eq!(
-            sends.take(),
-            Some(Sent::not_saved(Refusal::Gone { path: gone }))
-        );
-        assert!(
-            !workspace.path().join("Screenshots").exists(),
-            "nothing was written"
-        );
+                Some(Sent::not_saved(Refusal::Gone { path: gone }))
+            );
+            assert!(
+                !workspace.path().join("Screenshots").exists(),
+                "nothing was written"
+            );
+        }
     }
 }

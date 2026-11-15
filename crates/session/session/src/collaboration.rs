@@ -365,95 +365,99 @@ mod tests {
         notes
     }
 
-    /// An agent's place is the window of the app it acts in, named as that window is: a page here
-    /// following it opens the record and reads the same title beside its face.
-    #[test]
-    fn an_agents_place_names_the_record_its_window_shows() {
-        let tree = layout();
-        let notes = named(&[(NOTES, RECORD)]);
-        let (record, title) = super::app_window(&tree, &notes, WORKSPACE, NOTES_APP)
-            .expect("the Notes window is there");
-        assert_eq!(record.app, NOTES_APP);
-        assert_eq!(record.record, RECORD);
-        assert_eq!(title, "Notes", "what the window is called");
-        assert_eq!(
-            super::app_window(&tree, &notes, WORKSPACE, "so.tilo.sheets"),
-            None,
-            "no window of an app that shows none"
-        );
-        // Without the window's record, nothing names where it works: never a wrong window.
-        assert_eq!(
-            super::app_window(
-                &tree,
-                &crate::continuations::Continuations::default(),
-                WORKSPACE,
-                NOTES_APP
-            ),
-            None
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_shell_says_its_place_by_the_record_its_window_shows;
 
-    /// A shell says where this person is: the app and the record the window they work in shows, so
-    /// a page here draws them in it. A page showing the same record names that window as theirs,
-    /// and following them brings it forward.
-    #[test]
-    fn a_shell_says_where_this_person_works_and_a_page_follows_them_to_it() {
-        let shell = said_shell();
-        let [window] = shell.windows.as_slice() else {
-            panic!("one window on the shell: {:?}", shell.windows);
-        };
-        assert_eq!(window.app, NOTES_APP);
-        assert_eq!(
-            window.record,
-            LiveRecord {
-                app: NOTES_APP.to_owned(),
-                record: RECORD.to_owned(),
-            }
-            .short_digest(),
-            "the record's short digest, as presence names it"
-        );
-        assert!(window.focused, "the window they work in");
-        assert!(shell.size[0] > 0 && shell.size[1] > 0, "its screen");
-        assert_eq!(shell.label, "Quinten", "their name here");
-        assert_eq!(shell.colour, "#3b82f6", "their colour here");
-        assert!(!shell.agent, "a person, not an agent");
-
-        // The page shows the same record in the same window, and hears them say where they are.
-        let (page, _said) = Client::offline(device(0xaa), own("Ben"));
-        page.follow_desktop(&layout());
-        for greeting in [
-            PeerPresencePayload::Person {
-                name: "Quinten".to_owned(),
-            },
-            PeerPresencePayload::Arrived,
-        ] {
-            let (from, presence) = said(0xf0, greeting);
-            page.heard_presence(WORKSPACE, from, &presence);
+        phase an_agents_place_names_the_record_its_window_shows;
+        // An agent's place is the window of the app it acts in, named as that window is: a page here
+        // following it opens the record and reads the same title beside its face.
+        {
+            let tree = layout();
+            let notes = named(&[(NOTES, RECORD)]);
+            let (record, title) = super::app_window(&tree, &notes, WORKSPACE, NOTES_APP)
+                .expect("the Notes window is there");
+            assert_eq!(record.app, NOTES_APP);
+            assert_eq!(record.record, RECORD);
+            assert_eq!(title, "Notes", "what the window is called");
+            assert_eq!(
+                super::app_window(&tree, &notes, WORKSPACE, "so.tilo.sheets"),
+                None,
+                "no window of an app that shows none"
+            );
+            // Without the window's record, nothing names where it works: never a wrong window.
+            assert_eq!(
+                super::app_window(
+                    &tree,
+                    &crate::continuations::Continuations::default(),
+                    WORKSPACE,
+                    NOTES_APP
+                ),
+                None
+            );
         }
-        let (from, presence) = said(0xf0, PeerPresencePayload::Shell(shell));
-        page.heard_presence(WORKSPACE, from, &presence);
-        let notes = named(&[(NOTES, RECORD)]);
-        let people = page.people(&layout(), &notes, &|_: &str| Some("Notes".to_owned()));
-        let them = people
-            .iter()
-            .find(|person| person.id == device(0xf0).to_string())
-            .expect("they are here");
-        assert_eq!(
-            them.tab,
-            Some(NOTES),
-            "the window their record shows is theirs"
-        );
-        let mut follow = Follow::default();
-        follow.follow(Some(them.id.clone()));
-        let places: Vec<Place<'_>> = people
-            .iter()
-            .map(|person| Place {
-                id: &person.id,
-                tab: person.tab,
-                app: None,
-            })
-            .collect();
-        assert_eq!(follow.step(&places), Step::Bring(Target::Window(NOTES)));
-        assert_eq!(follow.step(&places), Step::Rest, "brought forward once");
+
+        phase a_shell_says_where_this_person_works_and_a_page_follows_them_to_it;
+        // A shell says where this person is: the app and the record the window they work in shows, so
+        // a page here draws them in it. A page showing the same record names that window as theirs,
+        // and following them brings it forward.
+        {
+            let shell = said_shell();
+            let [window] = shell.windows.as_slice() else {
+                panic!("one window on the shell: {:?}", shell.windows);
+            };
+            assert_eq!(window.app, NOTES_APP);
+            assert_eq!(
+                window.record,
+                LiveRecord {
+                    app: NOTES_APP.to_owned(),
+                    record: RECORD.to_owned(),
+                }
+                .short_digest(),
+                "the record's short digest, as presence names it"
+            );
+            assert!(window.focused, "the window they work in");
+            assert!(shell.size[0] > 0 && shell.size[1] > 0, "its screen");
+            assert_eq!(shell.label, "Quinten", "their name here");
+            assert_eq!(shell.colour, "#3b82f6", "their colour here");
+            assert!(!shell.agent, "a person, not an agent");
+
+            // The page shows the same record in the same window, and hears them say where they are.
+            let (page, _said) = Client::offline(device(0xaa), own("Ben"));
+            page.follow_desktop(&layout());
+            for greeting in [
+                PeerPresencePayload::Person {
+                    name: "Quinten".to_owned(),
+                },
+                PeerPresencePayload::Arrived,
+            ] {
+                let (from, presence) = said(0xf0, greeting);
+                page.heard_presence(WORKSPACE, from, &presence);
+            }
+            let (from, presence) = said(0xf0, PeerPresencePayload::Shell(shell));
+            page.heard_presence(WORKSPACE, from, &presence);
+            let notes = named(&[(NOTES, RECORD)]);
+            let people = page.people(&layout(), &notes, &|_: &str| Some("Notes".to_owned()));
+            let them = people
+                .iter()
+                .find(|person| person.id == device(0xf0).to_string())
+                .expect("they are here");
+            assert_eq!(
+                them.tab,
+                Some(NOTES),
+                "the window their record shows is theirs"
+            );
+            let mut follow = Follow::default();
+            follow.follow(Some(them.id.clone()));
+            let places: Vec<Place<'_>> = people
+                .iter()
+                .map(|person| Place {
+                    id: &person.id,
+                    tab: person.tab,
+                    app: None,
+                })
+                .collect();
+            assert_eq!(follow.step(&places), Step::Bring(Target::Window(NOTES)));
+            assert_eq!(follow.step(&places), Step::Rest, "brought forward once");
+        }
     }
 }

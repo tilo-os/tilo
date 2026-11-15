@@ -562,101 +562,105 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_shells_own_field_stands_over_the_compositors() {
-        let mut compositor = FakeCompositor {
-            field: Some(COMPOSITOR_FIELD),
-            ..FakeCompositor::default()
-        };
-        let own = own(Ok(OWN_FIELD_STATE));
-        let mut fields = Fields {
-            compositor: &mut compositor,
-            own: &own,
-        };
-        assert_eq!(fields.field(), Ok(OWN_FIELD_STATE));
-        assert_eq!(fields.insert(OWN_FIELD_STATE, "hello"), Insertion::Inserted);
-        assert_eq!(
-            own.inserted.borrow().as_slice(),
-            [(OWN_FIELD_STATE, "hello".to_owned())]
-        );
-        assert!(
-            compositor.inserted.borrow().is_empty(),
-            "the app's field behind the shell is not typed into"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn dictated_text_goes_into_the_field_that_holds_the_keys;
 
-    #[test]
-    fn without_an_own_field_the_compositors_field_is_dictated_into() {
-        let mut compositor = FakeCompositor {
-            field: Some(COMPOSITOR_FIELD),
-            ..FakeCompositor::default()
-        };
-        let own = without_own_field();
-        let mut fields = Fields {
-            compositor: &mut compositor,
-            own: &own,
-        };
-        assert_eq!(fields.field(), Ok(COMPOSITOR_FIELD));
-        assert_eq!(
-            fields.insert(COMPOSITOR_FIELD, "hello"),
-            Insertion::Inserted
-        );
-        assert_eq!(
-            compositor.inserted.borrow().as_slice(),
-            [(COMPOSITOR_FIELD, "hello".to_owned())]
-        );
-        assert!(own.inserted.borrow().is_empty());
-    }
+        phase the_shells_own_field_stands_over_the_compositors;
+        {
+            let mut compositor = FakeCompositor {
+                field: Some(COMPOSITOR_FIELD),
+                ..FakeCompositor::default()
+            };
+            let own = own(Ok(OWN_FIELD_STATE));
+            let mut fields = Fields {
+                compositor: &mut compositor,
+                own: &own,
+            };
+            assert_eq!(fields.field(), Ok(OWN_FIELD_STATE));
+            assert_eq!(fields.insert(OWN_FIELD_STATE, "hello"), Insertion::Inserted);
+            assert_eq!(
+                own.inserted.borrow().as_slice(),
+                [(OWN_FIELD_STATE, "hello".to_owned())]
+            );
+            assert!(
+                compositor.inserted.borrow().is_empty(),
+                "the app's field behind the shell is not typed into"
+            );
+        }
 
-    #[test]
-    fn a_secret_own_field_is_refused_rather_than_skipped() {
-        let mut compositor = FakeCompositor {
-            field: Some(COMPOSITOR_FIELD),
-            ..FakeCompositor::default()
-        };
-        let own = own(Err(FieldRefusal::Secret));
-        let mut fields = Fields {
-            compositor: &mut compositor,
-            own: &own,
-        };
-        assert_eq!(fields.field(), Err(FieldRefusal::Secret));
-    }
+        phase without_an_own_field_the_compositors_field_is_dictated_into;
+        {
+            let mut compositor = FakeCompositor {
+                field: Some(COMPOSITOR_FIELD),
+                ..FakeCompositor::default()
+            };
+            let own = without_own_field();
+            let mut fields = Fields {
+                compositor: &mut compositor,
+                own: &own,
+            };
+            assert_eq!(fields.field(), Ok(COMPOSITOR_FIELD));
+            assert_eq!(
+                fields.insert(COMPOSITOR_FIELD, "hello"),
+                Insertion::Inserted
+            );
+            assert_eq!(
+                compositor.inserted.borrow().as_slice(),
+                [(COMPOSITOR_FIELD, "hello".to_owned())]
+            );
+            assert!(own.inserted.borrow().is_empty());
+        }
 
-    #[test]
-    fn a_shell_holding_the_keys_without_a_field_takes_none_either() {
-        let mut compositor = FakeCompositor {
-            field: Some(COMPOSITOR_FIELD),
-            ..FakeCompositor::default()
-        };
-        // The search's rows take the keys, so no window behind them does.
-        let own = own(Err(FieldRefusal::NoField));
-        let mut fields = Fields {
-            compositor: &mut compositor,
-            own: &own,
-        };
-        assert_eq!(fields.field(), Err(FieldRefusal::NoField));
-    }
+        phase a_secret_own_field_is_refused_rather_than_skipped;
+        {
+            let mut compositor = FakeCompositor {
+                field: Some(COMPOSITOR_FIELD),
+                ..FakeCompositor::default()
+            };
+            let own = own(Err(FieldRefusal::Secret));
+            let mut fields = Fields {
+                compositor: &mut compositor,
+                own: &own,
+            };
+            assert_eq!(fields.field(), Err(FieldRefusal::Secret));
+        }
 
-    #[test]
-    fn text_goes_where_the_field_it_bound_lives() {
-        let mut compositor = FakeCompositor {
-            field: Some(COMPOSITOR_FIELD),
-            ..FakeCompositor::default()
-        };
-        // The field moved on since the dictation bound it.
-        let own = own(Ok(Field {
-            revision: 10,
-            ..OWN_FIELD_STATE
-        }));
-        let mut fields = Fields {
-            compositor: &mut compositor,
-            own: &own,
-        };
-        assert_eq!(fields.insert(OWN_FIELD_STATE, "late"), Insertion::Changed);
-        assert!(own.inserted.borrow().is_empty());
-        assert!(
-            compositor.inserted.borrow().is_empty(),
-            "the text does not fall through into another field"
-        );
+        phase a_shell_holding_the_keys_without_a_field_takes_none_either;
+        {
+            let mut compositor = FakeCompositor {
+                field: Some(COMPOSITOR_FIELD),
+                ..FakeCompositor::default()
+            };
+            // The search's rows take the keys, so no window behind them does.
+            let own = own(Err(FieldRefusal::NoField));
+            let mut fields = Fields {
+                compositor: &mut compositor,
+                own: &own,
+            };
+            assert_eq!(fields.field(), Err(FieldRefusal::NoField));
+        }
+
+        phase text_goes_where_the_field_it_bound_lives;
+        {
+            let mut compositor = FakeCompositor {
+                field: Some(COMPOSITOR_FIELD),
+                ..FakeCompositor::default()
+            };
+            // The field moved on since the dictation bound it.
+            let own = own(Ok(Field {
+                revision: 10,
+                ..OWN_FIELD_STATE
+            }));
+            let mut fields = Fields {
+                compositor: &mut compositor,
+                own: &own,
+            };
+            assert_eq!(fields.insert(OWN_FIELD_STATE, "late"), Insertion::Changed);
+            assert!(own.inserted.borrow().is_empty());
+            assert!(
+                compositor.inserted.borrow().is_empty(),
+                "the text does not fall through into another field"
+            );
+        }
     }
 }

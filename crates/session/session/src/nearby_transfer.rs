@@ -2174,39 +2174,43 @@ impl Inner {
 mod tests {
     use super::*;
 
-    #[test]
-    fn progress_is_announced_in_whole_percent() {
-        assert_eq!(percent(0, 0), 0, "an empty transfer has no progress");
-        assert_eq!(percent(5, 1_000), 0);
-        assert_eq!(percent(10, 1_000), 1);
-        assert_eq!(percent(2_000, 1_000), 100, "never past the total");
-    }
+    tilo_test_env::scenario! {
+        fn what_files_is_offered_is_named_measured_and_within_its_grants;
 
-    #[test]
-    fn a_name_is_cut_to_the_wire_budget_on_a_character_boundary() {
-        assert_eq!(clamp("Screenshot 1.png", 512), "Screenshot 1.png");
-        assert_eq!(clamp("ééé", 3), "é", "a character is never cut in two");
-        assert_eq!(clamp("", 4), "");
-    }
+        phase progress_is_announced_in_whole_percent;
+        {
+            assert_eq!(percent(0, 0), 0, "an empty transfer has no progress");
+            assert_eq!(percent(5, 1_000), 0);
+            assert_eq!(percent(10, 1_000), 1);
+            assert_eq!(percent(2_000, 1_000), 100, "never past the total");
+        }
 
-    #[test]
-    fn a_folder_is_offered_under_its_own_name() {
-        assert_eq!(folder_label(Path::new("/home/ada/Documents")), "Documents");
-        assert_eq!(folder_label(Path::new("/")), "Workspace files");
-    }
+        phase a_name_is_cut_to_the_wire_budget_on_a_character_boundary;
+        {
+            assert_eq!(clamp("Screenshot 1.png", 512), "Screenshot 1.png");
+            assert_eq!(clamp("ééé", 3), "é", "a character is never cut in two");
+            assert_eq!(clamp("", 4), "");
+        }
 
-    #[test]
-    fn a_file_outside_every_grant_is_not_sent() {
-        let grants = [Capability::Filesystem {
-            path: PathBuf::from("/home/ada/Documents"),
-            mode: FsMode::Read,
-            scope: tilo_desktop_model::capability::GRANT_SESSION,
-        }];
-        let refused = source_from_grants(Path::new("/etc/shadow"), &grants);
-        assert!(
-            refused.is_err(),
-            "a path the workspace shared no grant for is never opened"
-        );
+        phase a_folder_is_offered_under_its_own_name;
+        {
+            assert_eq!(folder_label(Path::new("/home/ada/Documents")), "Documents");
+            assert_eq!(folder_label(Path::new("/")), "Workspace files");
+        }
+
+        phase a_file_outside_every_grant_is_not_sent;
+        {
+            let grants = [Capability::Filesystem {
+                path: PathBuf::from("/home/ada/Documents"),
+                mode: FsMode::Read,
+                scope: tilo_desktop_model::capability::GRANT_SESSION,
+            }];
+            let refused = source_from_grants(Path::new("/etc/shadow"), &grants);
+            assert!(
+                refused.is_err(),
+                "a path the workspace shared no grant for is never opened"
+            );
+        }
     }
 }
 

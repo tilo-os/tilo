@@ -2393,124 +2393,128 @@ mod tests {
         }
     }
 
-    /// An agent is a service the launcher runs, and the agent's own options follow the entrypoint:
-    /// the workspace its record names it in, the id its actor works as, and the model it plans
-    /// with.
-    #[test]
-    fn an_agent_is_run_as_a_service_with_its_own_argv() {
-        let kept = kept();
-        let provider = r#"{"profile_id":"p","model_id":"m","protocol":"anthropic"}"#;
-        assert_eq!(
-            agent_argv(&kept, Some(provider)),
-            [
-                "--service",
-                "--workspace",
-                WORKSPACE,
-                "--app",
-                "so.tilo.agent",
-                "--agent-id",
-                "scribe",
-                "--name",
-                "Scribe",
-                "--provider",
-                provider,
-            ]
-        );
-        assert_eq!(
-            agent_argv(&kept, None),
-            [
-                "--service",
-                "--workspace",
-                WORKSPACE,
-                "--app",
-                "so.tilo.agent",
-                "--agent-id",
-                "scribe",
-                "--name",
-                "Scribe",
-            ],
-            "an agent with no model configured plans without a selection, and by keyword"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_agent_runs_as_one_service_with_the_model_chosen_for_it;
 
-    /// The keeper's choice on the record is what the agent plans with; with none it follows this
-    /// device's Settings for it.
-    #[test]
-    fn an_agents_model_is_the_keepers_choice_then_the_devices_own() {
-        use agent_provider_config::ProviderConfig;
+        phase an_agent_is_run_as_a_service_with_its_own_argv;
+        // An agent is a service the launcher runs, and the agent's own options follow the entrypoint:
+        // the workspace its record names it in, the id its actor works as, and the model it plans
+        // with.
+        {
+            let kept = kept();
+            let provider = r#"{"profile_id":"p","model_id":"m","protocol":"anthropic"}"#;
+            assert_eq!(
+                agent_argv(&kept, Some(provider)),
+                [
+                    "--service",
+                    "--workspace",
+                    WORKSPACE,
+                    "--app",
+                    "so.tilo.agent",
+                    "--agent-id",
+                    "scribe",
+                    "--name",
+                    "Scribe",
+                    "--provider",
+                    provider,
+                ]
+            );
+            assert_eq!(
+                agent_argv(&kept, None),
+                [
+                    "--service",
+                    "--workspace",
+                    WORKSPACE,
+                    "--app",
+                    "so.tilo.agent",
+                    "--agent-id",
+                    "scribe",
+                    "--name",
+                    "Scribe",
+                ],
+                "an agent with no model configured plans without a selection, and by keyword"
+            );
+        }
 
-        let mut config: ProviderConfig = serde_json::from_value(serde_json::json!({
-            "profiles": [
-                {
-                    "id": "keeper",
-                    "label": "Keeper's provider",
-                    "enabled": true,
-                    "models": [{"id": "chosen", "label": "Chosen"}],
+        phase an_agents_model_is_the_keepers_choice_then_the_devices_own;
+        // The keeper's choice on the record is what the agent plans with; with none it follows this
+        // device's Settings for it.
+        {
+            use agent_provider_config::ProviderConfig;
+
+            let mut config: ProviderConfig = serde_json::from_value(serde_json::json!({
+                "profiles": [
+                    {
+                        "id": "keeper",
+                        "label": "Keeper's provider",
+                        "enabled": true,
+                        "models": [{"id": "chosen", "label": "Chosen"}],
+                    },
+                    {
+                        "id": "here",
+                        "label": "This device's provider",
+                        "enabled": true,
+                        "default_model": "default",
+                        "models": [{"id": "default", "label": "Default"}],
+                    },
+                ],
+                "default_profile": "here",
+            }))
+            .expect("a configuration");
+            // The keeper chose a model on the record, for a profile this device holds: that is the one.
+            let mut chosen = kept();
+            chosen.model = Some("keeper/chosen".to_owned());
+            let selection = provider_selection(&config, &chosen).expect("a selection");
+            assert!(
+                selection.contains(r#""profile_id":"keeper""#),
+                "{selection}"
+            );
+            assert!(selection.contains(r#""model_id":"chosen""#), "{selection}");
+            // A profile or model this device does not hold is not guessed.
+            chosen.model = Some("elsewhere/model".to_owned());
+            assert!(provider_selection(&config, &chosen).is_none());
+            // No choice on the record: what this device's Settings hold for it.
+            config.agent_models.insert(
+                "scribe".to_owned(),
+                agent_provider_config::AgentModel {
+                    profile: "here".to_owned(),
+                    model: "default".to_owned(),
                 },
-                {
-                    "id": "here",
-                    "label": "This device's provider",
-                    "enabled": true,
-                    "default_model": "default",
-                    "models": [{"id": "default", "label": "Default"}],
-                },
-            ],
-            "default_profile": "here",
-        }))
-        .expect("a configuration");
-        // The keeper chose a model on the record, for a profile this device holds: that is the one.
-        let mut chosen = kept();
-        chosen.model = Some("keeper/chosen".to_owned());
-        let selection = provider_selection(&config, &chosen).expect("a selection");
-        assert!(
-            selection.contains(r#""profile_id":"keeper""#),
-            "{selection}"
-        );
-        assert!(selection.contains(r#""model_id":"chosen""#), "{selection}");
-        // A profile or model this device does not hold is not guessed.
-        chosen.model = Some("elsewhere/model".to_owned());
-        assert!(provider_selection(&config, &chosen).is_none());
-        // No choice on the record: what this device's Settings hold for it.
-        config.agent_models.insert(
-            "scribe".to_owned(),
-            agent_provider_config::AgentModel {
-                profile: "here".to_owned(),
-                model: "default".to_owned(),
-            },
-        );
-        let selection = provider_selection(&config, &kept()).expect("this device's selection");
-        assert!(selection.contains(r#""profile_id":"here""#), "{selection}");
-        assert!(selection.contains(r#""model_id":"default""#), "{selection}");
-    }
+            );
+            let selection = provider_selection(&config, &kept()).expect("this device's selection");
+            assert!(selection.contains(r#""profile_id":"here""#), "{selection}");
+            assert!(selection.contains(r#""model_id":"default""#), "{selection}");
+        }
 
-    /// One process per agent per session: a pass that sees the same record starts nothing, a
-    /// process that ended is not started again, and the record's next change is.
-    #[test]
-    fn an_agent_is_started_once_and_not_restarted_after_it_ends() {
-        let apps = apps();
-        let kept = kept();
-        let key = (kept.workspace.clone(), kept.id.clone());
-        assert!(apps.agent_due(&key, &kept));
-        apps.remember_agent(key.clone(), &kept, Some(7));
-        assert!(!apps.agent_due(&key, &kept), "a running agent starts once");
-        apps.state.borrow().spawner.report(Event {
-            id: 7,
-            app: "so.tilo.agent".to_owned(),
-            title: "Agent".to_owned(),
-            end: End::exited(1),
-            said: OutputTail::default(),
-        });
-        apps.follow();
-        assert!(
-            !apps.agent_due(&key, &kept),
-            "an agent that ended is not started in a loop"
-        );
-        let mut renamed = kept;
-        renamed.name = "Amanuensis".to_owned();
-        assert!(
-            apps.agent_due(&key, &renamed),
-            "the record's next change starts the agent again"
-        );
+        phase an_agent_is_started_once_and_not_restarted_after_it_ends;
+        // One process per agent per session: a pass that sees the same record starts nothing, a
+        // process that ended is not started again, and the record's next change is.
+        {
+            let apps = apps();
+            let kept = kept();
+            let key = (kept.workspace.clone(), kept.id.clone());
+            assert!(apps.agent_due(&key, &kept));
+            apps.remember_agent(key.clone(), &kept, Some(7));
+            assert!(!apps.agent_due(&key, &kept), "a running agent starts once");
+            apps.state.borrow().spawner.report(Event {
+                id: 7,
+                app: "so.tilo.agent".to_owned(),
+                title: "Agent".to_owned(),
+                end: End::exited(1),
+                said: OutputTail::default(),
+            });
+            apps.follow();
+            assert!(
+                !apps.agent_due(&key, &kept),
+                "an agent that ended is not started in a loop"
+            );
+            let mut renamed = kept;
+            renamed.name = "Amanuensis".to_owned();
+            assert!(
+                apps.agent_due(&key, &renamed),
+                "the record's next change starts the agent again"
+            );
+        }
     }
 
     /// The desktop the apps are started from, laid out as wide as an output: what its notice tabs

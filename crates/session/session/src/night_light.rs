@@ -253,48 +253,52 @@ fn retain_schedule(followed: &Followed) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_person_chooses_the_warmth_and_the_schedule_decides_when() {
-        let preference = Preference {
-            on: true,
-            temperature: 2_400,
-            scheduled: false,
-        };
-        assert_eq!(preference.kelvin(false), Some(2_400));
-        assert_eq!(
-            preference.kelvin(true),
-            Some(2_400),
-            "the switch shows in the day too"
-        );
+    tilo_test_env::scenario! {
+        fn the_night_light_is_the_persons_warmth_on_the_schedules_hours;
 
-        let scheduled = Preference {
-            scheduled: true,
-            ..preference
-        };
-        assert_eq!(scheduled.kelvin(false), None, "no warmth by day");
-        assert_eq!(
-            scheduled.kelvin(true),
-            Some(2_400),
-            "the person's warmth by night"
-        );
+        phase the_person_chooses_the_warmth_and_the_schedule_decides_when;
+        {
+            let preference = Preference {
+                on: true,
+                temperature: 2_400,
+                scheduled: false,
+            };
+            assert_eq!(preference.kelvin(false), Some(2_400));
+            assert_eq!(
+                preference.kelvin(true),
+                Some(2_400),
+                "the switch shows in the day too"
+            );
 
-        // A warmth another tool wrote outside what the displays show reads as the nearest they can.
-        let document = Map::from_iter([(
-            "display_person".to_owned(),
-            serde_json::json!({ "night_light": true, "night_light_temperature": 9_000 }),
-        )]);
-        assert_eq!(Preference::from_document(&document).temperature, 6_500);
-    }
+            let scheduled = Preference {
+                scheduled: true,
+                ..preference
+            };
+            assert_eq!(scheduled.kelvin(false), None, "no warmth by day");
+            assert_eq!(
+                scheduled.kelvin(true),
+                Some(2_400),
+                "the person's warmth by night"
+            );
 
-    #[test]
-    fn the_schedule_follows_the_appearance_day_and_night() {
-        let document = Map::from_iter([(
-            "display_person".to_owned(),
-            serde_json::json!({ "night_light": true, "night_light_schedule": true }),
-        )]);
-        let preference = Preference::from_document(&document);
-        assert!(preference.scheduled);
-        assert_eq!(preference.kelvin(false), None);
-        assert_eq!(preference.kelvin(true), Some(DEFAULT_TEMPERATURE));
+            // A warmth another tool wrote outside what the displays show reads as the nearest they can.
+            let document = Map::from_iter([(
+                "display_person".to_owned(),
+                serde_json::json!({ "night_light": true, "night_light_temperature": 9_000 }),
+            )]);
+            assert_eq!(Preference::from_document(&document).temperature, 6_500);
+        }
+
+        phase the_schedule_follows_the_appearance_day_and_night;
+        {
+            let document = Map::from_iter([(
+                "display_person".to_owned(),
+                serde_json::json!({ "night_light": true, "night_light_schedule": true }),
+            )]);
+            let preference = Preference::from_document(&document);
+            assert!(preference.scheduled);
+            assert_eq!(preference.kelvin(false), None);
+            assert_eq!(preference.kelvin(true), Some(DEFAULT_TEMPERATURE));
+        }
     }
 }

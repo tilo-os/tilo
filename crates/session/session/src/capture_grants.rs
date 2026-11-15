@@ -69,63 +69,67 @@ mod tests {
         .through(app)
     }
 
-    #[test]
-    fn taking_the_camera_away_stops_the_next_ask_but_not_any_other_device() {
-        let mut tree = shell(camera("so.tilo.meet"));
-        let workspace = tree.workspaces[0].id().to_string();
-        assert!(still_allowed(
-            &tree,
-            "so.tilo.meet",
-            &workspace,
-            CaptureKind::Camera,
-            10
-        ));
-        assert!(
-            !still_allowed(
+    tilo_test_env::scenario! {
+        fn a_capture_is_allowed_only_while_its_workspaces_grant_stands;
+
+        phase taking_the_camera_away_stops_the_next_ask_but_not_any_other_device;
+        {
+            let mut tree = shell(camera("so.tilo.meet"));
+            let workspace = tree.workspaces[0].id().to_string();
+            assert!(still_allowed(
                 &tree,
                 "so.tilo.meet",
                 &workspace,
-                CaptureKind::Microphone,
+                CaptureKind::Camera,
                 10
-            ),
-            "the camera grant is not a microphone grant"
-        );
-        let id = tree.workspaces[0].sandbox[0].id.clone();
-        assert!(tree.workspaces[0].revoke_sandbox(&id));
-        assert!(
-            !still_allowed(&tree, "so.tilo.meet", &workspace, CaptureKind::Camera, 10),
-            "the revoked camera is refused at once"
-        );
-        assert!(
-            still_allowed(&tree, "so.tilo.meet", &workspace, CaptureKind::Screen, 10),
-            "a screen share is the person's answer, not a workspace grant"
-        );
-    }
+            ));
+            assert!(
+                !still_allowed(
+                    &tree,
+                    "so.tilo.meet",
+                    &workspace,
+                    CaptureKind::Microphone,
+                    10
+                ),
+                "the camera grant is not a microphone grant"
+            );
+            let id = tree.workspaces[0].sandbox[0].id.clone();
+            assert!(tree.workspaces[0].revoke_sandbox(&id));
+            assert!(
+                !still_allowed(&tree, "so.tilo.meet", &workspace, CaptureKind::Camera, 10),
+                "the revoked camera is refused at once"
+            );
+            assert!(
+                still_allowed(&tree, "so.tilo.meet", &workspace, CaptureKind::Screen, 10),
+                "a screen share is the person's answer, not a workspace grant"
+            );
+        }
 
-    #[test]
-    fn an_expired_grant_stops_capturing_and_another_workspace_does_not_count() {
-        let tree = shell(camera("so.tilo.meet").expiring(collab_types::caps::Expiry::AtUnix(20)));
-        let workspace = tree.workspaces[0].id().to_string();
-        assert!(still_allowed(
-            &tree,
-            "so.tilo.meet",
-            &workspace,
-            CaptureKind::Camera,
-            19
-        ));
-        assert!(
-            !still_allowed(&tree, "so.tilo.meet", &workspace, CaptureKind::Camera, 21),
-            "a lapsed grant stops capturing without anyone revoking it"
-        );
-        assert!(
-            !still_allowed(
+        phase an_expired_grant_stops_capturing_and_another_workspace_does_not_count;
+        {
+            let tree = shell(camera("so.tilo.meet").expiring(collab_types::caps::Expiry::AtUnix(20)));
+            let workspace = tree.workspaces[0].id().to_string();
+            assert!(still_allowed(
                 &tree,
                 "so.tilo.meet",
-                "another-workspace",
+                &workspace,
                 CaptureKind::Camera,
                 19
-            ),
-            "a grant in one workspace says nothing about another"
-        );
+            ));
+            assert!(
+                !still_allowed(&tree, "so.tilo.meet", &workspace, CaptureKind::Camera, 21),
+                "a lapsed grant stops capturing without anyone revoking it"
+            );
+            assert!(
+                !still_allowed(
+                    &tree,
+                    "so.tilo.meet",
+                    "another-workspace",
+                    CaptureKind::Camera,
+                    19
+                ),
+                "a grant in one workspace says nothing about another"
+            );
+        }
     }
 }

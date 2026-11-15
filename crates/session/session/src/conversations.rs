@@ -1332,367 +1332,379 @@ mod tests {
         turns(chat, head, ME, &chat::projection::AgentNames::new()).0
     }
 
-    #[test]
-    fn an_unanswered_message_is_a_turn_of_the_conversations_agent() {
-        let chat = workspace();
-        let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
-        let entries = read(&chat, &head);
-        let [entry] = entries.as_slice() else {
-            panic!("one turn, not {entries:?}");
-        };
-        assert_eq!(entry.run.agent, AGENT);
-        assert_eq!(entry.run.starter, "me");
-        assert_eq!(entry.run.instruction, "add the revenue curve");
-        assert_eq!(entry.run.title, "Tide");
-        assert_eq!(
-            entry.run.turn,
-            Some(Turn::new("chat.workspace/channels/c_tide", "m1"))
-        );
-        assert_eq!(entry.looked, Looked::by(ME));
-        assert!(entry.run.active);
-    }
+    tilo_test_env::scenario! {
+        fn a_conversations_messages_become_its_agents_turns;
 
-    /// What a send-to box carried reaches the agent as the record it names: the run's subject is
-    /// that record, to act on through its own actions, and a message carrying it with no words is
-    /// a turn too.
-    #[test]
-    fn what_a_message_carries_is_the_subject_of_its_turn() {
-        let chat = workspace();
-        let issue = tilo_reference::ResourceAt {
-            app: "so.tilo.tasks".into(),
-            record: None,
-            reference: tilo_reference::ResourceRef::whole(
-                "tasks.issue",
-                "tasks.tracker/issues/42",
-                "Launch checklist",
-            ),
-        };
-        let mut handed = message(ME, "", 10);
-        handed.attachments = vec![
-            tilo_reference::Attached::resource(
-                issue,
-                Some(tilo_reference::Anchor::item("42")),
-                "Launch checklist",
-            ),
-            tilo_reference::Attached::Text {
-                text: "before Friday".into(),
-                from: None,
-            },
-        ];
-        let entries = read(&chat, &part(vec![("m1", handed)]));
-        let [entry] = entries.as_slice() else {
-            panic!("a message carrying a task alone is a turn, not {entries:?}");
-        };
-        let subject = entry.run.subject.as_ref().expect("the task is the subject");
-        assert_eq!(subject.app_id, "so.tilo.tasks");
-        assert_eq!(subject.resource.id, "tasks.tracker/issues/42");
-        assert_eq!(
-            subject.anchor.place,
-            Some(tilo_actions::SelectionPlace::item("42"))
-        );
-        assert_eq!(entry.run.instruction, "It quotes: \"before Friday\".");
-    }
+        phase an_unanswered_message_is_a_turn_of_the_conversations_agent;
+        {
+            let chat = workspace();
+            let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
+            let entries = read(&chat, &head);
+            let [entry] = entries.as_slice() else {
+                panic!("one turn, not {entries:?}");
+            };
+            assert_eq!(entry.run.agent, AGENT);
+            assert_eq!(entry.run.starter, "me");
+            assert_eq!(entry.run.instruction, "add the revenue curve");
+            assert_eq!(entry.run.title, "Tide");
+            assert_eq!(
+                entry.run.turn,
+                Some(Turn::new("chat.workspace/channels/c_tide", "m1"))
+            );
+            assert_eq!(entry.looked, Looked::by(ME));
+            assert!(entry.run.active);
+        }
 
-    /// A person writes messages under their root key, which is the member key their
-    /// conversation keeps: a message they post summons its conversation's agent.
-    #[test]
-    fn a_persons_message_is_a_turn() {
-        let bare = "22503e79b0b80274014ec6333d3561ca89cb3209937b901c4bc2e4bedccc2f85";
-        let chat = workspace();
-        let head = part(vec![("m1", message(bare, "what is on my task list?", 10))]);
-        let entries = read(&chat, &head);
-        let [entry] = entries.as_slice() else {
-            panic!("one turn, not {entries:?}");
-        };
-        assert_eq!(entry.run.agent, AGENT);
-        assert_eq!(entry.run.starter, bare, "the run acts for that person");
-        assert_eq!(entry.run.instruction, "what is on my task list?");
-        assert!(
-            entry.run.active,
-            "the person's message waits for its answer"
-        );
-        assert_eq!(
-            person_of("agent-task:22222222-2222-4222-8222-222222222222"),
-            None,
-            "an agent's message is no person's turn"
-        );
-    }
-
-    #[test]
-    fn the_agents_reply_ends_its_turn() {
-        let chat = workspace();
-        let reply = chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR);
-        let mut head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
-        head.messages.push(reply, message(AGENT_ACTOR, "done", 20));
-        assert_eq!(read(&chat, &head), Vec::new());
-    }
-
-    /// A reply whose turn failed and that the person asked again no longer answers: the same
-    /// message is a turn again, in a later attempt whose reply is its own.
-    #[test]
-    fn a_retried_reply_gives_its_summons_a_turn_again() {
-        let chat = workspace();
-        let mut asked = message(ME, "add the revenue curve", 10);
-        let mut head = part(vec![("m1", asked.clone())]);
-        let mut failed = message(AGENT_ACTOR, "", 20);
-        failed.parent = Some(Id::from_raw("m1"));
-        failed.work = Some(chat::record::Work {
-            state: Some(chat::record::Transition {
-                state: chat::model::AgentWorkState::ProviderFinished {
-                    outcome: chat::agent_stream::AgentFinish::Failed,
+        phase what_a_message_carries_is_the_subject_of_its_turn;
+        // What a send-to box carried reaches the agent as the record it names: the run's subject is
+        // that record, to act on through its own actions, and a message carrying it with no words is
+        // a turn too.
+        {
+            let chat = workspace();
+            let issue = tilo_reference::ResourceAt {
+                app: "so.tilo.tasks".into(),
+                record: None,
+                reference: tilo_reference::ResourceRef::whole(
+                    "tasks.issue",
+                    "tasks.tracker/issues/42",
+                    "Launch checklist",
+                ),
+            };
+            let mut handed = message(ME, "", 10);
+            handed.attachments = vec![
+                tilo_reference::Attached::resource(
+                    issue,
+                    Some(tilo_reference::Anchor::item("42")),
+                    "Launch checklist",
+                ),
+                tilo_reference::Attached::Text {
+                    text: "before Friday".into(),
+                    from: None,
                 },
-                since: 20,
-            }),
-            ..chat::record::Work::default()
-        });
-        head.messages.push(
-            chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
-            failed,
-        );
-        assert_eq!(
-            read(&chat, &head),
-            Vec::new(),
-            "a failed reply ends the turn until the person asks again"
-        );
-        // The retry moved the question to its next attempt: its reply is the one derived for
-        // that attempt, and nobody has written it.
-        asked.attempts = 1;
-        head.messages.push(Id::from_raw("m1"), asked.clone());
-        let entries = read(&chat, &head);
-        let [entry] = entries.as_slice() else {
-            panic!("the retried summons is a turn again: {entries:?}");
-        };
-        assert_eq!(entry.run.instruction, "add the revenue curve");
-        assert_eq!(
-            entry.run.turn,
-            Some(Turn::new("chat.workspace/channels/c_tide", "m1")),
-            "the turn is the same message, never a second question"
-        );
-        assert_eq!(
-            summonses(&chat, &head),
-            vec![Id::from_raw("m1")],
-            "the summons's item offers `record-work` again, so the agent's new answer lands"
-        );
-        // The answer lands in the attempt's own reply, never the one that failed.
-        let next = chat::record::reply_id_at(&Id::from_raw("m1"), AGENT_ACTOR, asked.attempts);
-        assert_ne!(
-            next,
-            chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
-            "a retried turn is answered in a reply of its own"
-        );
-    }
+            ];
+            let entries = read(&chat, &part(vec![("m1", handed)]));
+            let [entry] = entries.as_slice() else {
+                panic!("a message carrying a task alone is a turn, not {entries:?}");
+            };
+            let subject = entry.run.subject.as_ref().expect("the task is the subject");
+            assert_eq!(subject.app_id, "so.tilo.tasks");
+            assert_eq!(subject.resource.id, "tasks.tracker/issues/42");
+            assert_eq!(
+                subject.anchor.place,
+                Some(tilo_actions::SelectionPlace::item("42"))
+            );
+            assert_eq!(entry.run.instruction, "It quotes: \"before Friday\".");
+        }
 
-    /// A retried turn is a run of its own, not the one that failed read again: its epoch is the
-    /// attempt the message is in. That is what makes it deliverable — the pass announces a change
-    /// only when the turns differ ([`Held::differs_from`]), and the broker derives the run's own
-    /// id from the issue and its epoch, so a turn that read exactly like the failed one would be
-    /// handed to nobody.
-    #[test]
-    fn a_retried_turn_is_a_new_run_of_the_same_message() {
-        let chat = workspace();
-        let asker = message(ME, "add the revenue curve", 10);
-        let mut head = part(vec![("m1", asker.clone())]);
-        // The turn going before the answer was tried: the run the agent was handed first.
-        let first = read(&chat, &head);
-        let [before] = first.as_slice() else {
-            panic!("the ask is a turn: {first:?}");
-        };
-        assert_eq!(before.run.epoch, 1, "the first attempt is the first run");
-        // The try failed: the failed reply ends the turn.
-        let mut failed = message(AGENT_ACTOR, "", 20);
-        failed.parent = Some(Id::from_raw("m1"));
-        failed.work = Some(chat::record::Work {
-            state: Some(chat::record::Transition {
-                state: chat::model::AgentWorkState::ProviderFinished {
-                    outcome: chat::agent_stream::AgentFinish::Failed,
+        phase a_persons_message_is_a_turn;
+        // A person writes messages under their root key, which is the member key their
+        // conversation keeps: a message they post summons its conversation's agent.
+        {
+            let bare = "22503e79b0b80274014ec6333d3561ca89cb3209937b901c4bc2e4bedccc2f85";
+            let chat = workspace();
+            let head = part(vec![("m1", message(bare, "what is on my task list?", 10))]);
+            let entries = read(&chat, &head);
+            let [entry] = entries.as_slice() else {
+                panic!("one turn, not {entries:?}");
+            };
+            assert_eq!(entry.run.agent, AGENT);
+            assert_eq!(entry.run.starter, bare, "the run acts for that person");
+            assert_eq!(entry.run.instruction, "what is on my task list?");
+            assert!(
+                entry.run.active,
+                "the person's message waits for its answer"
+            );
+            assert_eq!(
+                person_of("agent-task:22222222-2222-4222-8222-222222222222"),
+                None,
+                "an agent's message is no person's turn"
+            );
+        }
+
+        phase the_agents_reply_ends_its_turn;
+        {
+            let chat = workspace();
+            let reply = chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR);
+            let mut head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
+            head.messages.push(reply, message(AGENT_ACTOR, "done", 20));
+            assert_eq!(read(&chat, &head), Vec::new());
+        }
+
+        phase the_newest_unanswered_message_is_the_turn;
+        {
+            let chat = workspace();
+            let head = part(vec![
+                ("m1", message(ME, "first", 10)),
+                ("m2", message(ME, "second", 20)),
+            ]);
+            let entries = read(&chat, &head);
+            let [entry] = entries.as_slice() else {
+                panic!("one turn, not {entries:?}");
+            };
+            assert_eq!(entry.run.instruction, "second");
+        }
+
+        phase an_agents_own_words_are_no_summons;
+        {
+            let chat = workspace();
+            let head = part(vec![("m1", message(AGENT_ACTOR, "on it", 10))]);
+            assert_eq!(read(&chat, &head), Vec::new());
+        }
+
+        phase a_channel_of_the_whole_workspace_summons_no_agent;
+        {
+            let mut chat = workspace();
+            chat.channels.push(
+                Id::from_raw("c_general"),
+                chat::record::Conversation {
+                    name: "general".into(),
+                    ..chat::record::Conversation::default()
                 },
-                since: 20,
-            }),
-            ..chat::record::Work::default()
-        });
-        head.messages.push(
-            chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
-            failed,
-        );
-        assert_eq!(read(&chat, &head), Vec::new());
-        // The person pressed Retry: the same message is a turn again, and it is a new run.
-        let mut retried = asker;
-        retried.attempts = 1;
-        head.messages.push(Id::from_raw("m1"), retried);
-        let again = read(&chat, &head);
-        let [after] = again.as_slice() else {
-            panic!("the retried summons is a turn again: {again:?}");
-        };
-        assert_eq!(
-            after.run.issue, before.run.issue,
-            "the retried run is the same message's"
-        );
-        assert_eq!(
-            after.run.epoch, 2,
-            "the retried run is the attempt the message moved to"
-        );
-        assert_ne!(
-            *after, *before,
-            "the retried turn differs from the one that failed, so the pass announces it"
-        );
-        // And the pass reads that as a change to deliver, exactly as it does a new turn.
-        let facts = |turns: Vec<Entry>| Held {
-            workspaces: vec![Facts {
-                workspace: "w1".into(),
-                agents: vec![AGENT.to_owned()],
-                policy: None,
-                turns,
-            }],
-        };
-        assert!(
-            facts(again).differs_from(&facts(first)),
-            "the retry is a change the broker is woken for"
-        );
+            );
+            let head = part(vec![(
+                "m1",
+                chat::record::Message {
+                    channel: Id::from_raw("c_general"),
+                    ..message(ME, "hello all", 10)
+                },
+            )]);
+            assert_eq!(read(&chat, &head), Vec::new());
+        }
     }
 
-    #[test]
-    fn the_newest_unanswered_message_is_the_turn() {
-        let chat = workspace();
-        let head = part(vec![
-            ("m1", message(ME, "first", 10)),
-            ("m2", message(ME, "second", 20)),
-        ]);
-        let entries = read(&chat, &head);
-        let [entry] = entries.as_slice() else {
-            panic!("one turn, not {entries:?}");
-        };
-        assert_eq!(entry.run.instruction, "second");
+    tilo_test_env::scenario! {
+        fn a_retry_gives_the_same_message_a_turn_and_a_run_again;
+
+        phase a_retried_reply_gives_its_summons_a_turn_again;
+        // A reply whose turn failed and that the person asked again no longer answers: the same
+        // message is a turn again, in a later attempt whose reply is its own.
+        {
+            let chat = workspace();
+            let mut asked = message(ME, "add the revenue curve", 10);
+            let mut head = part(vec![("m1", asked.clone())]);
+            let mut failed = message(AGENT_ACTOR, "", 20);
+            failed.parent = Some(Id::from_raw("m1"));
+            failed.work = Some(chat::record::Work {
+                state: Some(chat::record::Transition {
+                    state: chat::model::AgentWorkState::ProviderFinished {
+                        outcome: chat::agent_stream::AgentFinish::Failed,
+                    },
+                    since: 20,
+                }),
+                ..chat::record::Work::default()
+            });
+            head.messages.push(
+                chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
+                failed,
+            );
+            assert_eq!(
+                read(&chat, &head),
+                Vec::new(),
+                "a failed reply ends the turn until the person asks again"
+            );
+            // The retry moved the question to its next attempt: its reply is the one derived for
+            // that attempt, and nobody has written it.
+            asked.attempts = 1;
+            head.messages.push(Id::from_raw("m1"), asked.clone());
+            let entries = read(&chat, &head);
+            let [entry] = entries.as_slice() else {
+                panic!("the retried summons is a turn again: {entries:?}");
+            };
+            assert_eq!(entry.run.instruction, "add the revenue curve");
+            assert_eq!(
+                entry.run.turn,
+                Some(Turn::new("chat.workspace/channels/c_tide", "m1")),
+                "the turn is the same message, never a second question"
+            );
+            assert_eq!(
+                summonses(&chat, &head),
+                vec![Id::from_raw("m1")],
+                "the summons's item offers `record-work` again, so the agent's new answer lands"
+            );
+            // The answer lands in the attempt's own reply, never the one that failed.
+            let next = chat::record::reply_id_at(&Id::from_raw("m1"), AGENT_ACTOR, asked.attempts);
+            assert_ne!(
+                next,
+                chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
+                "a retried turn is answered in a reply of its own"
+            );
+        }
+
+        phase a_retried_turn_is_a_new_run_of_the_same_message;
+        // A retried turn is a run of its own, not the one that failed read again: its epoch is the
+        // attempt the message is in. That is what makes it deliverable — the pass announces a change
+        // only when the turns differ ([`Held::differs_from`]), and the broker derives the run's own
+        // id from the issue and its epoch, so a turn that read exactly like the failed one would be
+        // handed to nobody.
+        {
+            let chat = workspace();
+            let asker = message(ME, "add the revenue curve", 10);
+            let mut head = part(vec![("m1", asker.clone())]);
+            // The turn going before the answer was tried: the run the agent was handed first.
+            let first = read(&chat, &head);
+            let [before] = first.as_slice() else {
+                panic!("the ask is a turn: {first:?}");
+            };
+            assert_eq!(before.run.epoch, 1, "the first attempt is the first run");
+            // The try failed: the failed reply ends the turn.
+            let mut failed = message(AGENT_ACTOR, "", 20);
+            failed.parent = Some(Id::from_raw("m1"));
+            failed.work = Some(chat::record::Work {
+                state: Some(chat::record::Transition {
+                    state: chat::model::AgentWorkState::ProviderFinished {
+                        outcome: chat::agent_stream::AgentFinish::Failed,
+                    },
+                    since: 20,
+                }),
+                ..chat::record::Work::default()
+            });
+            head.messages.push(
+                chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
+                failed,
+            );
+            assert_eq!(read(&chat, &head), Vec::new());
+            // The person pressed Retry: the same message is a turn again, and it is a new run.
+            let mut retried = asker;
+            retried.attempts = 1;
+            head.messages.push(Id::from_raw("m1"), retried);
+            let again = read(&chat, &head);
+            let [after] = again.as_slice() else {
+                panic!("the retried summons is a turn again: {again:?}");
+            };
+            assert_eq!(
+                after.run.issue, before.run.issue,
+                "the retried run is the same message's"
+            );
+            assert_eq!(
+                after.run.epoch, 2,
+                "the retried run is the attempt the message moved to"
+            );
+            assert_ne!(
+                *after, *before,
+                "the retried turn differs from the one that failed, so the pass announces it"
+            );
+            // And the pass reads that as a change to deliver, exactly as it does a new turn.
+            let facts = |turns: Vec<Entry>| Held {
+                workspaces: vec![Facts {
+                    workspace: "w1".into(),
+                    agents: vec![AGENT.to_owned()],
+                    policy: None,
+                    turns,
+                }],
+            };
+            assert!(
+                facts(again).differs_from(&facts(first)),
+                "the retry is a change the broker is woken for"
+            );
+        }
     }
 
-    #[test]
-    fn an_agents_own_words_are_no_summons() {
-        let chat = workspace();
-        let head = part(vec![("m1", message(AGENT_ACTOR, "on it", 10))]);
-        assert_eq!(read(&chat, &head), Vec::new());
-    }
+    tilo_test_env::scenario! {
+        fn the_run_channel_holds_the_turns_it_read_and_charges_their_spend;
 
-    #[test]
-    fn a_channel_of_the_whole_workspace_summons_no_agent() {
-        let mut chat = workspace();
-        chat.channels.push(
-            Id::from_raw("c_general"),
-            chat::record::Conversation {
-                name: "general".into(),
-                ..chat::record::Conversation::default()
-            },
-        );
-        let head = part(vec![(
-            "m1",
-            chat::record::Message {
-                channel: Id::from_raw("c_general"),
-                ..message(ME, "hello all", 10)
-            },
-        )]);
-        assert_eq!(read(&chat, &head), Vec::new());
-    }
+        phase a_runs_spend_is_charged_to_its_agent_for_what_each_report_added;
+        {
+            let chat = workspace();
+            let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
+            let (entries, agents) = turns(&chat, &head, ME, &chat::projection::AgentNames::new());
+            let issue = entries[0].run.issue.clone();
+            let epoch = entries[0].run.epoch;
+            let agent = entries[0].run.agent.clone();
+            let runs = Runs::new(std::sync::Arc::new(|| {}));
+            *runs.held.lock().unwrap() = Held {
+                workspaces: vec![Facts {
+                    workspace: "w1".into(),
+                    agents,
+                    policy: None,
+                    turns: entries,
+                }],
+            };
+            let spent = |cost_micros| runtime_collab::TaskRunUpdate::Spent { cost_micros };
 
-    #[test]
-    fn a_runs_spend_is_charged_to_its_agent_for_what_each_report_added() {
-        let chat = workspace();
-        let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
-        let (entries, agents) = turns(&chat, &head, ME, &chat::projection::AgentNames::new());
-        let issue = entries[0].run.issue.clone();
-        let epoch = entries[0].run.epoch;
-        let agent = entries[0].run.agent.clone();
-        let runs = Runs::new(std::sync::Arc::new(|| {}));
-        *runs.held.lock().unwrap() = Held {
-            workspaces: vec![Facts {
-                workspace: "w1".into(),
-                agents,
-                policy: None,
-                turns: entries,
-            }],
-        };
-        let spent = |cost_micros| runtime_collab::TaskRunUpdate::Spent { cost_micros };
+            runs.reported("w1", &issue, epoch, &spent(420_000));
+            assert_eq!(
+                runs.take_spent(),
+                vec![("w1".to_owned(), agent.clone(), 420_000)]
+            );
+            assert_eq!(runs.take_spent(), Vec::new(), "a charge is taken once");
 
-        runs.reported("w1", &issue, epoch, &spent(420_000));
-        assert_eq!(
-            runs.take_spent(),
-            vec![("w1".to_owned(), agent.clone(), 420_000)]
-        );
-        assert_eq!(runs.take_spent(), Vec::new(), "a charge is taken once");
+            runs.reported("w1", &issue, epoch, &spent(420_000));
+            assert_eq!(
+                runs.take_spent(),
+                Vec::new(),
+                "a repeated total adds nothing"
+            );
 
-        runs.reported("w1", &issue, epoch, &spent(420_000));
-        assert_eq!(
-            runs.take_spent(),
-            Vec::new(),
-            "a repeated total adds nothing"
-        );
+            runs.reported("w1", &issue, epoch, &spent(900_000));
+            assert_eq!(
+                runs.take_spent(),
+                vec![("w1".to_owned(), agent, 480_000)],
+                "the run's total, not the last call's, is what its agent spent"
+            );
 
-        runs.reported("w1", &issue, epoch, &spent(900_000));
-        assert_eq!(
-            runs.take_spent(),
-            vec![("w1".to_owned(), agent, 480_000)],
-            "the run's total, not the last call's, is what its agent spent"
-        );
+            runs.reported("w2", &issue, epoch, &spent(100));
+            assert_eq!(
+                runs.take_spent(),
+                Vec::new(),
+                "a turn this session does not hold is not charged"
+            );
+        }
 
-        runs.reported("w2", &issue, epoch, &spent(100));
-        assert_eq!(
-            runs.take_spent(),
-            Vec::new(),
-            "a turn this session does not hold is not charged"
-        );
-    }
+        phase the_run_channel_knows_only_the_workspaces_it_read;
+        {
+            let chat = workspace();
+            let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
+            let (entries, agents) = turns(&chat, &head, ME, &chat::projection::AgentNames::new());
+            let runs = Runs::new(std::sync::Arc::new(|| {}));
+            *runs.held.lock().unwrap() = Held {
+                workspaces: vec![Facts {
+                    workspace: "w1".into(),
+                    agents,
+                    policy: None,
+                    turns: entries,
+                }],
+            };
+            assert!(runs.requires_workspace("w1"));
+            assert!(!runs.requires_workspace("w2"));
+            assert_eq!(runs.runs("w1").unwrap().len(), 1);
+            assert!(runs.runs("w2").is_err());
+            let mut run = runs.runs("w1").unwrap().remove(0);
+            assert!(runs.check_agent("w1", &run).is_ok());
+            run.agent = "other".into();
+            assert!(runs.check_agent("w1", &run).is_err());
+        }
 
-    #[test]
-    fn the_run_channel_knows_only_the_workspaces_it_read() {
-        let chat = workspace();
-        let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
-        let (entries, agents) = turns(&chat, &head, ME, &chat::projection::AgentNames::new());
-        let runs = Runs::new(std::sync::Arc::new(|| {}));
-        *runs.held.lock().unwrap() = Held {
-            workspaces: vec![Facts {
-                workspace: "w1".into(),
-                agents,
-                policy: None,
-                turns: entries,
-            }],
-        };
-        assert!(runs.requires_workspace("w1"));
-        assert!(!runs.requires_workspace("w2"));
-        assert_eq!(runs.runs("w1").unwrap().len(), 1);
-        assert!(runs.runs("w2").is_err());
-        let mut run = runs.runs("w1").unwrap().remove(0);
-        assert!(runs.check_agent("w1", &run).is_ok());
-        run.agent = "other".into();
-        assert!(runs.check_agent("w1", &run).is_err());
-    }
-
-    /// A pass that read different turns than the one before is what wakes the
-    /// broker to deliver a new one: the person typing an ask into a
-    /// conversation Chat held no message in is only handed to its agent
-    /// because [`Held::differs_from`] says the turns changed.
-    #[test]
-    fn a_new_turn_is_a_change_and_the_same_turns_are_not() {
-        let chat = workspace();
-        let asked = part(vec![("m1", message(ME, "what is on my task list?", 10))]);
-        let (entries, agents) = turns(&chat, &asked, ME, &chat::projection::AgentNames::new());
-        let facts = |turns: Vec<Entry>| Held {
-            workspaces: vec![Facts {
-                workspace: "w1".into(),
-                agents: agents.clone(),
-                policy: None,
-                turns,
-            }],
-        };
-        let nothing = Held::default();
-        let waiting = facts(entries.clone());
-        assert!(
-            nothing.differs_from(&waiting),
-            "a turn that was not there is a change to deliver"
-        );
-        assert!(
-            !waiting.differs_from(&facts(entries)),
-            "the same turns delivered again are no change"
-        );
-        assert!(
-            facts(Vec::new()).differs_from(&waiting),
-            "a turn that ended is a change too: its run stops"
-        );
+        phase a_new_turn_is_a_change_and_the_same_turns_are_not;
+        // A pass that read different turns than the one before is what wakes the
+        // broker to deliver a new one: the person typing an ask into a
+        // conversation Chat held no message in is only handed to its agent
+        // because [`Held::differs_from`] says the turns changed.
+        {
+            let chat = workspace();
+            let asked = part(vec![("m1", message(ME, "what is on my task list?", 10))]);
+            let (entries, agents) = turns(&chat, &asked, ME, &chat::projection::AgentNames::new());
+            let facts = |turns: Vec<Entry>| Held {
+                workspaces: vec![Facts {
+                    workspace: "w1".into(),
+                    agents: agents.clone(),
+                    policy: None,
+                    turns,
+                }],
+            };
+            let nothing = Held::default();
+            let waiting = facts(entries.clone());
+            assert!(
+                nothing.differs_from(&waiting),
+                "a turn that was not there is a change to deliver"
+            );
+            assert!(
+                !waiting.differs_from(&facts(entries)),
+                "the same turns delivered again are no change"
+            );
+            assert!(
+                facts(Vec::new()).differs_from(&waiting),
+                "a turn that ended is a change too: its run stops"
+            );
+        }
     }
 }

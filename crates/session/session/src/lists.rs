@@ -601,54 +601,58 @@ mod tests {
         .expect("a desktop entry")
     }
 
-    #[test]
-    fn an_installed_tilo_apps_own_entry_is_not_one_of_the_machines() {
-        let tilo_apps = app_catalogue::Installed::from_ids(["so.tilo.notes"]);
-        // The app is listed as itself; the desktop entry its bundle keeps is the same app, so
-        // search names it once.
-        assert!(!machine_entry(&entry("so.tilo.notes"), &tilo_apps));
-        // Any other app's entry is one of the machine's.
-        assert!(machine_entry(&entry("org.gnome.notes"), &tilo_apps));
-    }
+    tilo_test_env::scenario! {
+        fn the_machines_apps_are_its_own_entries_each_listed_once;
 
-    #[test]
-    fn an_apps_variants_are_listed_once_as_the_app() {
-        let parse = |id: &str, name: &str, icon: &str| {
-            desktop_entry::entry::parse(
-                &format!(
-                    "[Desktop Entry]\nType=Application\nName={name}\nIcon={icon}\nExec={id}\n"
+        phase an_installed_tilo_apps_own_entry_is_not_one_of_the_machines;
+        {
+            let tilo_apps = app_catalogue::Installed::from_ids(["so.tilo.notes"]);
+            // The app is listed as itself; the desktop entry its bundle keeps is the same app, so
+            // search names it once.
+            assert!(!machine_entry(&entry("so.tilo.notes"), &tilo_apps));
+            // Any other app's entry is one of the machine's.
+            assert!(machine_entry(&entry("org.gnome.notes"), &tilo_apps));
+        }
+
+        phase an_apps_variants_are_listed_once_as_the_app;
+        {
+            let parse = |id: &str, name: &str, icon: &str| {
+                desktop_entry::entry::parse(
+                    &format!(
+                        "[Desktop Entry]\nType=Application\nName={name}\nIcon={icon}\nExec={id}\n"
+                    ),
+                    id,
+                    std::path::Path::new("/usr/share/applications/x.desktop"),
+                    &[],
+                )
+                .expect("a desktop entry")
+            };
+            let entries = [
+                parse("foot", "Foot", "foot"),
+                parse("footclient", "Foot Client", "foot"),
+                parse("foot-server", "Foot Server", "foot"),
+                parse(
+                    "libreoffice-startcenter",
+                    "LibreOffice",
+                    "libreoffice-startcenter",
                 ),
-                id,
-                std::path::Path::new("/usr/share/applications/x.desktop"),
-                &[],
-            )
-            .expect("a desktop entry")
-        };
-        let entries = [
-            parse("foot", "Foot", "foot"),
-            parse("footclient", "Foot Client", "foot"),
-            parse("foot-server", "Foot Server", "foot"),
-            parse(
-                "libreoffice-startcenter",
-                "LibreOffice",
-                "libreoffice-startcenter",
-            ),
-            parse(
-                "libreoffice-writer",
-                "LibreOffice Writer",
-                "libreoffice-writer",
-            ),
-            parse("footnotes", "Footnotes", "foot"),
-        ];
-        let listed: Vec<_> = machine_apps(&entries, &app_catalogue::Installed::from_ids([""; 0]))
-            .into_iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(
-            listed,
-            ["Foot", "LibreOffice", "LibreOffice Writer", "Footnotes"],
-            "a variant shares the app's icon and extends its name; other apps stay"
-        );
+                parse(
+                    "libreoffice-writer",
+                    "LibreOffice Writer",
+                    "libreoffice-writer",
+                ),
+                parse("footnotes", "Footnotes", "foot"),
+            ];
+            let listed: Vec<_> = machine_apps(&entries, &app_catalogue::Installed::from_ids([""; 0]))
+                .into_iter()
+                .map(|entry| entry.name.as_str())
+                .collect();
+            assert_eq!(
+                listed,
+                ["Foot", "LibreOffice", "LibreOffice Writer", "Footnotes"],
+                "a variant shares the app's icon and extends its name; other apps stay"
+            );
+        }
     }
 
     /// The machine's own apps are named in the person's language, not in the machine's: on a German

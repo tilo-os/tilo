@@ -411,345 +411,357 @@ mod tests {
         ForwardedGamepadEvent::Axis { axis, value }
     }
 
-    #[test]
-    fn stick_inside_the_dead_zone_does_nothing() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
-        assert!(mapper.feed(axis(GamepadAxis::LeftX, 9_000), t).is_empty());
-        assert!(mapper.feed(axis(GamepadAxis::LeftY, -17_000), t).is_empty());
-        assert!(mapper.tick(at(t, 2_000)).is_empty());
-        assert_eq!(mapper.next_deadline(), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_direction_held_on_the_stick_or_the_pad_moves_and_repeats;
 
-    #[test]
-    fn stick_moves_along_its_dominant_axis_with_hysteresis() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
-        assert_eq!(
-            mapper.feed(axis(GamepadAxis::LeftX, 25_000), t),
-            vec![NavIntent::Move(NavDirection::Right)]
-        );
-        // Easing back toward the threshold keeps the same held direction instead of re-firing.
-        assert!(mapper.feed(axis(GamepadAxis::LeftX, 14_000), t).is_empty());
-        assert!(mapper.feed(axis(GamepadAxis::LeftX, 20_000), t).is_empty());
-        // Under the release level it ends; a new deflection fires again.
-        assert!(mapper.feed(axis(GamepadAxis::LeftX, 5_000), t).is_empty());
-        assert_eq!(mapper.next_deadline(), None);
-        assert_eq!(
-            mapper.feed(axis(GamepadAxis::LeftY, -30_000), t),
-            vec![NavIntent::Move(NavDirection::Up)]
-        );
-    }
-
-    #[test]
-    fn a_held_direction_repeats_and_accelerates() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
-        assert_eq!(
-            mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: 1 }, t),
-            vec![NavIntent::Move(NavDirection::Down)]
-        );
-        assert!(
-            mapper.tick(at(t, 379)).is_empty(),
-            "no repeat inside the delay"
-        );
-        let mut fired = Vec::new();
-        let mut now = t;
-        while fired.len() < 8 {
-            now = at(now, 1);
-            if !mapper.tick(now).is_empty() {
-                fired.push(now);
-            }
+        phase stick_inside_the_dead_zone_does_nothing;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
+            assert!(mapper.feed(axis(GamepadAxis::LeftX, 9_000), t).is_empty());
+            assert!(mapper.feed(axis(GamepadAxis::LeftY, -17_000), t).is_empty());
+            assert!(mapper.tick(at(t, 2_000)).is_empty());
+            assert_eq!(mapper.next_deadline(), None);
         }
-        assert_eq!(fired[0], at(t, 380));
-        let gaps: Vec<Duration> = fired
-            .windows(2)
-            .map(|w| w[1].duration_since(w[0]))
-            .collect();
-        assert_eq!(gaps[0], REPEAT_FIRST);
-        assert!(
-            gaps.windows(2).all(|w| w[1] <= w[0]),
-            "repeat never slows down: {gaps:?}"
-        );
-        assert!(gaps.last().unwrap() < &REPEAT_FIRST);
-        assert!(gaps.iter().all(|gap| *gap >= REPEAT_FASTEST));
-        assert!(
-            mapper
-                .feed(ForwardedGamepadEvent::Hat { x: 0, y: 0 }, now)
-                .is_empty()
-        );
-        assert!(mapper.tick(at(t, 10_000)).is_empty());
+
+        phase stick_moves_along_its_dominant_axis_with_hysteresis;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
+            assert_eq!(
+                mapper.feed(axis(GamepadAxis::LeftX, 25_000), t),
+                vec![NavIntent::Move(NavDirection::Right)]
+            );
+            // Easing back toward the threshold keeps the same held direction instead of re-firing.
+            assert!(mapper.feed(axis(GamepadAxis::LeftX, 14_000), t).is_empty());
+            assert!(mapper.feed(axis(GamepadAxis::LeftX, 20_000), t).is_empty());
+            // Under the release level it ends; a new deflection fires again.
+            assert!(mapper.feed(axis(GamepadAxis::LeftX, 5_000), t).is_empty());
+            assert_eq!(mapper.next_deadline(), None);
+            assert_eq!(
+                mapper.feed(axis(GamepadAxis::LeftY, -30_000), t),
+                vec![NavIntent::Move(NavDirection::Up)]
+            );
+        }
+
+        phase a_held_direction_repeats_and_accelerates;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
+            assert_eq!(
+                mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: 1 }, t),
+                vec![NavIntent::Move(NavDirection::Down)]
+            );
+            assert!(
+                mapper.tick(at(t, 379)).is_empty(),
+                "no repeat inside the delay"
+            );
+            let mut fired = Vec::new();
+            let mut now = t;
+            while fired.len() < 8 {
+                now = at(now, 1);
+                if !mapper.tick(now).is_empty() {
+                    fired.push(now);
+                }
+            }
+            assert_eq!(fired[0], at(t, 380));
+            let gaps: Vec<Duration> = fired
+                .windows(2)
+                .map(|w| w[1].duration_since(w[0]))
+                .collect();
+            assert_eq!(gaps[0], REPEAT_FIRST);
+            assert!(
+                gaps.windows(2).all(|w| w[1] <= w[0]),
+                "repeat never slows down: {gaps:?}"
+            );
+            assert!(gaps.last().unwrap() < &REPEAT_FIRST);
+            assert!(gaps.iter().all(|gap| *gap >= REPEAT_FASTEST));
+            assert!(
+                mapper
+                    .feed(ForwardedGamepadEvent::Hat { x: 0, y: 0 }, now)
+                    .is_empty()
+            );
+            assert!(mapper.tick(at(t, 10_000)).is_empty());
+        }
+
+        phase a_stalled_caller_gets_one_repeat_not_a_burst;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
+            mapper.feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t);
+            assert_eq!(mapper.tick(at(t, 5_000)).len(), 1);
+        }
+
+        phase a_d_pad_roll_through_a_diagonal_keeps_the_held_direction;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
+            mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: -1 }, t);
+            assert!(
+                mapper
+                    .feed(ForwardedGamepadEvent::Hat { x: 1, y: -1 }, t)
+                    .is_empty()
+            );
+            assert_eq!(
+                mapper.feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t),
+                vec![NavIntent::Move(NavDirection::Right)]
+            );
+        }
+
+        phase the_d_pad_wins_over_a_resting_stick;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
+            mapper.feed(axis(GamepadAxis::LeftX, 30_000), t);
+            assert_eq!(
+                mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: 1 }, t),
+                vec![NavIntent::Move(NavDirection::Down)]
+            );
+        }
     }
 
-    #[test]
-    fn a_stalled_caller_gets_one_repeat_not_a_burst() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
-        mapper.feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t);
-        assert_eq!(mapper.tick(at(t, 5_000)).len(), 1);
+    tilo_test_env::scenario! {
+        fn the_guide_and_its_chords_turn_buttons_into_chrome_moves;
+
+        phase guide_turns_directions_and_bumpers_into_chrome_moves;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
+            assert!(mapper.feed(press(GamepadButton::Guide), t).is_empty());
+            assert_eq!(
+                mapper.feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t),
+                vec![NavIntent::FocusNextWindow]
+            );
+            mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: 0 }, t);
+            assert_eq!(
+                mapper.feed(axis(GamepadAxis::LeftY, 30_000), t),
+                vec![NavIntent::NextStrip]
+            );
+            mapper.feed(axis(GamepadAxis::LeftY, 0), t);
+            assert_eq!(
+                mapper.feed(press(GamepadButton::LeftBumper), t),
+                vec![NavIntent::MoveGroupLeft]
+            );
+            // A chord is not a tap: releasing Guide does not open anything.
+            assert!(mapper.feed(release(GamepadButton::Guide), t).is_empty());
+            assert_eq!(
+                mapper.feed(press(GamepadButton::LeftBumper), t),
+                vec![NavIntent::PreviousTab]
+            );
+            assert_eq!(
+                mapper.feed(ForwardedGamepadEvent::Hat { x: -1, y: 0 }, t),
+                vec![NavIntent::Move(NavDirection::Left)]
+            );
+        }
+
+        phase a_bare_guide_tap_opens_quick_settings;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::PlayStation);
+            assert!(mapper.feed(press(GamepadButton::Guide), t).is_empty());
+            assert_eq!(
+                mapper.feed(release(GamepadButton::Guide), t),
+                vec![NavIntent::QuickSettings]
+            );
+        }
+
+        phase a_repeat_keeps_the_meaning_it_started_with;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
+            mapper.feed(press(GamepadButton::Guide), t);
+            mapper.feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t);
+            mapper.feed(release(GamepadButton::Guide), t);
+            assert_eq!(mapper.tick(at(t, 400)), vec![NavIntent::FocusNextWindow]);
+        }
+
+        phase triggers_switch_workspaces_once_per_pull;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
+            assert_eq!(
+                mapper.feed(axis(GamepadAxis::RightTrigger, 30_000), t),
+                vec![NavIntent::NextWorkspace]
+            );
+            assert!(
+                mapper
+                    .feed(axis(GamepadAxis::RightTrigger, 32_000), t)
+                    .is_empty()
+            );
+            assert!(
+                mapper
+                    .feed(axis(GamepadAxis::RightTrigger, 12_000), t)
+                    .is_empty()
+            );
+            assert!(
+                mapper
+                    .feed(axis(GamepadAxis::RightTrigger, 20_000), t)
+                    .is_empty(),
+                "still inside the release band"
+            );
+            mapper.feed(axis(GamepadAxis::RightTrigger, 0), t);
+            assert_eq!(
+                mapper.feed(axis(GamepadAxis::LeftTrigger, 20_000), t),
+                vec![NavIntent::PreviousWorkspace]
+            );
+        }
+
+        phase start_and_select_open_the_guide_and_overview;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::Nintendo);
+            assert_eq!(
+                mapper.feed(press(GamepadButton::Start), t),
+                vec![NavIntent::Help]
+            );
+            assert_eq!(
+                mapper.feed(press(GamepadButton::Select), t),
+                vec![NavIntent::Overview]
+            );
+            assert!(mapper.feed(release(GamepadButton::Start), t).is_empty());
+        }
+
+        phase passthrough_leaves_everything_but_guide_chords_to_the_game;
+        {
+            let t = Instant::now();
+            let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
+            mapper.set_passthrough(true);
+            assert!(mapper.feed(press(GamepadButton::South), t).is_empty());
+            assert!(
+                mapper
+                    .feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t)
+                    .is_empty()
+            );
+            assert!(mapper.tick(at(t, 1_000)).is_empty(), "no repeat either");
+            mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: 0 }, t);
+            mapper.feed(press(GamepadButton::Guide), t);
+            assert_eq!(
+                mapper.feed(press(GamepadButton::Start), t),
+                vec![NavIntent::Help]
+            );
+            assert_eq!(
+                mapper.feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t),
+                vec![NavIntent::FocusNextWindow]
+            );
+            mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: 0 }, t);
+            assert!(mapper.feed(release(GamepadButton::Guide), t).is_empty());
+            mapper.feed(press(GamepadButton::Guide), t);
+            assert_eq!(
+                mapper.feed(release(GamepadButton::Guide), t),
+                vec![NavIntent::QuickSettings]
+            );
+        }
     }
 
-    #[test]
-    fn guide_turns_directions_and_bumpers_into_chrome_moves() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
-        assert!(mapper.feed(press(GamepadButton::Guide), t).is_empty());
-        assert_eq!(
-            mapper.feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t),
-            vec![NavIntent::FocusNextWindow]
-        );
-        mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: 0 }, t);
-        assert_eq!(
-            mapper.feed(axis(GamepadAxis::LeftY, 30_000), t),
-            vec![NavIntent::NextStrip]
-        );
-        mapper.feed(axis(GamepadAxis::LeftY, 0), t);
-        assert_eq!(
-            mapper.feed(press(GamepadButton::LeftBumper), t),
-            vec![NavIntent::MoveGroupLeft]
-        );
-        // A chord is not a tap: releasing Guide does not open anything.
-        assert!(mapper.feed(release(GamepadButton::Guide), t).is_empty());
-        assert_eq!(
-            mapper.feed(press(GamepadButton::LeftBumper), t),
-            vec![NavIntent::PreviousTab]
-        );
-        assert_eq!(
-            mapper.feed(ForwardedGamepadEvent::Hat { x: -1, y: 0 }, t),
-            vec![NavIntent::Move(NavDirection::Left)]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn buttons_and_glyphs_follow_the_controllers_legend;
 
-    #[test]
-    fn a_bare_guide_tap_opens_quick_settings() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::PlayStation);
-        assert!(mapper.feed(press(GamepadButton::Guide), t).is_empty());
-        assert_eq!(
-            mapper.feed(release(GamepadButton::Guide), t),
-            vec![NavIntent::QuickSettings]
-        );
-    }
+        phase face_buttons_follow_the_printed_legend;
+        {
+            let t = Instant::now();
+            let roles = |family| {
+                let mut mapper = ControllerNavMapper::new(family);
+                [
+                    GamepadButton::South,
+                    GamepadButton::East,
+                    GamepadButton::West,
+                    GamepadButton::North,
+                ]
+                .map(|button| mapper.feed(press(button), t))
+            };
+            let xbox = roles(ControllerFamily::Xbox);
+            assert_eq!(
+                xbox,
+                [
+                    vec![NavIntent::Activate],
+                    vec![NavIntent::Back],
+                    vec![NavIntent::Actions],
+                    vec![NavIntent::Search],
+                ]
+            );
+            assert_eq!(roles(ControllerFamily::PlayStation), xbox);
+            assert_eq!(roles(ControllerFamily::Generic), xbox);
+            // Nintendo prints A east and B south: the same legends, mirrored.
+            assert_eq!(
+                roles(ControllerFamily::Nintendo),
+                [
+                    vec![NavIntent::Back],
+                    vec![NavIntent::Activate],
+                    vec![NavIntent::Search],
+                    vec![NavIntent::Actions],
+                ]
+            );
+            assert_eq!(
+                roles(ControllerFamily::JoyConPair),
+                roles(ControllerFamily::Nintendo)
+            );
+        }
 
-    #[test]
-    fn a_repeat_keeps_the_meaning_it_started_with() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
-        mapper.feed(press(GamepadButton::Guide), t);
-        mapper.feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t);
-        mapper.feed(release(GamepadButton::Guide), t);
-        assert_eq!(mapper.tick(at(t, 400)), vec![NavIntent::FocusNextWindow]);
-    }
-
-    #[test]
-    fn face_buttons_follow_the_printed_legend() {
-        let t = Instant::now();
-        let roles = |family| {
-            let mut mapper = ControllerNavMapper::new(family);
-            [
-                GamepadButton::South,
-                GamepadButton::East,
-                GamepadButton::West,
-                GamepadButton::North,
-            ]
-            .map(|button| mapper.feed(press(button), t))
-        };
-        let xbox = roles(ControllerFamily::Xbox);
-        assert_eq!(
-            xbox,
-            [
-                vec![NavIntent::Activate],
-                vec![NavIntent::Back],
-                vec![NavIntent::Actions],
-                vec![NavIntent::Search],
-            ]
-        );
-        assert_eq!(roles(ControllerFamily::PlayStation), xbox);
-        assert_eq!(roles(ControllerFamily::Generic), xbox);
-        // Nintendo prints A east and B south: the same legends, mirrored.
-        assert_eq!(
-            roles(ControllerFamily::Nintendo),
-            [
-                vec![NavIntent::Back],
-                vec![NavIntent::Activate],
-                vec![NavIntent::Search],
-                vec![NavIntent::Actions],
-            ]
-        );
-        assert_eq!(
-            roles(ControllerFamily::JoyConPair),
-            roles(ControllerFamily::Nintendo)
-        );
-    }
-
-    #[test]
-    fn roles_agree_with_the_glyphs_the_guide_draws() {
-        use ui::input::ControllerButton;
-        for family in [
-            ControllerFamily::Xbox,
-            ControllerFamily::Nintendo,
-            ControllerFamily::JoyConPair,
-            ControllerFamily::JoyConRight,
-            ControllerFamily::Generic,
-        ] {
-            for (evdev, glyph) in [
-                (GamepadButton::South, ControllerButton::South),
-                (GamepadButton::East, ControllerButton::East),
-                (GamepadButton::West, ControllerButton::West),
-                (GamepadButton::North, ControllerButton::North),
+        phase roles_agree_with_the_glyphs_the_guide_draws;
+        {
+            use ui::input::ControllerButton;
+            for family in [
+                ControllerFamily::Xbox,
+                ControllerFamily::Nintendo,
+                ControllerFamily::JoyConPair,
+                ControllerFamily::JoyConRight,
+                ControllerFamily::Generic,
             ] {
-                let expected = match glyph.label(family) {
-                    "A" => FaceRole::Confirm,
-                    "B" => FaceRole::Cancel,
-                    "X" => FaceRole::Third,
-                    "Y" => FaceRole::Fourth,
-                    other => panic!("{family:?} {glyph:?} has legend {other}"),
-                };
-                assert_eq!(face_role(family, evdev), Some(expected), "{family:?}");
+                for (evdev, glyph) in [
+                    (GamepadButton::South, ControllerButton::South),
+                    (GamepadButton::East, ControllerButton::East),
+                    (GamepadButton::West, ControllerButton::West),
+                    (GamepadButton::North, ControllerButton::North),
+                ] {
+                    let expected = match glyph.label(family) {
+                        "A" => FaceRole::Confirm,
+                        "B" => FaceRole::Cancel,
+                        "X" => FaceRole::Third,
+                        "Y" => FaceRole::Fourth,
+                        other => panic!("{family:?} {glyph:?} has legend {other}"),
+                    };
+                    assert_eq!(face_role(family, evdev), Some(expected), "{family:?}");
+                }
             }
         }
-    }
 
-    #[test]
-    fn the_guide_draws_the_button_that_carries_each_role() {
-        use ui::input::ControllerButton;
-        let faces = ControllerFamily::Xbox.faces();
-        assert_eq!(faces[0], ControllerButton::South);
-        assert_eq!(
-            ControllerFamily::Nintendo.faces()[0],
-            ControllerButton::East
-        );
-        assert_eq!(
-            ControllerFamily::Nintendo.faces()[2],
-            ControllerButton::North
-        );
-        assert_eq!(
-            ControllerFamily::PlayStation.faces()[1],
-            ControllerButton::East
-        );
-    }
+        phase the_guide_draws_the_button_that_carries_each_role;
+        {
+            use ui::input::ControllerButton;
+            let faces = ControllerFamily::Xbox.faces();
+            assert_eq!(faces[0], ControllerButton::South);
+            assert_eq!(
+                ControllerFamily::Nintendo.faces()[0],
+                ControllerButton::East
+            );
+            assert_eq!(
+                ControllerFamily::Nintendo.faces()[2],
+                ControllerButton::North
+            );
+            assert_eq!(
+                ControllerFamily::PlayStation.faces()[1],
+                ControllerButton::East
+            );
+        }
 
-    #[test]
-    fn triggers_switch_workspaces_once_per_pull() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
-        assert_eq!(
-            mapper.feed(axis(GamepadAxis::RightTrigger, 30_000), t),
-            vec![NavIntent::NextWorkspace]
-        );
-        assert!(
-            mapper
-                .feed(axis(GamepadAxis::RightTrigger, 32_000), t)
-                .is_empty()
-        );
-        assert!(
-            mapper
-                .feed(axis(GamepadAxis::RightTrigger, 12_000), t)
-                .is_empty()
-        );
-        assert!(
-            mapper
-                .feed(axis(GamepadAxis::RightTrigger, 20_000), t)
-                .is_empty(),
-            "still inside the release band"
-        );
-        mapper.feed(axis(GamepadAxis::RightTrigger, 0), t);
-        assert_eq!(
-            mapper.feed(axis(GamepadAxis::LeftTrigger, 20_000), t),
-            vec![NavIntent::PreviousWorkspace]
-        );
-    }
-
-    #[test]
-    fn start_and_select_open_the_guide_and_overview() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::Nintendo);
-        assert_eq!(
-            mapper.feed(press(GamepadButton::Start), t),
-            vec![NavIntent::Help]
-        );
-        assert_eq!(
-            mapper.feed(press(GamepadButton::Select), t),
-            vec![NavIntent::Overview]
-        );
-        assert!(mapper.feed(release(GamepadButton::Start), t).is_empty());
-    }
-
-    #[test]
-    fn passthrough_leaves_everything_but_guide_chords_to_the_game() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
-        mapper.set_passthrough(true);
-        assert!(mapper.feed(press(GamepadButton::South), t).is_empty());
-        assert!(
-            mapper
-                .feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t)
-                .is_empty()
-        );
-        assert!(mapper.tick(at(t, 1_000)).is_empty(), "no repeat either");
-        mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: 0 }, t);
-        mapper.feed(press(GamepadButton::Guide), t);
-        assert_eq!(
-            mapper.feed(press(GamepadButton::Start), t),
-            vec![NavIntent::Help]
-        );
-        assert_eq!(
-            mapper.feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t),
-            vec![NavIntent::FocusNextWindow]
-        );
-        mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: 0 }, t);
-        assert!(mapper.feed(release(GamepadButton::Guide), t).is_empty());
-        mapper.feed(press(GamepadButton::Guide), t);
-        assert_eq!(
-            mapper.feed(release(GamepadButton::Guide), t),
-            vec![NavIntent::QuickSettings]
-        );
-    }
-
-    #[test]
-    fn a_d_pad_roll_through_a_diagonal_keeps_the_held_direction() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
-        mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: -1 }, t);
-        assert!(
-            mapper
-                .feed(ForwardedGamepadEvent::Hat { x: 1, y: -1 }, t)
-                .is_empty()
-        );
-        assert_eq!(
-            mapper.feed(ForwardedGamepadEvent::Hat { x: 1, y: 0 }, t),
-            vec![NavIntent::Move(NavDirection::Right)]
-        );
-    }
-
-    #[test]
-    fn the_d_pad_wins_over_a_resting_stick() {
-        let t = Instant::now();
-        let mut mapper = ControllerNavMapper::new(ControllerFamily::Xbox);
-        mapper.feed(axis(GamepadAxis::LeftX, 30_000), t);
-        assert_eq!(
-            mapper.feed(ForwardedGamepadEvent::Hat { x: 0, y: 1 }, t),
-            vec![NavIntent::Move(NavDirection::Down)]
-        );
-    }
-
-    #[test]
-    fn legend_families_come_from_vendor_then_name() {
-        assert_eq!(
-            controller_family(Some(0x045e), "Controller"),
-            ControllerFamily::Xbox
-        );
-        assert_eq!(
-            controller_family(Some(0x054c), "Wireless Controller"),
-            ControllerFamily::PlayStation
-        );
-        assert_eq!(
-            controller_family(Some(0x057e), "Nintendo Switch Pro Controller"),
-            ControllerFamily::Nintendo
-        );
-        assert_eq!(
-            controller_family(None, "Nintendo Switch Combined Joy-Cons"),
-            ControllerFamily::JoyConPair
-        );
+        phase legend_families_come_from_vendor_then_name;
+        {
+            assert_eq!(
+                controller_family(Some(0x045e), "Controller"),
+                ControllerFamily::Xbox
+            );
+            assert_eq!(
+                controller_family(Some(0x054c), "Wireless Controller"),
+                ControllerFamily::PlayStation
+            );
+            assert_eq!(
+                controller_family(Some(0x057e), "Nintendo Switch Pro Controller"),
+                ControllerFamily::Nintendo
+            );
+            assert_eq!(
+                controller_family(None, "Nintendo Switch Combined Joy-Cons"),
+                ControllerFamily::JoyConPair
+            );
+        }
     }
 }

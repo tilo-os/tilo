@@ -549,73 +549,77 @@ impl crate::Session {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_session_publishes_its_input_and_lock_actions_and_runs_them_as_commands() {
-        let commands = Rc::new(RefCell::new(Vec::new()));
-        let reading = Rc::new(RefCell::new(ControlsReading::default()));
-        let mut controls = SessionControls::new(Rc::clone(&commands), reading);
-        let mut arguments = serde_json::Map::new();
-        controls
-            .invoke(INPUT_RESOURCE, "toggle-touchpad", &arguments)
-            .unwrap();
-        arguments.insert("on".into(), true.into());
-        controls
-            .invoke(INPUT_RESOURCE, "toggle-touchpad", &arguments)
-            .unwrap();
-        controls
-            .invoke(SESSION_RESOURCE, "lock", &serde_json::Map::new())
-            .unwrap();
-        controls
-            .invoke(SESSION_RESOURCE, "power-menu", &serde_json::Map::new())
-            .unwrap();
-        assert_eq!(
-            *commands.borrow(),
-            [
-                SessionCommand::SetTouchpad { on: None },
-                SessionCommand::SetTouchpad { on: Some(true) },
-                SessionCommand::Lock,
-                SessionCommand::OpenPowerMenu,
-            ]
-        );
-        assert!(
-            controls
-                .invoke(INPUT_RESOURCE, "nothing", &serde_json::Map::new())
-                .is_err()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_sessions_controls_are_actions_over_the_state_their_resources_read;
 
-    #[test]
-    fn every_resource_reads_the_state_its_actions_change() {
-        let commands = Rc::new(RefCell::new(Vec::new()));
-        let reading = ControlsReading {
-            locked: true,
-            touchpad: true,
-            night_light: true,
-            zoom: 3,
-        };
-        let mut controls =
-            SessionControls::new(Rc::clone(&commands), Rc::new(RefCell::new(reading)));
-        // What a reader sees before the loop's first pass is read at once,
-        // not left empty until something changes.
-        assert_eq!(
-            controls.read(SESSION_RESOURCE),
-            Some(json!({ "locked": true }))
-        );
-        assert_eq!(
-            controls.read(INPUT_RESOURCE),
-            Some(json!({ "touchpad": true }))
-        );
-        assert_eq!(
-            controls.read(NIGHT_LIGHT_RESOURCE),
-            Some(json!({ "on": true }))
-        );
-        assert_eq!(
-            controls.read(MAGNIFIER_RESOURCE),
-            Some(json!({ "on": true, "zoom": 3 }))
-        );
-        assert!(controls.read(APPS_RESOURCE).is_some());
-        assert_eq!(controls.read("session:nothing"), None);
-        assert!(controls.poll(), "a reader is told what it was not told");
-        assert!(!controls.poll(), "an unchanged reading is no revision");
+        phase the_session_publishes_its_input_and_lock_actions_and_runs_them_as_commands;
+        {
+            let commands = Rc::new(RefCell::new(Vec::new()));
+            let reading = Rc::new(RefCell::new(ControlsReading::default()));
+            let mut controls = SessionControls::new(Rc::clone(&commands), reading);
+            let mut arguments = serde_json::Map::new();
+            controls
+                .invoke(INPUT_RESOURCE, "toggle-touchpad", &arguments)
+                .unwrap();
+            arguments.insert("on".into(), true.into());
+            controls
+                .invoke(INPUT_RESOURCE, "toggle-touchpad", &arguments)
+                .unwrap();
+            controls
+                .invoke(SESSION_RESOURCE, "lock", &serde_json::Map::new())
+                .unwrap();
+            controls
+                .invoke(SESSION_RESOURCE, "power-menu", &serde_json::Map::new())
+                .unwrap();
+            assert_eq!(
+                *commands.borrow(),
+                [
+                    SessionCommand::SetTouchpad { on: None },
+                    SessionCommand::SetTouchpad { on: Some(true) },
+                    SessionCommand::Lock,
+                    SessionCommand::OpenPowerMenu,
+                ]
+            );
+            assert!(
+                controls
+                    .invoke(INPUT_RESOURCE, "nothing", &serde_json::Map::new())
+                    .is_err()
+            );
+        }
+
+        phase every_resource_reads_the_state_its_actions_change;
+        {
+            let commands = Rc::new(RefCell::new(Vec::new()));
+            let reading = ControlsReading {
+                locked: true,
+                touchpad: true,
+                night_light: true,
+                zoom: 3,
+            };
+            let mut controls =
+                SessionControls::new(Rc::clone(&commands), Rc::new(RefCell::new(reading)));
+            // What a reader sees before the loop's first pass is read at once,
+            // not left empty until something changes.
+            assert_eq!(
+                controls.read(SESSION_RESOURCE),
+                Some(json!({ "locked": true }))
+            );
+            assert_eq!(
+                controls.read(INPUT_RESOURCE),
+                Some(json!({ "touchpad": true }))
+            );
+            assert_eq!(
+                controls.read(NIGHT_LIGHT_RESOURCE),
+                Some(json!({ "on": true }))
+            );
+            assert_eq!(
+                controls.read(MAGNIFIER_RESOURCE),
+                Some(json!({ "on": true, "zoom": 3 }))
+            );
+            assert!(controls.read(APPS_RESOURCE).is_some());
+            assert_eq!(controls.read("session:nothing"), None);
+            assert!(controls.poll(), "a reader is told what it was not told");
+            assert!(!controls.poll(), "an unchanged reading is no revision");
+        }
     }
 }

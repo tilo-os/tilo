@@ -541,29 +541,33 @@ mod tests {
         controllers.into_iter().map(|(id, _)| id).collect()
     }
 
-    #[test]
-    fn a_leased_controller_is_left_alone_until_its_lease_ends() {
-        let machine = machine(
-            &[
-                ("room pad", ControllerFamily::Xbox),
-                ("headset pad", ControllerFamily::Nintendo),
-            ],
-            &["headset pad"],
-        );
-        assert_eq!(names(machine.wanted()), vec![id("room pad")]);
-        // The leased one is back once its lease ends.
-        let unleased = wanted(&machine.known, &BTreeSet::new(), &machine.refused);
-        assert_eq!(
-            names(unleased),
-            vec![id("headset pad"), id("room pad")],
-            "both are the desktop's again"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_controller_leased_away_or_refused_is_left_alone;
 
-    #[test]
-    fn a_controller_that_could_not_be_opened_is_not_asked_again() {
-        let machine = machine(&[("room pad", ControllerFamily::Xbox)], &[]);
-        let refused: BTreeSet<ControllerId> = [id("room pad")].into();
-        assert!(wanted(&machine.known, &machine.leased, &refused).is_empty());
+        phase a_leased_controller_is_left_alone_until_its_lease_ends;
+        {
+            let machine = machine(
+                &[
+                    ("room pad", ControllerFamily::Xbox),
+                    ("headset pad", ControllerFamily::Nintendo),
+                ],
+                &["headset pad"],
+            );
+            assert_eq!(names(machine.wanted()), vec![id("room pad")]);
+            // The leased one is back once its lease ends.
+            let unleased = wanted(&machine.known, &BTreeSet::new(), &machine.refused);
+            assert_eq!(
+                names(unleased),
+                vec![id("headset pad"), id("room pad")],
+                "both are the desktop's again"
+            );
+        }
+
+        phase a_controller_that_could_not_be_opened_is_not_asked_again;
+        {
+            let machine = machine(&[("room pad", ControllerFamily::Xbox)], &[]);
+            let refused: BTreeSet<ControllerId> = [id("room pad")].into();
+            assert!(wanted(&machine.known, &machine.leased, &refused).is_empty());
+        }
     }
 }

@@ -720,55 +720,63 @@ mod data_usage {
         /// 2026-03-14 12:00 UTC.
         const NOON: i64 = 1_773_489_600;
 
-        /// Readings wait a quarter hour to be counted, but one before a change of connection is
-        /// counted at once, ahead of the one after it. The first reading is where the session
-        /// starts counting from.
-        #[test]
-        fn readings_are_counted_on_their_own_connection() {
-            let mut counter = Counter::default();
-            assert!(
-                counter.take(taken(vec![on("wifi:a", 1)], NOON)).is_empty(),
-                "the first reading is the baseline"
-            );
-            assert!(
-                counter
-                    .take(taken(vec![on("wifi:a", 2)], NOON + 60))
-                    .is_empty()
-            );
-            let moved = counter.take(taken(vec![on("wifi:b", 4)], NOON + 120));
-            let order: Vec<(&str, u64)> = moved
-                .iter()
-                .map(|due| {
-                    (
-                        due.readings[0].connection.as_str(),
-                        due.readings[0].received,
-                    )
-                })
-                .collect();
-            assert_eq!(order, [("wifi:a", 2), ("wifi:b", 4)]);
-            assert!(
-                counter
-                    .take(taken(vec![on("wifi:b", 5)], NOON + 180))
-                    .is_empty()
-            );
-            assert_eq!(
-                counter
-                    .take(taken(vec![on("wifi:b", 6)], NOON + 180 + COUNT_EVERY))
-                    .len(),
-                1,
-                "a quarter hour on"
-            );
-            assert!(counter.take(taken(Vec::new(), NOON + 240)).is_empty());
-        }
+        tilo_test_env::scenario! {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+            )]
+            fn a_connections_readings_are_counted_and_sent_as_the_verbs_arguments;
 
-        #[test]
-        fn the_readings_are_the_verbs_arguments() {
-            let arguments = arguments(&[on("wifi:a", 1_000)], Some("b"), 10, 3_600);
-            assert_eq!(arguments["readings"][0]["connection"], "wifi:a");
-            assert_eq!(arguments["readings"][0]["kind"], "wifi");
-            assert_eq!(arguments["readings"][0]["received"], 1_000);
-            assert_eq!(arguments["boot"], "b");
-            assert_eq!(arguments["offset"], 3_600);
+            phase readings_are_counted_on_their_own_connection;
+            // Readings wait a quarter hour to be counted, but one before a change of connection is
+            // counted at once, ahead of the one after it. The first reading is where the session
+            // starts counting from.
+            {
+                let mut counter = Counter::default();
+                assert!(
+                    counter.take(taken(vec![on("wifi:a", 1)], NOON)).is_empty(),
+                    "the first reading is the baseline"
+                );
+                assert!(
+                    counter
+                        .take(taken(vec![on("wifi:a", 2)], NOON + 60))
+                        .is_empty()
+                );
+                let moved = counter.take(taken(vec![on("wifi:b", 4)], NOON + 120));
+                let order: Vec<(&str, u64)> = moved
+                    .iter()
+                    .map(|due| {
+                        (
+                            due.readings[0].connection.as_str(),
+                            due.readings[0].received,
+                        )
+                    })
+                    .collect();
+                assert_eq!(order, [("wifi:a", 2), ("wifi:b", 4)]);
+                assert!(
+                    counter
+                        .take(taken(vec![on("wifi:b", 5)], NOON + 180))
+                        .is_empty()
+                );
+                assert_eq!(
+                    counter
+                        .take(taken(vec![on("wifi:b", 6)], NOON + 180 + COUNT_EVERY))
+                        .len(),
+                    1,
+                    "a quarter hour on"
+                );
+                assert!(counter.take(taken(Vec::new(), NOON + 240)).is_empty());
+            }
+
+            phase the_readings_are_the_verbs_arguments;
+            {
+                let arguments = arguments(&[on("wifi:a", 1_000)], Some("b"), 10, 3_600);
+                assert_eq!(arguments["readings"][0]["connection"], "wifi:a");
+                assert_eq!(arguments["readings"][0]["kind"], "wifi");
+                assert_eq!(arguments["readings"][0]["received"], 1_000);
+                assert_eq!(arguments["boot"], "b");
+                assert_eq!(arguments["offset"], 3_600);
+            }
         }
     }
 }
@@ -926,113 +934,117 @@ mod tests {
         dialled
     }
 
-    /// A service a client dials is never silently absent from this session: every name the launcher
-    /// routes or an app declares has a row saying who serves it, or why nothing does. A service
-    /// this module owns is started by `start` , whose match over `Service` is exhaustive.
-    #[test]
-    fn every_service_a_client_dials_has_a_row() {
-        let missing: Vec<String> = dialled_by_clients()
-            .into_iter()
-            .filter(|name| !TABLE.iter().any(|door| door.name == name))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "no row serves {missing:?}: add one to the table in mount/doors.rs"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_table_of_services_has_one_row_for_everything_dialled_or_started;
 
-    /// Two rows for one name would be two servers on one socket: the table names each service once.
-    #[test]
-    fn the_table_names_each_service_once() {
-        let mut seen = BTreeSet::new();
-        for door in TABLE {
+        phase every_service_a_client_dials_has_a_row;
+        // A service a client dials is never silently absent from this session: every name the launcher
+        // routes or an app declares has a row saying who serves it, or why nothing does. A service
+        // this module owns is started by `start` , whose match over `Service` is exhaustive.
+        {
+            let missing: Vec<String> = dialled_by_clients()
+                .into_iter()
+                .filter(|name| !TABLE.iter().any(|door| door.name == name))
+                .collect();
             assert!(
-                seen.insert(door.name),
-                "`{}` has more than one row",
-                door.name
+                missing.is_empty(),
+                "no row serves {missing:?}: add one to the table in mount/doors.rs"
             );
         }
-    }
 
-    /// A row this module starts reaches its clients, a row served elsewhere names where, and a row
-    /// nothing serves says why.
-    #[test]
-    fn every_row_says_how_it_is_reached_and_why_not() {
-        for door in TABLE {
-            match door.owner {
-                Owner::Session(service) => assert_ne!(
-                    door.reach,
-                    Reach::NoConnection,
-                    "`{}` is started but reached nowhere ({service:?})",
+        phase the_table_names_each_service_once;
+        // Two rows for one name would be two servers on one socket: the table names each service once.
+        {
+            let mut seen = BTreeSet::new();
+            for door in TABLE {
+                assert!(
+                    seen.insert(door.name),
+                    "`{}` has more than one row",
                     door.name
-                ),
-                Owner::Module(module) => assert!(
-                    !module.is_empty() && door.reach != Reach::Plane,
-                    "`{}` names the module `{module}` but is reached on the plane",
-                    door.name
-                ),
-                Owner::Elsewhere(program) => assert!(
-                    !program.is_empty() && door.reach == Reach::Launcher,
-                    "`{}` names `{program}` as its server on no socket",
-                    door.name
-                ),
-                Owner::Nothing(reason) => assert!(
-                    reason.len() > 20,
-                    "`{}` says nothing of why nothing serves it",
-                    door.name
-                ),
+                );
             }
         }
-    }
 
-    /// Every service [`super::start`] starts has a row, so the table is what a client's reader
-    /// sees, and nothing is started outside it.
-    #[test]
-    fn every_started_service_has_a_row() {
-        for service in [
-            Service::Identity,
-            Service::SystemInfo,
-            Service::DataUsage,
-            Service::Tools,
-            Service::Render,
-        ] {
-            assert!(
-                TABLE
-                    .iter()
-                    .any(|door| door.owner == Owner::Session(service)),
-                "{service:?} has no row"
-            );
+        phase every_row_says_how_it_is_reached_and_why_not;
+        // A row this module starts reaches its clients, a row served elsewhere names where, and a row
+        // nothing serves says why.
+        {
+            for door in TABLE {
+                match door.owner {
+                    Owner::Session(service) => assert_ne!(
+                        door.reach,
+                        Reach::NoConnection,
+                        "`{}` is started but reached nowhere ({service:?})",
+                        door.name
+                    ),
+                    Owner::Module(module) => assert!(
+                        !module.is_empty() && door.reach != Reach::Plane,
+                        "`{}` names the module `{module}` but is reached on the plane",
+                        door.name
+                    ),
+                    Owner::Elsewhere(program) => assert!(
+                        !program.is_empty() && door.reach == Reach::Launcher,
+                        "`{}` names `{program}` as its server on no socket",
+                        door.name
+                    ),
+                    Owner::Nothing(reason) => assert!(
+                        reason.len() > 20,
+                        "`{}` says nothing of why nothing serves it",
+                        door.name
+                    ),
+                }
+            }
         }
-    }
 
-    /// The derivation reads code, so a source or manifest it cannot read fails here rather than
-    /// passing an empty set.
-    #[test]
-    fn the_dialled_names_come_from_the_code_that_dials_them() {
-        let names = dialled_by_clients();
-        for known in [
-            launcher::services::COLLAB_SERVICE,
-            launcher::services::IDENTITY_SERVICE,
-            launcher::services::CHOOSER_SERVICE,
-            launcher::services::COMPAT_SERVICE,
-            tilo_system_stats::SERVICE,
-            tilo_render_protocol::broker::SERVICE,
-            "tools",
-            "models",
-            "tilo-fs",
-        ] {
-            assert!(
-                names.contains(known),
-                "`{known}` is dialled by the launcher or an app's manifest, and the derivation \
+        phase every_started_service_has_a_row;
+        // Every service [`super::start`] starts has a row, so the table is what a client's reader
+        // sees, and nothing is started outside it.
+        {
+            for service in [
+                Service::Identity,
+                Service::SystemInfo,
+                Service::DataUsage,
+                Service::Tools,
+                Service::Render,
+            ] {
+                assert!(
+                    TABLE
+                        .iter()
+                        .any(|door| door.owner == Owner::Session(service)),
+                    "{service:?} has no row"
+                );
+            }
+        }
+
+        phase the_dialled_names_come_from_the_code_that_dials_them;
+        // The derivation reads code, so a source or manifest it cannot read fails here rather than
+        // passing an empty set.
+        {
+            let names = dialled_by_clients();
+            for known in [
+                launcher::services::COLLAB_SERVICE,
+                launcher::services::IDENTITY_SERVICE,
+                launcher::services::CHOOSER_SERVICE,
+                launcher::services::COMPAT_SERVICE,
+                tilo_system_stats::SERVICE,
+                tilo_render_protocol::broker::SERVICE,
+                "tools",
+                "models",
+                "tilo-fs",
+            ] {
+                assert!(
+                    names.contains(known),
+                    "`{known}` is dialled by the launcher or an app's manifest, and the derivation \
                  missed it"
+                );
+            }
+            assert_eq!(
+                manifest_services(
+                    "[sandbox.services]\ncollab = \"optional@16\"\n\n[entrypoint]\nbin = \"x\"\n"
+                ),
+                ["collab"],
+                "an app's declared services are read"
             );
         }
-        assert_eq!(
-            manifest_services(
-                "[sandbox.services]\ncollab = \"optional@16\"\n\n[entrypoint]\nbin = \"x\"\n"
-            ),
-            ["collab"],
-            "an app's declared services are read"
-        );
     }
 }

@@ -1033,93 +1033,97 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_display_reports_the_colour_its_sink_and_signal_give_it() {
-        let displays = showing(None, &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")]);
-        showing_colour(&displays, "HDMI-A-1", DisplayCapabilities::hdr10_baseline());
-        assert_eq!(
-            displays.colour(Some("eDP-1")),
-            DisplayCapabilities::sdr_default()
-        );
-        assert_eq!(
-            displays.colour(Some("HDMI-A-1")),
-            DisplayCapabilities::hdr10_baseline(),
-            "a display driven with HDR says so"
-        );
-        assert_eq!(
-            displays.colour(Some("DP-9")),
-            DisplayCapabilities::sdr_default(),
-            "a monitor nothing is shown on is prepared for no more than SDR"
-        );
-        assert_eq!(
-            reading(&displays).displays[1].colour,
-            DisplayCapabilities::hdr10_baseline(),
-            "the published reading carries it"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_display_reports_its_name_its_colour_and_the_picture_prepared_for_it;
 
-    #[test]
-    fn a_display_is_named_by_its_model_never_by_its_connector() {
-        let placed = |name: &str, label: &str| OutputInfo {
-            name: name.to_owned(),
-            monitor: name.to_owned(),
-            label: label.to_owned(),
-            enabled: true,
-            rect: Some((0, 0, 1280, 800)),
-            scale: 1.0,
-            description: None,
-            colour: DisplayCapabilities::sdr_default(),
-        };
-        assert_eq!(
-            display_name(&placed("eDP-1", "eDP-1")),
-            t("session-display-builtin"),
-            "the built-in panel is the built-in panel"
-        );
-        assert_eq!(
-            display_name(&placed("HDMI-A-1", "LG ULTRAGEAR+")),
-            "LG ULTRAGEAR+",
-            "a monitor is named by the model it reports"
-        );
-        assert_eq!(
-            display_name(&placed("HDMI-A-1", "HDMI-A-1")),
-            t("session-display-external"),
-            "a monitor that names no model is not named by its connector"
-        );
-        assert_eq!(
-            display_name(&placed("HDMI-A-1", "")),
-            t("session-display-external"),
-            "nor is one that names nothing"
-        );
-    }
+        phase a_display_reports_the_colour_its_sink_and_signal_give_it;
+        {
+            let displays = showing(None, &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")]);
+            showing_colour(&displays, "HDMI-A-1", DisplayCapabilities::hdr10_baseline());
+            assert_eq!(
+                displays.colour(Some("eDP-1")),
+                DisplayCapabilities::sdr_default()
+            );
+            assert_eq!(
+                displays.colour(Some("HDMI-A-1")),
+                DisplayCapabilities::hdr10_baseline(),
+                "a display driven with HDR says so"
+            );
+            assert_eq!(
+                displays.colour(Some("DP-9")),
+                DisplayCapabilities::sdr_default(),
+                "a monitor nothing is shown on is prepared for no more than SDR"
+            );
+            assert_eq!(
+                reading(&displays).displays[1].colour,
+                DisplayCapabilities::hdr10_baseline(),
+                "the published reading carries it"
+            );
+        }
 
-    #[test]
-    fn a_picture_on_every_display_is_prepared_for_what_they_all_show() {
-        let displays = showing(None, &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")]);
-        assert_eq!(displays.colour(None), DisplayCapabilities::sdr_default());
-        showing_colour(&displays, "HDMI-A-1", DisplayCapabilities::hdr10_baseline());
-        assert_eq!(
-            displays.colour(None),
-            DisplayCapabilities::sdr_default(),
-            "one display showing SDR takes HDR away from a picture on all of them"
-        );
-        showing_colour(
-            &displays,
-            "eDP-1",
-            DisplayCapabilities {
-                max_luminance_nits: 400.0,
-                ..DisplayCapabilities::hdr10_baseline()
-            },
-        );
-        let common = displays.colour(None);
-        assert!(
-            common.supports_pq_output,
-            "every display showing HDR prepares the picture for HDR"
-        );
-        assert!(
-            (common.max_luminance_nits - 400.0).abs() < f32::EPSILON,
-            "no brighter than the dimmest display, got {}",
-            common.max_luminance_nits
-        );
+        phase a_display_is_named_by_its_model_never_by_its_connector;
+        {
+            let placed = |name: &str, label: &str| OutputInfo {
+                name: name.to_owned(),
+                monitor: name.to_owned(),
+                label: label.to_owned(),
+                enabled: true,
+                rect: Some((0, 0, 1280, 800)),
+                scale: 1.0,
+                description: None,
+                colour: DisplayCapabilities::sdr_default(),
+            };
+            assert_eq!(
+                display_name(&placed("eDP-1", "eDP-1")),
+                t("session-display-builtin"),
+                "the built-in panel is the built-in panel"
+            );
+            assert_eq!(
+                display_name(&placed("HDMI-A-1", "LG ULTRAGEAR+")),
+                "LG ULTRAGEAR+",
+                "a monitor is named by the model it reports"
+            );
+            assert_eq!(
+                display_name(&placed("HDMI-A-1", "HDMI-A-1")),
+                t("session-display-external"),
+                "a monitor that names no model is not named by its connector"
+            );
+            assert_eq!(
+                display_name(&placed("HDMI-A-1", "")),
+                t("session-display-external"),
+                "nor is one that names nothing"
+            );
+        }
+
+        phase a_picture_on_every_display_is_prepared_for_what_they_all_show;
+        {
+            let displays = showing(None, &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")]);
+            assert_eq!(displays.colour(None), DisplayCapabilities::sdr_default());
+            showing_colour(&displays, "HDMI-A-1", DisplayCapabilities::hdr10_baseline());
+            assert_eq!(
+                displays.colour(None),
+                DisplayCapabilities::sdr_default(),
+                "one display showing SDR takes HDR away from a picture on all of them"
+            );
+            showing_colour(
+                &displays,
+                "eDP-1",
+                DisplayCapabilities {
+                    max_luminance_nits: 400.0,
+                    ..DisplayCapabilities::hdr10_baseline()
+                },
+            );
+            let common = displays.colour(None);
+            assert!(
+                common.supports_pq_output,
+                "every display showing HDR prepares the picture for HDR"
+            );
+            assert!(
+                (common.max_luminance_nits - 400.0).abs() < f32::EPSILON,
+                "no brighter than the dimmest display, got {}",
+                common.max_luminance_nits
+            );
+        }
     }
 
     /// What the resource publishes now.
@@ -1142,80 +1146,159 @@ mod tests {
         displays.invoke(RESOURCE, action, arguments).map(drop)
     }
 
-    #[test]
-    fn the_reading_follows_a_brightness_change() {
-        let dials = Dials::with(&[("eDP-1", 0.5), ("HDMI-A-1", 0.25), ("DP-9", 0.7)]);
-        // The last display is one this session shows nothing on: no control.
-        let displays = showing(
-            Some(dials),
-            &[("eDP-1", "Built-in display"), ("HDMI-A-1", "HDMI-A-1")],
-        );
-        let mut service = displays.clone();
-        let before = reading(&displays);
-        assert_eq!(
-            before
-                .displays
-                .iter()
-                .map(|display| (display.connector.as_str(), display.name.as_str()))
-                .collect::<Vec<_>>(),
-            [("eDP-1", "Built-in display"), ("HDMI-A-1", "HDMI-A-1")]
-        );
-        assert_eq!(before.displays[0].brightness, Some(0.5));
-        assert!(before.displays[0].backlight);
-        assert!(
-            before
-                .displays
-                .iter()
-                .all(|display| display.connector != "DP-9"),
-            "a display nothing is shown on has no control"
-        );
+    tilo_test_env::scenario! {
+        fn a_brightness_level_moves_the_displays_that_can_dim_and_is_refused_otherwise;
 
-        // A display the session shows, by its connector: the slider's way.
-        invoke(
-            &mut service,
-            "set-display-brightness",
-            &Map::from_iter([
-                ("display".to_owned(), Value::from("HDMI-A-1")),
-                ("level".to_owned(), Value::from(0.9)),
-            ]),
-        )
-        .expect("one display dims");
-        let after = reading(&displays);
-        assert!(close(after.displays[1].brightness, 0.9));
-        assert_eq!(
-            after.displays[0].brightness, before.displays[0].brightness,
-            "the other display is untouched"
-        );
-    }
+        phase the_reading_follows_a_brightness_change;
+        {
+            let dials = Dials::with(&[("eDP-1", 0.5), ("HDMI-A-1", 0.25), ("DP-9", 0.7)]);
+            // The last display is one this session shows nothing on: no control.
+            let displays = showing(
+                Some(dials),
+                &[("eDP-1", "Built-in display"), ("HDMI-A-1", "HDMI-A-1")],
+            );
+            let mut service = displays.clone();
+            let before = reading(&displays);
+            assert_eq!(
+                before
+                    .displays
+                    .iter()
+                    .map(|display| (display.connector.as_str(), display.name.as_str()))
+                    .collect::<Vec<_>>(),
+                [("eDP-1", "Built-in display"), ("HDMI-A-1", "HDMI-A-1")]
+            );
+            assert_eq!(before.displays[0].brightness, Some(0.5));
+            assert!(before.displays[0].backlight);
+            assert!(
+                before
+                    .displays
+                    .iter()
+                    .all(|display| display.connector != "DP-9"),
+                "a display nothing is shown on has no control"
+            );
 
-    #[test]
-    fn shift_moves_every_dimmable_display_together() {
-        let dials = Dials::with(&[("eDP-1", 0.5), ("HDMI-A-1", 0.25)]);
-        let mut service = showing(
-            Some(dials.clone()),
-            &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")],
-        );
-        invoke(
-            &mut service,
-            "brightness-up",
-            &Map::from_iter([("all".to_owned(), Value::from(true))]),
-        )
-        .expect("every display moves");
-        // The brightest steps 0.1 up; the dimmer keeps its share of it.
-        assert!(close(dials.at("eDP-1"), 0.6));
-        assert!(close(dials.at("HDMI-A-1"), 0.3));
+            // A display the session shows, by its connector: the slider's way.
+            invoke(
+                &mut service,
+                "set-display-brightness",
+                &Map::from_iter([
+                    ("display".to_owned(), Value::from("HDMI-A-1")),
+                    ("level".to_owned(), Value::from(0.9)),
+                ]),
+            )
+            .expect("one display dims");
+            let after = reading(&displays);
+            assert!(close(after.displays[1].brightness, 0.9));
+            assert_eq!(
+                after.displays[0].brightness, before.displays[0].brightness,
+                "the other display is untouched"
+            );
+        }
 
-        // Without `all` , only the display the person works on moves.
-        let mut inner = service.inner.borrow_mut();
-        inner.focused = Some("HDMI-A-1".into());
-        drop(inner);
-        invoke(&mut service, "brightness-down", &Map::new()).expect("the focused display dims");
-        assert!(close(dials.at("HDMI-A-1"), 0.2));
-        assert!(
-            close(dials.at("eDP-1"), 0.6),
-            "the display the person does not work on stays put"
-        );
-        assert_eq!(reading(&service).brightness(), dials.at("HDMI-A-1"));
+        phase shift_moves_every_dimmable_display_together;
+        {
+            let dials = Dials::with(&[("eDP-1", 0.5), ("HDMI-A-1", 0.25)]);
+            let mut service = showing(
+                Some(dials.clone()),
+                &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")],
+            );
+            invoke(
+                &mut service,
+                "brightness-up",
+                &Map::from_iter([("all".to_owned(), Value::from(true))]),
+            )
+            .expect("every display moves");
+            // The brightest steps 0.1 up; the dimmer keeps its share of it.
+            assert!(close(dials.at("eDP-1"), 0.6));
+            assert!(close(dials.at("HDMI-A-1"), 0.3));
+
+            // Without `all` , only the display the person works on moves.
+            let mut inner = service.inner.borrow_mut();
+            inner.focused = Some("HDMI-A-1".into());
+            drop(inner);
+            invoke(&mut service, "brightness-down", &Map::new()).expect("the focused display dims");
+            assert!(close(dials.at("HDMI-A-1"), 0.2));
+            assert!(
+                close(dials.at("eDP-1"), 0.6),
+                "the display the person does not work on stays put"
+            );
+            assert_eq!(reading(&service).brightness(), dials.at("HDMI-A-1"));
+        }
+
+        phase a_key_on_a_machine_that_dims_nothing_says_so;
+        {
+            let mut service = showing(None, &[("HDMI-A-1", "HDMI-A-1")]);
+            let error = invoke(&mut service, "brightness-down", &Map::new()).expect_err("nothing dims");
+            assert!(
+                matches!(&error, DoorError::Unavailable { code, .. } if code == "no-backlight"),
+                "{error:?}"
+            );
+            assert_eq!(reading(&service).brightness(), None);
+            assert!(!reading(&service).displays[0].backlight);
+        }
+
+        phase a_level_outside_zero_to_one_is_refused;
+        {
+            let mut service = showing(
+                Some(Dials::with(&[("eDP-1", 0.5)])),
+                &[("eDP-1", "Built-in")],
+            );
+            for level in [-0.1, 1.5, f64::NAN] {
+                let error = invoke(
+                    &mut service,
+                    "set-brightness",
+                    &Map::from_iter([("level".to_owned(), Value::from(level))]),
+                )
+                .expect_err("not a level");
+                assert!(matches!(error, DoorError::InvalidArguments(_)), "{error:?}");
+            }
+        }
+
+        phase the_ends_of_zero_to_one_are_levels;
+        {
+            let dials = Dials::with(&[("eDP-1", 0.5)]);
+            let mut service = showing(Some(dials.clone()), &[("eDP-1", "Built-in")]);
+            for level in [0.0_f32, 1.0] {
+                invoke(
+                    &mut service,
+                    "set-brightness",
+                    &Map::from_iter([("level".to_owned(), Value::from(f64::from(level)))]),
+                )
+                .expect("the end of the range is a level");
+                assert!(
+                    close(dials.at("eDP-1"), level),
+                    "the display is at {level}: {:?}",
+                    dials.at("eDP-1")
+                );
+            }
+        }
+
+        phase a_level_for_a_display_with_nothing_to_dim_is_refused_and_moves_no_other;
+        {
+            let dials = Dials::with(&[("eDP-1", 0.5)]);
+            let mut service = showing(
+                Some(dials.clone()),
+                &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")],
+            );
+            let error = invoke(
+                &mut service,
+                "set-display-brightness",
+                &Map::from_iter([
+                    ("display".to_owned(), Value::from("HDMI-A-1")),
+                    ("level".to_owned(), Value::from(0.9)),
+                ]),
+            )
+            .expect_err("that display has nothing to dim");
+            assert!(
+                matches!(&error, DoorError::Unavailable { code, .. } if code == "unknown-display"),
+                "{error:?}"
+            );
+            assert!(
+                dials.0.borrow().set.is_empty(),
+                "no display was set in its place"
+            );
+            assert!(close(dials.at("eDP-1"), 0.5));
+        }
     }
 
     /// A compositor showing `names` at 1280x800.
@@ -1297,80 +1380,5 @@ mod tests {
             None,
             "a backlight is dimmed where it is, not by the compositor"
         );
-    }
-
-    #[test]
-    fn a_key_on_a_machine_that_dims_nothing_says_so() {
-        let mut service = showing(None, &[("HDMI-A-1", "HDMI-A-1")]);
-        let error = invoke(&mut service, "brightness-down", &Map::new()).expect_err("nothing dims");
-        assert!(
-            matches!(&error, DoorError::Unavailable { code, .. } if code == "no-backlight"),
-            "{error:?}"
-        );
-        assert_eq!(reading(&service).brightness(), None);
-        assert!(!reading(&service).displays[0].backlight);
-    }
-
-    #[test]
-    fn a_level_outside_zero_to_one_is_refused() {
-        let mut service = showing(
-            Some(Dials::with(&[("eDP-1", 0.5)])),
-            &[("eDP-1", "Built-in")],
-        );
-        for level in [-0.1, 1.5, f64::NAN] {
-            let error = invoke(
-                &mut service,
-                "set-brightness",
-                &Map::from_iter([("level".to_owned(), Value::from(level))]),
-            )
-            .expect_err("not a level");
-            assert!(matches!(error, DoorError::InvalidArguments(_)), "{error:?}");
-        }
-    }
-
-    #[test]
-    fn the_ends_of_zero_to_one_are_levels() {
-        let dials = Dials::with(&[("eDP-1", 0.5)]);
-        let mut service = showing(Some(dials.clone()), &[("eDP-1", "Built-in")]);
-        for level in [0.0_f32, 1.0] {
-            invoke(
-                &mut service,
-                "set-brightness",
-                &Map::from_iter([("level".to_owned(), Value::from(f64::from(level)))]),
-            )
-            .expect("the end of the range is a level");
-            assert!(
-                close(dials.at("eDP-1"), level),
-                "the display is at {level}: {:?}",
-                dials.at("eDP-1")
-            );
-        }
-    }
-
-    #[test]
-    fn a_level_for_a_display_with_nothing_to_dim_is_refused_and_moves_no_other() {
-        let dials = Dials::with(&[("eDP-1", 0.5)]);
-        let mut service = showing(
-            Some(dials.clone()),
-            &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")],
-        );
-        let error = invoke(
-            &mut service,
-            "set-display-brightness",
-            &Map::from_iter([
-                ("display".to_owned(), Value::from("HDMI-A-1")),
-                ("level".to_owned(), Value::from(0.9)),
-            ]),
-        )
-        .expect_err("that display has nothing to dim");
-        assert!(
-            matches!(&error, DoorError::Unavailable { code, .. } if code == "unknown-display"),
-            "{error:?}"
-        );
-        assert!(
-            dials.0.borrow().set.is_empty(),
-            "no display was set in its place"
-        );
-        assert!(close(dials.at("eDP-1"), 0.5));
     }
 }

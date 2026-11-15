@@ -970,283 +970,291 @@ mod tests {
         (state.landed, state.failed.clone())
     }
 
-    #[test]
-    fn a_paste_gives_each_file_its_own_free_name() {
-        let dir = scratch("names");
-        let source = dir.path().join("source");
-        let destination = dir.path().join("destination");
-        fs::create_dir_all(&source).expect("the source folder");
-        fs::create_dir_all(&destination).expect("the destination folder");
-        let note = source.join("note.txt");
-        fs::write(&note, b"mine").expect("a file to copy");
-        fs::write(destination.join("note.txt"), b"theirs").expect("a file in the way");
+    tilo_test_env::scenario! {
+        fn a_paste_lands_whole_under_free_names;
 
-        let receipt =
-            plan(&files(&[&note], false), &destination, Conflict::KeepBoth, 7).expect("a paste");
-        assert_eq!(receipt.items.len(), 1);
-        let item = receipt.items.first().expect("the item");
-        assert_eq!(item.target, destination.join("note 2.txt"));
-        assert_eq!(item.state, State::Pending);
-        assert!(!receipt.moving);
-        assert_eq!(receipt.started_ms, 7);
+        phase a_paste_gives_each_file_its_own_free_name;
+        {
+            let dir = scratch("names");
+            let source = dir.path().join("source");
+            let destination = dir.path().join("destination");
+            fs::create_dir_all(&source).expect("the source folder");
+            fs::create_dir_all(&destination).expect("the destination folder");
+            let note = source.join("note.txt");
+            fs::write(&note, b"mine").expect("a file to copy");
+            fs::write(destination.join("note.txt"), b"theirs").expect("a file in the way");
 
-        // Pasted into the folder the files already sit in, a kept copy takes a second name.
-        let beside = plan(&files(&[&note], false), &source, Conflict::KeepBoth, 7)
-            .expect("a paste into its own folder");
-        assert_eq!(
-            beside.items.first().expect("the item").target,
-            source.join("note 2.txt")
-        );
-        // A destination that is not a folder takes nothing.
-        assert_eq!(
-            plan(&files(&[&note], false), &note, Conflict::KeepBoth, 7).err(),
-            Some(Refused::NotAFolder(note.clone()))
-        );
-        // Skipping a name the folder has leaves it out of the paste.
-        assert_eq!(
-            plan(&files(&[&note], false), &destination, Conflict::Skip, 7).err(),
-            Some(Refused::Nothing)
-        );
-    }
+            let receipt =
+                plan(&files(&[&note], false), &destination, Conflict::KeepBoth, 7).expect("a paste");
+            assert_eq!(receipt.items.len(), 1);
+            let item = receipt.items.first().expect("the item");
+            assert_eq!(item.target, destination.join("note 2.txt"));
+            assert_eq!(item.state, State::Pending);
+            assert!(!receipt.moving);
+            assert_eq!(receipt.started_ms, 7);
 
-    #[test]
-    fn a_paste_carries_its_items_out_and_a_cut_takes_the_sources() {
-        let dir = scratch("carry");
-        let source = dir.path().join("source");
-        let destination = dir.path().join("destination");
-        fs::create_dir_all(source.join("folder")).expect("a source folder");
-        fs::create_dir_all(&destination).expect("a destination folder");
-        let loose = source.join("note.txt");
-        fs::write(&loose, b"hello").expect("a file");
-        fs::write(source.join("folder").join("inner.txt"), b"inner").expect("a nested file");
-
-        let mut receipt = plan(
-            &files(&[&loose, &source.join("folder")], true),
-            &destination,
-            Conflict::KeepBoth,
-            0,
-        )
-        .expect("a paste");
-        let progress = Mutex::new(Progress::default());
-        let staging = take_staging(&receipt);
-        carry(&mut receipt, &staging, &progress);
-        assert_eq!(
-            fs::read(destination.join("note.txt")).expect("pasted"),
-            b"hello"
-        );
-        assert_eq!(
-            fs::read(destination.join("folder").join("inner.txt")).expect("pasted tree"),
-            b"inner"
-        );
-        assert!(!loose.exists(), "a cut takes its source once it is across");
-        assert!(!source.join("folder").exists());
-        assert!(
-            fs::read_dir(&receipt.staging).is_ok_and(|mut entries| entries.next().is_none()),
-            "no copy stays behind in staging: {}",
-            receipt.staging.display()
-        );
-        let (landed, failed) = reported(&progress);
-        assert_eq!(landed, 2);
-        assert!(failed.is_empty(), "{failed:?}");
-    }
-
-    #[test]
-    fn a_copy_is_whole_under_its_name_with_its_links_and_its_times() {
-        let dir = scratch("whole");
-        let source = dir.path().join("source");
-        let destination = dir.path().join("destination");
-        fs::create_dir_all(source.join("tree").join("deeper")).expect("a source tree");
-        fs::create_dir_all(&destination).expect("a destination folder");
-        let note = source.join("tree").join("deeper").join("note.txt");
-        fs::write(&note, b"the whole story").expect("a nested file");
-        std::os::unix::fs::symlink("../deeper/note.txt", source.join("tree").join("link"))
-            .expect("a link");
-        let changed = fs::metadata(&note)
-            .expect("the file's metadata")
-            .modified()
-            .expect("a modification time");
-
-        let mut receipt = plan(
-            &files(&[&source.join("tree")], false),
-            &destination,
-            Conflict::KeepBoth,
-            0,
-        )
-        .expect("a paste");
-        let progress = Mutex::new(Progress::default());
-        let staging = take_staging(&receipt);
-        carry(&mut receipt, &staging, &progress);
-        let pasted = destination.join("tree");
-        assert_eq!(
-            fs::read(pasted.join("deeper").join("note.txt")).expect("pasted"),
-            b"the whole story"
-        );
-        assert_eq!(
-            fs::read_link(pasted.join("link")).expect("the link was copied as a link"),
-            Path::new("../deeper/note.txt")
-        );
-        assert_eq!(
-            fs::metadata(pasted.join("deeper").join("note.txt"))
-                .expect("the copy's metadata")
-                .modified()
-                .expect("a modification time"),
-            changed,
-            "a copy keeps the time it last changed"
-        );
-        assert!(source.join("tree").exists(), "a copy leaves its source");
-    }
-
-    #[test]
-    fn replacing_sends_the_name_that_was_there_to_the_trash() {
-        let dir = scratch("replace");
-        let source = dir.path().join("source");
-        let destination = dir.path().join("destination");
-        fs::create_dir_all(&source).expect("a source folder");
-        fs::create_dir_all(&destination).expect("a destination folder");
-        let note = source.join("note.txt");
-        fs::write(&note, b"the new one").expect("a file");
-        fs::write(destination.join("note.txt"), b"the old one").expect("a file in the way");
-
-        let mut receipt =
-            plan(&files(&[&note], false), &destination, Conflict::Replace, 0).expect("a paste");
-        let progress = Mutex::new(Progress::default());
-        let staging = take_staging(&receipt);
-        carry(&mut receipt, &staging, &progress);
-        assert_eq!(
-            fs::read(destination.join("note.txt")).expect("pasted"),
-            b"the new one"
-        );
-        let Some(files) = host_fs::trash::trash_dir().filter(|files| files.is_dir()) else {
-            return;
-        };
-        let kept = fs::read_dir(&files).is_ok_and(|entries| {
-            entries.filter_map(Result::ok).any(|entry| {
-                let path = entry.path();
-                path.is_file() && fs::read(&path).is_ok_and(|bytes| bytes == b"the old one")
-            })
-        });
-        assert!(kept, "what was there is in the Trash, not gone");
-    }
-
-    #[test]
-    fn a_cut_source_comes_back_beside_a_name_that_was_taken_again() {
-        let dir = scratch("retaken");
-        let source = dir.path().join("source");
-        fs::create_dir_all(&source).expect("a source folder");
-        let note = source.join("note.txt");
-        fs::write(&note, b"mine").expect("a file");
-        let held = quarantine_path(&note).expect("a hidden name");
-        fs::rename(&note, &held).expect("the source is hidden");
-        fs::write(&note, b"someone else's").expect("the name is taken again");
-
-        let item = Item {
-            source: note.clone(),
-            target: dir.path().join("note.txt"),
-            state: State::Staged(Identity {
-                device: 0,
-                inode: 0,
-            }),
-            held: Some(held),
-        };
-        put_back(&item).expect("the source comes back");
-        assert_eq!(fs::read(&note).expect("the new file"), b"someone else's");
-        assert_eq!(
-            fs::read(source.join("note 2.txt")).expect("the source beside it"),
-            b"mine"
-        );
-    }
-
-    #[test]
-    fn what_landed_stays_and_what_did_not_goes_back_when_a_paste_is_undone() {
-        let dir = scratch("undo");
-        let source = dir.path().join("source");
-        let destination = dir.path().join("destination");
-        fs::create_dir_all(&source).expect("a source folder");
-        fs::create_dir_all(&destination).expect("a destination folder");
-        let across = source.join("across.txt");
-        let behind = source.join("behind.txt");
-        let away = source.join("away.txt");
-        fs::write(&across, b"across").expect("a file");
-        fs::write(&behind, b"behind").expect("a file");
-        fs::write(&away, b"away").expect("a file");
-
-        let mut receipt = plan(
-            &files(&[&across, &behind, &away], true),
-            &destination,
-            Conflict::KeepBoth,
-            0,
-        )
-        .expect("a paste");
-        let progress = Mutex::new(Progress::default());
-        // The first item went all the way; the second is only staged; the third was written down
-        // and never touched, as a session that stopped partway leaves them.
-        let (first, second) = (0usize, 1usize);
-        let staging = take_staging(&receipt);
-        stage(&mut receipt, &staging, first, &progress);
-        publish(&mut receipt, first, &progress);
-        unhold(&mut receipt, first, &progress);
-        stage(&mut receipt, &staging, second, &progress);
-        save(&receipt).expect("the receipt is written");
-
-        undo(&receipt, &progress).expect("the paste was undone");
-        assert_eq!(
-            fs::read(destination.join("across.txt")).expect("the published copy stays"),
-            b"across"
-        );
-        assert!(!across.exists(), "its source went, as a finished move does");
-        assert!(
-            !destination.join("behind.txt").exists(),
-            "nothing half written"
-        );
-        assert_eq!(fs::read(&behind).expect("the source is back"), b"behind");
-        assert_eq!(
-            fs::read(&away).expect("the untouched source stays"),
-            b"away"
-        );
-        assert!(fs::symlink_metadata(&receipt.staging).is_err());
-        assert!(
-            read_receipt().is_none(),
-            "a paste that is over leaves no receipt"
-        );
-    }
-
-    #[test]
-    fn an_unreadable_file_is_reported_and_the_rest_of_the_paste_lands() {
-        let dir = scratch("unreadable");
-        let source = dir.path().join("source");
-        let destination = dir.path().join("destination");
-        fs::create_dir_all(&source).expect("a source folder");
-        fs::create_dir_all(&destination).expect("a destination folder");
-        let secret = source.join("secret.txt");
-        let fine = source.join("fine.txt");
-        fs::write(&secret, b"closed").expect("a file");
-        fs::write(&fine, b"open").expect("a file");
-        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).expect("a closed file");
-        if fs::read(&secret).is_ok() {
-            // Root reads everything; there is no refusal to prove here.
-            return;
+            // Pasted into the folder the files already sit in, a kept copy takes a second name.
+            let beside = plan(&files(&[&note], false), &source, Conflict::KeepBoth, 7)
+                .expect("a paste into its own folder");
+            assert_eq!(
+                beside.items.first().expect("the item").target,
+                source.join("note 2.txt")
+            );
+            // A destination that is not a folder takes nothing.
+            assert_eq!(
+                plan(&files(&[&note], false), &note, Conflict::KeepBoth, 7).err(),
+                Some(Refused::NotAFolder(note.clone()))
+            );
+            // Skipping a name the folder has leaves it out of the paste.
+            assert_eq!(
+                plan(&files(&[&note], false), &destination, Conflict::Skip, 7).err(),
+                Some(Refused::Nothing)
+            );
         }
 
-        let mut receipt = plan(
-            &files(&[&secret, &fine], false),
-            &destination,
-            Conflict::KeepBoth,
-            0,
-        )
-        .expect("a paste");
-        let progress = Mutex::new(Progress::default());
-        let staging = take_staging(&receipt);
-        carry(&mut receipt, &staging, &progress);
-        assert_eq!(
-            fs::read(destination.join("fine.txt")).expect("the readable one landed"),
-            b"open"
-        );
-        let (landed, failed) = reported(&progress);
-        assert_eq!(failed.len(), 1, "one file was reported: {failed:?}");
-        assert_eq!(
-            failed.first().map(|(name, _)| name.as_str()),
-            Some("secret.txt")
-        );
-        assert_eq!(landed, 1);
+        phase a_paste_carries_its_items_out_and_a_cut_takes_the_sources;
+        {
+            let dir = scratch("carry");
+            let source = dir.path().join("source");
+            let destination = dir.path().join("destination");
+            fs::create_dir_all(source.join("folder")).expect("a source folder");
+            fs::create_dir_all(&destination).expect("a destination folder");
+            let loose = source.join("note.txt");
+            fs::write(&loose, b"hello").expect("a file");
+            fs::write(source.join("folder").join("inner.txt"), b"inner").expect("a nested file");
+
+            let mut receipt = plan(
+                &files(&[&loose, &source.join("folder")], true),
+                &destination,
+                Conflict::KeepBoth,
+                0,
+            )
+            .expect("a paste");
+            let progress = Mutex::new(Progress::default());
+            let staging = take_staging(&receipt);
+            carry(&mut receipt, &staging, &progress);
+            assert_eq!(
+                fs::read(destination.join("note.txt")).expect("pasted"),
+                b"hello"
+            );
+            assert_eq!(
+                fs::read(destination.join("folder").join("inner.txt")).expect("pasted tree"),
+                b"inner"
+            );
+            assert!(!loose.exists(), "a cut takes its source once it is across");
+            assert!(!source.join("folder").exists());
+            assert!(
+                fs::read_dir(&receipt.staging).is_ok_and(|mut entries| entries.next().is_none()),
+                "no copy stays behind in staging: {}",
+                receipt.staging.display()
+            );
+            let (landed, failed) = reported(&progress);
+            assert_eq!(landed, 2);
+            assert!(failed.is_empty(), "{failed:?}");
+        }
+
+        phase a_copy_is_whole_under_its_name_with_its_links_and_its_times;
+        {
+            let dir = scratch("whole");
+            let source = dir.path().join("source");
+            let destination = dir.path().join("destination");
+            fs::create_dir_all(source.join("tree").join("deeper")).expect("a source tree");
+            fs::create_dir_all(&destination).expect("a destination folder");
+            let note = source.join("tree").join("deeper").join("note.txt");
+            fs::write(&note, b"the whole story").expect("a nested file");
+            std::os::unix::fs::symlink("../deeper/note.txt", source.join("tree").join("link"))
+                .expect("a link");
+            let changed = fs::metadata(&note)
+                .expect("the file's metadata")
+                .modified()
+                .expect("a modification time");
+
+            let mut receipt = plan(
+                &files(&[&source.join("tree")], false),
+                &destination,
+                Conflict::KeepBoth,
+                0,
+            )
+            .expect("a paste");
+            let progress = Mutex::new(Progress::default());
+            let staging = take_staging(&receipt);
+            carry(&mut receipt, &staging, &progress);
+            let pasted = destination.join("tree");
+            assert_eq!(
+                fs::read(pasted.join("deeper").join("note.txt")).expect("pasted"),
+                b"the whole story"
+            );
+            assert_eq!(
+                fs::read_link(pasted.join("link")).expect("the link was copied as a link"),
+                Path::new("../deeper/note.txt")
+            );
+            assert_eq!(
+                fs::metadata(pasted.join("deeper").join("note.txt"))
+                    .expect("the copy's metadata")
+                    .modified()
+                    .expect("a modification time"),
+                changed,
+                "a copy keeps the time it last changed"
+            );
+            assert!(source.join("tree").exists(), "a copy leaves its source");
+        }
+
+        phase replacing_sends_the_name_that_was_there_to_the_trash;
+        {
+            let dir = scratch("replace");
+            let source = dir.path().join("source");
+            let destination = dir.path().join("destination");
+            fs::create_dir_all(&source).expect("a source folder");
+            fs::create_dir_all(&destination).expect("a destination folder");
+            let note = source.join("note.txt");
+            fs::write(&note, b"the new one").expect("a file");
+            fs::write(destination.join("note.txt"), b"the old one").expect("a file in the way");
+
+            let mut receipt =
+                plan(&files(&[&note], false), &destination, Conflict::Replace, 0).expect("a paste");
+            let progress = Mutex::new(Progress::default());
+            let staging = take_staging(&receipt);
+            carry(&mut receipt, &staging, &progress);
+            assert_eq!(
+                fs::read(destination.join("note.txt")).expect("pasted"),
+                b"the new one"
+            );
+            let Some(files) = host_fs::trash::trash_dir().filter(|files| files.is_dir()) else {
+                return;
+            };
+            let kept = fs::read_dir(&files).is_ok_and(|entries| {
+                entries.filter_map(Result::ok).any(|entry| {
+                    let path = entry.path();
+                    path.is_file() && fs::read(&path).is_ok_and(|bytes| bytes == b"the old one")
+                })
+            });
+            assert!(kept, "what was there is in the Trash, not gone");
+        }
+
+        phase an_unreadable_file_is_reported_and_the_rest_of_the_paste_lands;
+        {
+            let dir = scratch("unreadable");
+            let source = dir.path().join("source");
+            let destination = dir.path().join("destination");
+            fs::create_dir_all(&source).expect("a source folder");
+            fs::create_dir_all(&destination).expect("a destination folder");
+            let secret = source.join("secret.txt");
+            let fine = source.join("fine.txt");
+            fs::write(&secret, b"closed").expect("a file");
+            fs::write(&fine, b"open").expect("a file");
+            fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).expect("a closed file");
+            if fs::read(&secret).is_ok() {
+                // Root reads everything; there is no refusal to prove here.
+                return;
+            }
+
+            let mut receipt = plan(
+                &files(&[&secret, &fine], false),
+                &destination,
+                Conflict::KeepBoth,
+                0,
+            )
+            .expect("a paste");
+            let progress = Mutex::new(Progress::default());
+            let staging = take_staging(&receipt);
+            carry(&mut receipt, &staging, &progress);
+            assert_eq!(
+                fs::read(destination.join("fine.txt")).expect("the readable one landed"),
+                b"open"
+            );
+            let (landed, failed) = reported(&progress);
+            assert_eq!(failed.len(), 1, "one file was reported: {failed:?}");
+            assert_eq!(
+                failed.first().map(|(name, _)| name.as_str()),
+                Some("secret.txt")
+            );
+            assert_eq!(landed, 1);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_paste_undone_puts_back_what_did_not_land;
+
+        phase a_cut_source_comes_back_beside_a_name_that_was_taken_again;
+        {
+            let dir = scratch("retaken");
+            let source = dir.path().join("source");
+            fs::create_dir_all(&source).expect("a source folder");
+            let note = source.join("note.txt");
+            fs::write(&note, b"mine").expect("a file");
+            let held = quarantine_path(&note).expect("a hidden name");
+            fs::rename(&note, &held).expect("the source is hidden");
+            fs::write(&note, b"someone else's").expect("the name is taken again");
+
+            let item = Item {
+                source: note.clone(),
+                target: dir.path().join("note.txt"),
+                state: State::Staged(Identity {
+                    device: 0,
+                    inode: 0,
+                }),
+                held: Some(held),
+            };
+            put_back(&item).expect("the source comes back");
+            assert_eq!(fs::read(&note).expect("the new file"), b"someone else's");
+            assert_eq!(
+                fs::read(source.join("note 2.txt")).expect("the source beside it"),
+                b"mine"
+            );
+        }
+
+        phase what_landed_stays_and_what_did_not_goes_back_when_a_paste_is_undone;
+        {
+            let dir = scratch("undo");
+            let source = dir.path().join("source");
+            let destination = dir.path().join("destination");
+            fs::create_dir_all(&source).expect("a source folder");
+            fs::create_dir_all(&destination).expect("a destination folder");
+            let across = source.join("across.txt");
+            let behind = source.join("behind.txt");
+            let away = source.join("away.txt");
+            fs::write(&across, b"across").expect("a file");
+            fs::write(&behind, b"behind").expect("a file");
+            fs::write(&away, b"away").expect("a file");
+
+            let mut receipt = plan(
+                &files(&[&across, &behind, &away], true),
+                &destination,
+                Conflict::KeepBoth,
+                0,
+            )
+            .expect("a paste");
+            let progress = Mutex::new(Progress::default());
+            // The first item went all the way; the second is only staged; the third was written down
+            // and never touched, as a session that stopped partway leaves them.
+            let (first, second) = (0usize, 1usize);
+            let staging = take_staging(&receipt);
+            stage(&mut receipt, &staging, first, &progress);
+            publish(&mut receipt, first, &progress);
+            unhold(&mut receipt, first, &progress);
+            stage(&mut receipt, &staging, second, &progress);
+            save(&receipt).expect("the receipt is written");
+
+            undo(&receipt, &progress).expect("the paste was undone");
+            assert_eq!(
+                fs::read(destination.join("across.txt")).expect("the published copy stays"),
+                b"across"
+            );
+            assert!(!across.exists(), "its source went, as a finished move does");
+            assert!(
+                !destination.join("behind.txt").exists(),
+                "nothing half written"
+            );
+            assert_eq!(fs::read(&behind).expect("the source is back"), b"behind");
+            assert_eq!(
+                fs::read(&away).expect("the untouched source stays"),
+                b"away"
+            );
+            assert!(fs::symlink_metadata(&receipt.staging).is_err());
+            assert!(
+                read_receipt().is_none(),
+                "a paste that is over leaves no receipt"
+            );
+        }
     }
 }

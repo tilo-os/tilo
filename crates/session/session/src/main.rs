@@ -299,53 +299,57 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_headless_session_names_the_connector_of_its_first_output() {
-        let output = parse_output(&flags(&[
-            "--backend",
-            "headless",
-            "--connector",
-            "eDP-1",
-            "--output",
-            "HDMI-A-1=1920x1080@1280,0",
-        ]))
-        .expect("parsed");
-        assert_eq!(output.connector, "eDP-1");
-        assert_eq!(
-            output.outputs,
-            vec![("HDMI-A-1".to_owned(), (1920, 1080), Some((1280, 0)))]
-        );
+    tilo_test_env::scenario! {
+        fn a_headless_sessions_outputs_are_named_by_connector_size_and_place;
 
-        assert_eq!(
-            parse_output(&flags(&["--backend", "headless"])).map(|output| output.connector),
-            Some("HEADLESS-1".to_owned()),
-            "the default connector"
-        );
-        assert!(
-            parse_output(&flags(&["--backend", "nested", "--connector", "eDP-1"])).is_none(),
-            "only a headless session's outputs have connectors of their own"
-        );
-    }
+        phase a_headless_session_names_the_connector_of_its_first_output;
+        {
+            let output = parse_output(&flags(&[
+                "--backend",
+                "headless",
+                "--connector",
+                "eDP-1",
+                "--output",
+                "HDMI-A-1=1920x1080@1280,0",
+            ]))
+            .expect("parsed");
+            assert_eq!(output.connector, "eDP-1");
+            assert_eq!(
+                output.outputs,
+                vec![("HDMI-A-1".to_owned(), (1920, 1080), Some((1280, 0)))]
+            );
 
-    #[test]
-    fn an_output_names_its_size_place_and_connector() {
-        let named = |value: &str| named_output(value, 2);
-        assert_eq!(
-            named("1280x800"),
-            Some(("HEADLESS-2".to_owned(), (1280, 800), None))
-        );
-        assert_eq!(
-            named("1920x1080@1280,0"),
-            Some(("HEADLESS-2".to_owned(), (1920, 1080), Some((1280, 0))))
-        );
-        assert_eq!(
-            named("DP-2=2560x1440@-2560,0"),
-            Some(("DP-2".to_owned(), (2560, 1440), Some((-2560, 0)))),
-            "a connector named outright, left of the first display"
-        );
-        assert_eq!(named("wide"), None);
-        assert_eq!(named("1280"), None);
-        assert_eq!(named("1280x800@middle"), None);
+            assert_eq!(
+                parse_output(&flags(&["--backend", "headless"])).map(|output| output.connector),
+                Some("HEADLESS-1".to_owned()),
+                "the default connector"
+            );
+            assert!(
+                parse_output(&flags(&["--backend", "nested", "--connector", "eDP-1"])).is_none(),
+                "only a headless session's outputs have connectors of their own"
+            );
+        }
+
+        phase an_output_names_its_size_place_and_connector;
+        {
+            let named = |value: &str| named_output(value, 2);
+            assert_eq!(
+                named("1280x800"),
+                Some(("HEADLESS-2".to_owned(), (1280, 800), None))
+            );
+            assert_eq!(
+                named("1920x1080@1280,0"),
+                Some(("HEADLESS-2".to_owned(), (1920, 1080), Some((1280, 0))))
+            );
+            assert_eq!(
+                named("DP-2=2560x1440@-2560,0"),
+                Some(("DP-2".to_owned(), (2560, 1440), Some((-2560, 0)))),
+                "a connector named outright, left of the first display"
+            );
+            assert_eq!(named("wide"), None);
+            assert_eq!(named("1280"), None);
+            assert_eq!(named("1280x800@middle"), None);
+        }
     }
 }
 

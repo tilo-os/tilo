@@ -1974,61 +1974,69 @@ mod tests {
         );
     }
 
-    /// An ask is named to the app the way the app sent it, so the reply says which of its messages
-    /// this session could not answer.
-    #[test]
-    fn an_ask_is_named_as_the_app_sent_it() {
-        assert_eq!(
-            name_of(&FloatingSurfaceClientMessage::Hello { version: 21 }),
-            "hello"
-        );
-        assert_eq!(
-            name_of(&FloatingSurfaceClientMessage::AllowHostShell),
-            "allow_host_shell"
-        );
-        assert_eq!(
-            name_of(&FloatingSurfaceClientMessage::OpenCaptureStudio {
-                mode: ui::floating_surface::CaptureStudioProtocolMode::PictureInPicture,
-            }),
-            "open_capture_studio"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn what_an_app_and_its_launcher_send_is_read_as_they_sent_it;
 
-    #[test]
-    fn the_launcher_s_handshake_and_the_app_s_hello_are_read() {
-        let frame = handshake("so.tilo.notes");
-        let parsed: LauncherHandshake = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
-        assert_eq!(parsed.protocol, SHELL_UI_LAUNCH_PROTOCOL);
-        assert_eq!(parsed.app_id, "so.tilo.notes");
-        assert!(!parsed.network_status_allowed);
-        // What the launcher says of the network reaches the window; one that predates the field
-        // leaves it out.
-        let allowed: LauncherHandshake = serde_json::from_value(serde_json::json!({
-            "protocol": SHELL_UI_LAUNCH_PROTOCOL,
-            "app_id": "so.tilo.notes",
-            "network_status_allowed": true,
-        }))
-        .unwrap();
-        assert!(allowed.network_status_allowed);
-        let old: LauncherHandshake = serde_json::from_value(serde_json::json!({
-            "protocol": SHELL_UI_LAUNCH_PROTOCOL,
-            "app_id": "so.tilo.notes",
-        }))
-        .unwrap();
-        assert!(!old.network_status_allowed);
-        let mut hello = serde_json::to_vec(&FloatingSurfaceClientMessage::Hello {
-            version: FLOATING_SURFACE_PROTOCOL_VERSION,
-        })
-        .unwrap();
-        hello.push(b'\n');
-        assert_eq!(
-            hello_version(&hello[..hello.len() - 1]),
-            Some(FLOATING_SURFACE_PROTOCOL_VERSION)
-        );
-        assert_eq!(
-            hello_version(b"{\"type\":\"hello\",\"version\":0}"),
-            Some(0)
-        );
-        assert_eq!(hello_version(b"{\"type\":\"other\"}"), None);
+        phase an_ask_is_named_as_the_app_sent_it;
+        // An ask is named to the app the way the app sent it, so the reply says which of its messages
+        // this session could not answer.
+        {
+            assert_eq!(
+                name_of(&FloatingSurfaceClientMessage::Hello { version: 21 }),
+                "hello"
+            );
+            assert_eq!(
+                name_of(&FloatingSurfaceClientMessage::AllowHostShell),
+                "allow_host_shell"
+            );
+            assert_eq!(
+                name_of(&FloatingSurfaceClientMessage::OpenCaptureStudio {
+                    mode: ui::floating_surface::CaptureStudioProtocolMode::PictureInPicture,
+                }),
+                "open_capture_studio"
+            );
+        }
+
+        phase the_launcher_s_handshake_and_the_app_s_hello_are_read;
+        {
+            let frame = handshake("so.tilo.notes");
+            let parsed: LauncherHandshake = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+            assert_eq!(parsed.protocol, SHELL_UI_LAUNCH_PROTOCOL);
+            assert_eq!(parsed.app_id, "so.tilo.notes");
+            assert!(!parsed.network_status_allowed);
+            // What the launcher says of the network reaches the window; one that predates the field
+            // leaves it out.
+            let allowed: LauncherHandshake = serde_json::from_value(serde_json::json!({
+                "protocol": SHELL_UI_LAUNCH_PROTOCOL,
+                "app_id": "so.tilo.notes",
+                "network_status_allowed": true,
+            }))
+            .unwrap();
+            assert!(allowed.network_status_allowed);
+            let old: LauncherHandshake = serde_json::from_value(serde_json::json!({
+                "protocol": SHELL_UI_LAUNCH_PROTOCOL,
+                "app_id": "so.tilo.notes",
+            }))
+            .unwrap();
+            assert!(!old.network_status_allowed);
+            let mut hello = serde_json::to_vec(&FloatingSurfaceClientMessage::Hello {
+                version: FLOATING_SURFACE_PROTOCOL_VERSION,
+            })
+            .unwrap();
+            hello.push(b'\n');
+            assert_eq!(
+                hello_version(&hello[..hello.len() - 1]),
+                Some(FLOATING_SURFACE_PROTOCOL_VERSION)
+            );
+            assert_eq!(
+                hello_version(b"{\"type\":\"hello\",\"version\":0}"),
+                Some(0)
+            );
+            assert_eq!(hello_version(b"{\"type\":\"other\"}"), None);
+        }
     }
 }

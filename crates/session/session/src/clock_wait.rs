@@ -276,34 +276,38 @@ mod tests {
         }
     }
 
-    /// A wait with nothing to listen to still shows why the shell is off, and does not end on its
-    /// own.
-    #[test]
-    fn the_wait_holds_the_shell_until_the_clock_is_admitted() {
-        let mut wait = ClockWait::new(
-            PathBuf::from("/nonexistent"),
-            false,
-            refusal(DeviceCertError::NotYetValid),
-        );
-        assert!(!wait.done(), "the shell waits for the clock");
-        assert!(matches!(wait.pump(), ClockWaitStep::Waiting));
-        assert!(!wait.done(), "nothing verified the identity");
-        wait.finish();
-        assert!(wait.done(), "the shell takes the wait's place");
-    }
+    tilo_test_env::scenario! {
+        fn the_shell_waits_for_a_clock_that_admits_its_certificate;
 
-    /// A certificate the clock reads as not yet valid becomes valid when the clock reaches its
-    /// instant, and one it reads as expired only when the clock is moved back.
-    #[test]
-    fn only_a_forward_running_clock_admits_a_certificate_dated_ahead() {
-        assert_eq!(
-            refusal(DeviceCertError::NotYetValid).valid_at_ns(),
-            Some(2_000_000_000)
-        );
-        assert_eq!(
-            refusal(DeviceCertError::Expired).valid_at_ns(),
-            None,
-            "an expired certificate has no instant a forward-running clock reaches"
-        );
+        phase the_wait_holds_the_shell_until_the_clock_is_admitted;
+        // A wait with nothing to listen to still shows why the shell is off, and does not end on its
+        // own.
+        {
+            let mut wait = ClockWait::new(
+                PathBuf::from("/nonexistent"),
+                false,
+                refusal(DeviceCertError::NotYetValid),
+            );
+            assert!(!wait.done(), "the shell waits for the clock");
+            assert!(matches!(wait.pump(), ClockWaitStep::Waiting));
+            assert!(!wait.done(), "nothing verified the identity");
+            wait.finish();
+            assert!(wait.done(), "the shell takes the wait's place");
+        }
+
+        phase only_a_forward_running_clock_admits_a_certificate_dated_ahead;
+        // A certificate the clock reads as not yet valid becomes valid when the clock reaches its
+        // instant, and one it reads as expired only when the clock is moved back.
+        {
+            assert_eq!(
+                refusal(DeviceCertError::NotYetValid).valid_at_ns(),
+                Some(2_000_000_000)
+            );
+            assert_eq!(
+                refusal(DeviceCertError::Expired).valid_at_ns(),
+                None,
+                "an expired certificate has no instant a forward-running clock reaches"
+            );
+        }
     }
 }

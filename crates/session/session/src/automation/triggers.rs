@@ -1349,228 +1349,236 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn a_calendar_schedule_fires_at_the_next_listed_local_time() {
-        // 2026-09-25 is a Friday; the local clock is two hours ahead.
-        let clock = ManualClock::new(
-            at("2026-09-25T10:00:00Z"),
-            FixedOffset::east_opt(2 * 3600).expect("offset"),
-        );
-        let weekday_mornings = Schedule::Calendar {
-            at: tilo_automation::TimeOfDay {
-                hour: 9,
-                minute: 30,
-            },
-            weekdays: vec![Weekday::Monday, Weekday::Friday],
-        };
-        assert_eq!(
-            next_fire_time(&weekday_mornings, clock.now(), &clock),
-            Some(at("2026-09-28T07:30:00Z")),
-            "Friday 09:30 local has passed, so Monday's is next"
-        );
-        let daily_evening = Schedule::Calendar {
-            at: tilo_automation::TimeOfDay {
-                hour: 18,
-                minute: 0,
-            },
-            weekdays: Vec::new(),
-        };
-        assert_eq!(
-            next_fire_time(&daily_evening, clock.now(), &clock),
-            Some(at("2026-09-25T16:00:00Z"))
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_schedule_fires_at_its_own_times_once_each;
 
-    #[test]
-    fn an_interval_fires_on_the_same_times_wherever_it_was_armed() {
-        let clock = utc_clock("2026-09-25T10:00:00Z");
-        let hourly = Schedule::Interval { seconds: 3600 };
-        assert_eq!(
-            next_fire_time(&hourly, clock.now(), clock.as_ref()),
-            Some(at("2026-09-25T11:00:00Z"))
-        );
-        assert_eq!(
-            next_fire_time(&hourly, at("2026-09-25T09:30:12Z"), clock.as_ref()),
-            Some(at("2026-09-25T10:00:00Z")),
-            "armed half way through a period, it still fires on the hour"
-        );
-    }
+        phase a_calendar_schedule_fires_at_the_next_listed_local_time;
+        {
+            // 2026-09-25 is a Friday; the local clock is two hours ahead.
+            let clock = ManualClock::new(
+                at("2026-09-25T10:00:00Z"),
+                FixedOffset::east_opt(2 * 3600).expect("offset"),
+            );
+            let weekday_mornings = Schedule::Calendar {
+                at: tilo_automation::TimeOfDay {
+                    hour: 9,
+                    minute: 30,
+                },
+                weekdays: vec![Weekday::Monday, Weekday::Friday],
+            };
+            assert_eq!(
+                next_fire_time(&weekday_mornings, clock.now(), &clock),
+                Some(at("2026-09-28T07:30:00Z")),
+                "Friday 09:30 local has passed, so Monday's is next"
+            );
+            let daily_evening = Schedule::Calendar {
+                at: tilo_automation::TimeOfDay {
+                    hour: 18,
+                    minute: 0,
+                },
+                weekdays: Vec::new(),
+            };
+            assert_eq!(
+                next_fire_time(&daily_evening, clock.now(), &clock),
+                Some(at("2026-09-25T16:00:00Z"))
+            );
+        }
 
-    #[test]
-    fn an_hourly_schedule_fires_once_for_each_of_its_fire_times() {
-        let clock = utc_clock("2026-09-25T08:00:10Z");
-        let devices = PersonalDevices::alone("laptop");
-        let context = TriggerContext {
-            clock: clock.as_ref(),
-            devices: &devices,
-        };
-        let mut schedules = ScheduleTriggers::open(None, Arc::new(|| ()));
-        let armed = [Armed {
-            workspace: "workspace".into(),
-            shortcut: shortcut(&TriggerSpec::Schedule {
-                schedule: Schedule::Interval { seconds: 3600 },
-                catch_up: CatchUp::Skip,
-            }),
-            saver: "person".into(),
-            claims: Vec::new(),
-        }];
-        assert!(
-            schedules
-                .observe(TriggerEvent::Tick, &armed, context)
-                .is_empty(),
-            "nothing is due before the hour"
-        );
-        clock.set(at("2026-09-25T09:00:05Z"));
-        let fired = schedules.observe(TriggerEvent::Tick, &armed, context);
-        assert_eq!(fired.len(), 1, "the fire time runs");
-        assert_eq!(
-            fired[0].run,
-            scheduled_run(
-                &ledger_key("workspace", "tidy", 0),
-                at("2026-09-25T09:00:00Z")
-            ),
-            "the run is the fire time's, so the person's devices agree on it"
-        );
-        assert_eq!(
-            fired[0].claim.as_ref().map(|claim| claim.device.as_str()),
-            Some("laptop"),
-            "this device claims the fire time it took"
-        );
-        for _ in 0..5 {
+        phase an_interval_fires_on_the_same_times_wherever_it_was_armed;
+        {
+            let clock = utc_clock("2026-09-25T10:00:00Z");
+            let hourly = Schedule::Interval { seconds: 3600 };
+            assert_eq!(
+                next_fire_time(&hourly, clock.now(), clock.as_ref()),
+                Some(at("2026-09-25T11:00:00Z"))
+            );
+            assert_eq!(
+                next_fire_time(&hourly, at("2026-09-25T09:30:12Z"), clock.as_ref()),
+                Some(at("2026-09-25T10:00:00Z")),
+                "armed half way through a period, it still fires on the hour"
+            );
+        }
+
+        phase an_hourly_schedule_fires_once_for_each_of_its_fire_times;
+        {
+            let clock = utc_clock("2026-09-25T08:00:10Z");
+            let devices = PersonalDevices::alone("laptop");
+            let context = TriggerContext {
+                clock: clock.as_ref(),
+                devices: &devices,
+            };
+            let mut schedules = ScheduleTriggers::open(None, Arc::new(|| ()));
+            let armed = [Armed {
+                workspace: "workspace".into(),
+                shortcut: shortcut(&TriggerSpec::Schedule {
+                    schedule: Schedule::Interval { seconds: 3600 },
+                    catch_up: CatchUp::Skip,
+                }),
+                saver: "person".into(),
+                claims: Vec::new(),
+            }];
             assert!(
                 schedules
                     .observe(TriggerEvent::Tick, &armed, context)
                     .is_empty(),
-                "the same fire time never runs twice"
+                "nothing is due before the hour"
             );
+            clock.set(at("2026-09-25T09:00:05Z"));
+            let fired = schedules.observe(TriggerEvent::Tick, &armed, context);
+            assert_eq!(fired.len(), 1, "the fire time runs");
+            assert_eq!(
+                fired[0].run,
+                scheduled_run(
+                    &ledger_key("workspace", "tidy", 0),
+                    at("2026-09-25T09:00:00Z")
+                ),
+                "the run is the fire time's, so the person's devices agree on it"
+            );
+            assert_eq!(
+                fired[0].claim.as_ref().map(|claim| claim.device.as_str()),
+                Some("laptop"),
+                "this device claims the fire time it took"
+            );
+            for _ in 0..5 {
+                assert!(
+                    schedules
+                        .observe(TriggerEvent::Tick, &armed, context)
+                        .is_empty(),
+                    "the same fire time never runs twice"
+                );
+            }
         }
     }
 
-    #[test]
-    fn a_keyboard_trigger_fires_on_its_chord_only() {
-        let clock = utc_clock("2026-09-25T10:00:00Z");
-        let mut host =
-            TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
-        let armed = [Armed {
-            workspace: "workspace".into(),
-            shortcut: shortcut(&TriggerSpec::Keyboard {
-                chord: "Super+Shift+N".into(),
-            }),
-            saver: "person".into(),
-            claims: Vec::new(),
-        }];
-        let chord = KeyChord::parse("Super+Shift+N").expect("a chord");
-        assert_eq!(
-            host.observe(TriggerEvent::Key(&chord), &armed).len(),
-            1,
-            "the trigger's own chord starts it"
-        );
-        let other = KeyChord::parse("Super+Shift+M").expect("a chord");
-        assert!(
-            host.observe(TriggerEvent::Key(&other), &armed).is_empty(),
-            "another chord starts nothing"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_event_trigger_fires_on_the_event_it_names_and_no_other;
 
-    #[test]
-    fn an_app_opening_fires_once_it_starts_publishing() {
-        let clock = utc_clock("2026-09-25T10:00:00Z");
-        let mut host =
-            TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
-        let armed = [Armed {
-            workspace: "workspace".into(),
-            shortcut: shortcut(&TriggerSpec::AppOpened {
-                app_id: "so.tilo.notes".into(),
-            }),
-            saver: "person".into(),
-            claims: Vec::new(),
-        }];
-        let mut running = BTreeSet::new();
-        assert!(
-            host.observe(TriggerEvent::Apps(&running), &armed)
-                .is_empty(),
-            "the first look only learns what already runs"
-        );
-        running.insert("so.tilo.notes".to_owned());
-        let fired = host.observe(TriggerEvent::Apps(&running), &armed);
-        assert_eq!(fired.len(), 1, "the app opening starts the shortcut");
-        assert!(
-            host.observe(TriggerEvent::Apps(&running), &armed)
-                .is_empty(),
-            "an app that stays running starts nothing again"
-        );
-    }
+        phase a_keyboard_trigger_fires_on_its_chord_only;
+        {
+            let clock = utc_clock("2026-09-25T10:00:00Z");
+            let mut host =
+                TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
+            let armed = [Armed {
+                workspace: "workspace".into(),
+                shortcut: shortcut(&TriggerSpec::Keyboard {
+                    chord: "Super+Shift+N".into(),
+                }),
+                saver: "person".into(),
+                claims: Vec::new(),
+            }];
+            let chord = KeyChord::parse("Super+Shift+N").expect("a chord");
+            assert_eq!(
+                host.observe(TriggerEvent::Key(&chord), &armed).len(),
+                1,
+                "the trigger's own chord starts it"
+            );
+            let other = KeyChord::parse("Super+Shift+M").expect("a chord");
+            assert!(
+                host.observe(TriggerEvent::Key(&other), &armed).is_empty(),
+                "another chord starts nothing"
+            );
+        }
 
-    #[test]
-    fn a_focus_mode_fires_on_the_transition_it_names() {
-        let clock = utc_clock("2026-09-25T10:00:00Z");
-        let mut host =
-            TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
-        let armed = [Armed {
-            workspace: "workspace".into(),
-            shortcut: shortcut(&TriggerSpec::FocusMode {
-                mode: tilo_automation::FOCUS_DO_NOT_DISTURB.into(),
-                transition: tilo_automation::FocusTransition::Enter,
-            }),
-            saver: "person".into(),
-            claims: Vec::new(),
-        }];
-        let off = FocusState::default();
-        assert!(host.observe(TriggerEvent::Focus(off), &armed).is_empty());
-        let on = FocusState {
-            do_not_disturb: true,
-            focus: false,
-        };
-        assert_eq!(
-            host.observe(TriggerEvent::Focus(on), &armed).len(),
-            1,
-            "entering the mode starts the shortcut"
-        );
-        assert!(
-            host.observe(TriggerEvent::Focus(on), &armed).is_empty(),
-            "staying on is no transition"
-        );
-        assert_eq!(
-            host.observe(TriggerEvent::Focus(off), &armed).len(),
-            0,
-            "leaving is another transition than the one it names"
-        );
-    }
+        phase an_app_opening_fires_once_it_starts_publishing;
+        {
+            let clock = utc_clock("2026-09-25T10:00:00Z");
+            let mut host =
+                TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
+            let armed = [Armed {
+                workspace: "workspace".into(),
+                shortcut: shortcut(&TriggerSpec::AppOpened {
+                    app_id: "so.tilo.notes".into(),
+                }),
+                saver: "person".into(),
+                claims: Vec::new(),
+            }];
+            let mut running = BTreeSet::new();
+            assert!(
+                host.observe(TriggerEvent::Apps(&running), &armed)
+                    .is_empty(),
+                "the first look only learns what already runs"
+            );
+            running.insert("so.tilo.notes".to_owned());
+            let fired = host.observe(TriggerEvent::Apps(&running), &armed);
+            assert_eq!(fired.len(), 1, "the app opening starts the shortcut");
+            assert!(
+                host.observe(TriggerEvent::Apps(&running), &armed)
+                    .is_empty(),
+                "an app that stays running starts nothing again"
+            );
+        }
 
-    #[test]
-    fn a_change_in_a_watched_folder_fires_the_trigger_naming_its_capability() {
-        let clock = utc_clock("2026-09-25T10:00:00Z");
-        let mut host =
-            TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
-        let armed = [Armed {
-            workspace: "workspace".into(),
-            shortcut: shortcut(&TriggerSpec::FileChanged {
+        phase a_focus_mode_fires_on_the_transition_it_names;
+        {
+            let clock = utc_clock("2026-09-25T10:00:00Z");
+            let mut host =
+                TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
+            let armed = [Armed {
+                workspace: "workspace".into(),
+                shortcut: shortcut(&TriggerSpec::FocusMode {
+                    mode: tilo_automation::FOCUS_DO_NOT_DISTURB.into(),
+                    transition: tilo_automation::FocusTransition::Enter,
+                }),
+                saver: "person".into(),
+                claims: Vec::new(),
+            }];
+            let off = FocusState::default();
+            assert!(host.observe(TriggerEvent::Focus(off), &armed).is_empty());
+            let on = FocusState {
+                do_not_disturb: true,
+                focus: false,
+            };
+            assert_eq!(
+                host.observe(TriggerEvent::Focus(on), &armed).len(),
+                1,
+                "entering the mode starts the shortcut"
+            );
+            assert!(
+                host.observe(TriggerEvent::Focus(on), &armed).is_empty(),
+                "staying on is no transition"
+            );
+            assert_eq!(
+                host.observe(TriggerEvent::Focus(off), &armed).len(),
+                0,
+                "leaving is another transition than the one it names"
+            );
+        }
+
+        phase a_change_in_a_watched_folder_fires_the_trigger_naming_its_capability;
+        {
+            let clock = utc_clock("2026-09-25T10:00:00Z");
+            let mut host =
+                TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
+            let armed = [Armed {
+                workspace: "workspace".into(),
+                shortcut: shortcut(&TriggerSpec::FileChanged {
+                    capability: "cap-1".into(),
+                }),
+                saver: "person".into(),
+                claims: Vec::new(),
+            }];
+            let watched = FolderChange {
+                workspace: "workspace".into(),
                 capability: "cap-1".into(),
-            }),
-            saver: "person".into(),
-            claims: Vec::new(),
-        }];
-        let watched = FolderChange {
-            workspace: "workspace".into(),
-            capability: "cap-1".into(),
-            file: "Invoices/July.pdf".into(),
-            change: FileChange::Created,
-        };
-        assert_eq!(
-            host.observe(TriggerEvent::Files(&[watched]), &armed).len(),
-            1,
-            "the file appearing starts the shortcut"
-        );
-        let elsewhere = FolderChange {
-            workspace: "workspace".into(),
-            capability: "cap-2".into(),
-            file: "Notes.md".into(),
-            change: FileChange::Modified,
-        };
-        assert!(
-            host.observe(TriggerEvent::Files(&[elsewhere]), &armed)
-                .is_empty(),
-            "a folder the trigger does not name starts nothing"
-        );
+                file: "Invoices/July.pdf".into(),
+                change: FileChange::Created,
+            };
+            assert_eq!(
+                host.observe(TriggerEvent::Files(&[watched]), &armed).len(),
+                1,
+                "the file appearing starts the shortcut"
+            );
+            let elsewhere = FolderChange {
+                workspace: "workspace".into(),
+                capability: "cap-2".into(),
+                file: "Notes.md".into(),
+                change: FileChange::Modified,
+            };
+            assert!(
+                host.observe(TriggerEvent::Files(&[elsewhere]), &armed)
+                    .is_empty(),
+                "a folder the trigger does not name starts nothing"
+            );
+        }
     }
 }

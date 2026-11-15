@@ -106,62 +106,62 @@ mod tests {
         dir
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_device_that_finished_its_setup_starts_at_its_shell() {
-        let (_env, home) = home();
-        let dir = identity_dir(home.path());
-        assert!(!setup_due(false, false, &dir), "nothing is left to set up");
-    }
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn setup_is_due_until_the_device_finished_it;
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_device_with_no_identity_sets_up_before_its_shell() {
-        let (_env, home) = home();
-        let dir = identity_dir(home.path());
-        assert!(setup_due(true, false, &dir));
-    }
+        phase a_device_that_finished_its_setup_starts_at_its_shell;
+        {
+            let (_env, home) = home();
+            let dir = identity_dir(home.path());
+            assert!(!setup_due(false, false, &dir), "nothing is left to set up");
+        }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn an_identity_the_last_startup_found_unusable_sets_up_again() {
-        let (_env, home) = home();
-        let dir = identity_dir(home.path());
-        assert!(setup_due(false, true, &dir));
-    }
+        phase a_device_with_no_identity_sets_up_before_its_shell;
+        {
+            let (_env, home) = home();
+            let dir = identity_dir(home.path());
+            assert!(setup_due(true, false, &dir));
+        }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_restart_mid_setup_opens_it_again() {
-        let (_env, home) = home();
-        let dir = identity_dir(home.path());
-        // The ceremony's journal, written ahead of the step it guards: any entry at its path is
-        // setup the person had not finished.
-        std::fs::write(
-            dir.join(".onboarding-progress.json"),
-            br#"{"version":1,"stage":"identity-ready"}"#,
-        )
-        .expect("journal");
-        assert!(
-            tilo_onboarding_host::view::has_pending_progress(&dir),
-            "the journal is the one the ceremony leaves"
-        );
-        assert!(
-            setup_due(false, false, &dir),
-            "setup under way is opened again"
-        );
-    }
+        phase an_identity_the_last_startup_found_unusable_sets_up_again;
+        {
+            let (_env, home) = home();
+            let dir = identity_dir(home.path());
+            assert!(setup_due(false, true, &dir));
+        }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_prepared_setup_waits_for_its_owner() {
-        let (home, dir, _) = tilo_onboarding_host::browser::fixtures::fixture();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("HOME", home.path());
-        assert!(
-            tilo_onboarding_host::prepared::session_pending(&dir),
-            "the fixture leaves a prepared setup"
-        );
-        assert!(setup_due(false, false, &dir));
+        phase a_restart_mid_setup_opens_it_again;
+        {
+            let (_env, home) = home();
+            let dir = identity_dir(home.path());
+            // The ceremony's journal, written ahead of the step it guards: any entry at its path is
+            // setup the person had not finished.
+            std::fs::write(
+                dir.join(".onboarding-progress.json"),
+                br#"{"version":1,"stage":"identity-ready"}"#,
+            )
+            .expect("journal");
+            assert!(
+                tilo_onboarding_host::view::has_pending_progress(&dir),
+                "the journal is the one the ceremony leaves"
+            );
+            assert!(
+                setup_due(false, false, &dir),
+                "setup under way is opened again"
+            );
+        }
+
+        phase a_prepared_setup_waits_for_its_owner;
+        {
+            let (home, dir, _) = tilo_onboarding_host::browser::fixtures::fixture();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("HOME", home.path());
+            assert!(
+                tilo_onboarding_host::prepared::session_pending(&dir),
+                "the fixture leaves a prepared setup"
+            );
+            assert!(setup_due(false, false, &dir));
+        }
     }
 }

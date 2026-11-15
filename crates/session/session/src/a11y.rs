@@ -387,48 +387,52 @@ mod tests {
         Accessibility::new(Arc::new(|| {}), aside)
     }
 
-    /// What the shell's own screen stands in for draws nothing, so it reads as nothing: a client
-    /// finds the window that draws, not the one behind it.
-    #[test]
-    fn a_surface_the_shells_screen_stands_in_for_reads_as_nothing() {
-        let mut doors = Doors::default();
-        let drawn = face("Drawn", false);
-        let stood_aside = face("Stood aside", true);
-        doors.add(Rc::clone(&drawn));
-        doors.add(Rc::clone(&stood_aside));
-        let mut export = export(vec![Rc::clone(&stood_aside)]);
+    tilo_test_env::scenario! {
+        fn the_export_publishes_the_surface_that_draws_and_focuses_the_one_the_keys_go_to;
 
-        export.step(&doors);
+        phase a_surface_the_shells_screen_stands_in_for_reads_as_nothing;
+        // What the shell's own screen stands in for draws nothing, so it reads as nothing: a client
+        // finds the window that draws, not the one behind it.
+        {
+            let mut doors = Doors::default();
+            let drawn = face("Drawn", false);
+            let stood_aside = face("Stood aside", true);
+            doors.add(Rc::clone(&drawn));
+            doors.add(Rc::clone(&stood_aside));
+            let mut export = export(vec![Rc::clone(&stood_aside)]);
 
-        assert!(
-            export.windows.contains_key(&0),
-            "the surface that draws is the window a client finds"
-        );
-        assert!(
-            !export.windows.contains_key(&1),
-            "the surface the screen stands in for publishes no window"
-        );
-    }
+            export.step(&doors);
 
-    /// The topmost surface that would take the keys is the window a screen reader reads as focused,
-    /// as the compositor routes a key to it.
-    #[test]
-    fn the_window_the_keys_go_to_reads_as_focused() {
-        let mut doors = Doors::default();
-        doors.add(face("Shell", false));
-        doors.add(face("Question", true));
-        let mut export = export(Vec::new());
+            assert!(
+                export.windows.contains_key(&0),
+                "the surface that draws is the window a client finds"
+            );
+            assert!(
+                !export.windows.contains_key(&1),
+                "the surface the screen stands in for publishes no window"
+            );
+        }
 
-        export.step(&doors);
+        phase the_window_the_keys_go_to_reads_as_focused;
+        // The topmost surface that would take the keys is the window a screen reader reads as focused,
+        // as the compositor routes a key to it.
+        {
+            let mut doors = Doors::default();
+            doors.add(face("Shell", false));
+            doors.add(face("Question", true));
+            let mut export = export(Vec::new());
 
-        assert!(
-            export.windows.get(&1).is_some_and(|window| window.focused),
-            "the surface that takes the keys holds the focus"
-        );
-        assert!(
-            export.windows.get(&0).is_some_and(|window| !window.focused),
-            "the one below it does not"
-        );
+            export.step(&doors);
+
+            assert!(
+                export.windows.get(&1).is_some_and(|window| window.focused),
+                "the surface that takes the keys holds the focus"
+            );
+            assert!(
+                export.windows.get(&0).is_some_and(|window| !window.focused),
+                "the one below it does not"
+            );
+        }
     }
 
     /// Every callback the adapter makes from its own thread leaves its request for the loop and

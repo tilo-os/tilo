@@ -160,71 +160,86 @@ mod tests {
         assert!(!compositor.a11y().cursor.crosshair);
     }
 
-    #[test]
-    fn settings_off_leave_every_assist_off() {
-        let a11y = a11y(&settings(&[]));
-        assert!(a11y.assists.is_off());
-        assert!(!a11y.visual_alerts);
-        assert_eq!(a11y.cursor.size, 24);
-        assert!(!a11y.cursor.crosshair);
-        assert_eq!(a11y.color_filter, ColorFilter::Off);
-        assert_eq!(a11y.magnifier.zoom, 1, "the magnifier starts off");
-        assert_eq!(a11y.magnifier.view, MagnifierView::Lens);
-    }
+    tilo_test_env::scenario! {
+        fn stored_settings_become_the_compositors_assists;
 
-    #[test]
-    fn every_assist_reaches_the_compositor() {
-        let a11y = a11y(&settings(&[
-            ("sticky_keys", true.into()),
-            ("slow_keys", true.into()),
-            ("bounce_keys", true.into()),
-            ("bounce_keys_alert", true.into()),
-            ("mouse_keys", true.into()),
-            ("switch_control", true.into()),
-            ("switch_key_pair", "f9_f10".into()),
-            ("switch_scan_ms", 1200.into()),
-            ("visual_alerts", true.into()),
-        ]));
-        assert!(a11y.assists.sticky_keys);
-        assert_eq!(a11y.assists.slow_keys, Some(SLOW_KEYS_DELAY));
-        assert_eq!(
-            a11y.assists.bounce_keys,
-            Some(Duration::from_millis(u64::from(
-                tilo_accessibility_settings::BOUNCE_KEYS_DEFAULT_DELAY_MS
-            )))
-        );
-        assert!(a11y.assists.bounce_alert);
-        assert!(a11y.assists.mouse_keys);
-        let switch = a11y.assists.switch.expect("switch scanning is on");
-        assert_eq!(switch.pair, SwitchPair::F9F10);
-        assert_eq!(switch.period, Some(Duration::from_millis(1200)));
-        assert!(a11y.visual_alerts);
-    }
+        phase settings_off_leave_every_assist_off;
+        {
+            let a11y = a11y(&settings(&[]));
+            assert!(a11y.assists.is_off());
+            assert!(!a11y.visual_alerts);
+            assert_eq!(a11y.cursor.size, 24);
+            assert!(!a11y.cursor.crosshair);
+            assert_eq!(a11y.color_filter, ColorFilter::Off);
+            assert_eq!(a11y.magnifier.zoom, 1, "the magnifier starts off");
+            assert_eq!(a11y.magnifier.view, MagnifierView::Lens);
+        }
 
-    #[test]
-    fn no_scan_period_means_the_switches_step_by_hand() {
-        let a11y = a11y(&settings(&[
-            ("switch_control", true.into()),
-            ("switch_scan_ms", 0.into()),
-        ]));
-        assert_eq!(a11y.assists.switch.expect("on").period, None);
-    }
+        phase every_assist_reaches_the_compositor;
+        {
+            let a11y = a11y(&settings(&[
+                ("sticky_keys", true.into()),
+                ("slow_keys", true.into()),
+                ("bounce_keys", true.into()),
+                ("bounce_keys_alert", true.into()),
+                ("mouse_keys", true.into()),
+                ("switch_control", true.into()),
+                ("switch_key_pair", "f9_f10".into()),
+                ("switch_scan_ms", 1200.into()),
+                ("visual_alerts", true.into()),
+            ]));
+            assert!(a11y.assists.sticky_keys);
+            assert_eq!(a11y.assists.slow_keys, Some(SLOW_KEYS_DELAY));
+            assert_eq!(
+                a11y.assists.bounce_keys,
+                Some(Duration::from_millis(u64::from(
+                    tilo_accessibility_settings::BOUNCE_KEYS_DEFAULT_DELAY_MS
+                )))
+            );
+            assert!(a11y.assists.bounce_alert);
+            assert!(a11y.assists.mouse_keys);
+            let switch = a11y.assists.switch.expect("switch scanning is on");
+            assert_eq!(switch.pair, SwitchPair::F9F10);
+            assert_eq!(switch.period, Some(Duration::from_millis(1200)));
+            assert!(a11y.visual_alerts);
+        }
 
-    #[test]
-    fn a_larger_pointer_is_only_large_with_the_setting_on() {
-        let plain = a11y(&settings(&[("cursor_size", 48.into())]));
-        assert_eq!(plain.cursor.size, 24);
-        let large = a11y(&settings(&[
-            ("large_cursor", true.into()),
-            ("cursor_size", 48.into()),
-        ]));
-        assert_eq!(large.cursor.size, 48);
-    }
+        phase no_scan_period_means_the_switches_step_by_hand;
+        {
+            let a11y = a11y(&settings(&[
+                ("switch_control", true.into()),
+                ("switch_scan_ms", 0.into()),
+            ]));
+            assert_eq!(a11y.assists.switch.expect("on").period, None);
+        }
 
-    #[test]
-    fn a_crosshair_goes_with_its_setting() {
-        let a11y = a11y(&settings(&[("cursor_crosshair", true.into())]));
-        assert!(a11y.cursor.crosshair);
+        phase a_larger_pointer_is_only_large_with_the_setting_on;
+        {
+            let plain = a11y(&settings(&[("cursor_size", 48.into())]));
+            assert_eq!(plain.cursor.size, 24);
+            let large = a11y(&settings(&[
+                ("large_cursor", true.into()),
+                ("cursor_size", 48.into()),
+            ]));
+            assert_eq!(large.cursor.size, 48);
+        }
+
+        phase a_crosshair_goes_with_its_setting;
+        {
+            let a11y = a11y(&settings(&[("cursor_crosshair", true.into())]));
+            assert!(a11y.cursor.crosshair);
+        }
+
+        phase the_magnifier_carries_its_zoom_and_view;
+        {
+            let a11y = a11y(&settings(&[
+                ("magnifier_zoom", 3.into()),
+                ("magnifier_view", "full_screen".into()),
+            ]));
+            assert_eq!(a11y.magnifier.zoom, 3);
+            assert_eq!(a11y.magnifier.view, MagnifierView::FullScreen);
+            assert!(a11y.magnifier.factor() > 2.0);
+        }
     }
 
     /// The pointer theme the person stored is the one the compositor draws,
@@ -253,41 +268,34 @@ mod tests {
         );
     }
 
-    #[test]
-    fn every_colour_filter_maps_to_the_compositor_s_own() {
-        for (stored, compositor) in [
-            (StoredFilter::None, ColorFilter::Off),
-            (StoredFilter::Grayscale, ColorFilter::Grayscale),
-            (StoredFilter::Inverted, ColorFilter::Inverted),
-            (
-                StoredFilter::GrayscaleInverted,
-                ColorFilter::GrayscaleInverted,
-            ),
-        ] {
-            assert_eq!(color_filter(stored), compositor, "{stored:?}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn every_stored_choice_maps_to_the_compositors_own;
 
-    #[test]
-    fn every_switch_pair_maps_to_the_compositor_s_own() {
-        for (stored, compositor) in [
-            (StoredPair::F6F7, SwitchPair::F6F7),
-            (StoredPair::F9F10, SwitchPair::F9F10),
-            (StoredPair::Digits12, SwitchPair::Digits12),
-        ] {
-            assert_eq!(switch_pair(stored), compositor, "{stored:?}");
+        phase every_colour_filter_maps_to_the_compositor_s_own;
+        {
+            for (stored, compositor) in [
+                (StoredFilter::None, ColorFilter::Off),
+                (StoredFilter::Grayscale, ColorFilter::Grayscale),
+                (StoredFilter::Inverted, ColorFilter::Inverted),
+                (
+                    StoredFilter::GrayscaleInverted,
+                    ColorFilter::GrayscaleInverted,
+                ),
+            ] {
+                assert_eq!(color_filter(stored), compositor, "{stored:?}");
+            }
         }
-    }
 
-    #[test]
-    fn the_magnifier_carries_its_zoom_and_view() {
-        let a11y = a11y(&settings(&[
-            ("magnifier_zoom", 3.into()),
-            ("magnifier_view", "full_screen".into()),
-        ]));
-        assert_eq!(a11y.magnifier.zoom, 3);
-        assert_eq!(a11y.magnifier.view, MagnifierView::FullScreen);
-        assert!(a11y.magnifier.factor() > 2.0);
+        phase every_switch_pair_maps_to_the_compositor_s_own;
+        {
+            for (stored, compositor) in [
+                (StoredPair::F6F7, SwitchPair::F6F7),
+                (StoredPair::F9F10, SwitchPair::F9F10),
+                (StoredPair::Digits12, SwitchPair::Digits12),
+            ] {
+                assert_eq!(switch_pair(stored), compositor, "{stored:?}");
+            }
+        }
     }
 
     /// A text field waiting for typing, typed on the glass or not.
@@ -299,62 +307,66 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_on_screen_keyboard_follows_its_setting_and_the_glass() {
-        // Automatic: with a text field and a touch on the screen.
-        assert!(keyboard_visible(OnScreenKeyboard::Auto, entry(true, true)));
-        // Not while they type on the keyboard they hold.
-        assert!(!keyboard_visible(
-            OnScreenKeyboard::Auto,
-            entry(true, false)
-        ));
-        // Not over a desktop with no field waiting for anything.
-        assert!(!keyboard_visible(
-            OnScreenKeyboard::Auto,
-            entry(false, true)
-        ));
-        // Always: up even before a field is reached.
-        assert!(keyboard_visible(
-            OnScreenKeyboard::Always,
-            entry(false, false)
-        ));
-        // Never: not even for a touch in a field.
-        assert!(!keyboard_visible(
-            OnScreenKeyboard::Never,
-            entry(true, true)
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn the_on_screen_keyboard_shows_and_runs_by_its_setting_and_the_glass;
 
-    #[test]
-    fn the_on_screen_keyboard_runs_wherever_the_glass_can_be_touched() {
-        // Automatic: not on a desktop typed on by a keyboard and a pointer.
-        assert!(!keyboard_runs(OnScreenKeyboard::Auto, entry(false, false)));
-        // And on one that can be touched, field or no field: the tap into a field finds a keyboard
-        // already serving the seat.
-        let touchable = TextEntry {
-            touch_available: true,
-            ..entry(false, false)
-        };
-        assert!(keyboard_runs(OnScreenKeyboard::Auto, touchable));
-        assert!(!keyboard_visible(OnScreenKeyboard::Auto, touchable));
-        // Always: running before anything was touched.
-        assert!(keyboard_runs(OnScreenKeyboard::Always, entry(false, false)));
-        // Never: not even where the glass is touched.
-        assert!(!keyboard_runs(OnScreenKeyboard::Never, touchable));
-    }
+        phase the_on_screen_keyboard_follows_its_setting_and_the_glass;
+        {
+            // Automatic: with a text field and a touch on the screen.
+            assert!(keyboard_visible(OnScreenKeyboard::Auto, entry(true, true)));
+            // Not while they type on the keyboard they hold.
+            assert!(!keyboard_visible(
+                OnScreenKeyboard::Auto,
+                entry(true, false)
+            ));
+            // Not over a desktop with no field waiting for anything.
+            assert!(!keyboard_visible(
+                OnScreenKeyboard::Auto,
+                entry(false, true)
+            ));
+            // Always: up even before a field is reached.
+            assert!(keyboard_visible(
+                OnScreenKeyboard::Always,
+                entry(false, false)
+            ));
+            // Never: not even for a touch in a field.
+            assert!(!keyboard_visible(
+                OnScreenKeyboard::Never,
+                entry(true, true)
+            ));
+        }
 
-    #[test]
-    fn the_stored_keyboard_preference_is_the_one_that_applies() {
-        for (stored, expected) in [
-            ("never", OnScreenKeyboard::Never),
-            ("always", OnScreenKeyboard::Always),
-            ("automatic", OnScreenKeyboard::Auto),
-        ] {
-            assert_eq!(
-                settings(&[("on_screen_keyboard", stored.into())]).on_screen_keyboard,
-                expected,
-                "{stored}"
-            );
+        phase the_on_screen_keyboard_runs_wherever_the_glass_can_be_touched;
+        {
+            // Automatic: not on a desktop typed on by a keyboard and a pointer.
+            assert!(!keyboard_runs(OnScreenKeyboard::Auto, entry(false, false)));
+            // And on one that can be touched, field or no field: the tap into a field finds a keyboard
+            // already serving the seat.
+            let touchable = TextEntry {
+                touch_available: true,
+                ..entry(false, false)
+            };
+            assert!(keyboard_runs(OnScreenKeyboard::Auto, touchable));
+            assert!(!keyboard_visible(OnScreenKeyboard::Auto, touchable));
+            // Always: running before anything was touched.
+            assert!(keyboard_runs(OnScreenKeyboard::Always, entry(false, false)));
+            // Never: not even where the glass is touched.
+            assert!(!keyboard_runs(OnScreenKeyboard::Never, touchable));
+        }
+
+        phase the_stored_keyboard_preference_is_the_one_that_applies;
+        {
+            for (stored, expected) in [
+                ("never", OnScreenKeyboard::Never),
+                ("always", OnScreenKeyboard::Always),
+                ("automatic", OnScreenKeyboard::Auto),
+            ] {
+                assert_eq!(
+                    settings(&[("on_screen_keyboard", stored.into())]).on_screen_keyboard,
+                    expected,
+                    "{stored}"
+                );
+            }
         }
     }
 }

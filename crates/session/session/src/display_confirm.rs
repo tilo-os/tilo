@@ -292,51 +292,55 @@ mod tests {
         confirmation
     }
 
-    #[test]
-    fn a_tools_change_is_asked_about() {
-        let confirmation = asked_about_a_tool(7);
-        assert!(confirmation.asks_about_tool(7));
-    }
+    tilo_test_env::scenario! {
+        fn a_tools_display_change_is_asked_about_until_it_is_kept_or_goes_back;
 
-    #[test]
-    fn the_question_closes_when_its_change_goes_back_but_not_another() {
-        let mut confirmation = asked_about_a_tool(7);
-        confirmation.hear(
-            DisplayEvent::Reverted { id: 8 },
-            &crate::notifications::told::Told::default(),
-        );
-        assert!(confirmation.asks_about_tool(7), "another change went back");
-        confirmation.hear(
-            DisplayEvent::Reverted { id: 7 },
-            &crate::notifications::told::Told::default(),
-        );
-        assert!(confirmation.asked.is_none());
-    }
-
-    #[test]
-    fn a_safe_change_kept_while_the_question_stands_leaves_it_alone() {
-        let mut confirmation = asked_about_a_tool(7);
-        confirmation.hear(
-            DisplayEvent::Kept {
-                changes: Vec::new(),
-            },
-            &crate::notifications::told::Told::default(),
-        );
-        assert!(confirmation.asks_about_tool(7));
-    }
-
-    #[test]
-    fn a_change_kept_in_answer_to_the_question_takes_it_down() {
-        let mut confirmation = asked_about_a_tool(7);
-        if let Some(asked) = confirmation.asked.as_mut() {
-            asked.answering = true;
+        phase a_tools_change_is_asked_about;
+        {
+            let confirmation = asked_about_a_tool(7);
+            assert!(confirmation.asks_about_tool(7));
         }
-        confirmation.hear(
-            DisplayEvent::Kept {
-                changes: Vec::new(),
-            },
-            &crate::notifications::told::Told::default(),
-        );
-        assert!(confirmation.asked.is_none());
+
+        phase the_question_closes_when_its_change_goes_back_but_not_another;
+        {
+            let mut confirmation = asked_about_a_tool(7);
+            confirmation.hear(
+                DisplayEvent::Reverted { id: 8 },
+                &crate::notifications::told::Told::default(),
+            );
+            assert!(confirmation.asks_about_tool(7), "another change went back");
+            confirmation.hear(
+                DisplayEvent::Reverted { id: 7 },
+                &crate::notifications::told::Told::default(),
+            );
+            assert!(confirmation.asked.is_none());
+        }
+
+        phase a_safe_change_kept_while_the_question_stands_leaves_it_alone;
+        {
+            let mut confirmation = asked_about_a_tool(7);
+            confirmation.hear(
+                DisplayEvent::Kept {
+                    changes: Vec::new(),
+                },
+                &crate::notifications::told::Told::default(),
+            );
+            assert!(confirmation.asks_about_tool(7));
+        }
+
+        phase a_change_kept_in_answer_to_the_question_takes_it_down;
+        {
+            let mut confirmation = asked_about_a_tool(7);
+            if let Some(asked) = confirmation.asked.as_mut() {
+                asked.answering = true;
+            }
+            confirmation.hear(
+                DisplayEvent::Kept {
+                    changes: Vec::new(),
+                },
+                &crate::notifications::told::Told::default(),
+            );
+            assert!(confirmation.asked.is_none());
+        }
     }
 }

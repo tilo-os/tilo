@@ -472,159 +472,167 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_choice_a_monitor_has_becomes_the_compositors_own_knob() {
-        let mut stored = settings_store::hardware::DisplayConfig::default();
-        stored.outputs.insert(
-            "DP-1".into(),
-            OutputConfig {
-                enabled: false,
-                primary: true,
-                x: 1920,
-                y: 240,
-                scale: 2.0,
-                transform: OutputTransform::Rotate270,
-                mode: Some(settings_store::hardware::OutputMode {
-                    width: 2560,
-                    height: 1440,
-                    refresh_mhz: 143_981,
-                }),
-                hdr: true,
-                sdr_brightness_nits: 312,
-                vrr: true,
-                color_profile: Some("/usr/share/color/icc/panel.icc".into()),
-                ..OutputConfig::default()
-            },
-        );
-        let config = super::sent(
-            &stored,
-            &[],
-            &std::collections::BTreeMap::new(),
-            Some(3400),
-            None,
-        );
-        assert_eq!(config.night_light, Some(3400));
-        assert!(config.disabled.contains("DP-1"));
-        assert_eq!(
-            config.primary.as_deref(),
-            Some("DP-1"),
-            "the display the person chose is the primary one"
-        );
-        assert_eq!(config.positions.get("DP-1"), Some(&(1920, 240)));
-        assert_eq!(config.scales.get("DP-1"), Some(&2.0));
-        assert_eq!(
-            config.transforms.get("DP-1"),
-            Some(&tilo_compositor::Transform::_270)
-        );
-        assert_eq!(
-            config
-                .modes
-                .get("DP-1")
-                .map(|mode| (mode.width, mode.height, mode.refresh_mhz)),
-            Some((2560, 1440, 143_981))
-        );
-        assert!(config.variable_refresh.contains("DP-1"));
-        assert_eq!(
-            config.color_profiles.get("DP-1"),
-            Some(&std::path::PathBuf::from("/usr/share/color/icc/panel.icc"))
-        );
-        assert_eq!(
-            config.hdr.get("DP-1").map(|hdr| hdr.sdr_white_nits),
-            Some(312.0)
-        );
+    tilo_test_env::scenario! {
+        fn stored_display_settings_become_what_the_compositor_is_sent;
+
+        phase every_choice_a_monitor_has_becomes_the_compositors_own_knob;
+        {
+            let mut stored = settings_store::hardware::DisplayConfig::default();
+            stored.outputs.insert(
+                "DP-1".into(),
+                OutputConfig {
+                    enabled: false,
+                    primary: true,
+                    x: 1920,
+                    y: 240,
+                    scale: 2.0,
+                    transform: OutputTransform::Rotate270,
+                    mode: Some(settings_store::hardware::OutputMode {
+                        width: 2560,
+                        height: 1440,
+                        refresh_mhz: 143_981,
+                    }),
+                    hdr: true,
+                    sdr_brightness_nits: 312,
+                    vrr: true,
+                    color_profile: Some("/usr/share/color/icc/panel.icc".into()),
+                    ..OutputConfig::default()
+                },
+            );
+            let config = super::sent(
+                &stored,
+                &[],
+                &std::collections::BTreeMap::new(),
+                Some(3400),
+                None,
+            );
+            assert_eq!(config.night_light, Some(3400));
+            assert!(config.disabled.contains("DP-1"));
+            assert_eq!(
+                config.primary.as_deref(),
+                Some("DP-1"),
+                "the display the person chose is the primary one"
+            );
+            assert_eq!(config.positions.get("DP-1"), Some(&(1920, 240)));
+            assert_eq!(config.scales.get("DP-1"), Some(&2.0));
+            assert_eq!(
+                config.transforms.get("DP-1"),
+                Some(&tilo_compositor::Transform::_270)
+            );
+            assert_eq!(
+                config
+                    .modes
+                    .get("DP-1")
+                    .map(|mode| (mode.width, mode.height, mode.refresh_mhz)),
+                Some((2560, 1440, 143_981))
+            );
+            assert!(config.variable_refresh.contains("DP-1"));
+            assert_eq!(
+                config.color_profiles.get("DP-1"),
+                Some(&std::path::PathBuf::from("/usr/share/color/icc/panel.icc"))
+            );
+            assert_eq!(
+                config.hdr.get("DP-1").map(|hdr| hdr.sdr_white_nits),
+                Some(312.0)
+            );
+        }
+
+        phase a_monitor_never_arranged_for_keeps_the_scale_and_turn_it_was_last_shown_at;
+        {
+            let mut last = std::collections::BTreeMap::new();
+            last.insert(
+                "eDP-1".to_owned(),
+                settings_store::hardware::MonitorLast {
+                    scale: 1.5,
+                    transform: OutputTransform::Rotate90,
+                },
+            );
+            let descriptor = settings_store::hardware::OutputDescriptor {
+                connector: "eDP-1".into(),
+                connector_label: String::new(),
+                modes: Vec::new(),
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
+                monitor: None,
+            };
+            let config = super::sent(
+                &settings_store::hardware::DisplayConfig::default(),
+                std::slice::from_ref(&descriptor),
+                &last,
+                None,
+                None,
+            );
+            assert_eq!(config.scales.get("eDP-1"), Some(&1.5));
+            assert_eq!(
+                config.transforms.get("eDP-1"),
+                Some(&tilo_compositor::Transform::_90)
+            );
+        }
+
+        phase the_panel_follows_the_device_over_the_turn_it_was_shown_at;
+        {
+            let mut stored = settings_store::hardware::DisplayConfig::default();
+            stored.outputs.insert(
+                "eDP-1".into(),
+                OutputConfig {
+                    transform: OutputTransform::Rotate180,
+                    ..OutputConfig::default()
+                },
+            );
+            let turned = Some(("eDP-1", tilo_compositor::Transform::_90));
+            let config = super::sent(
+                &stored,
+                &[],
+                &std::collections::BTreeMap::new(),
+                None,
+                turned,
+            );
+            assert_eq!(
+                config.transforms.get("eDP-1"),
+                Some(&tilo_compositor::Transform::_90),
+                "the panel turns with the machine, whatever its arrangement says"
+            );
+        }
     }
 
-    #[test]
-    fn a_monitor_never_arranged_for_keeps_the_scale_and_turn_it_was_last_shown_at() {
-        let mut last = std::collections::BTreeMap::new();
-        last.insert(
-            "eDP-1".to_owned(),
-            settings_store::hardware::MonitorLast {
-                scale: 1.5,
-                transform: OutputTransform::Rotate90,
-            },
-        );
-        let descriptor = settings_store::hardware::OutputDescriptor {
-            connector: "eDP-1".into(),
-            connector_label: String::new(),
-            modes: Vec::new(),
-            hdr: false,
-            vrr: false,
-            color_profiles: Vec::new(),
-            monitor: None,
-        };
-        let config = super::sent(
-            &settings_store::hardware::DisplayConfig::default(),
-            std::slice::from_ref(&descriptor),
-            &last,
-            None,
-            None,
-        );
-        assert_eq!(config.scales.get("eDP-1"), Some(&1.5));
-        assert_eq!(
-            config.transforms.get("eDP-1"),
-            Some(&tilo_compositor::Transform::_90)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_panels_backlight_is_the_built_in_displays_and_dims_it;
 
-    #[test]
-    fn the_panel_follows_the_device_over_the_turn_it_was_shown_at() {
-        let mut stored = settings_store::hardware::DisplayConfig::default();
-        stored.outputs.insert(
-            "eDP-1".into(),
-            OutputConfig {
-                transform: OutputTransform::Rotate180,
-                ..OutputConfig::default()
-            },
-        );
-        let turned = Some(("eDP-1", tilo_compositor::Transform::_90));
-        let config = super::sent(
-            &stored,
-            &[],
-            &std::collections::BTreeMap::new(),
-            None,
-            turned,
-        );
-        assert_eq!(
-            config.transforms.get("eDP-1"),
-            Some(&tilo_compositor::Transform::_90),
-            "the panel turns with the machine, whatever its arrangement says"
-        );
-    }
+        phase the_panel_is_the_built_in_display_and_never_an_external_one;
+        {
+            let directory = tempfile::tempdir().expect("a directory");
+            let built_in = BrightnessTarget::Backlight(directory.path().join("intel_backlight"));
+            let chosen = PanelBacklight::of(&[
+                panel("DP-1", BrightnessTarget::Ddc("/dev/i2c-4".into())),
+                panel("eDP-1", built_in.clone()),
+            ]);
+            assert_eq!(chosen.target, Some(built_in));
 
-    #[test]
-    fn the_panel_is_the_built_in_display_and_never_an_external_one() {
-        let directory = tempfile::tempdir().expect("a directory");
-        let built_in = BrightnessTarget::Backlight(directory.path().join("intel_backlight"));
-        let chosen = PanelBacklight::of(&[
-            panel("DP-1", BrightnessTarget::Ddc("/dev/i2c-4".into())),
-            panel("eDP-1", built_in.clone()),
-        ]);
-        assert_eq!(chosen.target, Some(built_in));
+            let without_panel = PanelBacklight::of(&[
+                panel("DP-1", BrightnessTarget::Ddc("/dev/i2c-4".into())),
+                panel("HDMI-A-1", BrightnessTarget::Software),
+            ]);
+            assert_eq!(without_panel.target, None);
+        }
 
-        let without_panel = PanelBacklight::of(&[
-            panel("DP-1", BrightnessTarget::Ddc("/dev/i2c-4".into())),
-            panel("HDMI-A-1", BrightnessTarget::Software),
-        ]);
-        assert_eq!(without_panel.target, None);
-    }
+        phase the_dim_lowers_the_panels_backlight_and_puts_it_back;
+        {
+            let device = tempfile::tempdir().expect("a device");
+            std::fs::write(device.path().join("max_brightness"), "200").expect("a maximum");
+            std::fs::write(device.path().join("brightness"), "200").expect("a brightness");
+            let panel = PanelBacklight::of(&[panel(
+                "eDP-1",
+                BrightnessTarget::Backlight(device.path().to_owned()),
+            )]);
 
-    #[test]
-    fn the_dim_lowers_the_panels_backlight_and_puts_it_back() {
-        let device = tempfile::tempdir().expect("a device");
-        std::fs::write(device.path().join("max_brightness"), "200").expect("a maximum");
-        std::fs::write(device.path().join("brightness"), "200").expect("a brightness");
-        let panel = PanelBacklight::of(&[panel(
-            "eDP-1",
-            BrightnessTarget::Backlight(device.path().to_owned()),
-        )]);
-
-        assert_eq!(panel.brightness(), Some(1.0));
-        assert!(panel.set_brightness(0.3));
-        assert!((panel.brightness().expect("a brightness") - 0.3).abs() < 0.01);
-        assert_eq!(
-            panel.describe().as_deref(),
-            Some(device.path().to_str().expect("a UTF-8 path")),
-        );
+            assert_eq!(panel.brightness(), Some(1.0));
+            assert!(panel.set_brightness(0.3));
+            assert!((panel.brightness().expect("a brightness") - 0.3).abs() < 0.01);
+            assert_eq!(
+                panel.describe().as_deref(),
+                Some(device.path().to_str().expect("a UTF-8 path")),
+            );
+        }
     }
 }

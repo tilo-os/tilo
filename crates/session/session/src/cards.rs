@@ -398,228 +398,236 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_card_keeps_the_token_its_activity_was_given() {
-        let cards = Cards::new();
-        cards
-            .present("so.tilo.chat", 7, &call("chat-call:voice"))
-            .unwrap();
-        let first = cards.presented().remove(0);
-        cards
-            .present("so.tilo.chat", 7, &call("chat-call:voice"))
-            .unwrap();
-        let again = cards.presented().remove(0);
-        assert_eq!(first.token, again.token, "the same call keeps its card");
-        assert_eq!(again.content, Size::new(360.0, 240.0));
-        assert_eq!(again.window_size(), Size::new(376.0, 256.0));
-        assert_eq!(
-            again.body(Rect::new(8.0, 16.0, 384.0, 272.0)),
-            Rect::new(16.0, 24.0, 376.0, 264.0),
-            "the layer's place inside the frame is the app's body"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_card_belongs_to_the_connection_that_presented_it;
 
-    #[test]
-    fn only_the_connection_that_presented_a_card_ends_it() {
-        let cards = Cards::new();
-        cards
-            .present("so.tilo.chat", 7, &call("chat-call:voice"))
-            .unwrap();
-        cards.told(
-            "so.tilo.chat",
-            "chat-call:voice",
-            Some(Rect::new(0.0, 0.0, 360.0, 240.0)),
-        );
-        assert!(
+        phase a_card_keeps_the_token_its_activity_was_given;
+        {
+            let cards = Cards::new();
             cards
-                .stood_down("so.tilo.chat", 8, "chat-call:voice")
-                .is_none()
-        );
-        assert!(cards.dismissed(8, "chat-call:voice").is_none());
-        assert!(
+                .present("so.tilo.chat", 7, &call("chat-call:voice"))
+                .unwrap();
+            let first = cards.presented().remove(0);
             cards
-                .stood_down("so.tilo.chat", 7, "chat-call:voice")
-                .is_some()
-        );
-        assert_eq!(cards.connection_closed(8).len(), 0);
-        assert_eq!(cards.connection_closed(7).len(), 1);
-        assert!(cards.size("so.tilo.chat", "chat-call:voice").is_none());
-    }
+                .present("so.tilo.chat", 7, &call("chat-call:voice"))
+                .unwrap();
+            let again = cards.presented().remove(0);
+            assert_eq!(first.token, again.token, "the same call keeps its card");
+            assert_eq!(again.content, Size::new(360.0, 240.0));
+            assert_eq!(again.window_size(), Size::new(376.0, 256.0));
+            assert_eq!(
+                again.body(Rect::new(8.0, 16.0, 384.0, 272.0)),
+                Rect::new(16.0, 24.0, 376.0, 264.0),
+                "the layer's place inside the frame is the app's body"
+            );
+        }
 
-    /// The card its app stood down is the connection that presented it to bring back: another one
-    /// of the app's windows cannot take it over by presenting a frame for it.
-    #[test]
-    fn another_connection_cannot_resume_a_card_that_stood_down() {
-        let cards = Cards::new();
-        cards
-            .present("so.tilo.chat", 7, &call("chat-call:voice"))
-            .unwrap();
-        cards.told(
-            "so.tilo.chat",
-            "chat-call:voice",
-            Some(Rect::new(0.0, 0.0, 360.0, 240.0)),
-        );
-        assert!(
+        phase only_the_connection_that_presented_a_card_ends_it;
+        {
+            let cards = Cards::new();
             cards
-                .stood_down("so.tilo.chat", 7, "chat-call:voice")
-                .is_some()
-        );
-        assert!(
-            !cards.presented_again("so.tilo.chat", 8, "chat-call:voice"),
-            "a window that never presented the card leaves it stood down"
-        );
-        assert!(cards.presented_again("so.tilo.chat", 7, "chat-call:voice"));
-    }
+                .present("so.tilo.chat", 7, &call("chat-call:voice"))
+                .unwrap();
+            cards.told(
+                "so.tilo.chat",
+                "chat-call:voice",
+                Some(Rect::new(0.0, 0.0, 360.0, 240.0)),
+            );
+            assert!(
+                cards
+                    .stood_down("so.tilo.chat", 8, "chat-call:voice")
+                    .is_none()
+            );
+            assert!(cards.dismissed(8, "chat-call:voice").is_none());
+            assert!(
+                cards
+                    .stood_down("so.tilo.chat", 7, "chat-call:voice")
+                    .is_some()
+            );
+            assert_eq!(cards.connection_closed(8).len(), 0);
+            assert_eq!(cards.connection_closed(7).len(), 1);
+            assert!(cards.size("so.tilo.chat", "chat-call:voice").is_none());
+        }
 
-    #[test]
-    fn another_window_of_the_app_cannot_take_over_a_card() {
-        let cards = Cards::new();
-        cards
-            .present("so.tilo.chat", 7, &call("chat-call:voice"))
-            .unwrap();
-        let card = cards.presented().remove(0);
-        assert!(
+        phase another_connection_cannot_resume_a_card_that_stood_down;
+        // The card its app stood down is the connection that presented it to bring back: another one
+        // of the app's windows cannot take it over by presenting a frame for it.
+        {
+            let cards = Cards::new();
             cards
-                .present("so.tilo.chat", 8, &call("chat-call:voice"))
-                .is_err()
-        );
-        let kept = cards.presented().remove(0);
-        assert_eq!(kept.connection, 7, "the window that presented it keeps it");
-        assert_eq!(kept.token, card.token);
+                .present("so.tilo.chat", 7, &call("chat-call:voice"))
+                .unwrap();
+            cards.told(
+                "so.tilo.chat",
+                "chat-call:voice",
+                Some(Rect::new(0.0, 0.0, 360.0, 240.0)),
+            );
+            assert!(
+                cards
+                    .stood_down("so.tilo.chat", 7, "chat-call:voice")
+                    .is_some()
+            );
+            assert!(
+                !cards.presented_again("so.tilo.chat", 8, "chat-call:voice"),
+                "a window that never presented the card leaves it stood down"
+            );
+            assert!(cards.presented_again("so.tilo.chat", 7, "chat-call:voice"));
+        }
+
+        phase another_window_of_the_app_cannot_take_over_a_card;
+        {
+            let cards = Cards::new();
+            cards
+                .present("so.tilo.chat", 7, &call("chat-call:voice"))
+                .unwrap();
+            let card = cards.presented().remove(0);
+            assert!(
+                cards
+                    .present("so.tilo.chat", 8, &call("chat-call:voice"))
+                    .is_err()
+            );
+            let kept = cards.presented().remove(0);
+            assert_eq!(kept.connection, 7, "the window that presented it keeps it");
+            assert_eq!(kept.token, card.token);
+        }
     }
 
-    #[test]
-    fn a_card_with_no_place_from_the_layer_is_drawn_nowhere() {
-        let cards = Cards::new();
-        cards
-            .present("so.tilo.chat", 7, &call("chat-call:voice"))
-            .unwrap();
-        let card = cards.presented().remove(0);
-        cards.told(
-            "so.tilo.chat",
-            "chat-call:voice",
-            Some(Rect::new(100.0, 100.0, 460.0, 340.0)),
-        );
-        assert!(
-            !cards.live("so.tilo.chat", "chat-call:voice"),
-            "no window is up yet"
-        );
-        cards.placements().place(
-            &card.token,
-            (368, 248),
-            Some(Rect::new(100.0, 100.0, 468.0, 348.0)),
-        );
-        cards.placements().mapped(&card.token, 3);
-        assert!(cards.live("so.tilo.chat", "chat-call:voice"));
-        cards.placements().suspend(&card.token);
-        assert!(!cards.live("so.tilo.chat", "chat-call:voice"), "stood down");
-    }
+    tilo_test_env::scenario! {
+        fn a_card_is_drawn_where_the_layer_placed_it_while_it_stands;
 
-    #[test]
-    fn a_card_is_adopted_once_its_window_is_up_and_again_after_it_stands_down() {
-        let cards = Cards::new();
-        cards
-            .present("so.tilo.chat", 7, &call("chat-call:voice"))
-            .unwrap();
-        let card = cards.presented().remove(0);
-        cards.placements().place(
-            &card.token,
-            (376, 256),
-            Some(Rect::new(0.0, 0.0, 376.0, 256.0)),
-        );
-        cards.placements().mapped(&card.token, 4);
-        cards.told(
-            "so.tilo.chat",
-            "chat-call:voice",
-            Some(Rect::new(8.0, 8.0, 368.0, 248.0)),
-        );
-        assert!(cards.adopt("so.tilo.chat", "chat-call:voice"), "told once");
-        assert!(!cards.adopt("so.tilo.chat", "chat-call:voice"), "not again");
-        cards
-            .stood_down("so.tilo.chat", 7, "chat-call:voice")
-            .expect("stood down");
-        assert!(
-            cards.adopt("so.tilo.chat", "chat-call:voice"),
-            "fresh after a return"
-        );
-    }
+        phase a_card_with_no_place_from_the_layer_is_drawn_nowhere;
+        {
+            let cards = Cards::new();
+            cards
+                .present("so.tilo.chat", 7, &call("chat-call:voice"))
+                .unwrap();
+            let card = cards.presented().remove(0);
+            cards.told(
+                "so.tilo.chat",
+                "chat-call:voice",
+                Some(Rect::new(100.0, 100.0, 460.0, 340.0)),
+            );
+            assert!(
+                !cards.live("so.tilo.chat", "chat-call:voice"),
+                "no window is up yet"
+            );
+            cards.placements().place(
+                &card.token,
+                (368, 248),
+                Some(Rect::new(100.0, 100.0, 468.0, 348.0)),
+            );
+            cards.placements().mapped(&card.token, 3);
+            assert!(cards.live("so.tilo.chat", "chat-call:voice"));
+            cards.placements().suspend(&card.token);
+            assert!(!cards.live("so.tilo.chat", "chat-call:voice"), "stood down");
+        }
 
-    #[test]
-    fn a_card_its_app_presents_again_after_standing_it_down_is_drawn_again() {
-        let cards = Cards::new();
-        cards
-            .present("so.tilo.chat", 7, &call("chat-call:voice"))
-            .unwrap();
-        cards.told(
-            "so.tilo.chat",
-            "chat-call:voice",
-            Some(Rect::new(0.0, 0.0, 360.0, 240.0)),
-        );
-        let stood_down = cards
-            .stood_down("so.tilo.chat", 7, "chat-call:voice")
-            .expect("stood down");
-        cards.told("so.tilo.chat", "chat-call:voice", None);
-        assert!(!cards.presented_again("so.tilo.chat", 8, "chat-call:voice"));
-        assert!(
-            cards.presented()[0].stood_down,
-            "another window changes nothing"
-        );
-        assert!(cards.presented_again("so.tilo.chat", 7, &stood_down.activity));
-        assert!(!cards.presented()[0].stood_down);
-        assert!(
-            !cards.presented_again("so.tilo.chat", 7, "chat-call:voice"),
-            "told once"
-        );
-    }
-
-    #[test]
-    fn echoing_the_stand_down_the_session_asked_for_is_no_stand_down() {
-        let cards = Cards::new();
-        cards
-            .present("so.tilo.chat", 7, &call("chat-call:voice"))
-            .unwrap();
-        // The session has already told the app it draws the call itself.
-        cards.told("so.tilo.chat", "chat-call:voice", None);
-        assert!(
+        phase a_card_is_adopted_once_its_window_is_up_and_again_after_it_stands_down;
+        {
+            let cards = Cards::new();
+            cards
+                .present("so.tilo.chat", 7, &call("chat-call:voice"))
+                .unwrap();
+            let card = cards.presented().remove(0);
+            cards.placements().place(
+                &card.token,
+                (376, 256),
+                Some(Rect::new(0.0, 0.0, 376.0, 256.0)),
+            );
+            cards.placements().mapped(&card.token, 4);
+            cards.told(
+                "so.tilo.chat",
+                "chat-call:voice",
+                Some(Rect::new(8.0, 8.0, 368.0, 248.0)),
+            );
+            assert!(cards.adopt("so.tilo.chat", "chat-call:voice"), "told once");
+            assert!(!cards.adopt("so.tilo.chat", "chat-call:voice"), "not again");
             cards
                 .stood_down("so.tilo.chat", 7, "chat-call:voice")
-                .is_none()
-        );
-        assert!(
-            !cards.presented()[0].stood_down,
-            "the call's card comes back when its window goes"
-        );
-    }
+                .expect("stood down");
+            assert!(
+                cards.adopt("so.tilo.chat", "chat-call:voice"),
+                "fresh after a return"
+            );
+        }
 
-    #[test]
-    fn a_cards_window_that_went_away_is_one_to_ask_its_app_for_again() {
-        let cards = Cards::new();
-        cards
-            .present("so.tilo.chat", 7, &call("chat-call:voice"))
-            .unwrap();
-        let card = cards.presented().remove(0);
-        cards.placements().place(
-            &card.token,
-            (376, 256),
-            Some(Rect::new(0.0, 0.0, 376.0, 256.0)),
-        );
-        cards.placements().mapped(&card.token, 4);
-        assert!(cards.lost().is_empty());
-        cards.placements().gone(4);
-        assert_eq!(cards.lost(), vec![card.token.clone()]);
-        assert!(cards.lost().is_empty(), "told once");
-        assert_eq!(
-            cards.by_token(&card.token).map(|card| card.activity),
-            Some("chat-call:voice".to_owned())
-        );
-    }
+        phase a_card_its_app_presents_again_after_standing_it_down_is_drawn_again;
+        {
+            let cards = Cards::new();
+            cards
+                .present("so.tilo.chat", 7, &call("chat-call:voice"))
+                .unwrap();
+            cards.told(
+                "so.tilo.chat",
+                "chat-call:voice",
+                Some(Rect::new(0.0, 0.0, 360.0, 240.0)),
+            );
+            let stood_down = cards
+                .stood_down("so.tilo.chat", 7, "chat-call:voice")
+                .expect("stood down");
+            cards.told("so.tilo.chat", "chat-call:voice", None);
+            assert!(!cards.presented_again("so.tilo.chat", 8, "chat-call:voice"));
+            assert!(
+                cards.presented()[0].stood_down,
+                "another window changes nothing"
+            );
+            assert!(cards.presented_again("so.tilo.chat", 7, &stood_down.activity));
+            assert!(!cards.presented()[0].stood_down);
+            assert!(
+                !cards.presented_again("so.tilo.chat", 7, "chat-call:voice"),
+                "told once"
+            );
+        }
 
-    #[test]
-    fn a_picture_in_picture_mirror_is_not_a_card() {
-        let cards = Cards::new();
-        let mut request = call("pip:1");
-        request.role = FloatingSurfaceProtocolRole::PictureInPicture;
-        assert!(cards.present("so.tilo.chat", 7, &request).is_err());
-        assert!(cards.presented().is_empty());
+        phase echoing_the_stand_down_the_session_asked_for_is_no_stand_down;
+        {
+            let cards = Cards::new();
+            cards
+                .present("so.tilo.chat", 7, &call("chat-call:voice"))
+                .unwrap();
+            // The session has already told the app it draws the call itself.
+            cards.told("so.tilo.chat", "chat-call:voice", None);
+            assert!(
+                cards
+                    .stood_down("so.tilo.chat", 7, "chat-call:voice")
+                    .is_none()
+            );
+            assert!(
+                !cards.presented()[0].stood_down,
+                "the call's card comes back when its window goes"
+            );
+        }
+
+        phase a_cards_window_that_went_away_is_one_to_ask_its_app_for_again;
+        {
+            let cards = Cards::new();
+            cards
+                .present("so.tilo.chat", 7, &call("chat-call:voice"))
+                .unwrap();
+            let card = cards.presented().remove(0);
+            cards.placements().place(
+                &card.token,
+                (376, 256),
+                Some(Rect::new(0.0, 0.0, 376.0, 256.0)),
+            );
+            cards.placements().mapped(&card.token, 4);
+            assert!(cards.lost().is_empty());
+            cards.placements().gone(4);
+            assert_eq!(cards.lost(), vec![card.token.clone()]);
+            assert!(cards.lost().is_empty(), "told once");
+            assert_eq!(
+                cards.by_token(&card.token).map(|card| card.activity),
+                Some("chat-call:voice".to_owned())
+            );
+        }
+
+        phase a_picture_in_picture_mirror_is_not_a_card;
+        {
+            let cards = Cards::new();
+            let mut request = call("pip:1");
+            request.role = FloatingSurfaceProtocolRole::PictureInPicture;
+            assert!(cards.present("so.tilo.chat", 7, &request).is_err());
+            assert!(cards.presented().is_empty());
+        }
     }
 }
