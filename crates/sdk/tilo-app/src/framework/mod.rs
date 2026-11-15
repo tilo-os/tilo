@@ -382,8 +382,8 @@ mod workspace_emoji;
 
 pub use app::launch_spec;
 pub use app::{
-    AppName, FileHistory, OpeningCx, OpeningView, ResourceApp, SURFACE_FLAG, SeedCx, definition,
-    run_helper,
+    AppName, FileHistory, FolderHistory, OpeningCx, OpeningView, ResourceApp, SURFACE_FLAG, SeedCx,
+    definition, run_helper,
 };
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::{definition_launch_spec, run};

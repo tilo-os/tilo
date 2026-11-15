@@ -81,12 +81,17 @@ fn unreachable_scope() -> ! {
 /// [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY) shows.
 const FILE_SCOPE: &str = "file";
 
+/// The History scope of the folder an app of
+/// [`ResourceApp::FOLDER_HISTORY`](super::ResourceApp::FOLDER_HISTORY) shows.
+pub(crate) const FOLDER_SCOPE: &str = "folder";
+
 /// The History mode registration of `A`: one scope, previewed by its view.
 pub(crate) fn history_definition<A: ResourceApp>() -> &'static HistoryDefinition {
     leaked(TypeId::of::<HistoryKey<A>>(), || {
         history_definition_of(
             super::app::hooks::<A>().id(),
             A::FILE_HISTORY,
+            A::FOLDER_HISTORY,
             (<A::Resource as Resource>::LABEL, preview::<A>),
             restore_schema::<A::Resource>(),
         )
@@ -100,9 +105,25 @@ pub(crate) fn history_definition<A: ResourceApp>() -> &'static HistoryDefinition
 fn history_definition_of(
     app_id: &'static str,
     file: Option<super::app::FileHistory>,
+    folder: Option<super::app::FolderHistory>,
     (label, create): (&'static str, ui_core::history_mode::PreviewFactory),
     content_schema: Option<&'static HistoryRestoreSchema>,
 ) -> HistoryDefinition {
+    // A window that shows the workspace's folder: its History is the folder's own
+    // changes, every file's in one list. The window's record only keeps which folder is
+    // open, which is not activity to list.
+    if let Some(folder) = folder {
+        let scopes: &'static [HistoryScopeDefinition] = Box::leak(
+            vec![HistoryScopeDefinition {
+                key: FOLDER_SCOPE,
+                title: folder.title,
+                presentation: HistoryPresentation::Folder,
+                content_schema: None,
+            }]
+            .into_boxed_slice(),
+        );
+        return HistoryDefinition { app_id, scopes };
+    }
     // A file of the mounted filesystem the app shows is a scope beside
     // the resource's; History moves to it when the app opens a file's.
     let file = file.map(|file| HistoryScopeDefinition {

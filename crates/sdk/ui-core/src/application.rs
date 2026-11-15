@@ -1277,7 +1277,7 @@ impl AppComponent {
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        self.register_history_of(definition, None)
+        self.register_history_of(definition, None, None)
     }
     /// Register presentation for this component's document, as [`Self::register_document_history`], and
     /// for the files of the mounted filesystem it shows: every checked-file scope reads the file
@@ -1287,7 +1287,18 @@ impl AppComponent {
         definition: &'static crate::history_mode::HistoryDefinition,
         files: crate::history_mode::checked_files::FileHistorySource,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        self.register_history_of(definition, Some(files))
+        self.register_history_of(definition, Some(files), None)
+    }
+
+    /// Register presentation for the folder this component's window shows, as
+    /// [`Self::register_document_history`]: the tree record the window's rows are, read
+    /// through the window.
+    pub fn register_document_folder_history(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+        folder: crate::history_mode::folder::FolderHistorySource,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        self.register_history_of(definition, None, Some(folder))
     }
     /// Open History at `entry` when the window starts, as a window replaying
     /// a recording opens at its first step. Refused before History is
@@ -1310,6 +1321,7 @@ impl AppComponent {
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
         files: Option<crate::history_mode::checked_files::FileHistorySource>,
+        folder: Option<crate::history_mode::folder::FolderHistorySource>,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         use crate::history_mode::{
             HistoryOwner, HistoryPresentation, HistoryRegistration, HistorySourceRegistration,
@@ -1331,6 +1343,13 @@ impl AppComponent {
                 }
                 HistoryPresentation::CheckedFiles { .. } => match &files {
                     Some(source) => Ok(HistorySourceRegistration::CheckedFiles {
+                        scope: scope.key,
+                        source: source.clone(),
+                    }),
+                    None => Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner),
+                },
+                HistoryPresentation::Folder => match &folder {
+                    Some(source) => Ok(HistorySourceRegistration::FolderFiles {
                         scope: scope.key,
                         source: source.clone(),
                     }),

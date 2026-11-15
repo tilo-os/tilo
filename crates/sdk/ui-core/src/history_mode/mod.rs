@@ -23,6 +23,7 @@ pub mod checked_files;
 pub mod coverage;
 pub(crate) mod door;
 mod files_session;
+pub mod folder;
 pub mod preview;
 pub mod restore;
 pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAssetSource};

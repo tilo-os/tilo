@@ -59,7 +59,8 @@ pub(crate) fn restore_reviewed_history(
         HistorySourceRegistration::HostDocument { resource, .. }
         | HistorySourceRegistration::OwnedDocument { resource, .. } => resource,
         HistorySourceRegistration::Unversioned { .. }
-        | HistorySourceRegistration::CheckedFiles { .. } => {
+        | HistorySourceRegistration::CheckedFiles { .. }
+        | HistorySourceRegistration::FolderFiles { .. } => {
             return Err("This resource has no restorable versions.".into());
         }
     };
@@ -160,7 +161,8 @@ pub(crate) fn restore_reviewed_history(
                 owner.restore_write(&mut state.doc, &admitted, write)
             }
             HistorySourceRegistration::Unversioned { .. }
-            | HistorySourceRegistration::CheckedFiles { .. } => {
+            | HistorySourceRegistration::CheckedFiles { .. }
+            | HistorySourceRegistration::FolderFiles { .. } => {
                 return Err("This resource has no restorable versions.".to_owned());
             }
         };
@@ -256,7 +258,8 @@ pub(crate) fn describe_history(
         HistorySourceRegistration::HostDocument { resource, .. } => (resource, false),
         HistorySourceRegistration::OwnedDocument { resource, .. } => (resource, true),
         HistorySourceRegistration::Unversioned { .. }
-        | HistorySourceRegistration::CheckedFiles { .. } => {
+        | HistorySourceRegistration::CheckedFiles { .. }
+        | HistorySourceRegistration::FolderFiles { .. } => {
             return Err(OwnedRestoreError::Denied);
         }
     };

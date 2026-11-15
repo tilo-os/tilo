@@ -64,7 +64,8 @@ impl HistoryHost {
             HistorySourceRegistration::HostDocument { resource, .. }
             | HistorySourceRegistration::OwnedDocument { resource, .. } => resource.clone(),
             HistorySourceRegistration::Unversioned { .. }
-            | HistorySourceRegistration::CheckedFiles { .. } => return,
+            | HistorySourceRegistration::CheckedFiles { .. }
+            | HistorySourceRegistration::FolderFiles { .. } => return,
         };
         if !self.assets.requested && self.assets.snapshots.iter().any(Option::is_some) {
             self.assets.requested = true;

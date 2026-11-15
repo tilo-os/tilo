@@ -952,10 +952,10 @@ impl AuthorCell {
             person: &self.person,
             identity: &self.identity,
             image: self.image.as_ref(),
-            writer: self.writer.as_ref().map(|(label, hue)| RowWriter {
-                label,
-                hue: *hue,
-            }),
+            writer: self
+                .writer
+                .as_ref()
+                .map(|(label, hue)| RowWriter { label, hue: *hue }),
         }
     }
 }

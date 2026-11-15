@@ -133,6 +133,10 @@ pub trait ResourceApp: 'static {
     /// the filesystem's projection, not the app's document. The app's
     /// view names the file with [`RecordEnv::file_history`](super::RecordEnv::file_history).
     const FILE_HISTORY: Option<FileHistory> = None;
+    /// The History of the folder a window shows: every file's changes in it, one row per
+    /// file and writer, read from the tree record the window's rows are. The window
+    /// provides the record, so History reads what the rows read.
+    const FOLDER_HISTORY: Option<FolderHistory> = None;
     /// What of the machine it runs on the app shows (its journal, its
     /// processes, its drives, the person's real files). A headless drive
     /// that captures it must then name one of its [scenarios](Self::scenarios)
@@ -419,6 +423,14 @@ impl<W: ui_core::widget::Widget + 'static> OpeningView for W {
     }
 }
 
+/// The History scope of [`ResourceApp::FOLDER_HISTORY`]: the folder a window
+/// shows, every file's changes in it as one list.
+#[derive(Clone, Copy)]
+pub struct FolderHistory {
+    /// What the scope is called in History: "Folder".
+    pub title: &'static str,
+}
+
 /// The History scope of [`ResourceApp::FILE_HISTORY`]: the files of the
 /// mounted filesystem an app shows.
 #[derive(Clone, Copy)]
@@ -578,6 +590,7 @@ pub(crate) struct AppHooks {
     behaviour: ComponentBehaviour,
     document_history: bool,
     file_history: Option<FileHistory>,
+    folder_history: Option<FolderHistory>,
     #[cfg(tilo_native_runner)]
     private_windows: bool,
     #[cfg(tilo_native_runner)]
@@ -636,6 +649,7 @@ impl<A: ResourceApp> Hooks<A> {
         behaviour: A::BEHAVIOUR,
         document_history: A::DOCUMENT_HISTORY,
         file_history: A::FILE_HISTORY,
+        folder_history: A::FOLDER_HISTORY,
         #[cfg(tilo_native_runner)]
         private_windows: A::PRIVATE_WINDOWS,
         #[cfg(tilo_native_runner)]
@@ -1175,8 +1189,10 @@ fn unopened(app: &AppHooks, context: HostContext, reason: &str) -> AppComponent 
     let mut component = AppComponent::new(context, unopened.boxed(), (app.action_registry)());
     component.set_behaviour(app.behaviour);
     // An earlier version of the record may still read as the resource:
-    // History shows its versions and restores one, as in the app's own window.
-    if app.document_history
+    // History shows its versions and restores one, as in the app's own window. A
+    // folder's History needs the folder itself, which a notice has not opened.
+    if app.folder_history.is_none()
+        && app.document_history
         && let Err(error) = component.register_document_history((app.history)())
     {
         tracing::warn!(%error, "the unopened record shows without its History");
@@ -1346,13 +1362,24 @@ fn window(
         Ok(root) => root,
         Err(reason) => return Ok(unopened(app, context, &reason)),
     };
+    // The folder History lists, when the window declares one: the root holds the record
+    // its rows are, and hands it over rather than History reading a second copy.
+    let folder = app.folder_history.and_then(|_| {
+        ui_core::widget::capability::capability::<
+            dyn ui_core::history_mode::folder::FolderHistoryWindow,
+        >(root.as_ref())
+        .map(|window| {
+            ui_core::history_mode::folder::FolderHistorySource::new(window.folder_history())
+        })
+    });
     let mut component = AppComponent::new(context, root, (app.action_registry)());
     component.set_behaviour(app.behaviour);
     if app.document_history {
         let history = (app.history)();
-        match files {
-            Some(files) => component.register_document_and_file_history(history, files),
-            None => component.register_document_history(history),
+        match (files, folder) {
+            (_, Some(folder)) => component.register_document_folder_history(history, folder),
+            (Some(files), None) => component.register_document_and_file_history(history, files),
+            (None, None) => component.register_document_history(history),
         }
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     }

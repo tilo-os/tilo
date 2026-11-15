@@ -552,22 +552,13 @@ impl ListRowFace<'_> {
     /// person's own ink, and what wrote for them as a chip wearing its mark and hue. The
     /// name is cut short before the chip, never the chip: what wrote is part of who, and a
     /// reader who cannot see the mark hears it in the row's description.
-    fn paint_author(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        m: &RowMetrics,
-        slot: Rect,
-        line_cy: f64,
-    ) {
+    fn paint_author(&self, ctx: &mut PaintCtx<'_>, m: &RowMetrics, slot: Rect, line_cy: f64) {
         let theme = ctx.theme;
         let Some(author) = self.author else {
             return;
         };
         let side = slot.height().min(RowMetrics::avatar(theme, false));
-        let face = Rect::from_center_size(
-            Point::new(slot.x0 + side / 2.0, line_cy),
-            (side, side),
-        );
+        let face = Rect::from_center_size(Point::new(slot.x0 + side / 2.0, line_cy), (side, side));
         crate::widget::AvatarFace::new(author.person, author.identity)
             .image(author.image)
             .paint(ctx, face);
@@ -575,16 +566,20 @@ impl ListRowFace<'_> {
         let chip = author.writer.map(|writer| {
             let lead = crate::widget::ChipLead::Agent(theme.tokens.colors.presence.hue(writer.hue));
             let width = crate::widget::ChipFace::intrinsic_width(
-                writer.label, lead, false, ctx.text, theme,
+                writer.label,
+                lead,
+                false,
+                ctx.text,
+                theme,
             );
             (writer, lead, width)
         });
         let chip_w = chip.as_ref().map_or(0.0, |(.., width)| *width);
         let name_right = slot.x1 - chip_w - if chip.is_some() { m.tag_gap } else { 0.0 };
         let cap = (name_right - x).max(0.0);
-        let name = ctx
-            .text
-            .elide_to_width_style(author.person, crate::num::f32_of_f64(cap), &m.author);
+        let name =
+            ctx.text
+                .elide_to_width_style(author.person, crate::num::f32_of_f64(cap), &m.author);
         let (_, height) = ctx.text.measure_style(&name, None, &m.author);
         ctx.text(
             &name,

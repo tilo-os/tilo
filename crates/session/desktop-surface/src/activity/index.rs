@@ -306,74 +306,14 @@ impl Default for WorkspaceHistoryIndex {
 /// whose device signed the version and the agent that wrote for them when one
 /// did.
 fn folder_rows(doc: &AutoCommit, authors: &AuthorDirectory, limit: usize) -> Vec<HistoryEntry> {
-    use fs_protocol::history;
-    use ui::history_source::WriterPlace;
-    use ui::history_source::file_changes::{
-        NoTurnBoundary, QUIET, change_summary, coalesce, unknown_file_author,
-    };
-
-    let Ok(tree) = <fs_protocol::tree::FilesTree as tilo_resource::Resource>::read(doc) else {
-        return Vec::new();
-    };
-    let mut rows = Vec::new();
-    for (id, node) in &tree.nodes {
-        if tree.trashed(id) {
-            continue;
-        }
-        let Some(record_id) = node.record_id else {
-            continue;
-        };
-        let path = fs_protocol::tree::path_of(&tree, id);
-        let folder = match node.parent.as_deref() {
-            Some(parent) if parent != fs_protocol::tree::ROOT_ID => {
-                format!("/{}", fs_protocol::tree::path_of(&tree, parent))
-            }
-            _ => "/".to_owned(),
-        };
-        let versions: Vec<_> = history::record_versions(doc, record_id)
-            .into_values()
-            .collect();
-        let attributed = history::record_attributions(doc, record_id);
-        let attributions: BTreeMap<_, _> = attributed
-            .iter()
-            .map(|(version, attributed)| (*version, attributed.attribution.clone()))
-            .collect();
-        for change in coalesce(&versions, &attributions, QUIET, &NoTurnBoundary) {
-            let version = change.last();
-            let person = version.actor.person.as_bytes();
-            let author = authors
-                .resolve_attributed_file_actor_in(
-                    person,
-                    version.actor.device.as_bytes(),
-                    attributions.get(&version.id),
-                    WriterPlace {
-                        folder: Some(&folder),
-                    },
-                )
-                .unwrap_or_else(|| unknown_file_author(person));
-            rows.push(HistoryEntry {
-                id: HistoryEntryId(*version.id.0.as_bytes()),
-                author,
-                entry_kind: ui::widget::EntryKind::Compaction,
-                artifact_kind: ArtifactKind::File,
-                timestamp: ui::time::UNIX_EPOCH
-                    .checked_add(ui::time::Duration::from_millis(version.timestamp_ms))
-                    .unwrap_or(ui::time::UNIX_EPOCH),
-                summary: change_summary(&change, &path),
-                text_delta: None,
-                diff_payload: None,
-                redaction: None,
-                context: None,
-            });
-        }
-    }
-    // Keep the newest: the index bounds what it shows, and a folder can hold
-    // more changes than one history pane lists.
-    rows.sort_by_key(|row| row.timestamp);
-    if rows.len() > limit {
-        rows.drain(..rows.len().saturating_sub(limit));
-    }
-    rows
+    ui::history_source::folder::entries(doc, authors)
+        .into_iter()
+        .rev()
+        .take(limit)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 /// The rows of `doc` , each saying what a model described it as when one did: a description stands

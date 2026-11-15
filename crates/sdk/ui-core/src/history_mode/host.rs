@@ -115,6 +115,9 @@ pub struct HistoryHost {
     requested_file_version: Option<fs_protocol::FileVersionId>,
     observed_file_binding: Option<uuid::Uuid>,
     file_target_resolved: bool,
+    /// The folder revision whose changes the timeline lists: the folder is read again
+    /// only when its tree record moved.
+    observed_folder_revision: Option<u64>,
     toolbar: Column,
     /// The side panel's foot while a change is selected: what it was, the before/after switch, Restore
     /// and Restore just this change.
@@ -332,7 +335,8 @@ impl HistoryHost {
                 HistoryController::unprojected(resource.clone(), source.committed_heads(doc)?),
             ),
             HistorySourceRegistration::Unversioned { .. }
-            | HistorySourceRegistration::CheckedFiles { .. } => None,
+            | HistorySourceRegistration::CheckedFiles { .. }
+            | HistorySourceRegistration::FolderFiles { .. } => None,
         };
         let unavailable = unavailable_state(match registration.sources.first() {
             Some(HistorySourceRegistration::Unversioned { reason, .. }) => reason,
@@ -364,6 +368,7 @@ impl HistoryHost {
             requested_file_version: None,
             observed_file_binding: None,
             file_target_resolved: false,
+            observed_folder_revision: None,
             toolbar,
             footer: Column::new().with_no_padding().with_intrinsic_height(),
             banner: Row::new(),
@@ -1221,7 +1226,12 @@ impl HistoryHost {
         self.open && (self.width >= 600.0 || self.selected.is_empty() || self.activity_page)
     }
     fn timeline_available(&self) -> bool {
-        self.controller.is_some() || self.files.is_some()
+        self.controller.is_some() || self.files.is_some() || self.source_is_folder()
+    }
+    /// Whether the shown scope is a folder's own changes, which the timeline lists without a
+    /// document controller: the window's record holds them.
+    fn source_is_folder(&self) -> bool {
+        matches!(self.source(), HistorySourceRegistration::FolderFiles { .. })
     }
     fn show_preview(&self) -> bool {
         !self.selected.is_empty() && !self.activity_page
@@ -1295,6 +1305,9 @@ impl HistoryHost {
         if !selected.is_empty() && selected != self.selected {
             return Some(true);
         }
+        if let HistorySourceRegistration::FolderFiles { source, .. } = self.source() {
+            return Some(self.open && self.observed_folder_revision != Some(source.revision()));
+        }
         matches!(
             self.source(),
             HistorySourceRegistration::CheckedFiles { .. }
@@ -1325,6 +1338,7 @@ impl HistoryHost {
             && self.registration.sources.iter().all(|source| match source {
                 HistorySourceRegistration::OwnedDocument { owner, .. } => followed(owner),
                 HistorySourceRegistration::CheckedFiles { .. }
+                | HistorySourceRegistration::FolderFiles { .. }
                 | HistorySourceRegistration::HostDocument { .. }
                 | HistorySourceRegistration::Unversioned { .. } => true,
             })
@@ -1525,6 +1539,10 @@ impl HistoryHost {
                             HistorySourceRegistration::CheckedFiles { .. } => {
                                 self.close_files_presentation();
                             }
+                            HistorySourceRegistration::FolderFiles { .. } => {
+                                self.close_files_presentation();
+                                self.observed_folder_revision = None;
+                            }
                         }
                     }
                 }
@@ -1535,6 +1553,18 @@ impl HistoryHost {
             HistorySourceRegistration::CheckedFiles { .. }
         ) {
             self.refresh_files(changed);
+            return;
+        }
+        if let HistorySourceRegistration::FolderFiles { source, .. } = self.source().clone() {
+            let revision = source.revision();
+            if self.observed_folder_revision != Some(revision) {
+                self.observed_folder_revision = Some(revision);
+                self.timeline.set_entries(source.entries());
+                changed = true;
+            }
+            if changed {
+                self.rebuild_toolbar();
+            }
             return;
         }
         // Resolve actual current selected IDs before replacing the projection;

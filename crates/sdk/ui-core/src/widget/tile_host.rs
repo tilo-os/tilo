@@ -702,7 +702,7 @@ impl TileHost {
                         reason,
                     })
                 }
-                HistoryPresentation::CheckedFiles { .. } => {
+                HistoryPresentation::CheckedFiles { .. } | HistoryPresentation::Folder => {
                     Err(HistoryRegistrationError::UnsupportedOwner)
                 }
             })

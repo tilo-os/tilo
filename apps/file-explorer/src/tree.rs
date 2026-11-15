@@ -71,6 +71,16 @@ impl ResourceApp for FilesTreeShell {
     const TITLE: &'static str = "Files";
     const TITLE_KEY: &'static str = "files-app-title";
     const ICON: Option<&'static str> = Some("file-explorer");
+    /// The workspace's tree, the record every member holds: the window shows it and its
+    /// History reads its changes, so it is opened with the window.
+    const PERSON_RECORDS: &'static [ui::framework::PersonKind] =
+        &[ui::framework::PersonKind::shared::<
+            fs_protocol::tree::FilesTree,
+        >()];
+    /// The folder this window shows: every file's changes in it, as one list, read from
+    /// the tree record its rows are.
+    const FOLDER_HISTORY: Option<ui::framework::FolderHistory> =
+        Some(ui::framework::FolderHistory { title: "Folder" });
 
     fn view(cx: &mut ViewCx<FilesWindow>) -> Element {
         Box::new(TreeBrowser::new(cx))
@@ -110,11 +120,35 @@ fn opening_app(head: &[u8], name: &str) -> Option<String> {
     Some(format!("so.tilo.{}", landing.app))
 }
 
+/// The folder's own changes, as History reads them: the tree record the window already
+/// holds for its rows, and the directory its rows name people with. One record, read the
+/// same way twice — never a second copy of the files.
+struct TreeFolder {
+    tree: WorkspaceRecord<fs_protocol::tree::FilesTree>,
+    people: People,
+}
+
+impl ui::history_mode::folder::FolderVersions for TreeFolder {
+    fn folder_entries(&self) -> Vec<ui::HistoryEntry> {
+        let authors = self.people.registry();
+        self.tree
+            .read(|doc| ui::history_source::folder::entries(doc, &authors))
+            .unwrap_or_default()
+    }
+
+    fn folder_revision(&self) -> u64 {
+        self.tree.revision()
+    }
+}
+
 /// The window: the folder it shows and the entries in it.
 pub struct TreeBrowser {
     live: Live<FilesWindow>,
     /// The workspace's tree, as the page holds it.
     tree: Option<WorkspaceRecord<fs_protocol::tree::FilesTree>>,
+    /// The folder History lists, made once so the registration a window installs and the
+    /// one its root witnesses are the same source.
+    folder: Option<Rc<TreeFolder>>,
     /// What the workspace calls the people its nodes name.
     people: People,
     /// The window's own record, which the open folder is set in.
@@ -149,16 +183,25 @@ impl TreeBrowser {
         let keep: Option<Keeps> = cx
             .content()
             .map(|content| Rc::new(move |bytes: &[u8]| content.put(bytes).ok()) as Keeps);
+        let people = cx.people();
+        // The workspace's tree is the record every member holds, under the
+        // Files app's own name for it — the one the page's search reads
+        // when it finds a file by what it says.
+        let tree = cx.shared_record::<fs_protocol::tree::FilesTree>(
+            FILES_APP,
+            &fs_protocol::tree::record_id(),
+        );
+        let folder = tree.as_ref().map(|tree| {
+            Rc::new(TreeFolder {
+                tree: tree.clone(),
+                people: people.clone(),
+            })
+        });
         let mut browser = Self {
             live: cx.live().clone(),
-            // The workspace's tree is the record every member holds, under the
-            // Files app's own name for it — the one the page's search reads
-            // when it finds a file by what it says.
-            tree: cx.shared_record::<fs_protocol::tree::FilesTree>(
-                FILES_APP,
-                &fs_protocol::tree::record_id(),
-            ),
-            people: cx.people(),
+            tree,
+            folder,
+            people,
             dispatch: cx.dispatcher(),
             read,
             keep,
@@ -301,36 +344,22 @@ impl TreeBrowser {
             row = row.mark(Icon::Folder);
         }
         if let Some(author) = self.author_of(node) {
-            // The author as its own element: a person wears their avatar, an
-            // agent wears the agent mark and its own colour with its name
-            // beside it, and the hover names what wrote, its session, the
-            // computer and the folder. Never one line joined from names.
+            // Who made it as its own cell: the person's face and name, and what wrote
+            // for them as a chip wearing the agent mark and its own colour. The hover
+            // names the agent, its session, the computer and the folder. Never one line
+            // joined from names.
             let parts = ui::author_parts(&author);
             let identity = parts
                 .person_identity
                 .clone()
                 .unwrap_or_else(|| parts.person.clone());
-            let (shown, agent, hue) = match &parts.writer {
-                Some(writer) => (
-                    writer.clone(),
-                    true,
-                    ui::tokens::PresenceHue::of_agent(writer),
-                ),
-                None => (
-                    parts.person.clone(),
-                    false,
-                    ui::tokens::PresenceHue::of_identity(&identity),
-                ),
-            };
-            row = row.avatar(shown.clone(), identity).avatar_hue(hue);
-            if agent {
-                row = row.agent_face();
+            row = row.author_cell(parts.person.clone(), identity);
+            if let Some(writer) = &parts.writer {
+                row = row.author_writer(writer.clone(), ui::tokens::PresenceHue::of_agent(writer));
             }
-            row = row.meta(shown);
-            if agent {
-                // For a reader who cannot see the mark: whose change it is.
-                row = row.description(parts.person);
-            }
+            // For a reader who cannot see the mark: the person, the writer and the
+            // computer, as one description built from the fields.
+            row = row.description(ui::author_spoken(&parts));
             if let Some(hover) = ui::attribution_hover(&author) {
                 row = row.tooltip(hover);
             }
@@ -595,6 +624,92 @@ impl Decorator for TreeBrowser {
 
     fn name(&self) -> &'static str {
         "FilesTree"
+    }
+
+    /// The folder this window holds for its History, and everything the row body offers as
+    /// before.
+    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn ui::history_mode::capability::DocumentHistory>() {
+            request.provide::<dyn ui::history_mode::capability::DocumentHistory>(self);
+            return;
+        }
+        if request.wants::<dyn ui::history_mode::folder::FolderHistoryWindow>() {
+            request.provide::<dyn ui::history_mode::folder::FolderHistoryWindow>(self);
+            return;
+        }
+        self.body.provide(request);
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn ui::history_mode::capability::DocumentHistory>() {
+            request.provide::<dyn ui::history_mode::capability::DocumentHistory>(self);
+            return;
+        }
+        if request.wants::<dyn ui::history_mode::folder::FolderHistoryWindow>() {
+            request.provide::<dyn ui::history_mode::folder::FolderHistoryWindow>(self);
+            return;
+        }
+        self.body.provide_mut(request);
+    }
+}
+
+/// The History this window shows, asked of its root by the runner that mounts it: the
+/// folder's own changes, read from the tree record its rows are.
+impl ui::history_mode::capability::DocumentHistory for TreeBrowser {
+    fn history_registration(
+        &self,
+    ) -> Result<
+        Option<ui::history_mode::HistoryRegistration>,
+        ui::history_mode::HistoryRegistrationError,
+    > {
+        let Some(folder) = &self.folder else {
+            return Ok(None);
+        };
+        let source = ui::history_mode::folder::FolderHistorySource::new(
+            Rc::clone(folder) as Rc<dyn ui::history_mode::folder::FolderVersions>
+        );
+        Ok(Some(ui::history_mode::HistoryRegistration::new(
+            &FOLDER_SCOPE_DEFINITION,
+            vec![ui::history_mode::HistorySourceRegistration::FolderFiles {
+                scope: "folder",
+                source,
+            }],
+        )?))
+    }
+}
+
+/// The one scope this window's History shows, as the runner asks for it by root.
+static FOLDER_SCOPE_DEFINITION: ui::history_mode::HistoryDefinition =
+    ui::history_mode::HistoryDefinition {
+        app_id: "so.tilo.file-explorer",
+        scopes: &[ui::history_mode::HistoryScopeDefinition {
+            key: "folder",
+            title: "Folder",
+            presentation: ui::history_mode::HistoryPresentation::Folder,
+            content_schema: None,
+        }],
+    };
+
+impl ui::history_mode::folder::FolderHistoryWindow for TreeBrowser {
+    fn folder_history(&self) -> Rc<dyn ui::history_mode::folder::FolderVersions> {
+        match &self.folder {
+            Some(folder) => Rc::clone(folder) as Rc<dyn ui::history_mode::folder::FolderVersions>,
+            None => Rc::new(NoFolder),
+        }
+    }
+}
+
+/// A window that holds no tree record yet: History lists nothing, and says so with its
+/// empty state.
+struct NoFolder;
+
+impl ui::history_mode::folder::FolderVersions for NoFolder {
+    fn folder_entries(&self) -> Vec<ui::HistoryEntry> {
+        Vec::new()
+    }
+
+    fn folder_revision(&self) -> u64 {
+        0
     }
 }
 

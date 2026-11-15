@@ -35,6 +35,11 @@ pub enum HistoryPresentation {
     CheckedFiles {
         create: super::checked_files::FilePreviewFactory,
     },
+    /// A folder's own changes, read from the tree record that holds its files' versions
+    /// ([`super::folder::FolderVersions`]). There is nothing to preview or restore: a
+    /// version of a folder is every one of its files' versions, and History lists the
+    /// changes, file by file.
+    Folder,
     External {
         reason: &'static str,
     },
@@ -45,7 +50,7 @@ impl HistoryPresentation {
     pub fn preview_factory(&self) -> Option<PreviewFactory> {
         match self {
             Self::Domain { create } | Self::DomainWithAssets { create, .. } => Some(*create),
-            Self::CheckedFiles { .. } | Self::External { .. } => None,
+            Self::CheckedFiles { .. } | Self::Folder | Self::External { .. } => None,
         }
     }
 }
@@ -60,6 +65,12 @@ pub enum HistorySourceRegistration {
     CheckedFiles {
         scope: &'static str,
         source: super::checked_files::FileHistorySource,
+    },
+    /// A folder's own changes, read from the tree record the window holds
+    /// ([`super::folder::FolderHistorySource`]).
+    FolderFiles {
+        scope: &'static str,
+        source: super::folder::FolderHistorySource,
     },
     HostDocument {
         scope: &'static str,
@@ -94,7 +105,8 @@ impl HistorySourceRegistration {
             Self::HostDocument { scope, .. }
             | Self::OwnedDocument { scope, .. }
             | Self::Unversioned { scope, .. }
-            | Self::CheckedFiles { scope, .. } => scope,
+            | Self::CheckedFiles { scope, .. }
+            | Self::FolderFiles { scope, .. } => scope,
         }
     }
     /// Committed frontier for the refresh predicate, preserving source admission.
@@ -104,7 +116,9 @@ impl HistorySourceRegistration {
     ) -> Result<Vec<automerge::ChangeHash>, HistoryRegistrationError> {
         match self {
             Self::OwnedDocument { owner, .. } => owner.committed_heads(outer),
-            Self::CheckedFiles { .. } => Err(HistoryRegistrationError::UnsupportedOwner),
+            Self::CheckedFiles { .. } | Self::FolderFiles { .. } => {
+                Err(HistoryRegistrationError::UnsupportedOwner)
+            }
             Self::HostDocument { .. } | Self::Unversioned { .. } => Ok(outer.base_heads()),
         }
     }
@@ -115,7 +129,9 @@ impl HistorySourceRegistration {
     ) -> Result<automerge::AutoCommit, HistoryRegistrationError> {
         match self {
             Self::OwnedDocument { owner, .. } => owner.document(outer),
-            Self::CheckedFiles { .. } => Err(HistoryRegistrationError::UnsupportedOwner),
+            Self::CheckedFiles { .. } | Self::FolderFiles { .. } => {
+                Err(HistoryRegistrationError::UnsupportedOwner)
+            }
             Self::HostDocument { .. } | Self::Unversioned { .. } => Ok(outer.clone()),
         }
     }
@@ -202,7 +218,7 @@ impl HistoryRegistration {
                         reason,
                     })
                 }
-                HistoryPresentation::CheckedFiles { .. } => {
+                HistoryPresentation::CheckedFiles { .. } | HistoryPresentation::Folder => {
                     Err(HistoryRegistrationError::UnsupportedOwner)
                 }
             })
@@ -233,9 +249,13 @@ impl HistoryRegistration {
     /// it names, owning no document.
     #[must_use]
     pub fn is_checked_files_only(&self) -> bool {
-        self.sources
-            .iter()
-            .all(|source| matches!(source, HistorySourceRegistration::CheckedFiles { .. }))
+        self.sources.iter().all(|source| {
+            matches!(
+                source,
+                HistorySourceRegistration::CheckedFiles { .. }
+                    | HistorySourceRegistration::FolderFiles { .. }
+            )
+        })
     }
     /// Validate the declared scope and source correspondence.
     pub fn validate(&self) -> Result<(), HistoryRegistrationError> {
@@ -262,10 +282,14 @@ impl HistoryRegistration {
                 return Err(HistoryRegistrationError::InvalidScopes);
             }
             match (&scope.presentation, source) {
+                // A file's or a folder's own versions claim none of the window's
+                // document, so neither carries a restore schema.
                 (
                     HistoryPresentation::CheckedFiles { .. },
                     HistorySourceRegistration::CheckedFiles { .. },
-                ) if scope.content_schema.is_none() => {}
+                )
+                | (HistoryPresentation::Folder, HistorySourceRegistration::FolderFiles { .. })
+                    if scope.content_schema.is_none() => {}
                 (
                     HistoryPresentation::Domain { .. }
                     | HistoryPresentation::DomainWithAssets { .. },
@@ -340,21 +364,41 @@ impl HistoryRegistration {
             Ok(())
         }
         for source in &self.sources {
-            if let HistorySourceRegistration::CheckedFiles { scope, source } = source {
-                let root_registration =
-                    crate::history_mode::capability::history_registration(root)?
-                        .ok_or(HistoryRegistrationError::UnsupportedOwner)?;
-                if root_registration.definition.app_id != self.definition.app_id || !root_registration.sources.iter().any(|candidate| matches!(candidate,HistorySourceRegistration::CheckedFiles { scope: other_scope,source: other } if scope==other_scope && source.same_owner(other))) { return Err(HistoryRegistrationError::UnsupportedOwner); }
+            // A file or folder this window shows is the window's own: the root it was
+            // handed must witness the same source, so a runner never lends one window's
+            // History another window's folder.
+            let witnessed = match source {
+                HistorySourceRegistration::CheckedFiles { scope, source } => {
+                    let root_registration =
+                        crate::history_mode::capability::history_registration(root)?
+                            .ok_or(HistoryRegistrationError::UnsupportedOwner)?;
+                    root_registration.definition.app_id == self.definition.app_id
+                        && root_registration.sources.iter().any(|candidate| matches!(candidate,HistorySourceRegistration::CheckedFiles { scope: other_scope,source: other } if scope==other_scope && source.same_owner(other)))
+                }
+                HistorySourceRegistration::FolderFiles { scope, source } => {
+                    let root_registration =
+                        crate::history_mode::capability::history_registration(root)?
+                            .ok_or(HistoryRegistrationError::UnsupportedOwner)?;
+                    root_registration.definition.app_id == self.definition.app_id
+                        && root_registration.sources.iter().any(|candidate| matches!(candidate,HistorySourceRegistration::FolderFiles { scope: other_scope,source: other } if scope==other_scope && source.same_owner(other)))
+                }
+                _ => true,
+            };
+            if !witnessed {
+                return Err(HistoryRegistrationError::UnsupportedOwner);
             }
         }
         let mut actual = Vec::new();
         // An explicitly witnessed Files-only root does not claim its enclosing
         // tab's UI state as file content. Descendant document owners still match
         // their own declared Domain sources under the normal bijection below.
-        let external_only = self
-            .sources
-            .iter()
-            .all(|source| matches!(source, HistorySourceRegistration::CheckedFiles { .. }));
+        let external_only = self.sources.iter().all(|source| {
+            matches!(
+                source,
+                HistorySourceRegistration::CheckedFiles { .. }
+                    | HistorySourceRegistration::FolderFiles { .. }
+            )
+        });
         if let Some(owner) = enclosing {
             owner.validate()?;
             if !external_only {

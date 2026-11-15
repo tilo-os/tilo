@@ -174,7 +174,10 @@ impl ListRowFace<'_> {
             .max(leading_h)
             .max(value)
             .max(fact_avatar)
-            .max(self.author_extent(&m, text, theme).map_or(0.0, |(_, height)| height));
+            .max(
+                self.author_extent(&m, text, theme)
+                    .map_or(0.0, |(_, height)| height),
+            );
         if let Some(height) = self.row_height {
             return held.max(height).max(self.min_target).ceil();
         }
@@ -229,7 +232,10 @@ impl ListRowFace<'_> {
             .map_or(0.0, |_| f64::from(BadgeFace::height(theme)));
         RowMetrics::line(text, &m.meta)
             .max(self.fact_avatar(theme).unwrap_or(0.0))
-            .max(self.author_extent(m, text, theme).map_or(0.0, |(_, height)| height))
+            .max(
+                self.author_extent(m, text, theme)
+                    .map_or(0.0, |(_, height)| height),
+            )
             .max(count)
             .max(m.mark)
             .max(value)
@@ -285,8 +291,7 @@ impl ListRowFace<'_> {
     /// The side of the avatar in the facts column, where the row shows one: the inline
     /// size, as a fact's line is.
     pub(super) fn fact_avatar(&self, theme: &Theme) -> Option<f64> {
-        (self.avatar.is_some() || self.author.is_some())
-            .then(|| RowMetrics::avatar(theme, false))
+        (self.avatar.is_some() || self.author.is_some()).then(|| RowMetrics::avatar(theme, false))
     }
 
     /// The author cell's natural width and height, when the row shows who made it: the

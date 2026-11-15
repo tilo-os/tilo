@@ -1172,7 +1172,8 @@ impl ActivityTimeline {
                 .then(|| entry.author.name.clone())
         })?;
         let lead = writer_lead(entry, &label, theme);
-        let width = crate::widget::ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);
+        let width =
+            crate::widget::ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);
         (width > 0.0).then_some((label, width, lead))
     }
 
@@ -1184,9 +1185,8 @@ impl ActivityTimeline {
         is_bot_author(&entry.author).then(|| {
             let label = crate::i18n::widget_format("author-bot-chip", &[]);
             let lead = ChipLead::None;
-            let width = crate::widget::ChipFace::intrinsic_width(
-                &label, lead, false, text_renderer, theme,
-            );
+            let width =
+                crate::widget::ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);
             (label, width, lead)
         })
     }
@@ -2439,9 +2439,12 @@ impl ActivityTimeline {
             (chip_x + width).min(slot_end),
             cy + height / 2.0,
         );
-        crate::widget::ChipFace::new(chip, &label)
-            .lead(lead)
-            .paint(scene, transform, text_renderer, theme);
+        crate::widget::ChipFace::new(chip, &label).lead(lead).paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+        );
     }
 
     fn draw_row_body(
