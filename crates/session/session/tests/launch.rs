@@ -771,31 +771,12 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
     );
 }
 
-/// A message this session does not answer is still said so, so nothing of an app's waits on an
-/// answer that will not come: every kind of message it serves nothing for is named back to the
-/// app as the app sent it, in the order the app sent them.
-#[test]
-fn a_message_the_session_cannot_answer_is_said_so() {
-    let _settled = ui::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("starts");
-    let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
-
-    // An app's card is the app's own window: the session mirrors no region of a floating surface.
-    let mut connection = ask(
-        &launches,
-        PROBE,
-        pid,
-        tab,
-        &FloatingSurfaceClientMessage::UpdateRegion {
-            id: "primary".to_owned(),
-            region: [0.0, 0.0, 320.0, 240.0],
-        },
-    );
-    // The rest of what this session serves nothing for, each as the app names it on the wire,
-    // told on the same connection after it.
-    let rest = [
+/// What this session serves nothing for besides the region a test opens with: each kind as the
+/// app names it on the wire, with one message of it, in the order a test tells them. The last is
+/// refused for what its connection never did (it offered no page), every other whatever the
+/// window is.
+fn unanswerable() -> Vec<(&'static str, FloatingSurfaceClientMessage)> {
+    vec![
         // What a window embeds of other apps' resources, and what else it shares live.
         (
             "embeds",
@@ -812,6 +793,22 @@ fn a_message_the_session_cannot_answer_is_said_so() {
         (
             "window_resource",
             FloatingSurfaceClientMessage::WindowResource { resource: None },
+        ),
+        // The control under a point, and the parts a person picks: answers to questions this
+        // session asked no window.
+        (
+            "pointed",
+            FloatingSurfaceClientMessage::Pointed {
+                request: 1,
+                control: None,
+            },
+        ),
+        (
+            "pick_answered",
+            FloatingSurfaceClientMessage::PickAnswered {
+                request: 1,
+                answer: ui::pick_wire::PickAnswer::Targets { parts: Vec::new() },
+            },
         ),
         // The answer to a device-shell operation nobody here asked for.
         (
@@ -846,7 +843,34 @@ fn a_message_the_session_cannot_answer_is_said_so() {
                 part: None,
             },
         ),
-    ];
+    ]
+}
+
+/// A message this session does not answer is still said so, so nothing of an app's waits on an
+/// answer that will not come: every kind of message it serves nothing for is named back to the
+/// app as the app sent it, in the order the app sent them.
+#[test]
+fn a_message_the_session_cannot_answer_is_said_so() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
+
+    // An app's card is the app's own window: the session mirrors no region of a floating surface.
+    let mut connection = ask(
+        &launches,
+        PROBE,
+        pid,
+        tab,
+        &FloatingSurfaceClientMessage::UpdateRegion {
+            id: "primary".to_owned(),
+            region: [0.0, 0.0, 320.0, 240.0],
+        },
+    );
+    // The rest of what this session serves nothing for, each as the app names it on the wire,
+    // told on the same connection after it.
+    let rest = unanswerable();
     for (_, message) in &rest {
         tell(&mut connection, message);
     }
