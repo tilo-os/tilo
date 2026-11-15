@@ -101,7 +101,7 @@ pub struct IncomingIssue {
     /// The tracker's status: backlog, todo, in-progress, in-review, done or cancelled.
     pub status: String,
     pub labels: Vec<String>,
-    /// `person:<name>`.
+    /// `outside:<name>`: who it is assigned to there, who need not be a member here.
     pub assignee: Option<String>,
     pub comments: Vec<IncomingComment>,
     /// The pages of the issues its relations name: how Tasks finds them, in this run or an

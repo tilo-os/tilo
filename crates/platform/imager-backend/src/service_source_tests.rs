@@ -427,7 +427,7 @@ fn linear_issues_land_with_state_labels_assignee_comments_links_and_source() {
     let first = &issues[0];
     assert_eq!(first["identifier"], "ENG-1");
     assert_eq!(first["status"], "in-progress");
-    assert_eq!(first["assignee"], "person:Ada Lovelace");
+    assert_eq!(first["assignee"], "outside:Ada Lovelace");
     assert_eq!(first["labels"], json!(["Migration", "P1"]));
     assert_eq!(
         first["links"],
