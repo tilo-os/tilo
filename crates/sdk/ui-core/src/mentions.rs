@@ -71,6 +71,47 @@ pub fn reading_nothing(reference: &tilo_reference::Embed) -> tilo_reference::emb
     }
 }
 
+/// What a run of changes may do to the mentions of some people a record holds, read from the changes
+/// alone: whether a value they write names one of the people (a new mention of them is such a value,
+/// as a text's mark or a stored mark's), and whether they take anything away (delete, overwrite or
+/// unmark), which can end a mention already there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Touched {
+    pub names: bool,
+    pub removes: bool,
+}
+
+/// What `changes`, encoded changes as a record's history keeps them, may do to the mentions of
+/// `people` ([`Touched`]); `None` when they do not read as changes. Costs what the changes hold, never
+/// what the record does: a host follows a large record's mentions without reading it whole.
+#[must_use]
+pub fn touched_by(changes: &[u8], people: &std::collections::BTreeSet<String>) -> Option<Touched> {
+    use automerge::legacy::{MarkData, OpType};
+    let mut touched = Touched::default();
+    for change in automerge::Automerge::parse_changes(changes).ok()? {
+        for op in change.decode().operations {
+            match &op.action {
+                OpType::Put(ScalarValue::Str(value))
+                | OpType::MarkBegin(MarkData {
+                    value: ScalarValue::Str(value),
+                    ..
+                }) if people.contains(value.as_str()) => touched.names = true,
+                OpType::MarkBegin(MarkData {
+                    value: ScalarValue::Null,
+                    ..
+                })
+                | OpType::Delete => touched.removes = true,
+                _ => {}
+            }
+            touched.removes |= !op.pred.is_empty();
+            if touched.names && touched.removes {
+                return Some(touched);
+            }
+        }
+    }
+    Some(touched)
+}
+
 /// Every mention in `doc`, in document order, each excerpt read for someone whose holdings nobody here
 /// can tell ([`reading_nothing`]).
 #[must_use]

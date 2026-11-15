@@ -57,6 +57,10 @@ dev-rust-views = ["dep:tube", "chat/samples"]
 lazy-search-feed = []
 
 [dependencies]
+# A branch of a workspace takes an app's own copy of a record into the
+# workspace's, as every incoming change is taken in; a record read again takes
+# in what was appended to it since.
+tilo-automerge = { path = "../../doc/tilo-automerge" }
 # A window's page reaches this session as the paint stream its app encoded.
 base64.workspace = true
 # The MLS vault's master key: the Secret Service, the Keychain, the page's
@@ -261,9 +265,6 @@ tilo-system-stats = { path = "../../system/system-stats" }
 # provider seam it asks for what the services publish. Its channel encryption
 # service governs the sealed channels a workspace's content is carried in.
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
-# A branch of a workspace takes an app's own copy of a record into the
-# workspace's, as every incoming change is taken in.
-tilo-automerge = { path = "../../doc/tilo-automerge" }
 # The person's other devices: what was copied here is shared through
 # the same fabric as everything else that follows them.
 tilo-device-fabric = { path = "../device-fabric" }

@@ -81,6 +81,8 @@ pub(crate) fn install() {
         committed_record,
         changes,
         record_document,
+        record_since,
+        record_heads,
         content,
         permit,
         host_then,
@@ -103,6 +105,10 @@ enum DesktopSending {
 struct Mounted {
     attachment: Attachment,
     records: HashMap<(String, String), RecordSync>,
+    /// The heads, sorted, at which the workspace last read each record this mount has open, as
+    /// the mount took them in: everything up to them is in its replica, so the next read brings
+    /// only what changed since, not the record whole.
+    merged: HashMap<(String, String), Vec<[u8; 32]>>,
 }
 
 pub(crate) struct Joined {
@@ -143,6 +149,9 @@ pub(crate) struct Joined {
     /// a window makes as it opens (taking a seat) would never reach the
     /// others.
     delivered: HashMap<(String, String), Vec<ui::automerge::ChangeHash>>,
+    /// The heads each record stood at when the workspace last delivered it, as the page read it:
+    /// where a reader of the page's records starts to ask what changed since.
+    read_heads: HashMap<(String, String), Vec<[u8; 32]>>,
     /// Changes this page made to the workspace: to its records, sent, and to its
     /// desktop's windows (opened, closed, moved), not the desktop it joined.
     authored: u64,
@@ -227,6 +236,7 @@ pub(crate) fn open(
         desktop_value: None,
         local_value: None,
         delivered: HashMap::new(),
+        read_heads: HashMap::new(),
         authored: 0,
         moderates: Arc::default(),
         invitable: Arc::default(),
@@ -344,6 +354,57 @@ pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCo
         .record(&joined.uuid, app, record)
         .ok()??;
     AutoCommit::load(&bytes).ok()
+}
+
+/// What changed of `record` of `app` since `heads`, as the workspace holds it: its changes alone
+/// where it holds those heads, and the record whole otherwise.
+pub(crate) fn record_since(
+    id: u32,
+    app: &str,
+    record: &str,
+    heads: &[ui::automerge::ChangeHash],
+) -> tilo_session::platform::records::Since {
+    use tilo_session::platform::records::Since;
+    let Some(joined) = replica_of(id) else {
+        return Since::Whole;
+    };
+    let joined = joined.borrow();
+    let held = sorted_heads(&heads.iter().map(|head| head.0).collect::<Vec<_>>());
+    if held.is_empty() {
+        return Since::Whole;
+    }
+    match joined
+        .peer
+        .engine()
+        .record_update(&joined.uuid, app, record, Some(&held))
+    {
+        Ok(RecordReading::Changes { heads, bytes, .. }) => Since::Changes {
+            heads: heads.into_iter().map(ui::automerge::ChangeHash).collect(),
+            bytes,
+        },
+        Ok(RecordReading::Unchanged(_) | RecordReading::Pending) => Since::Unchanged,
+        Ok(RecordReading::Captured { .. }) | Err(_) => Since::Whole,
+    }
+}
+
+/// The heads the workspace last delivered `record` of `app` at, as the page read it.
+pub(crate) fn record_heads(
+    id: u32,
+    app: &str,
+    record: &str,
+) -> Option<Vec<ui::automerge::ChangeHash>> {
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    let heads = joined
+        .read_heads
+        .get(&(app.to_owned(), record.to_owned()))?;
+    Some(
+        heads
+            .iter()
+            .copied()
+            .map(ui::automerge::ChangeHash)
+            .collect(),
+    )
 }
 
 /// The name of the workspace in front on peer `id`'s workspace desktop, once the
@@ -508,6 +569,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             Mounted {
                 attachment,
                 records: HashMap::new(),
+                merged: HashMap::new(),
             },
         );
     }
@@ -1000,9 +1062,21 @@ impl Joined {
                 &route.record,
                 kept.as_deref(),
             );
+            if let Ok(
+                RecordReading::Captured { heads, .. } | RecordReading::Changes { heads, .. },
+            ) = &read
+            {
+                self.read_heads
+                    .insert((route.app_id.clone(), route.record.clone()), heads.clone());
+            }
             let applied = match read {
                 Ok(RecordReading::Captured { bytes, heads, .. }) => {
                     self.apply(&route, (bytes, &heads), &mut woken)
+                }
+                Ok(RecordReading::Changes { bytes, heads, .. })
+                    if self.is_open(&route.app_id, &route.record) =>
+                {
+                    self.apply_open_changes(&route, &bytes, &heads, &mut woken)
                 }
                 Ok(RecordReading::Changes { bytes, heads, .. }) => {
                     self.apply_kept_changes(&route, bytes, &heads, &mut woken)
@@ -1238,6 +1312,9 @@ impl Joined {
                 if replica.merge(store, &checkout, DocumentMutation::Snapshot(bytes.clone()))? {
                     woken.insert(id);
                 }
+                mounted
+                    .merged
+                    .insert((app.clone(), record.clone()), sorted_heads(heads));
                 merged = true;
             }
         }
@@ -1262,8 +1339,11 @@ impl Joined {
     /// and the store took it from the replica: what a read of it need only bring the changes
     /// since. `None` for the desktop, an open record, or one the store does not hold.
     fn kept_heads(&self, route: &DocumentRoute) -> Option<Vec<[u8; 32]>> {
-        if route.app_id == DESKTOP_APP || self.is_open(&route.app_id, &route.record) {
+        if route.app_id == DESKTOP_APP {
             return None;
+        }
+        if self.is_open(&route.app_id, &route.record) {
+            return self.merged_heads(&route.app_id, &route.record);
         }
         let heads = self
             .delivered
@@ -1271,6 +1351,43 @@ impl Joined {
         let mut heads: Vec<[u8; 32]> = heads.iter().map(|head| head.0).collect();
         heads.sort_unstable();
         Some(heads)
+    }
+
+    /// The heads every mount with `record` of `app` open last took it in at, when they all took
+    /// it in at the same ones: what a read of it then need only bring the changes since. `None`
+    /// when a mount has not taken it in yet, or two took in different reads.
+    fn merged_heads(&self, app: &str, record: &str) -> Option<Vec<[u8; 32]>> {
+        let key = (app.to_owned(), record.to_owned());
+        let mut shared: Option<&Vec<[u8; 32]>> = None;
+        for mounted in self.mounts.values() {
+            for store in mounted.attachment.stores.borrow().iter() {
+                if store.app_and_home().0 != app {
+                    continue;
+                }
+                let Some(checkout) = store.open_records().into_iter().find(|checkout| {
+                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
+                }) else {
+                    continue;
+                };
+                let heads = mounted.merged.get(&key)?;
+                // A record closed and opened again starts from what its store kept, which may
+                // stand before the heads this mount took in last.
+                let holds = store.read(&checkout.id, |doc| {
+                    heads.iter().all(|head| {
+                        ui::automerge::ReadDoc::get_change_by_hash(
+                            doc,
+                            &ui::automerge::ChangeHash(*head),
+                        )
+                        .is_some()
+                    })
+                });
+                if holds != Some(true) || shared.is_some_and(|shared| shared != heads) {
+                    return None;
+                }
+                shared = Some(heads);
+            }
+        }
+        shared.filter(|heads| !heads.is_empty()).cloned()
     }
 
     /// Whether a mount has `record` of `app` open.
@@ -1283,6 +1400,47 @@ impl Joined {
                     })
             })
         })
+    }
+
+    /// Merge `changes`, what changed of `route` since the heads every mount with it open last took
+    /// it in at ([`Self::merged_heads`]), into those mounts' replicas: the record then stands at
+    /// `heads` in each, and none of them loads the record whole to get there.
+    fn apply_open_changes(
+        &mut self,
+        route: &DocumentRoute,
+        changes: &[u8],
+        heads: &[[u8; 32]],
+        woken: &mut HashSet<u64>,
+    ) -> Result<(), String> {
+        let (app, record) = (route.app_id.clone(), route.record.clone());
+        self.changes.note(&self.uuid, &app, &record, !self.ready);
+        for (&id, mounted) in &mut self.mounts {
+            for store in mounted.attachment.stores.borrow().iter() {
+                if store.app_and_home().0 != app {
+                    continue;
+                }
+                let Some(checkout) = store.open_records().into_iter().find(|checkout| {
+                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
+                }) else {
+                    continue;
+                };
+                let replica = mounted
+                    .records
+                    .entry((app.clone(), record.clone()))
+                    .or_default();
+                if replica.merge(
+                    store,
+                    &checkout,
+                    DocumentMutation::Incremental(changes.to_vec()),
+                )? {
+                    woken.insert(id);
+                }
+                mounted
+                    .merged
+                    .insert((app.clone(), record.clone()), sorted_heads(heads));
+            }
+        }
+        Ok(())
     }
 
     /// Keep `changes`, what changed of `route` since the heads the store held it at
@@ -1413,10 +1571,20 @@ impl Joined {
                         });
                     }
                     let delivered = &mut self.delivered;
+                    let merged = &mut mounted.merged;
                     let replica = mounted.records.entry(key.clone()).or_insert_with(|| {
                         match delivered.remove(&key) {
-                            // The workspace has the record as it delivered it.
-                            Some(heads) => RecordSync::delivered(heads),
+                            // The workspace has the record as it delivered it, and the store the
+                            // mount opened it from holds it there.
+                            Some(heads) => {
+                                merged.insert(
+                                    key.clone(),
+                                    sorted_heads(
+                                        &heads.iter().map(|head| head.0).collect::<Vec<_>>(),
+                                    ),
+                                );
+                                RecordSync::delivered(heads)
+                            }
                             None => RecordSync::new(),
                         }
                     });
@@ -1650,4 +1818,12 @@ pub(crate) fn takes(event: &Event) -> bool {
             | Event::Refused { .. }
             | Event::RecordOpened { .. }
     )
+}
+
+/// `heads` sorted, as a read of a record names the heads it starts from.
+fn sorted_heads(heads: &[[u8; 32]]) -> Vec<[u8; 32]> {
+    let mut heads = heads.to_vec();
+    heads.sort_unstable();
+    heads.dedup();
+    heads
 }

@@ -16,7 +16,7 @@ use ui::automerge::AutoCommit;
 
 use crate::platform::Store;
 use crate::platform::notice::{Notice, Notices, OPEN_ACTION, Place};
-use crate::platform::records::{Changed, Records};
+use crate::platform::records::{Changed, Records, Since};
 
 /// The package this device's told state is kept under: the session's.
 const PACKAGE: &str = "so.tilo.session.mentions";
@@ -63,6 +63,18 @@ pub struct Look<'a> {
 pub struct Held {
     /// Per record (`app` and route), the tags told and still standing.
     told: BTreeMap<(String, String), BTreeSet<String>>,
+    /// Per record, where it was last looked at: what changed since is all a look reads of it.
+    seen: BTreeMap<(String, String), Seen>,
+}
+
+/// Where a record was last looked at.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Seen {
+    /// The heads it stood at.
+    heads: Vec<automerge::ChangeHash>,
+    /// Whether its mentions were read there, or the record was only taken as seen up to them: what
+    /// it held before this device followed it, which is not news and was not read.
+    read: bool,
 }
 
 impl Held {
@@ -170,14 +182,17 @@ impl Held {
     fn encoded(&self) -> serde_json::Map<String, serde_json::Value> {
         self.told
             .iter()
-            .map(|((app, route), tags)| {
+            .map(|(key, tags)| {
+                let seen = self.seen.get(key);
                 (
-                    format!("{app}\t{route}"),
-                    serde_json::Value::Array(
-                        tags.iter()
-                            .map(|tag| serde_json::Value::String(tag.clone()))
-                            .collect(),
-                    ),
+                    format!("{}\t{}", key.0, key.1),
+                    serde_json::json!({
+                        "told": tags,
+                        "heads": seen
+                            .map(|seen| seen.heads.iter().map(ToString::to_string).collect::<Vec<_>>())
+                            .unwrap_or_default(),
+                        "read": seen.is_some_and(|seen| seen.read),
+                    }),
                 )
             })
             .collect()
@@ -189,16 +204,35 @@ impl Held {
             let Some((app, route)) = record.split_once('\t') else {
                 continue;
             };
-            let tags: BTreeSet<String> = tags
+            let key = (app.to_owned(), route.to_owned());
+            let told: BTreeSet<String> = tags["told"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(|tag| Some(tag.as_str()?.to_owned()))
                 .collect();
-            self.told
-                .entry((app.to_owned(), route.to_owned()))
-                .or_default()
-                .extend(tags);
+            // Heads kept in part are no place to follow a record from: without all of them it is
+            // read whole at its next change.
+            let heads: Result<Vec<automerge::ChangeHash>, String> = tags["heads"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|head| {
+                    head.as_str()
+                        .ok_or_else(|| "a head is not a string".to_owned())?
+                        .parse()
+                        .map_err(|error: automerge::ParseChangeHashError| error.to_string())
+                })
+                .collect();
+            let heads = heads.unwrap_or_else(|error| {
+                tracing::warn!(%error, %app, %route, "where a record was looked at is not kept");
+                Vec::new()
+            });
+            if !heads.is_empty() {
+                let read = tags["read"].as_bool().unwrap_or(false);
+                self.seen.insert(key.clone(), Seen { heads, read });
+            }
+            self.told.entry(key).or_default().extend(told);
         }
     }
 }
@@ -307,7 +341,11 @@ impl Mentions {
         let pending = std::mem::take(&mut *self.0.pending.borrow_mut());
         let mut kept = false;
         for changed in pending {
-            let Some(doc) = records.document(&changed.app, &changed.workspace, &changed.record)
+            if let Some(moved) = self.unread(records.as_ref(), &changed) {
+                kept |= moved;
+                continue;
+            }
+            let Some(mut doc) = records.document(&changed.app, &changed.workspace, &changed.record)
             else {
                 continue;
             };
@@ -322,6 +360,8 @@ impl Mentions {
                 .or_else(|| self.known_kind(&changed.app, &changed.workspace))
                 .unwrap_or_default();
             let mut held = self.0.held.borrow_mut();
+            let key = (changed.app.clone(), changed.record.clone());
+            self.read_where_seen(&mut held, &changed, &kind, &mut doc, tree.as_ref());
             // What the workspace held before this device followed the record is not news.
             let quiet = changed.replayed && !held.knows(&changed.app, &changed.record);
             let told = held.look(
@@ -339,8 +379,14 @@ impl Mentions {
                 &self.0.me,
                 &*self.0.name,
             );
+            let heads = doc.get_heads();
+            if heads.is_empty() {
+                held.seen.remove(&key);
+            } else {
+                held.seen.insert(key, Seen { heads, read: true });
+            }
             drop(held);
-            kept |= !told.show.is_empty() || !told.withdraw.is_empty() || quiet;
+            kept = true;
             let Some(notices) = &self.0.notices else {
                 continue;
             };
@@ -354,6 +400,87 @@ impl Mentions {
         if kept {
             self.keep();
         }
+    }
+
+    /// Where `changed`'s record was taken as seen up to some heads and never read, read what it
+    /// held there, quietly: none of it is news when it is read now.
+    fn read_where_seen(
+        &self,
+        held: &mut Held,
+        changed: &Changed,
+        kind: &str,
+        doc: &mut AutoCommit,
+        tree: Option<&AutoCommit>,
+    ) {
+        let key = (changed.app.clone(), changed.record.clone());
+        let Some(heads) = held
+            .seen
+            .get(&key)
+            .filter(|seen| !seen.read)
+            .map(|seen| seen.heads.clone())
+        else {
+            return;
+        };
+        let Ok(before) = doc.fork_at(&heads) else {
+            return;
+        };
+        held.look(
+            &Look {
+                app: &changed.app,
+                record: &changed.record,
+                kind,
+                doc: &before,
+                tree,
+                quiet: true,
+                read: &ui::mentions::reading_nothing,
+            },
+            &self.0.me,
+            &*self.0.name,
+        );
+    }
+
+    /// Whether `changed` needs no reading of its record, and if so whether what is kept moved:
+    /// `None` when the record must be read whole. A record looked at before is read as what
+    /// changed since, and read whole only when that names the person, or takes something away
+    /// where a mention of them stands; one the workspace held before this device followed it is
+    /// taken as seen where it stands. So a large record's changes cost what they hold.
+    fn unread(&self, records: &dyn Records, changed: &Changed) -> Option<bool> {
+        let key = (changed.app.clone(), changed.record.clone());
+        let mut held = self.0.held.borrow_mut();
+        if let Some(seen) = held.seen.get(&key).cloned() {
+            let (heads, bytes) = match records.since(
+                &changed.app,
+                &changed.workspace,
+                &changed.record,
+                &seen.heads,
+            ) {
+                Since::Unchanged => return Some(false),
+                Since::Whole => return None,
+                Since::Changes { heads, bytes } => (heads, bytes),
+            };
+            let touched = ui::mentions::touched_by(&bytes, &self.0.me)?;
+            let standing = held.told.get(&key).is_some_and(|told| !told.is_empty());
+            if touched.names || (touched.removes && standing) || heads.is_empty() {
+                return None;
+            }
+            held.seen.insert(
+                key,
+                Seen {
+                    heads,
+                    read: seen.read,
+                },
+            );
+            return Some(true);
+        }
+        if !changed.replayed || held.knows(&changed.app, &changed.record) {
+            return None;
+        }
+        let heads = records
+            .heads(&changed.app, &changed.workspace, &changed.record)
+            .filter(|heads| !heads.is_empty())?;
+        held.told.entry(key.clone()).or_default();
+        held.seen.insert(key, Seen { heads, read: false });
+        Some(true)
     }
 
     /// The record kind this host knows `app`'s records by, where the record names none itself.

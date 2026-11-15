@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
-use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
+use automerge::AutoCommit;
 use durable_store::{
     Durability, DurableStore, Lease, ReadyWake, Revision, SettleWatch, SharedLease, StorageKey,
     StoreError, Stored, WriteOp,
@@ -347,12 +347,51 @@ impl<T: 'static> Reading<T> {
     }
 }
 
+/// What changed of a record since the heads a reader holds it at, as a host reads it without the
+/// record whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Since {
+    /// It stands where the reader last read it.
+    Unchanged,
+    /// These encoded changes, after which it stands at `heads`.
+    Changes {
+        heads: Vec<automerge::ChangeHash>,
+        bytes: Vec<u8>,
+    },
+    /// Only the record whole answers: the host does not hold the reader's heads, or reads no
+    /// changes apart.
+    Whole,
+}
+
 /// What a host reads of its records.
 pub trait Records {
     /// The records a change reached since this was last taken.
     fn take_changed(&self) -> Vec<Changed>;
     /// The document of `app`'s `record` (a route) in `workspace`, as this host holds it now.
     fn document(&self, app: &str, workspace: &str, record: &str) -> Option<AutoCommit>;
+    /// What changed of `app`'s `record` in `workspace` since `heads`, read without the record
+    /// whole where this host can.
+    fn since(
+        &self,
+        app: &str,
+        workspace: &str,
+        record: &str,
+        heads: &[automerge::ChangeHash],
+    ) -> Since {
+        let _ = (app, workspace, record, heads);
+        Since::Whole
+    }
+    /// The heads `app`'s `record` in `workspace` stands at here, where this host knows them
+    /// without reading the record.
+    fn heads(
+        &self,
+        app: &str,
+        workspace: &str,
+        record: &str,
+    ) -> Option<Vec<automerge::ChangeHash>> {
+        let _ = (app, workspace, record);
+        None
+    }
     /// The kind of the records `app` keeps in `workspace` (`notes.notebook`), empty when unknown.
     fn kind(&self, app: &str, workspace: &str) -> String {
         let _ = (app, workspace);
@@ -423,9 +462,10 @@ fn index_document(store: &dyn DurableStore, app: &str, workspace: &str) -> Optio
     }
     // An app keeping the index appends to it, and this read may land on a tail it has not finished
     // writing: the changes before it are the index as of the last write that completed.
-    AutoCommit::load_with_options(
+    loaded::document(
+        store,
+        &StorageKey::workspace_index(app, workspace),
         &stored.bytes,
-        LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
     )
     .inspect_err(
         |error| tracing::warn!(%error, %app, %workspace, "a workspace's index does not load"),
@@ -474,12 +514,236 @@ fn stored_document(store: &dyn DurableStore, key: &StorageKey) -> Option<AutoCom
     if stored.bytes.is_empty() {
         return None;
     }
-    AutoCommit::load_with_options(
-        &stored.bytes,
-        LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
-    )
-    .inspect_err(|error| tracing::warn!(%error, ?key, "a record does not load"))
-    .ok()
+    loaded::document(store, key, &stored.bytes)
+        .inspect_err(|error| tracing::warn!(%error, ?key, "a record does not load"))
+        .ok()
+}
+
+/// The documents this thread read from the stores, kept loaded.
+///
+/// A record's writers append to what is kept of it, so a document read again is mostly the one
+/// read last with a few changes after it. Loading it whole each time costs the whole record for
+/// every change — a tracker of thousands of issues reloaded for one comment, by every role that
+/// follows the records — so the last load is kept and brought up to date with what was appended
+/// since. A document whose kept bytes are not the ones read last followed by more (rewritten
+/// whole, compacted) loads whole again.
+mod loaded {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use automerge::{AutoCommit, AutomergeError, LoadOptions, OnPartialLoad};
+    use durable_store::{DurableStore, StorageKey};
+
+    /// Below this a document loads faster than it is checked against the one kept.
+    const KEPT_FROM_BYTES: usize = 64 * 1024;
+    /// What the documents kept on one thread may come to, by their bytes: past it the one read
+    /// longest ago is let go.
+    const KEPT_BYTES: usize = 256 * 1024 * 1024;
+
+    struct Kept {
+        /// The bytes it was loaded from: how many, and their digest.
+        len: usize,
+        digest: blake3::Hash,
+        doc: AutoCommit,
+        /// When it was last read, in reads of this thread.
+        used: u64,
+    }
+
+    #[derive(Default)]
+    struct Documents {
+        kept: HashMap<(usize, StorageKey), Kept>,
+        reads: u64,
+    }
+
+    thread_local! {
+        static DOCUMENTS: RefCell<Documents> = RefCell::default();
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        /// How many documents this thread loaded whole.
+        static LOADED_WHOLE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// The document `bytes`, what `store` keeps at `key`, as far as its writer finished writing
+    /// it: brought up from the one read last when `bytes` are its bytes followed by more.
+    pub(super) fn document(
+        store: &dyn DurableStore,
+        key: &StorageKey,
+        bytes: &[u8],
+    ) -> Result<AutoCommit, AutomergeError> {
+        if bytes.len() < KEPT_FROM_BYTES {
+            return whole(bytes);
+        }
+        // The store by its address: a store dropped and another made where it was is told apart by
+        // what it keeps, which is checked below.
+        let at = (std::ptr::from_ref(store).cast::<()>() as usize, key.clone());
+        DOCUMENTS.with(|documents| {
+            let mut documents = documents.borrow_mut();
+            documents.reads = documents.reads.wrapping_add(1);
+            let now = documents.reads;
+            if let Some(kept) = documents.kept.get_mut(&at)
+                && let Some(read) = brought_up(kept, bytes)
+            {
+                kept.used = now;
+                return Ok(read);
+            }
+            documents.kept.remove(&at);
+            #[cfg(test)]
+            LOADED_WHOLE.with(|loaded| loaded.set(loaded.get().saturating_add(1)));
+            // Kept only when it loads whole: a tail still being written is left out of what is
+            // read, and the next read loads it again.
+            let Ok(mut doc) = AutoCommit::load_with_options(
+                bytes,
+                LoadOptions::new().on_partial_load(OnPartialLoad::Error),
+            ) else {
+                return whole(bytes);
+            };
+            if doc.get_missing_deps(&[]).is_empty() {
+                documents.kept.insert(
+                    at,
+                    Kept {
+                        len: bytes.len(),
+                        digest: blake3::hash(bytes),
+                        doc: doc.clone(),
+                        used: now,
+                    },
+                );
+                documents.let_go_past(KEPT_BYTES);
+            }
+            Ok(doc)
+        })
+    }
+
+    /// `kept` brought up to `bytes`, when they are its own bytes followed by more.
+    fn brought_up(kept: &mut Kept, bytes: &[u8]) -> Option<AutoCommit> {
+        let before = bytes.get(..kept.len)?;
+        if blake3::hash(before) != kept.digest {
+            return None;
+        }
+        if let Some(after) = bytes.get(kept.len..).filter(|after| !after.is_empty()) {
+            // A tail still being written does not load: the kept document stands as it was
+            // and the next read tries again.
+            // Read strictly: a load of it would leave a torn change out without saying so.
+            let mut grown = kept.doc.clone();
+            tilo_automerge::ApplyIncoming::load_incoming_whole(&mut grown, after).ok()?;
+            if !grown.get_missing_deps(&[]).is_empty() {
+                return None;
+            }
+            kept.doc = grown;
+            kept.len = bytes.len();
+            kept.digest = blake3::hash(bytes);
+        }
+        Some(kept.doc.clone())
+    }
+
+    impl Documents {
+        /// Let the documents read longest ago go until what is kept comes to `bytes` at most.
+        fn let_go_past(&mut self, bytes: usize) {
+            loop {
+                let total: usize = self.kept.values().map(|kept| kept.len).sum();
+                if total <= bytes {
+                    return;
+                }
+                let Some(oldest) = self
+                    .kept
+                    .iter()
+                    .min_by_key(|(_, kept)| kept.used)
+                    .map(|(at, _)| at.clone())
+                else {
+                    return;
+                };
+                self.kept.remove(&oldest);
+            }
+        }
+    }
+
+    /// `bytes` loaded whole, as far as their writer finished writing them.
+    fn whole(bytes: &[u8]) -> Result<AutoCommit, AutomergeError> {
+        AutoCommit::load_with_options(
+            bytes,
+            LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
+        )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use automerge::transaction::Transactable as _;
+        use automerge::{ROOT, ReadDoc as _};
+        use durable_store::WriteOp;
+
+        fn loaded_whole() -> usize {
+            LOADED_WHOLE.with(std::cell::Cell::get)
+        }
+
+        fn write(store: &durable_store::MemoryStore, key: &StorageKey, op: WriteOp) {
+            let lease = store.lease(key).expect("the key is this test's");
+            store.write(key, op, None).expect("written");
+            drop(lease);
+        }
+
+        fn read(store: &durable_store::MemoryStore, key: &StorageKey) -> AutoCommit {
+            let bytes = store.read(key).unwrap().unwrap().bytes;
+            document(store, key, &bytes).expect("it loads")
+        }
+
+        /// A large record its writer appends to is read as the last read and what was appended,
+        /// never loaded whole again; one rewritten whole, or whose tail is still being written, is
+        /// read as it is.
+        #[test]
+        fn an_appended_record_is_read_from_the_last_read_and_what_was_appended() {
+            let store = durable_store::MemoryStore::new();
+            let key = StorageKey::document("so.tilo.tasks", "workspace", String::from("record"));
+            let mut doc = AutoCommit::new();
+            for at in 0..4_000 {
+                // Text that does not compress, as a tracker's issues' does not.
+                let text = blake3::hash(format!("issue {at}").as_bytes())
+                    .to_hex()
+                    .to_string();
+                doc.put(ROOT, format!("issue-{at}"), text).unwrap();
+            }
+            write(&store, &key, WriteOp::Replace(doc.save()));
+            let before = loaded_whole();
+            assert_eq!(read(&store, &key).length(ROOT), 4_000);
+            assert_eq!(loaded_whole(), before + 1, "the first read loads it");
+
+            for at in 0..20 {
+                doc.put(ROOT, format!("comment-{at}"), "a comment").unwrap();
+                write(&store, &key, WriteOp::Append(doc.save_incremental()));
+                let mut read = read(&store, &key);
+                assert_eq!(read.length(ROOT), 4_001 + at);
+                assert_eq!(read.get_heads(), doc.get_heads());
+            }
+            assert_eq!(
+                loaded_whole(),
+                before + 1,
+                "appends are read from the last read"
+            );
+
+            // A tail still being written is left out, and read once it is whole.
+            doc.put(ROOT, "late", "still being written").unwrap();
+            let tail = doc.save_incremental();
+            let (half, rest) = tail.split_at(tail.len() / 2);
+            write(&store, &key, WriteOp::Append(half.to_vec()));
+            assert!(read(&store, &key).get(ROOT, "late").unwrap().is_none());
+            write(&store, &key, WriteOp::Append(rest.to_vec()));
+            assert!(read(&store, &key).get(ROOT, "late").unwrap().is_some());
+
+            // Rewritten whole, as a compaction does: what it holds now, loaded whole.
+            let mut other = AutoCommit::new();
+            for at in 0..4_000 {
+                let text = blake3::hash(format!("note {at}").as_bytes())
+                    .to_hex()
+                    .to_string();
+                other.put(ROOT, format!("note-{at}"), text).unwrap();
+            }
+            write(&store, &key, WriteOp::Replace(other.save()));
+            let read = read(&store, &key);
+            assert!(read.get(ROOT, "issue-0").unwrap().is_none());
+            assert!(read.get(ROOT, "note-0").unwrap().is_some());
+        }
+    }
 }
 
 /// `store` as the workspaces' records are kept in it, noting every record and index written

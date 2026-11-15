@@ -23,7 +23,7 @@ use std::rc::Rc;
 
 use durable_store::MemoryStore;
 use tilo_relay_protocol::workspaces::WorkspacesRequest;
-use tilo_session::platform::records::Changes;
+use tilo_session::platform::records::{Changes, Since};
 use ui::automerge::AutoCommit;
 use ui::record::RecordStore;
 
@@ -85,6 +85,10 @@ pub(crate) struct Replicated {
     pub(crate) changes: fn() -> Changes,
     /// A record as the page holds it now.
     pub(crate) record_document: fn(u32, &str, &str) -> Option<AutoCommit>,
+    /// What changed of a record since the heads a reader holds it at, read without it whole.
+    pub(crate) record_since: fn(u32, &str, &str, &[ui::automerge::ChangeHash]) -> Since,
+    /// The heads the workspace last delivered a record at, as the page took it in.
+    pub(crate) record_heads: fn(u32, &str, &str) -> Option<Vec<ui::automerge::ChangeHash>>,
     /// The content store a mount lends its windows: its workspace's.
     pub(crate) content: fn(u32) -> Option<tilo_content::ContentStore>,
     /// The workspace's answer whether the person may change `node`.
@@ -164,6 +168,27 @@ pub(crate) fn changes() -> Changes {
 pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
     installed(None, |replicated| {
         (replicated.record_document)(id, app, record)
+    })
+}
+
+pub(crate) fn record_since(
+    id: u32,
+    app: &str,
+    record: &str,
+    heads: &[ui::automerge::ChangeHash],
+) -> Since {
+    installed(Since::Whole, |replicated| {
+        (replicated.record_since)(id, app, record, heads)
+    })
+}
+
+pub(crate) fn record_heads(
+    id: u32,
+    app: &str,
+    record: &str,
+) -> Option<Vec<ui::automerge::ChangeHash>> {
+    installed(None, |replicated| {
+        (replicated.record_heads)(id, app, record)
     })
 }
 

@@ -606,6 +606,11 @@ impl Engine {
         let Some(held) = self.own_writes(workspace, app, record) else {
             return self.read_replica(workspace, (app, record), holding, maximum);
         };
+        if let Some(reading) =
+            self.read_own_since(workspace, (app, record), holding, maximum, &held)?
+        {
+            return Ok(reading);
+        }
         // This device's own writes the replica has not taken in yet read over what it holds.
         let base = match self.read_replica(workspace, (app, record), Holding::default(), maximum) {
             Ok(RecordReading::Captured { bytes, .. }) => Some(bytes),
@@ -625,6 +630,65 @@ impl Engine {
             heads,
             bytes,
         })
+    }
+
+    /// [`Self::read_record`] of a record this device wrote to and its replica has not taken in yet
+    /// (`held`), for a reader `holding` heads of an earlier read: what the replica changed since what
+    /// the reader holds of it, then those of the writes the reader lacks, so a record that
+    /// changes while this device's writes wait is never read whole. `None` where only a whole read
+    /// answers: the reader holds no heads, or one the replica and the writes do not, or a write
+    /// carries the record whole.
+    fn read_own_since(
+        &self,
+        workspace: &str,
+        route: (&str, &str),
+        holding: Holding<'_>,
+        maximum: usize,
+        held: &[Vec<u8>],
+    ) -> Result<Option<RecordReading>, String> {
+        if holding.heads.is_empty() {
+            return Ok(None);
+        }
+        let author = self.identity.device_cert.device_public_key;
+        let Ok(Some(own)) = tilo_peer_state::document_frame::own_changes(author, held) else {
+            return Ok(None);
+        };
+        let mut failed = None;
+        let read = tilo_peer_state::document_frame::read_after_own(holding.heads, &own, |base| {
+            let replica = self.read_replica(
+                workspace,
+                route,
+                Holding {
+                    revision: Some(tilo_peer_state::owner::revision_of_heads(base)),
+                    heads: base,
+                },
+                maximum,
+            );
+            match replica {
+                Ok(RecordReading::Changes { bytes, heads, .. }) => Some((bytes, heads)),
+                Ok(RecordReading::Unchanged(_)) => Some((Vec::new(), base.to_vec())),
+                Ok(RecordReading::Captured { .. } | RecordReading::Pending) => None,
+                Err(error) => {
+                    failed = Some(error);
+                    None
+                }
+            }
+        });
+        if let Some(error) = failed {
+            return Err(error);
+        }
+        let Some((bytes, heads)) = read.filter(|(bytes, _)| bytes.len() <= maximum) else {
+            return Ok(None);
+        };
+        let revision = tilo_peer_state::owner::revision_of_heads(&heads);
+        if bytes.is_empty() && heads.as_slice() == holding.heads {
+            return Ok(Some(RecordReading::Unchanged(revision)));
+        }
+        Ok(Some(RecordReading::Changes {
+            revision,
+            heads,
+            bytes,
+        }))
     }
 
     /// The revision `workspace`'s `app`'s `record` stands at for the reader this device is,

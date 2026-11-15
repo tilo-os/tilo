@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tilo_actions::remote::{ActionHost as _, InvokeArgument, InvokeRequest};
 use tilo_session::mentions::Mentions;
 use tilo_session::platform::notice::{Place, open_target};
-use tilo_session::platform::records::{Changed, Changes, Records};
+use tilo_session::platform::records::{Changed, Changes, Records, Since};
 use ui::automerge::AutoCommit;
 
 use super::Desktop;
@@ -37,6 +37,25 @@ impl Records for Taken {
 
     fn document(&self, app: &str, _workspace: &str, record: &str) -> Option<AutoCommit> {
         crate::replicated::record_document(self.peer, app, record)
+    }
+
+    fn since(
+        &self,
+        app: &str,
+        _workspace: &str,
+        record: &str,
+        heads: &[ui::automerge::ChangeHash],
+    ) -> Since {
+        crate::replicated::record_since(self.peer, app, record, heads)
+    }
+
+    fn heads(
+        &self,
+        app: &str,
+        _workspace: &str,
+        record: &str,
+    ) -> Option<Vec<ui::automerge::ChangeHash>> {
+        crate::replicated::record_heads(self.peer, app, record)
     }
 
     fn kind(&self, app: &str, _workspace: &str) -> String {

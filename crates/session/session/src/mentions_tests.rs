@@ -521,3 +521,222 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
         }
     );
 }
+
+/// A device's records as a page reads them: what changed of a record since some heads, apart from
+/// the record, and every whole read counted.
+struct Counted {
+    linked: crate::platform::records::Linked,
+    store: Store,
+    whole: std::cell::Cell<usize>,
+}
+
+impl Records for Counted {
+    fn take_changed(&self) -> Vec<Changed> {
+        self.linked.take_changed()
+    }
+
+    fn document(&self, app: &str, workspace: &str, record: &str) -> Option<AutoCommit> {
+        self.whole.set(self.whole.get().saturating_add(1));
+        self.linked.document(app, workspace, record)
+    }
+
+    fn since(
+        &self,
+        app: &str,
+        workspace: &str,
+        record: &str,
+        heads: &[automerge::ChangeHash],
+    ) -> Since {
+        // The host's own copy: what the page's replica answers from, never the reader's.
+        let Some(mut doc) =
+            crate::platform::records::document(self.store.as_ref(), app, workspace, record)
+        else {
+            return Since::Whole;
+        };
+        if heads
+            .iter()
+            .any(|head| doc.get_change_by_hash(head).is_none())
+        {
+            return Since::Whole;
+        }
+        let now = doc.get_heads();
+        if now == heads {
+            return Since::Unchanged;
+        }
+        let bytes = doc
+            .get_changes(heads)
+            .iter()
+            .flat_map(|change| change.raw_bytes().to_vec())
+            .collect();
+        Since::Changes { heads: now, bytes }
+    }
+
+    fn heads(
+        &self,
+        app: &str,
+        workspace: &str,
+        record: &str,
+    ) -> Option<Vec<automerge::ChangeHash>> {
+        crate::platform::records::document(self.store.as_ref(), app, workspace, record)
+            .map(|mut doc| doc.get_heads())
+    }
+}
+
+/// A tracker of `issues` issues, each with a thread of comments as text, as the workspace held it
+/// before this device followed it; issue 7's thread mentions Bea.
+fn tracker(issues: usize) -> AutoCommit {
+    let mut doc = AutoCommit::new();
+    ui::record::init(
+        &mut doc,
+        &RecordId::parse(TRACKER).unwrap(),
+        &RecordKind::new("tasks.tracker"),
+        "workspace",
+    );
+    let all = doc.put_object(ROOT, "issues", ObjType::Map).unwrap();
+    for at in 0..issues {
+        let entry = doc
+            .put_object(&all, format!("i{at}"), ObjType::Map)
+            .unwrap();
+        doc.put(&entry, "k", format!("{at:06}")).unwrap();
+        let issue = doc.put_object(&entry, "v", ObjType::Map).unwrap();
+        doc.put(&issue, "title", format!("Issue {at}")).unwrap();
+        let thread = doc.put_object(&issue, "thread", ObjType::Text).unwrap();
+        doc.splice_text(&thread, 0, 0, "@Bea first look\n").unwrap();
+        if at == 7 {
+            doc.mark(&thread, Mark::new(MARK.into(), BEA, 0, 4), ExpandMark::None)
+                .unwrap();
+        }
+    }
+    doc.commit();
+    doc
+}
+
+const TRACKER: &str = "tab:00000000000000b2";
+const TASKS: &str = "so.tilo.tasks";
+
+/// The thread of issue `at` in `doc`.
+fn thread(doc: &AutoCommit, at: usize) -> ObjId {
+    let (_, all) = doc.get(ROOT, "issues").unwrap().unwrap();
+    let (_, entry) = doc.get(&all, format!("i{at}")).unwrap().unwrap();
+    let (_, issue) = doc.get(&entry, "v").unwrap().unwrap();
+    doc.get(&issue, "thread").unwrap().unwrap().1
+}
+
+/// A comment added to issue `at`'s thread, mentioning `person` when given, written as Tasks
+/// writes it and noted as it lands.
+fn comment(device: &Device, doc: &mut AutoCommit, at: usize, person: Option<&str>) {
+    let thread = thread(doc, at);
+    let end = doc.text(&thread).unwrap().chars().count();
+    doc.splice_text(&thread, end, 0, "@Bea see this\n").unwrap();
+    if let Some(person) = person {
+        doc.mark(
+            &thread,
+            Mark::new(MARK.into(), person, end, end.saturating_add(4)),
+            ExpandMark::None,
+        )
+        .unwrap();
+    }
+    doc.commit();
+    device.writes(TASKS, TRACKER, doc);
+}
+
+/// A record the size of a company's tracker is followed for the person's mentions at the cost of
+/// what changes in it: what the workspace held before is taken as seen without reading it, a
+/// change that names nobody here reads nothing of the record, and only the change that mentions
+/// the person reads it whole, telling that mention and none from before.
+#[test]
+fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
+    let issues = 2_500;
+    let device = Device::empty();
+    let mut doc = tracker(issues);
+    device.already_held(TASKS, TRACKER, &mut doc);
+    let shown = Rc::new(Shown::default());
+    let records = Rc::new(Counted {
+        linked: crate::platform::records::Linked::over(
+            device.store.clone(),
+            device.changes.clone(),
+        ),
+        store: device.store.clone(),
+        whole: std::cell::Cell::new(0),
+    });
+    let mentions = Mentions::over(Given {
+        person: vec![BEA.to_owned()],
+        store: Some(device.store.clone()),
+        records: Some(Rc::clone(&records) as Rc<dyn Records>),
+        notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
+        name: Rc::new(name),
+        wake: None,
+    });
+    // Each look a second after the one before, past the pause the role keeps between looks.
+    let clock = std::cell::Cell::new(ui::time::now());
+    let look = |mentions: &Mentions| {
+        clock.set(
+            clock
+                .get()
+                .checked_add(ui::time::Duration::from_secs(1))
+                .unwrap(),
+        );
+        mentions.step_at(clock.get());
+    };
+    look(&mentions);
+    assert_eq!(
+        records.whole.get(),
+        0,
+        "what the workspace held is not read"
+    );
+    assert!(shown.up.borrow().is_empty(), "and none of it is news");
+
+    // A busy afternoon in the tracker, mentioning everyone but Bea.
+    let began = std::time::Instant::now();
+    for at in 0..50 {
+        comment(&device, &mut doc, at * 37 % issues, Some(CAI));
+        look(&mentions);
+    }
+    assert_eq!(
+        records.whole.get(),
+        0,
+        "a change that names nobody here reads nothing of the record"
+    );
+    assert!(shown.up.borrow().is_empty());
+    eprintln!(
+        "50 changes of a {issues}-issue tracker followed in {:?}",
+        began.elapsed()
+    );
+
+    // Ada mentions Bea on issue 9: that alone is news, not issue 7's mention from before.
+    comment(&device, &mut doc, 9, Some(BEA));
+    look(&mentions);
+    assert_eq!(
+        records.whole.get(),
+        1,
+        "the change that mentions Bea reads the record"
+    );
+    let up = shown.up.borrow();
+    assert_eq!(up.len(), 1, "{up:?}");
+    let place = up
+        .values()
+        .next()
+        .unwrap()
+        .place
+        .clone()
+        .expect("it opens what it names");
+    assert_eq!(place.resource, "tasks.tracker/issues/i9", "{up:?}");
+    drop(up);
+
+    // After a restart the record is followed from where it was looked at last.
+    let again = Mentions::over(Given {
+        person: vec![BEA.to_owned()],
+        store: Some(device.store.clone()),
+        records: Some(Rc::clone(&records) as Rc<dyn Records>),
+        notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
+        name: Rc::new(name),
+        wake: None,
+    });
+    comment(&device, &mut doc, 11, None);
+    look(&again);
+    assert_eq!(
+        records.whole.get(),
+        1,
+        "nothing is read again after a restart"
+    );
+}
