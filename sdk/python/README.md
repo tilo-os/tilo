@@ -50,7 +50,10 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
   extension, reaching the host the key file names as a device of the person.
 - **Account and workspaces.** `GET /v1/workspaces` lists what the key reaches,
   `POST /v1/workspaces` makes one, `DELETE /v1/workspaces/{id}` deletes one
-  with everything in it. `GET /v1/account` is the person's plan and what each
+  with everything in it. `POST /v1/workspaces/{id}/branches` branches one:
+  `await tilo.workspaces.branch(template, "Acme")` answers a new workspace of
+  the person's own that starts with everything `template` holds and goes on
+  apart from it. `GET /v1/account` is the person's plan and what each
   workspace keeps.
 - **Actions are invocations.** `await ws.do("notes/Todo#append-paragraph",
   text="Buy milk")` answers the result, or a `Run` if the host has not

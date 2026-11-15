@@ -165,6 +165,11 @@ read them: nobody you invite into the workspace sees them, and a key minted for 
 Passing your customer's id as the create's idempotency key makes the create safe to repeat: asked again,
 after a timeout or a crash, it answers the workspace the first one made instead of making a second.
 
+To start each customer from a workspace you set up once, branch that one instead of creating an empty
+one: `tilo.workspaces.branch(template, name, labels=..., idempotency_key=...)` takes the same labels and
+idempotency key, and the customer's workspace starts with everything the template holds and goes on apart
+from it ([branch a workspace](../tilo-sh/workspaces.md#branch-a-workspace)).
+
 ```python example=customer-labels
 from tilo import Tilo
 
@@ -336,6 +341,7 @@ A key the host turns away says why: `KeyRevoked`, `KeyExpired` (a minted key pas
 
 ```sh
 tilo account workspaces create "Applicant: Jane Doe"
+tilo account workspaces branch "Onboarding template" "Applicant: Amir Haddad"   # or start from one set up once
 tilo files put passport.png -w applicant-jane-doe
 tilo -w applicant-jane-doe do pdf-viewer#import-pdf-content content=tilo.content:… name=application.pdf
 tilo -w applicant-jane-doe do pdf-viewer/application.pdf#read-form-fields
@@ -350,8 +356,9 @@ tilo account workspaces rm applicant-jane-doe   # when the customer leaves
 
 ## What is underneath
 
-Making and deleting workspaces and minting keys are the account's
-(`POST /v1/workspaces`, `DELETE /v1/workspaces/<workspace>`, `POST /v1/keys`), inviting is the
+Making, branching and deleting workspaces and minting keys are the account's
+(`POST /v1/workspaces`, `POST /v1/workspaces/<workspace>/branches`, `DELETE /v1/workspaces/<workspace>`,
+`POST /v1/keys`), inviting is the
 workspace's own (`POST /v1/workspaces/<workspace>/members/invitations`), and everything in a
 workspace is a resource under `/v1/workspaces/<workspace>/resources/...`. A minted key is a
 certificate your key signed, narrower than it: the
@@ -359,6 +366,6 @@ hosts and the runtime check it like any other device of yours, and it ends when 
 ([design](../architecture/workspace-api.md)).
 
 Every one of these is also an MCP call an agent makes (`account/workspaces#create`,
-`account/keys#mint`, `workspace/members#invite`), answered typed: one API, two ways to say it
+`account/workspaces#branch`, `account/keys#mint`, `workspace/members#invite`), answered typed: one API, two ways to say it
 ([`api.md`](api.md)). A file's bytes go up in one request before an app takes the reference
 ([files](../tilo-sh/files.md)).

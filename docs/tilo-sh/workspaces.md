@@ -65,6 +65,70 @@ tilo account workspaces rm applicant-jane-doe   # {"deleted": …, "revoked_keys
 Only a key that reaches all your workspaces deletes, and only workspaces of your own: one you were
 invited into, or one already deleted, answers `not_found` ([errors](errors.md)).
 
+## Branch a workspace
+
+A branch is a new workspace of your own that starts with everything one of yours holds: its records,
+with their history, and the files they name. From then on the two go apart, and nothing merges back.
+What is tied to people stays behind: the conversations in Chat, each person's own places, and the
+members. You are the branch's only member. The source's labels stay behind too; give the branch its own.
+
+So set a workspace up once, then branch it for each task or each customer:
+
+```sh
+tilo account workspaces branch "Onboarding template" "Onboarding: Acme" --label customer_id=cus_8121
+```
+
+```python example=branch-workspace
+from tilo import Tilo
+
+tilo = Tilo()
+
+# Set a workspace up once.
+template = tilo.workspace(tilo.workspaces.create("Onboarding template").id)
+template.do("snippets#new-snippet", title="Welcome letter")
+
+# Branch it for a customer: the branch holds what the template holds.
+branch = tilo.workspaces.branch(template, "Onboarding: Acme", labels={"customer_id": "cus_8121"})
+acme = tilo.workspace(branch.id)
+letter = acme.read("snippets/Welcome letter")
+print("branch:", branch.name, "holds:", letter.fields["title"])
+
+# Change the branch: the template stays as it was.
+letter.favorite = True
+print("favorite in the branch:", acme.read("snippets/Welcome letter").fields["favorite"])
+print("favorite in the template:", template.read("snippets/Welcome letter").fields["favorite"])
+```
+
+```typescript example=branch-workspace
+import { Tilo } from "tilo-sdk";
+
+const tilo = new Tilo();
+
+// Set a workspace up once.
+const template = tilo.workspace((await tilo.workspaces.create("Onboarding template")).id);
+await template.do("snippets#new-snippet", { title: "Welcome letter" });
+
+// Branch it for a customer: the branch holds what the template holds.
+const branch = await tilo.workspaces.branch(template, "Onboarding: Acme", {
+  labels: { customer_id: "cus_8121" },
+});
+const acme = tilo.workspace(branch.id);
+const letter = await acme.read("snippets/Welcome letter");
+console.log("branch:", branch.name, "holds:", letter.fields.title);
+
+// Change the branch: the template stays as it was.
+await letter.edit(["favorite"], true);
+console.log("favorite in the branch:", (await acme.read("snippets/Welcome letter")).fields.favorite);
+console.log("favorite in the template:", (await template.read("snippets/Welcome letter")).fields.favorite);
+```
+
+A workspace also branches itself: `workspace.branch("Onboarding: Acme")`. A key for the branch is minted
+as for any workspace ([keys](identities.md)); it reaches the branch and not the workspace it came from.
+Only a key that reaches all your workspaces branches, and only workspaces of your own: a key for one
+workspace is refused with `not_permitted`, and one you were invited into answers `not_found`. A branch
+that could not take everything is removed again, and the error names what did not come. As with
+making one, the same idempotency key answers the same branch.
+
 ## People in a workspace
 
 Inviting someone answers a link. Following it signs them in and lands them in the workspace as that role.

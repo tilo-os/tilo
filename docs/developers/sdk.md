@@ -23,7 +23,8 @@ packages will publish as).
 
 The CLI calls [`/v1`](api.md): `POST
 /v1/workspaces/<workspace>/resources/<path>/actions/<action>` for an action,
-`POST /v1/workspaces` for one more workspace. It reaches the API through an
+`POST /v1/workspaces` for one more workspace,
+`POST /v1/workspaces/<workspace>/branches` for a branch of one. It reaches the API through an
 API server with `TILO_API_KEY`, or with no server at all: as this computer's
 own key, in process (`tilo keys export` writes that key as a file, which
 `tilo --key-file` acts with and which holds nothing but the key, its
@@ -31,7 +32,8 @@ certificate and the host it reaches).
 
 Every resource has a **path**, `app/resource#action`, as MCP's `tilo_do` takes it:
 `pdf-viewer/application.pdf#read-form-fields`. The account is a resource too:
-`account/workspaces#create`, `account/keys#mint`. Creating workspaces and minting keys are
+`account/workspaces#create`, `account/workspaces#branch`, `account/keys#mint`. Creating and
+branching workspaces and minting keys are
 ordinary actions, so they appear in the action list, go through the same permission checks,
 and land in history like any other action.
 
