@@ -173,7 +173,8 @@ impl ListRowFace<'_> {
             .text_block(text, &m)
             .max(leading_h)
             .max(value)
-            .max(fact_avatar);
+            .max(fact_avatar)
+            .max(self.author_extent(&m, text, theme).map_or(0.0, |(_, height)| height));
         if let Some(height) = self.row_height {
             return held.max(height).max(self.min_target).ceil();
         }
@@ -206,6 +207,7 @@ impl ListRowFace<'_> {
         self.meta.is_some()
             || !self.meta_spans.is_empty()
             || self.avatar.is_some()
+            || self.author.is_some()
             || self.count.is_some()
             || self.marks.iter().flatten().next().is_some()
             || self.value.is_some()
@@ -227,6 +229,7 @@ impl ListRowFace<'_> {
             .map_or(0.0, |_| f64::from(BadgeFace::height(theme)));
         RowMetrics::line(text, &m.meta)
             .max(self.fact_avatar(theme).unwrap_or(0.0))
+            .max(self.author_extent(m, text, theme).map_or(0.0, |(_, height)| height))
             .max(count)
             .max(m.mark)
             .max(value)
@@ -282,9 +285,38 @@ impl ListRowFace<'_> {
     /// The side of the avatar in the facts column, where the row shows one: the inline
     /// size, as a fact's line is.
     pub(super) fn fact_avatar(&self, theme: &Theme) -> Option<f64> {
-        self.avatar
-            .is_some()
+        (self.avatar.is_some() || self.author.is_some())
             .then(|| RowMetrics::avatar(theme, false))
+    }
+
+    /// The author cell's natural width and height, when the row shows who made it: the
+    /// person's face and name, and the writer's chip after them
+    /// ([`ListRow::author_cell`]).
+    pub(super) fn author_extent(
+        &self,
+        m: &RowMetrics,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<(f64, f64)> {
+        let author = self.author?;
+        let face = RowMetrics::avatar(theme, false);
+        let name = f64::from(text.measure_style(author.person, None, &m.author).0);
+        let chip = author.writer.map_or(0.0, |writer| {
+            crate::widget::ChipFace::intrinsic_width(
+                writer.label,
+                crate::widget::ChipLead::Agent(theme.tokens.colors.presence.hue(writer.hue)),
+                false,
+                text,
+                theme,
+            )
+        });
+        let mut width = face + m.column_gap + name;
+        let mut height = face;
+        if chip > 0.0 {
+            width += m.tag_gap + chip;
+            height = height.max(crate::widget::ChipFace::height(theme));
+        }
+        Some((width, height))
     }
 
     /// The width of the marks' run, the gaps between them included.
@@ -398,20 +430,41 @@ impl ListRowFace<'_> {
             geo.count_right = Some(right);
             right -= pill + m.column_gap;
         }
-        if let Some(side) = self.fact_avatar(theme) {
-            geo.avatar = Some(Rect::new(
-                right - side,
-                cy - side / 2.0,
-                right,
-                cy + side / 2.0,
-            ));
-            right -= side + m.column_gap;
-        }
-        geo.meta_right = right;
-        let meta_w = self.meta_width(m, text, ((right - left).max(0.0)) / 2.0);
-        geo.meta_left = right - meta_w;
-        if meta_w > 0.0 {
-            right -= meta_w + m.column_gap;
+        if self.author.is_some() {
+            // Who made it, as one cell: the person's face and name, the writer's chip
+            // after them. It takes the place of the face and the meta, which would
+            // otherwise say only the writer's name.
+            if let Some((natural, height)) = self.author_extent(m, text, theme) {
+                let cap = ((right - left).max(0.0)) / 2.0;
+                let width = natural.min(cap);
+                geo.author = Some(Rect::new(
+                    right - width,
+                    cy - height / 2.0,
+                    right,
+                    cy + height / 2.0,
+                ));
+                if width > 0.0 {
+                    right -= width + m.column_gap;
+                }
+            }
+            geo.meta_right = right;
+            geo.meta_left = right;
+        } else {
+            if let Some(side) = self.fact_avatar(theme) {
+                geo.avatar = Some(Rect::new(
+                    right - side,
+                    cy - side / 2.0,
+                    right,
+                    cy + side / 2.0,
+                ));
+                right -= side + m.column_gap;
+            }
+            geo.meta_right = right;
+            let meta_w = self.meta_width(m, text, ((right - left).max(0.0)) / 2.0);
+            geo.meta_left = right - meta_w;
+            if meta_w > 0.0 {
+                right -= meta_w + m.column_gap;
+            }
         }
         geo.text_right = right;
         geo.title_right = right;

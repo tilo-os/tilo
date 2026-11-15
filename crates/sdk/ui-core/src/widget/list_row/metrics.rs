@@ -19,6 +19,9 @@ pub(super) struct RowMetrics {
     pub(super) subtitle: TextStyle,
     pub(super) secondary: TextStyle,
     pub(super) meta: TextStyle,
+    /// The name an author cell gives the person, beside their face: a caption, in the
+    /// person's own ink, never the figures' tabular style.
+    pub(super) author: TextStyle,
     pub(super) badge: TextStyle,
     pub(super) value_body: TextStyle,
     pub(super) value_title: TextStyle,
@@ -46,6 +49,7 @@ impl RowMetrics {
             subtitle: theme.text(TextRole::Body),
             secondary: theme.text(TextRole::Caption),
             meta: theme.text(TextRole::Caption).numeric(),
+            author: theme.text(TextRole::Caption),
             badge: theme.text(TextRole::Caption).strong(),
             value_body: theme.text(TextRole::Body).numeric(),
             value_title: theme.text(TextRole::Title).numeric(),

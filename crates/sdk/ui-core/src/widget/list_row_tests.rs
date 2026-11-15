@@ -2038,3 +2038,56 @@ fn a_row_holds_the_name_and_description_of_the_control_it_carries() {
     assert_eq!(Widget::accessibility_child_name(&plain, 1), None);
     assert_eq!(Widget::accessibility_child_description(&plain, 1), None);
 }
+
+#[test]
+fn an_author_cell_holds_the_person_and_the_writer_beside_them() {
+    let face = ListRowFace::new("terms.txt")
+        .meta("Edited")
+        .author(RowAuthor {
+            person: "Ada",
+            identity: "ada@example.com",
+            image: None,
+            writer: Some(RowWriter {
+                label: "Claude Code",
+                hue: PresenceHue::Violet,
+            }),
+        });
+    let rect = Rect::new(0.0, 0.0, 520.0, 36.0);
+    let placed = geometry(&face, rect);
+    let slot = placed
+        .author
+        .expect("the author cell has a slot of its own");
+    assert!(
+        slot.width() > 100.0,
+        "the cell holds the person and the writer: {slot:?}"
+    );
+    assert!(
+        slot.x1 <= rect.x1,
+        "the cell stays inside the row: {slot:?}"
+    );
+    assert!(
+        placed.avatar.is_none(),
+        "the cell is the face, never a second one beside it"
+    );
+    assert!(
+        placed.text_right < slot.x0,
+        "the title ends before the cell: text to {}, cell at {}",
+        placed.text_right,
+        slot.x0
+    );
+
+    // The writer's chip makes the cell wider than the person alone.
+    let alone = ListRowFace::new("terms.txt").author(RowAuthor {
+        person: "Ada",
+        identity: "ada@example.com",
+        image: None,
+        writer: None,
+    });
+    let mine = geometry(&alone, rect)
+        .author
+        .expect("a person alone still has the cell");
+    assert!(
+        mine.width() < slot.width(),
+        "the writer's chip adds width: {mine:?} against {slot:?}"
+    );
+}

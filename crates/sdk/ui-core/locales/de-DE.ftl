@@ -820,6 +820,8 @@ author-persona-suffix = { $name }, über { $service }
 history-writer-agent = Externer Agent
 history-writer-app = App
 history-writer-program = Programm
+author-spoken-writer = { $person }, mit { $writer }
+author-spoken-device = { $who }, auf { $device }
 
 # Das Eingabefeld eines Kontextmenüs: Tippen schränkt seine Einträge ein, und
 # seine Senden-Zeile übernimmt das Getippte in die Sendebox neben dem Menü.

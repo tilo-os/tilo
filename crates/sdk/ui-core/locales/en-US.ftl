@@ -829,6 +829,8 @@ author-persona-suffix = { $name }, via { $service }
 history-writer-agent = External agent
 history-writer-app = App
 history-writer-program = Program
+author-spoken-writer = { $person }, with { $writer }
+author-spoken-device = { $who }, on { $device }
 
 # A context menu's query field: typing narrows its entries, and its send row
 # carries the typing into the send-to box that opens beside the menu.

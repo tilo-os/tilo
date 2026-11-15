@@ -142,6 +142,38 @@ pub fn author_parts(author: &HistoryAuthor) -> AuthorParts {
     }
 }
 
+/// What a reader hears of an author cell, as one description built from its fields:
+/// the person, then what wrote for them, then the computer whose session vouched for
+/// it. Never a label joined from names.
+#[must_use]
+pub fn author_spoken(parts: &AuthorParts) -> String {
+    let mut spoken = parts.person.clone();
+    if let Some(writer) = parts
+        .writer
+        .as_deref()
+        .filter(|writer| !writer.trim().is_empty())
+    {
+        spoken = crate::i18n::widget_format(
+            "author-spoken-writer",
+            &[
+                ("person", spoken.into()),
+                ("writer", writer.to_owned().into()),
+            ],
+        );
+    }
+    if let Some(device) = parts
+        .device
+        .as_deref()
+        .filter(|device| !device.trim().is_empty())
+    {
+        spoken = crate::i18n::widget_format(
+            "author-spoken-device",
+            &[("who", spoken.into()), ("device", device.to_owned().into())],
+        );
+    }
+    spoken
+}
+
 /// The hover that names what wrote an attributed change, field by field:
 /// "External agent · Claude Code · ‘Prepare the report’ · Kaiserslautern · /Reports".
 /// `None` for a change with no recorded writer, whose row names a person.

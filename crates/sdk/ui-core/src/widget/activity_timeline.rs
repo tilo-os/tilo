@@ -3,7 +3,7 @@
 use crate::i18n::{widget_format, widget_text};
 use crate::num::f64_of_usize;
 use crate::time::SystemTime;
-use crate::widget::ModelPath;
+use crate::widget::{ChipLead, ModelPath};
 use std::collections::{HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
@@ -1157,43 +1157,37 @@ impl ActivityTimeline {
     }
 
     /// The chip naming what wrote an attributed change: an agent tool, an app
-    /// or a program, beside the person whose avatar the row wears.
+    /// or a program, beside the person whose avatar the row wears. An agent's
+    /// chip wears the agent mark in its own hue, the mark it shows wherever it
+    /// writes; an app's and a program's wear their name alone.
     fn writer_chip(
         entry: &HistoryEntry,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-    ) -> Option<(String, f64)> {
+    ) -> Option<(String, f64, ChipLead)> {
         // An agent's own device writes under the agent's name; an attributed
         // session names its tool. Either way the chip is the software's own.
         let label = crate::history_source::sentence::writer_badge(&entry.author).or_else(|| {
             (entry.author.relation == crate::widget::history::AuthorRelation::Software)
                 .then(|| entry.author.name.clone())
         })?;
-        let width = crate::widget::ChipFace::intrinsic_width(
-            &label,
-            crate::widget::ChipLead::None,
-            false,
-            text_renderer,
-            theme,
-        );
-        (width > 0.0).then_some((label, width))
+        let lead = writer_lead(entry, &label, theme);
+        let width = crate::widget::ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);
+        (width > 0.0).then_some((label, width, lead))
     }
 
     fn bot_chip(
         entry: &HistoryEntry,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-    ) -> Option<(String, f64)> {
+    ) -> Option<(String, f64, ChipLead)> {
         is_bot_author(&entry.author).then(|| {
             let label = crate::i18n::widget_format("author-bot-chip", &[]);
+            let lead = ChipLead::None;
             let width = crate::widget::ChipFace::intrinsic_width(
-                &label,
-                crate::widget::ChipLead::None,
-                false,
-                text_renderer,
-                theme,
+                &label, lead, false, text_renderer, theme,
             );
-            (label, width)
+            (label, width, lead)
         })
     }
 
@@ -2175,6 +2169,29 @@ impl DaySection {
     }
 }
 
+/// The mark a writer's chip wears: the agent mark in the hue the agent writes in
+/// everywhere, for an agent that wrote for the person — through a session, or with
+/// its own device. An app or a program writes under its own name, without a mark.
+fn writer_lead(entry: &HistoryEntry, label: &str, theme: &Theme) -> ChipLead {
+    let agent = match entry.author.attribution.as_ref() {
+        Some(attribution) => matches!(
+            attribution.writer.as_ref(),
+            Some(fs_protocol::AttributedWriter::Agent { .. })
+        ),
+        None => entry.author.relation == crate::widget::history::AuthorRelation::Software,
+    };
+    if !agent {
+        return ChipLead::None;
+    }
+    ChipLead::Agent(
+        theme
+            .tokens
+            .colors
+            .presence
+            .hue(crate::tokens::PresenceHue::of_agent(label)),
+    )
+}
+
 fn civil_day(ts: SystemTime) -> i64 {
     const DAY: u64 = 86_400;
     match ts.duration_since(SystemTime::UNIX_EPOCH) {
@@ -2263,7 +2280,7 @@ impl ActivityTimeline {
         } else {
             Self::bot_chip(entry, ctx.text, ctx.theme)
                 .or_else(|| Self::writer_chip(entry, ctx.text, ctx.theme))
-                .map_or(0.0, |(_, width)| width + 6.0)
+                .map_or(0.0, |(_, width, _)| width + 6.0)
         };
         let layout = EntryRowLayout {
             row,
@@ -2408,7 +2425,7 @@ impl ActivityTimeline {
             author_slot_w,
             ..
         } = layout;
-        let Some((label, width)) = Self::bot_chip(entry, text_renderer, theme)
+        let Some((label, width, lead)) = Self::bot_chip(entry, text_renderer, theme)
             .or_else(|| Self::writer_chip(entry, text_renderer, theme))
         else {
             return;
@@ -2422,7 +2439,9 @@ impl ActivityTimeline {
             (chip_x + width).min(slot_end),
             cy + height / 2.0,
         );
-        crate::widget::ChipFace::new(chip, &label).paint(scene, transform, text_renderer, theme);
+        crate::widget::ChipFace::new(chip, &label)
+            .lead(lead)
+            .paint(scene, transform, text_renderer, theme);
     }
 
     fn draw_row_body(

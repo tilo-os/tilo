@@ -38,6 +38,31 @@ use crate::widget::{
     TaffyTreeExt, Tone, Widget,
 };
 
+/// Who made what a row shows, as the fields the row paints: the person's face and
+/// their name, then what wrote for them — an agent, an app, a program — as a chip
+/// wearing its own mark and its own colour. A row shows the person and the writer as
+/// two things, never one label joined from two names
+/// ([`AuthorParts`](crate::history_source::sentence::AuthorParts)).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowAuthor<'a> {
+    /// The person the change is in the name of.
+    pub person: &'a str,
+    /// That person's principal, which colours their face.
+    pub identity: &'a str,
+    /// The picture they set, already decoded by the app's image store.
+    pub image: Option<&'a ImageData>,
+    /// What wrote for them, when something did; nothing for the person's own change.
+    pub writer: Option<RowWriter<'a>>,
+}
+
+/// The software that wrote for the person, worn as a chip: its name and the hue its
+/// mark and label wear, so an agent reads as an agent wherever it writes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowWriter<'a> {
+    pub label: &'a str,
+    pub hue: PresenceHue,
+}
+
 /// What sits in a row's leading column.
 #[derive(Clone, Copy)]
 pub enum RowLeading<'a> {
@@ -160,6 +185,8 @@ struct RowGeometry {
     meta_right: f64,
     meta_left: f64,
     facts_cy: f64,
+    /// The author cell, when the row shows who made it ([`ListRow::author_cell`]).
+    author: Option<Rect>,
 }
 
 pub const MAX_MARKS: usize = 3;
@@ -203,6 +230,9 @@ pub struct ListRowFace<'a> {
     meta_spans: &'a [(&'a str, Tone)],
     value: Option<(&'a str, RowValue)>,
     avatar: Option<AvatarFace<'a>>,
+    /// Who made it, as its own cell: the person's face and name, and the writer's
+    /// chip ([`ListRow::author_cell`]).
+    author: Option<RowAuthor<'a>>,
     marks: [Option<RowMark>; MAX_MARKS],
     mark_tone: Tone,
     tags: &'a [(&'a str, ChipStyle)],
@@ -296,6 +326,7 @@ impl<'a> ListRowFace<'a> {
             meta_spans: &[],
             value: None,
             avatar: None,
+            author: None,
             marks: [None; MAX_MARKS],
             mark_tone: Tone::Neutral,
             tags: &[],
@@ -502,6 +533,15 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn avatar(mut self, avatar: AvatarFace<'a>) -> Self {
         self.avatar = Some(avatar);
+        self
+    }
+
+    /// Who made it, as its own cell in the facts column: the person's face and name, and
+    /// what wrote for them as a chip wearing its own mark. Shown instead of the person's
+    /// face and meta, which would otherwise say only the writer's name.
+    #[must_use]
+    pub fn author(mut self, author: RowAuthor<'a>) -> Self {
+        self.author = Some(author);
         self
     }
 
@@ -898,6 +938,28 @@ struct FactAvatar {
     glyph: Option<Icon>,
 }
 
+/// The author cell a retained row keeps: its own [`RowAuthor`], owned.
+struct AuthorCell {
+    person: String,
+    identity: String,
+    image: Option<ImageData>,
+    writer: Option<(String, PresenceHue)>,
+}
+
+impl AuthorCell {
+    fn borrowed(&self) -> RowAuthor<'_> {
+        RowAuthor {
+            person: &self.person,
+            identity: &self.identity,
+            image: self.image.as_ref(),
+            writer: self.writer.as_ref().map(|(label, hue)| RowWriter {
+                label,
+                hue: *hue,
+            }),
+        }
+    }
+}
+
 impl FactAvatar {
     fn face(&self) -> AvatarFace<'_> {
         let face = AvatarFace::new(&self.name, &self.identity).image(self.image.as_ref());
@@ -1005,6 +1067,8 @@ pub struct ListRow {
     tags: Vec<(String, ChipStyle)>,
     count: Option<usize>,
     avatar: Option<FactAvatar>,
+    /// Who made it, as the cell ([`ListRow::author_cell`]).
+    author: Option<AuthorCell>,
     leading: Option<Leading>,
     leading_column: Option<f64>,
     nested: bool,
@@ -1098,6 +1162,7 @@ impl ListRow {
             tags: Vec::new(),
             count: None,
             avatar: None,
+            author: None,
             leading: None,
             leading_column: None,
             nested: false,
@@ -1390,6 +1455,40 @@ impl ListRow {
             tint: None,
             agent: false,
         });
+        self
+    }
+
+    /// Who made what the row shows, as the cell the toolkit paints everywhere: the
+    /// person's face and name, then the software that wrote for them as a chip wearing
+    /// its own mark ([`RowAuthor`]). Shown instead of the person's face and meta, so a row
+    /// an agent wrote names the person it was written for and the agent beside it.
+    #[must_use]
+    pub fn author_cell(mut self, person: impl Into<String>, identity: impl Into<String>) -> Self {
+        self.author = Some(AuthorCell {
+            person: person.into(),
+            identity: identity.into(),
+            image: None,
+            writer: None,
+        });
+        self
+    }
+
+    /// The writer of an [`Self::author_cell`]: what wrote for the person, in the hue its
+    /// mark wears.
+    #[must_use]
+    pub fn author_writer(mut self, label: impl Into<String>, hue: PresenceHue) -> Self {
+        if let Some(author) = &mut self.author {
+            author.writer = Some((label.into(), hue));
+        }
+        self
+    }
+
+    /// The person's picture in an [`Self::author_cell`].
+    #[must_use]
+    pub fn author_image(mut self, image: ImageData) -> Self {
+        if let Some(author) = &mut self.author {
+            author.image = Some(image);
+        }
         self
     }
 
@@ -2092,6 +2191,9 @@ impl ListRow {
         face = face.chevron_column(self.chevron_column);
         if let Some(avatar) = &self.avatar {
             face = face.avatar(avatar.face());
+        }
+        if let Some(author) = &self.author {
+            face = face.author(author.borrowed());
         }
         if let Some(leading) = &self.leading {
             face = face.leading(match leading {
