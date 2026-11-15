@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, defaultDisplayName, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStanding, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, defaultDisplayName, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStanding, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -800,6 +800,37 @@ test('the person switches between the home and the workspaces they entered, neve
       subtitle: 'Workspace · globex.example · did not open last time'},
     {id: 'open-workspace:https://workspaces.example/TEAM', title: 'Open Team', label: 'Team', source: 'workspaces', subtitle: 'Workspace · workspaces.example'},
   ]);
+});
+
+test('the host’s list names the person’s workspaces, and memory says where those on other hosts are', () => {
+  const home = {name: 'Lounge', host: {origin: 'https://workspaces.example'}, workspace: 'LOUNGE'};
+  const entered = [
+    {origin: 'https://workspaces.example', workspace: 'OWN', name: 'Old name', hostDevice: '11'.repeat(32), unavailable: true},
+    {origin: 'https://elsewhere.example', workspace: 'AWAY', name: null, hostDevice: '22'.repeat(32), unavailable: false},
+  ];
+  const listed = [
+    // The answering host keeps these itself (it names no address for them):
+    // reached here, and named as it names them, no longer marked as not opening.
+    {workspace: 'OWN', name: 'My workspace', role: 'owner', host: {name: 'workspaces.example'}},
+    {workspace: 'LOUNGE', name: 'Lounge', host: {name: 'workspaces.example'}},
+    // Another host's: its name is no page address, so only a workspace this
+    // browser reached before is offered.
+    {workspace: 'AWAY', name: 'Away', host: {name: 'eu1.example', hint: 'cd'.repeat(8)}},
+    {workspace: 'ELSEWHERE', name: 'Unreached', host: {name: 'eu2.example', hint: 'ef'.repeat(8)}},
+    // A workspace no device has said the host of yet: nothing opens it.
+    {workspace: 'UNKNOWN', name: 'Unknown'},
+  ];
+  const answering = 'https://workspaces.example';
+  assert.deepEqual(knownWorkspaces({entered, listed, answering}), [
+    {origin: answering, workspace: 'OWN', name: 'My workspace', hostDevice: '11'.repeat(32), unavailable: false},
+    {origin: 'https://elsewhere.example', workspace: 'AWAY', name: 'Away', hostDevice: '22'.repeat(32), unavailable: false},
+    {origin: answering, workspace: 'LOUNGE', name: 'Lounge', unavailable: false},
+  ]);
+  // In the Lounge, neither the home nor the workspace in front is offered back.
+  assert.deepEqual(workspaceChoices({home, homeWorkspace: 'LOUNGE', entered, listed, answering,
+    current: {kind: 'workspace', host: answering, workspace: 'LOUNGE'}}).map(choice => choice.name), ['My workspace', 'Away']);
+  // Before the host answers, the switcher is what the browser remembered.
+  assert.deepEqual(knownWorkspaces({entered}), entered);
 });
 
 test('the directory lists the workspaces this page holds by the host actions that open them, the one in front included', () => {

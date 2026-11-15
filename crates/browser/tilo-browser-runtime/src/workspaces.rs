@@ -239,6 +239,9 @@ impl WasmPeer {
                     workspace: id.clone(),
                 })
                 .await?)?,
+            // The person's workspaces as their host lists them, the same question the CLI's peer
+            // asks: what the page offers besides the workspaces this browser remembered.
+            "personal" => self.personal_workspaces().await?,
             "invite" => {
                 let reply = self
                     .workspaces_request(args.invitation(id.clone())?)

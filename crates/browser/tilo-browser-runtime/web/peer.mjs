@@ -1122,6 +1122,11 @@ async function connect({
     /** The workspaces the host governs (`workspaces.rs`): `list()`,
      * `create(name)`, `enter(workspace)`; needs no workspace. */
     workspaces: governed,
+    /** The person's workspaces as their host lists them (`workspaces.rs`,
+     * `personal`): `[{workspace, name, role?, host?}]`, each naming its host
+     * where this one does not keep it. What the workspace switcher offers
+     * besides the workspaces this browser remembered. */
+    personalWorkspaces: async () => (await ask('personal')).workspaces ?? [],
     getSnapshot: () => snapshot,
     /** How many changes this page made to the workspace's records and sent:
      * above zero once the person posted or created something. */

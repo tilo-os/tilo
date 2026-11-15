@@ -1723,6 +1723,21 @@ impl WasmPeer {
             .map_err(|_| js_error("peer session closed"))?
             .map_err(js_error)
     }
+
+    /// The person's workspaces as their host lists them, in the page's shape: the question this
+    /// page's device asks ([`Device::personal_list`], the one the CLI's peer asks), so a page
+    /// offers every workspace of theirs, not only the ones this browser's storage still remembers.
+    pub(crate) async fn personal_workspaces(&self) -> Result<serde_json::Value, JsError> {
+        let list = self
+            .device
+            .personal_list(
+                &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+                None,
+            )
+            .await
+            .map_err(|refusal| js_error(refusal.message))?;
+        serde_json::to_value(&list).map_err(js_error)
+    }
 }
 
 #[wasm_bindgen]

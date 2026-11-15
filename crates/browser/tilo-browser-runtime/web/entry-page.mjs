@@ -1343,7 +1343,11 @@ export async function startEntryPage({mode}) {
     // Only the desktop lists host actions: a single app's mount refuses them.
     const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed
       ? hostActionParts(page.mount, ['identity', 'machine', 'workspaces', 'workspace', 'tab']) : null;
-    const here = page.router.route.target.scope;
+    // The workspace in front as the session knows it: a bare home entry names
+    // none until admission answers which, and the switcher would offer the
+    // workspace the page is in back to itself.
+    const scope = page.router.route.target.scope;
+    const here = scope?.kind === 'workspace' ? {...scope, workspace: scope.workspace ?? page.peer?.workspace ?? null} : scope;
     // The host that answers at the peer's origin now: workspaces remembered there
     // under another host went with that host's state.
     const hostDevice = page.peer ? hostDeviceOf(page.peer.host?.hostCert) : null;
@@ -1354,9 +1358,9 @@ export async function startEntryPage({mode}) {
     if (page.peer) page.peer.onStatus?.(() => bar.look());
     else if (!page.mount) noDesktop = true;
     bar.look();
-    if (!embed && !enteredViaDoor && !viaTicket && page.peer && here.kind === 'workspace') {
+    if (!embed && !enteredViaDoor && !viaTicket && page.peer && here?.kind === 'workspace') {
       // A workspace entered as a member: offered again from the person's other workspaces.
-      const entry = {origin: here.host, workspace: here.workspace ?? page.peer.workspace};
+      const entry = {origin: here.host, workspace: here.workspace};
       remembering(() => {
         rememberEntered(runtime, {...entry, hostDevice, name: invitedTo});
         if (!rememberedWorkspace({kind: 'workspace', host: entry.origin, workspace: entry.workspace})?.name) unnamed = entry;
@@ -1364,15 +1368,27 @@ export async function startEntryPage({mode}) {
     }
     if (hostActions) {
       let offered = [];
+      let ownOffered = false;
+      // The person's workspaces as their host lists them, once it answered:
+      // offered beside the ones this browser remembers, so a browser that lost
+      // what it kept (or a person signing in on a new one) still finds them.
+      let listed = null;
       const offer = own => {
+        ownOffered = own;
         offered = remembering(() => workspaceChoices({home: page.entry?.home, homeWorkspace: homeWorkspaceOf(page.entry),
-          entered: enteredWorkspaces(), current: here, own})) ?? [];
+          entered: enteredWorkspaces(), listed, answering: page.peer?.origin ?? null, current: here, own})) ?? [];
         hostActions('workspaces').setHostActions(workspaceSwitchActions(offered, {current: workspaceName}));
       };
       offer(false);
+      // Asked as the switcher first draws, so the page paints at once and the
+      // switcher fills in when the host answers.
+      void page.peer?.personalWorkspaces?.().then(workspaces => {
+        listed = workspaces;
+        offer(ownOffered);
+      }, error => console.warn('workspaces: the host did not list them', error));
       // The way back from a workspace to the person's own desktop, where they
       // may have one: asked of the home's door, so offered once it answers.
-      if (!embed && here.kind !== 'own') void ownDesktopAllowed(page.entry?.home).then(open => { if (open) offer(true); });
+      if (!embed && here?.kind !== 'own') void ownDesktopAllowed(page.entry?.home).then(open => { if (open) offer(true); });
       switchWorkspace = id => {
         const choice = offered.find(candidate => candidate.id === id);
         return choice ? openWorkspace({choice, page, status}) : undefined;
@@ -1420,7 +1436,7 @@ export async function startEntryPage({mode}) {
     // agent was set up, or else their own desktop where the site gives one.
     // The home workspace let them in already (they stay in it, and find it
     // in the workspace menu), but their own comes first.
-    if (firstRun && !embed && here.kind !== 'own') {
+    if (firstRun && !embed && here?.kind !== 'own') {
       firstRun.whenDone(async () => {
         if (!hostedOwn) await hostedOwnMade;
         if (hostedOwn) {
@@ -1444,7 +1460,7 @@ export async function startEntryPage({mode}) {
     // their agent, opens a workspace of their own instead of leaving them on
     // the shared desktop they landed in. A link into another workspace is that
     // workspace's, and is left alone.
-    if (!embed && !firstRun && here.kind === 'workspace' && readSetup()?.step !== 'done'
+    if (!embed && !firstRun && here?.kind === 'workspace' && readSetup()?.step !== 'done'
         && page.peer?.workspace && page.peer.workspace === homeRoomOf(page.entry)) {
       loadPage(page.entry.base);
       return;

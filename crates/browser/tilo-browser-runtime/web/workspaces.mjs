@@ -126,16 +126,47 @@ function isHomeWorkspace({home, homeWorkspace = null, scope}) {
 }
 
 /**
+ * The workspaces of the person this browser knows: what it remembers entering
+ * (`entered`, in `enteredWorkspaces`'s shape) with the ones their host `listed`
+ * for them filled in. The host is the source of truth for which workspaces of
+ * theirs exist and what they are called; this browser's memory says where those
+ * on other hosts are reached, which a host's name alone does not. A listed
+ * workspace names the host that keeps it: one with no signed `hint` is the host
+ * that answered (`answering`, its origin), the rest are reached where this
+ * browser reached them before. One entry per workspace, the host's name
+ * winning and one it lists no longer marked as not opening.
+ */
+export function knownWorkspaces({entered = [], listed = [], answering = null} = {}) {
+  const known = entered.map(entry => ({...entry}));
+  if (!Array.isArray(listed)) return known;
+  for (const workspace of listed) {
+    if (typeof workspace?.workspace !== 'string' || !workspace.workspace) continue;
+    const at = known.findIndex(entry => entry.workspace === workspace.workspace);
+    // A host that answered names no address for a workspace it keeps itself:
+    // the page reaches it where it is. Another host's name opens nothing, so
+    // only one this browser reached before is offered.
+    const here = Boolean(workspace.host) && !workspace.host.hint;
+    const origin = here ? answering : (at >= 0 ? known[at].origin : null);
+    if (!origin) continue;
+    const name = typeof workspace.name === 'string' && workspace.name ? workspace.name : null;
+    if (at >= 0) known[at] = {...known[at], origin: originOf(origin), ...(name ? {name} : {}), unavailable: false};
+    else known.push({origin: originOf(origin), workspace: workspace.workspace, name, unavailable: false});
+  }
+  return known;
+}
+
+/**
  * The workspaces the person can switch to from `current` (a route scope, or
- * `null`): the web host's `home` workspace, then the workspaces they `entered`,
- * never the one in front. `homeWorkspace` is the workspace this browser was admitted
- * to through the home's door, so that workspace is offered once, as the home.
+ * `null`): the web host's `home` workspace, then the workspaces they `entered`
+ * or their host `listed` (`knownWorkspaces`), never the one in front.
+ * `homeWorkspace` is the workspace this browser was admitted to through the
+ * home's door, so that workspace is offered once, as the home.
  * Where the person may have a desktop of their own (`own`), it comes first,
  * so a workspace is never a dead end. Each choice is
  * `{id, name, origin, workspace, home, own, unavailable}`; `id` is its host
  * action id.
  */
-export function workspaceChoices({home = null, homeWorkspace = null, entered = [], current = null, own = false}) {
+export function workspaceChoices({home = null, homeWorkspace = null, entered = [], listed = [], answering = null, current = null, own = false}) {
   const here = current?.kind === 'workspace' ? current : null;
   const homeOrigin = home?.host?.origin ? originOf(home.host.origin) : null;
   const isHome = scope => isHomeWorkspace({home, homeWorkspace, scope});
@@ -147,7 +178,7 @@ export function workspaceChoices({home = null, homeWorkspace = null, entered = [
     choices.push({id: `${OPEN_WORKSPACE}home`, name: home.name || new URL(homeOrigin).host, origin: homeOrigin,
       workspace: home.workspace ?? null, home: true, own: false, unavailable: false});
   }
-  for (const entry of entered) {
+  for (const entry of knownWorkspaces({entered, listed, answering})) {
     if (isHome({host: entry.origin, workspace: entry.workspace}) || (here && originOf(here.host) === entry.origin && here.workspace === entry.workspace)) continue;
     choices.push({id: `${OPEN_WORKSPACE}${entry.origin}/${entry.workspace}`, name: entry.name || new URL(entry.origin).host,
       origin: entry.origin, workspace: entry.workspace, home: false, own: false, unavailable: entry.unavailable});
@@ -185,7 +216,7 @@ export function workspaceActions(choices, {current = null} = {}) {
  * `current` (the scope in front) comes too, so the workspace the page is in
  * says Open rather than Join.
  */
-export function heldWorkspaces({entered = [], current = null} = {}) {
+export function heldWorkspaces({entered = [], listed = [], answering = null, current = null} = {}) {
   const held = [];
   const seen = new Set();
   const add = (origin, workspace, name) => {
@@ -195,7 +226,7 @@ export function heldWorkspaces({entered = [], current = null} = {}) {
     held.push({workspace, key: `${OPEN_WORKSPACE}${at}/${workspace}`, name: name || new URL(at).host});
   };
   if (current?.kind === 'workspace') add(current.host, current.workspace, current.name ?? null);
-  for (const entry of entered) add(entry?.origin, entry?.workspace, entry?.name ?? null);
+  for (const entry of knownWorkspaces({entered, listed, answering})) add(entry?.origin, entry?.workspace, entry?.name ?? null);
   return held;
 }
 

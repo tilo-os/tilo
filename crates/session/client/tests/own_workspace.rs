@@ -117,6 +117,36 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     );
     assert_eq!(device.join(&own.workspace).await.unwrap(), own.workspace_id);
 
+    // The host lists the person's workspaces, the one it just made for them included: the same
+    // list the CLI's peer asks for, so a page whose own storage remembers nothing still offers
+    // them. A workspace the answering host keeps itself names no other host.
+    let listed = device
+        .personal_list(
+            &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    let mine = listed
+        .workspaces
+        .iter()
+        .find(|listed| listed.workspace == own.workspace)
+        .expect("the host lists the workspace it made for the person");
+    assert_eq!(mine.name, own.name, "named as the host names it");
+    assert_eq!(mine.role.as_deref(), Some("owner"));
+    // The host names itself as where it keeps it, and gives no address: a page
+    // reaches it where it asked.
+    let address = mine.host.as_ref().expect("the host names itself");
+    assert!(!address.name.is_empty());
+    assert_eq!(address.hint, None);
+    assert!(
+        listed
+            .workspaces
+            .iter()
+            .any(|listed| listed.workspace == lounge.workspace),
+        "the Lounge is one of the person's too: {listed:?}"
+    );
+
     // Asked again, it answers the same workspace; one this device is in already is not redeemed
     // again.
     let again = device

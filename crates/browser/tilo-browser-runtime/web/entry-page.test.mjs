@@ -25,7 +25,7 @@ class Element {
 
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root custody with fixtures.
-async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null} = {}) {
+async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null, scope = null} = {}) {
   const values = new Map(Object.entries(local));
   let assigned = null;
   const stored = new Map(Object.entries(session));
@@ -56,10 +56,13 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     // it lets invite.
     membership: {list: async () => ({name: 'Current', members: []}), mayInvite: async () => false, waitList: async () => { throw new Error('only someone the workspace lets invite lists the wait list'); }},
     workspaces: {create: async name => ({workspace: 'created', name}), enter: async () => calls.push('enter')},
+    // The person's workspaces as the host lists them; a fixture says what it
+    // answers, and nothing by default.
+    personalWorkspaces: async () => [],
     dispose: async () => calls.push('dispose')};
   const page = {peer: own ? null : {...peer, ...member}, entry: entry ?? {base: 'https://web.example/'},
     mount: {setHostActions: actions => shown.push(actions), setOwnPerson: person => calls.push(['own', person]), flush: async () => calls.push('flush'), cleanup: async () => calls.push('cleanup')},
-    router: {route: {target: {scope: own ? {kind: 'own'} : {kind: 'workspace', host: ORIGIN, workspace: 'current'}}}, stop: () => calls.push('stop')},
+    router: {route: {target: {scope: own ? {kind: 'own'} : scope ?? {kind: 'workspace', host: ORIGIN, workspace: 'current'}}}, stop: () => calls.push('stop')},
     link: {format: route => `https://web.example/#/${route.target.scope.workspace}`}};
   const prepared = [];
   const runtime = runtimeFake({
@@ -99,9 +102,12 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       return boot ? boot(options, page) : page;
     }};
   // A workspace an earlier visit entered, and those it kept as they were
-  // stored, whichever host held them.
-  localStorage.setItem('tilo-entered-workspaces', JSON.stringify([
-    {origin: ORIGIN, workspace: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'}, ...remembered]));
+  // stored, whichever host held them; `null` leaves the store as `local` has
+  // it, as a browser that lost what it remembered has none.
+  if (remembered !== null) {
+    localStorage.setItem('tilo-entered-workspaces', JSON.stringify([
+      {origin: ORIGIN, workspace: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'}, ...remembered]));
+  }
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot, grammar = () => globalThis.__entryPageFixture.page.link;')
@@ -305,6 +311,33 @@ test('workspaces another host held at the origin of the page host are no longer 
   ]});
   assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'People', 'Join a workspace']);
   assert.deepEqual(enteredWorkspaces().map(entry => entry.workspace), ['current', 'other', 'away']);
+});
+
+test('the person’s workspaces come from their host when this browser remembers none', async () => {
+  // This browser's kept list is unreadable (an older spelling), so it offers
+  // nothing of its own; the host still lists the person's workspaces, and the
+  // switcher fills them in once it answers.
+  const {shown} = await fixture({remembered: null, local: {'tilo-entered-workspaces': '[{"room":"old spelling"}]'},
+    member: {personalWorkspaces: async () => [
+      {workspace: 'current', name: 'Lounge', role: 'member', host: {name: 'node.example'}},
+      {workspace: 'mine', name: 'My workspace', role: 'owner', host: {name: 'node.example'}},
+    ]}});
+  await tick();
+  const titles = shown.at(-1).map(action => action.title);
+  assert.ok(titles.includes('Open My workspace'), titles.join(', '));
+  assert.ok(!titles.includes('Open Lounge'), 'the workspace in front is not offered back');
+});
+
+test('a bare home entry, which names no workspace until admitted, does not offer the one in front back to itself', async () => {
+  const {shown} = await fixture({scope: {kind: 'workspace', host: ORIGIN, workspace: null},
+    member: {personalWorkspaces: async () => [
+      {workspace: 'current', name: 'Lounge', role: 'member', host: {name: 'node.example'}},
+      {workspace: 'mine', name: 'My workspace', role: 'owner', host: {name: 'node.example'}},
+    ]}});
+  await tick();
+  const titles = shown.map(actions => actions.map(action => action.title)).at(-1);
+  assert.ok(titles.includes('Open My workspace'), titles.join(', '));
+  assert.ok(!titles.includes('Open Lounge'), 'the workspace in front is not offered back');
 });
 
 test('the page keeps switch actions together and dispatches them', async () => {
