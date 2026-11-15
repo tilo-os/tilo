@@ -1115,7 +1115,7 @@ doc = false
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
 "tilo-accessibility-settings" = { path = "../../../crates/platform/tilo-accessibility-settings", default-features = false, features = ["model"] }
 "tilo-accesskit-winit-0_34_0" = { package = "tilo-accesskit-winit", path = "../../../vendor/accesskit_winit", default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
-"tilo-account-probe" = { path = "../../../crates/system/account-probe", default-features = false, features = [] }
+"tilo-account-probe" = { path = "../../../crates/platform/account-probe", default-features = false, features = [] }
 "tilo-action-broker" = { path = "../../../crates/collab/tilo-action-broker", default-features = false, features = ["test-support"] }
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }

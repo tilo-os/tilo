@@ -311,6 +311,7 @@ members = [
     "examples/packaging/notes-cli",
 
     # Platform
+    "crates/platform/account-probe",
     "crates/platform/migration-sources",
     "crates/platform/pc-keyboard-geometry",
     "crates/platform/tilo-app-id",
@@ -474,7 +475,6 @@ members = [
 
     # System
     "crates/system/account-custody",
-    "crates/system/account-probe",
     "crates/system/accounts",
     "crates/system/advisory-lock",
     "crates/system/app-state",

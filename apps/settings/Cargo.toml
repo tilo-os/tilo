@@ -129,7 +129,7 @@ tracing.workspace = true
 # The DAV account panes parse server URLs and name discovered calendars.
 tilo-dav = { path = "../../crates/system/tilo-dav", optional = true }
 # The sign-in probes both this app and the workspace host run (one owner).
-tilo-account-probe = { path = "../../crates/system/account-probe", optional = true }
+tilo-account-probe = { path = "../../crates/platform/account-probe", optional = true }
 zeroize.workspace = true
 # The shared account + region/format stores Settings owns are plain
 # serde-serialisable JSON documents that other apps (Mail, Calendar,

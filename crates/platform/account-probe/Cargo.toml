@@ -13,14 +13,14 @@ doctest = false
 
 [dependencies]
 # The account and secret shapes the probes read; nothing here keeps either.
-accounts = { path = "../accounts" }
+accounts = { path = "../../system/accounts" }
 # The same clients the apps use: async-imap as Mail does, the shared bounded
 # DAV client as Calendar does.
 async-imap.workspace = true
-tilo-dav = { path = "../tilo-dav" }
+tilo-dav = { path = "../../system/tilo-dav" }
 # Certificate roots and the TLS client configuration, as every other app's
 # outbound connection makes them.
-tilo-net = { path = "../../platform/tilo-net" }
+tilo-net = { path = "../tilo-net" }
 rustls.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 tokio-rustls.workspace = true
