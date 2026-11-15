@@ -2,9 +2,9 @@
 //! session: the sheet the session raises over the whole display, landed on where the card's footer
 //! draws its actions.
 //!
-//! The bug this file was written for: on the system trust sheet ("Let the agent Edit a text
-//! field"), a click on "Allow once" at its drawn and reported place was taken as a decline. The
-//! sheet's layout was right; what the press hit was not the button. This test drives the
+//! The bug this file was written for: on the system trust sheet ("Claude Code #1 asks to: Edit a
+//! text field"), a click on "Allow once" at its drawn and reported place was taken as a decline.
+//! The sheet's layout was right; what the press hit was not the button. This test drives the
 //! production path a person does — the session's own portal sheet, its published controls saying
 //! where the button stands, and a compositor-level pointer press there — and reads the answer the
 //! question got.
@@ -27,8 +27,8 @@ use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_service::{Asked, Question, Questions};
 use tilo_session::{Options, Session};
 
-/// The kind of question a conversation turn's ask is.
-const TURN_QUESTION: &str = "session.turn-question";
+/// The kind of question an agent's step, or an app's, is.
+const STEP_QUESTION: &str = "session.step-question";
 
 /// A headless session at a 1440 by 900 display, as the run that showed the bug had.
 fn session_at(width: i32, height: i32) -> (Session, Questions) {
@@ -53,29 +53,20 @@ fn session_scaled(width: i32, height: i32, scale: f64) -> (Session, Questions) {
     (session, questions)
 }
 
-/// Ask a conversation turn's trust question, as the session's own turn does.
-fn ask_a_turn(questions: &Questions) -> Asked {
+/// Ask an agent's step in its session, as the broker does before it runs.
+fn ask_a_step(questions: &Questions) -> Asked {
     questions.ask(Question {
-        handle: "sheet-click:/turn-question".into(),
-        kind: TURN_QUESTION.to_owned(),
+        handle: "sheet-click:/step-question".into(),
+        kind: STEP_QUESTION.to_owned(),
         app_id: None,
-        label: "Edit a text field".into(),
+        label: "Claude Code #1".into(),
         details: json!({
-            "resource_label": "Groceries",
-            "action_label": "Edit a text field",
-            "draft": {
-                "action_label": "Edit a text field",
-                "resource_label": "Groceries",
-                "fields": [{
-                    "path": ["title"],
-                    "label": "Title",
-                    "value": {"type": "text", "text": "Groceries"},
-                    "editable": true,
-                    "multiline": false,
-                    "shows": null,
-                    "role": null
-                }]
-            }
+            "agent": "Claude Code #1",
+            "action": "Edit a text field",
+            "resource": "Groceries",
+            "fields": [["Title", "Groceries"]],
+            "risk": "low",
+            "may_allow_agent": false
         }),
     })
 }
@@ -133,7 +124,7 @@ fn a_click_on_allow_once_at_its_reported_place_allows_the_step() {
     // Motion reads at its end: this test checks the frame it lands on.
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = session_at(1440, 900);
-    let mut asked = ask_a_turn(&questions);
+    let mut asked = ask_a_step(&questions);
     crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()
@@ -155,7 +146,11 @@ fn a_click_on_allow_once_at_its_reported_place_allows_the_step() {
         (&mut asked).now_or_never()
     });
     let answer = answer.expect("the step is allowed, not declined");
-    assert_eq!(answer.choice, None, "allowing once carries no other choice");
+    assert_eq!(
+        answer.choice,
+        Some(0),
+        "the allow-once row is the sheet's first answer"
+    );
 }
 
 /// A press that arrives before any pointer motion — the pointer was never reported over the
@@ -164,7 +159,7 @@ fn a_click_on_allow_once_at_its_reported_place_allows_the_step() {
 fn a_press_with_no_pointer_over_the_sheet_answers_nothing() {
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = session_at(1440, 900);
-    let mut asked = ask_a_turn(&questions);
+    let mut asked = ask_a_step(&questions);
     crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()
@@ -195,7 +190,7 @@ fn a_press_with_no_pointer_over_the_sheet_answers_nothing() {
 fn a_press_beside_the_card_does_not_decline_the_step() {
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = session_at(1440, 900);
-    let mut asked = ask_a_turn(&questions);
+    let mut asked = ask_a_step(&questions);
     crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()
@@ -227,7 +222,7 @@ fn a_click_on_allow_once_answers_at_a_scaled_display() {
     let _settled = ui::motion::testing::settled();
     // A 1440x900 display drawn at 2: the same logical shell, twice the pixels.
     let (mut session, questions) = session_scaled(2880, 1800, 2.0);
-    let mut asked = ask_a_turn(&questions);
+    let mut asked = ask_a_step(&questions);
     crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()

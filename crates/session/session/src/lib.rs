@@ -396,8 +396,6 @@ mod time;
 #[cfg(target_os = "linux")]
 mod tools;
 #[cfg(target_os = "linux")]
-pub mod turn_questions;
-#[cfg(target_os = "linux")]
 pub mod unlock;
 #[cfg(target_os = "linux")]
 mod unlock_history;

@@ -404,12 +404,6 @@ style-failed-app-name = Shell
 style-failed-title = Your style could not be shown
 style-failed-body = { $style } could not be shown, so the shell shows Strips. Your choice is kept.
 
-## A step an agent takes inside a conversation, asking the person before it
-## runs. The sheet shows the step's draft; confirming allows this one step.
-turn-question-title = Let the agent { $action }
-turn-question-detail = { $action } on { $resource }, as shown. It runs once, for this step only.
-turn-question-detail-here = { $action }, as shown. It runs once, for this step only.
-
 ## A turn whose agent stopped before it answered the person's message.
 turn-unanswered = The agent stopped before it answered
 

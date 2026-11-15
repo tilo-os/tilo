@@ -109,11 +109,6 @@ impl AppActionConsentPrompter for Sheet {
         if request.moderation.is_some() {
             return None;
         }
-        // A step an agent takes inside a conversation shows its draft on the sheet, and is
-        // allowed for that one step only.
-        if crate::turn_questions::is_turn_ask(&request) {
-            return crate::turn_questions::ask(&self.questions, request);
-        }
         if let Some(allowed) = self.allowed_unasked(&request) {
             let (answer, answered) = tokio::sync::oneshot::channel();
             let _ = answer.send(allowed);

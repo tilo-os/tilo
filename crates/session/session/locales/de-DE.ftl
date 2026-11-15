@@ -409,12 +409,6 @@ style-failed-app-name = Shell
 style-failed-title = Dein Stil konnte nicht angezeigt werden
 style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt die Shell Streifen. Deine Wahl bleibt erhalten.
 
-## A step an agent takes inside a conversation, asking the person before it
-## runs. The sheet shows the step's draft; confirming allows this one step.
-turn-question-title = Den Agenten { $action } lassen
-turn-question-detail = { $action } auf { $resource }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
-turn-question-detail-here = { $action }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
-
 ## A turn whose agent stopped before it answered the person's message.
 turn-unanswered = Der Agent hat aufgehört, bevor er antwortete
 
