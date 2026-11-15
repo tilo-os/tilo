@@ -3,7 +3,7 @@
 //! [`BackgroundLayer`] is what lies under the windows: the backdrop, the launchpad on a shell with no
 //! windows yet, and the surface's strips and window bars. [`DesktopChrome`] is what lies above
 //! them: the top bar, the strip ribbon and rail ([`StripNavigator`]), the overview panel, the Tilo
-//! menu and the workspace menu, and the shelltop's chords. A page draws the chrome over the shell in
+//! menu and the workspace menu, and the desktop's chords. A page draws the chrome over the shell in
 //! one widget tree; the native session hosts the shell under its client windows and the chrome above
 //! them.
 //! Neither layer knows its host. What a person may change is asked of [`DesktopRules`]; what only

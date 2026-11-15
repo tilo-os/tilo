@@ -172,7 +172,7 @@ fn the_shell_choices_survive_the_session_ending() {
             &mut session,
             "shell.show_style(shell.viewing, style: \"so.tilo.shell:desktop\")",
         );
-        assert!(!failed, "the shell shows the shelltop: {answer}");
+        assert!(!failed, "the shell shows the desktop style: {answer}");
         session
             .run_shell_action("dock_on", vec![serde_json::json!("left")])
             .expect("the dock moves to the leading edge");

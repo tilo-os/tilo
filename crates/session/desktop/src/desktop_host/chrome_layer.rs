@@ -102,7 +102,7 @@ pub struct DesktopChrome {
     handle: DesktopHandle,
     generation: String,
     rules: Rc<dyn DesktopRules>,
-    /// The shelltop's shortcut table, shared with the session: the chords the shell answers and the
+    /// The shell's shortcut table, shared with the session: the chords the shell answers and the
     /// ones its rows show are one table.
     shortcuts: crate::shortcuts::Shared,
     /// Chords read the host's stand-in for Super as a Mac's.
@@ -1087,7 +1087,7 @@ impl DesktopChrome {
         self.handle.replace_tree(tree);
         if let DesktopCommand::RenameWorkspace { name } = command {
             // The workspace's name is the workspace's, which every device and list of it reads
-            // from its governance: the desk keeps it at once, and the host writes it there.
+            // from its governance: the shell keeps it at once, and the host writes it there.
             let workspace = self.handle.read(|tree| {
                 tree.active_workspace()
                     .map(tilo_desktop_model::Workspace::id)

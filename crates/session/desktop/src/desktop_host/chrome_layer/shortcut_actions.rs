@@ -13,7 +13,7 @@ use crate::chrome::ChromeIntent;
 use crate::host_contract::DesktopAsk;
 
 impl DesktopChrome {
-    /// Perform a shelltop shortcut: false for one the shell has no part in (locking the device, the
+    /// Perform a shell shortcut: false for one the shell has no part in (locking the device, the
     /// magnifier, dictation, …), which the session then answers ([`crate::asks`]).
     /// Every shortcut of the table is named here or handed on: a shortcut the table gains without a
     /// handler does not build. Each names the verb its menu row, its palette row and an agent's

@@ -1,7 +1,7 @@
-//! The shelltop's search in a session: the shared desktop search ([`tilo_desktop_search`]) the shell
+//! The shell's search in a session: the shared desktop search ([`tilo_desktop_search`]) the shell
 //! opens, over what is published and what the session's services answer, each row run by its
 //! address. A native desktop and the page both host this one role.
-//! The shell lists the windows, the people and the shelltop's own commands. The search adds what a
+//! The shell lists the windows, the people and its own commands. The search adds what a
 //! session offers beyond the shell: Settings' pages, the apps this host lists and the machine's own
 //! (with the person's switch), the store's catalogue, what apps hold (the content index), the
 //! person's files, where their windows were, the actions open apps publish through the action host

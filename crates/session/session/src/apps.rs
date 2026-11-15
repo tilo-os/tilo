@@ -997,7 +997,7 @@ impl Apps {
             let outcome = not_opened(policy, asked, why);
             policy.failed_at(tab, asked, outcome);
         });
-        // The answer is a shelltop command like any other: the shell carries it out, and lays its tab
+        // The answer is a shell command like any other: the shell carries it out, and lays its tab
         // out, on its next pass.
         desktop.with_widgets(WidgetHost::relayout);
     }
@@ -1169,7 +1169,7 @@ impl Apps {
                 if let Err(error) = notice {
                     tracing::warn!(%error, app = %event.app, "no notice for the app");
                 }
-                // The notice is a shelltop command like any other: the shell carries it out, and lays
+                // The notice is a shell command like any other: the shell carries it out, and lays
                 // its tab out, on its next pass.
                 desktop.with_widgets(WidgetHost::relayout);
             }

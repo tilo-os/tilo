@@ -1495,7 +1495,7 @@ impl Session {
             crate::workspace_settings::WorkspaceTabs::new(&records, options.wake.handle());
         let directory_store = Rc::new(crate::directory::Store::default());
         let clipboard = Rc::new(crate::clipboard::Clipboard::new(options.wake.handle()));
-        // The shell's own fields copy and paste through the shelltop's clipboard, as apps do.
+        // The shell's own fields copy and paste through the shell's clipboard, as apps do.
         ui::host::install_default(
             ui::host::HostServices::null().with_clipboard(Arc::new(clipboard.shell())),
         );
