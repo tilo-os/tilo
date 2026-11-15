@@ -891,7 +891,7 @@ def struct_field(code: str, begin: int, end: int, name: str) -> tuple[int, int]:
                 return segment + code[segment:position].index(":") + 1, position
             segment = position + 1
         position += 1
-    return 0, 0
+    return end, end
 
 
 def argument(code: str, start: int, index: int) -> tuple[int, int]:
@@ -2334,7 +2334,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 # The message is the sequence itself: a literal or a
                 # `format!` template handed to it, never a local named
                 # somewhere else in the file.
-                begin, end = struct_field(code, opened + 1, close, "message")
+                begin, end = struct_field(code, opened + 1, close - 1, "message")
                 sentences(begin, end, close, {})
                 start = code.find(builder, start + len(builder))
         if labels:

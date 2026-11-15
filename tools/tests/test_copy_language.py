@@ -892,6 +892,27 @@ class CopyLanguageTests(unittest.TestCase):
                 "value is copy like any other; what it resolved through its own "
                 "catalogue, or holds in its own words, is not")
 
+    def test_a_wire_literal_with_no_message_field_reads_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn run(&mut self) -> Result<()> {",
+                "    self.note = format!(\"Today is {} where the person is\", day);",
+                "    self.report(TurnUpdate::Cancelled { reason })",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                [],
+                "a wire literal that carries no message hands the check no words, so "
+                "the rest of the file is not read as the turn's copy")
+
     def test_a_field_a_structs_own_type_paints_is_copy_inline(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
