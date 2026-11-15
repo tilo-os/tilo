@@ -1475,8 +1475,8 @@ mod tests {
 
         first.close().await;
 
-        // Another browser of the person asks: the host names it apart from the
-        // one already certified, as it does every computer set up alike.
+        // Another browser of the person, named apart as a client numbers
+        // itself when the host refuses a name another device reads by.
         assert!(matches!(
             certify_a_browser(&relay, user, "Browser 2").await,
             CertificationOutcome::Issued { .. }

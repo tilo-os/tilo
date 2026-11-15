@@ -15,6 +15,29 @@ use tilo_relay::WorkspaceId;
 /// would show.
 const IDLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
 
+/// How long both hosts' counters stand still before the idle watch starts.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// `counters` once they have stood still for [`SETTLE`].
+async fn still<F, C>(counters: F) -> C
+where
+    F: Fn() -> C + Send + Sync,
+    C: PartialEq + Send,
+{
+    tilo_test_env::within("both hosts to stand still", async {
+        let mut quiet = counters();
+        loop {
+            tokio::time::sleep(SETTLE).await;
+            let now = counters();
+            if now == quiet {
+                break quiet;
+            }
+            quiet = now;
+        }
+    })
+    .await
+}
+
 /// Whether `client`'s host admits it to `workspace_id`.
 async fn admitted(client: &RelayClient, workspace_id: WorkspaceId) -> bool {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
@@ -120,8 +143,11 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     );
 
     // With nothing changing, neither host does anything: no session is
-    // opened again, nothing is subscribed, sent or received.
-    let quiet = (governor.host.metrics(), member.host.metrics());
+    // opened again, nothing is subscribed, sent or received. The watch
+    // starts once the counters stand still, so what a host set in motion
+    // before it (the change just carried, the address it names itself at)
+    // is not read as the host doing something.
+    let quiet = still(|| (governor.host.metrics(), member.host.metrics())).await;
     tokio::time::sleep(IDLE_WINDOW).await;
     assert_eq!((governor.host.metrics(), member.host.metrics()), quiet);
 
