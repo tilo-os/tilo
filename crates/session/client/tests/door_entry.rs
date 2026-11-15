@@ -28,7 +28,7 @@ use tilo_relay_protocol::entering::{
 };
 use tilo_relay_protocol::transport::{ALPN, Envelope};
 use tilo_session_client::MemoryPeerStore;
-use tilo_session_client::device::{Entering, Held, door_entry, entered};
+use tilo_session_client::device::{Entering, Held, HostRefusal, door_entry, entered};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
 use crate::support::{enrol, enter_page, in_workspace, start_peer, start_workspace_host};
@@ -402,4 +402,68 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
 
     drop(host.web);
     host.relay.shutdown().await;
+}
+
+/// The entry of a device that has no root at hand: what it holds is all it can enter under.
+fn entering_without_a_root(held: Option<&Held>) -> Entering<'_> {
+    Entering {
+        held,
+        root: None,
+        label: "Firefox on Linux",
+        name: "Bob",
+        token: None,
+    }
+}
+
+/// A device with no root at hand comes to the door under what it holds from that very host for
+/// its own key, and with anything else it is told it holds no certificate, typed, before the door
+/// or any host is asked.
+#[tokio::test]
+async fn a_device_without_a_root_comes_to_the_door_only_under_what_it_holds_from_that_host() {
+    let (alice, _) = UserIdentity::generate("Alice", 1);
+    let host_cert = enrol(&alice, "alice-home", DeviceCapabilities::member()).cert;
+    let other_host = enrol(&alice, "alice-other", DeviceCapabilities::member()).cert;
+    let (bob, page, tab) = (new_key(), new_key(), new_key());
+    let (cert, _) = door_entry(&host_cert, "lounge", &page, entering(None, &bob))
+        .await
+        .unwrap();
+    let own = Held {
+        cert: cert.clone(),
+        host_cert: Some(host_cert.clone()),
+    };
+    let from_another_host = Held {
+        cert: cert.clone(),
+        host_cert: Some(other_host),
+    };
+
+    let (kept, entry) = door_entry(
+        &host_cert,
+        "lounge",
+        &page,
+        entering_without_a_root(Some(&own)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(kept, cert);
+    assert_eq!(entry.workspace, "lounge");
+    assert!(
+        matches!(entry.through, tilo_relay_protocol::entering::Through::Door),
+        "{entry:?}"
+    );
+
+    let refusals = [
+        ("nothing held", None, &page),
+        ("held from another host", Some(&from_another_host), &page),
+        ("held for another device's key", Some(&own), &tab),
+    ];
+    for (row, held, device) in refusals {
+        let refused = door_entry(&host_cert, "lounge", device, entering_without_a_root(held))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused.code,
+            HostRefusal::NO_CERTIFICATE,
+            "{row}: {refused:?}"
+        );
+    }
 }

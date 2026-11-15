@@ -396,3 +396,36 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
         HostRefusal::NO_CERTIFICATE
     );
 }
+
+/// Bytes that are no invitation name no workspace: the entry is refused as not admitted, typed,
+/// before a certificate is chosen or made, with a root at hand or without, and no host is asked.
+#[tokio::test]
+async fn an_invitation_that_names_no_workspace_is_refused_before_a_certificate_is_chosen() {
+    let (alice, _) = UserIdentity::generate("Alice", 1);
+    let host = enrol(&alice, "alice-home", DeviceCapabilities::member()).cert;
+    let bob = new_key();
+    let page = new_key();
+    let rows: [(&str, &[u8]); 2] = [
+        ("no bytes", b""),
+        ("bytes that are no invitation", b"not an invitation"),
+    ];
+    for (row, invitation) in rows {
+        for root in [Some(&bob), None] {
+            let refused =
+                invitation_entry(&host, invitation, &page, entering(None, root, b"token"))
+                    .await
+                    .unwrap_err();
+            let case = format!("{row}, with a root: {}: {refused:?}", root.is_some());
+            // Without a root and with nothing held, choosing a certificate first would have said
+            // `no_certificate`: the invitation is read before that.
+            assert_eq!(refused.code, HostRefusal::NOT_ADMITTED, "{case}");
+            assert!(
+                refused
+                    .message
+                    .starts_with("This invitation cannot be used: "),
+                "{case}"
+            );
+            assert_eq!(refused.refusal, None, "{case}");
+        }
+    }
+}
