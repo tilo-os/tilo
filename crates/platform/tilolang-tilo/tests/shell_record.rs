@@ -526,17 +526,46 @@ fn a_charging_pack_shows_the_charging_battery() {
     );
 }
 
+/// Every node under `node`, depth first.
+fn under<'a>(node: &'a tilolang_runtime::UiNode, out: &mut Vec<&'a tilolang_runtime::UiNode>) {
+    for child in &node.children {
+        out.push(child);
+        under(child, out);
+    }
+}
+
+/// The labels of the commands under `menu` a person can choose.
+fn commands(menu: &tilolang_runtime::UiNode) -> Vec<String> {
+    let mut items = Vec::new();
+    under(menu, &mut items);
+    items
+        .iter()
+        .filter(|i| i.kind == "ui.MenuItem" && i.events.contains_key("choose"))
+        .filter_map(|i| match i.props.get("label") {
+            Some(Value::Text(label)) => Some(label.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The menus of `role` that hold a resource's commands (`subject`).
+fn resource_menus(
+    view: &tilolang_runtime::ViewInstance,
+    role: &str,
+) -> Vec<tilolang_runtime::UiNode> {
+    nodes(view, "ui.MenuButton")
+        .into_iter()
+        .filter(|menu| menu.props.get("role") == Some(&Value::Text(role.to_owned())))
+        .filter(|menu| menu.props.contains_key("subject"))
+        .collect()
+}
+
 /// The macOS bar carries the focused window's own commands: one menu named by the window, the
 /// actions its resource publishes in it (the notes app's "Delete" and "Tag…"), each item running
-/// the app's action, and never a menu the shell made up.
+/// the app's action, and never a menu the shell made up. On the canvas, which is the whole
+/// screen, the bar keeps no window menu: each place's own handle carries its commands.
 #[test]
 fn the_macos_bar_carries_the_focused_windows_own_commands() {
-    fn under<'a>(node: &'a tilolang_runtime::UiNode, out: &mut Vec<&'a tilolang_runtime::UiNode>) {
-        for child in &node.children {
-            out.push(child);
-            under(child, out);
-        }
-    }
     let mut r = workspace();
     r.commit();
     r.host.root_of("so.tilo.lang.notes").unwrap();
@@ -544,9 +573,6 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
     scenario(&r, "so.tilo.lang.notes", "a week of notes");
     r.commit();
     use_preset(&mut r, "macos");
-    // The layout is the session's: the scenario writes it in this host, and nothing of it
-    // goes to the workspace.
-    let layout = scenario(&r, APP, "a canvas of spaces");
     let meta = r.host.package(APP).unwrap().meta;
     let shell = meta
         .views
@@ -555,44 +581,36 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
         .expect("the shell's view")
         .id
         .clone();
-    let mut macos = r
-        .host
-        .runtime()
-        .open_view(&Principal::new("ada"), &shell, vec![layout])
-        .unwrap();
-    // A desktop's output: 1280 by 800, where the bar has room for the window's commands.
-    macos.set_space("", tilolang_runtime::Space::from_rem(80.0, 50.0));
-    macos.poll_patches().unwrap();
+    // The layout is the session's: the scenario writes it in this host, and nothing of it goes
+    // to the workspace.
+    let open = |r: &Replica, layout: Value| {
+        let mut view = r
+            .host
+            .runtime()
+            .open_view(&Principal::new("ada"), &shell, vec![layout])
+            .unwrap();
+        // A desktop's output: 1280 by 800, where the bar has room for the window's commands.
+        view.set_space("", tilolang_runtime::Space::from_rem(80.0, 50.0));
+        view.poll_patches().unwrap();
+        view
+    };
     let card = |view: &tilolang_runtime::ViewInstance| format!("{:?}", view.tree());
+    let macos = open(&r, scenario(&r, APP, "a window of several places"));
     // The menu the bar names the window in front by: a button of the bar that holds commands,
     // the shell filling them from the declarations of the resource the window shows (`subject`).
     // The bar carries the shell's own menus too (the workspace, the preset the shell shows).
-    let bar: Vec<tilolang_runtime::UiNode> = nodes(&macos, "ui.MenuButton")
-        .into_iter()
-        .filter(|menu| menu.props.get("role") == Some(&Value::Text("bar".to_owned())))
-        .filter(|menu| menu.props.contains_key("subject"))
-        .collect();
+    let bar = resource_menus(&macos, "bar");
     assert_eq!(
         bar.len(),
         1,
         "the bar holds the window's one menu: {}",
         card(&macos)
     );
-    let mut items = Vec::new();
-    under(bar.last().unwrap(), &mut items);
-    let commands: Vec<String> = items
-        .iter()
-        .filter(|i| i.kind == "ui.MenuItem" && i.events.contains_key("choose"))
-        .filter_map(|i| i.props.get("label").cloned())
-        .filter_map(|label| match label {
-            Value::Text(label) => Some(label),
-            _ => None,
-        })
-        .collect();
+    let listed = commands(&bar[0]);
     for command in ["Delete", "Tag…"] {
         assert!(
-            commands.iter().any(|label| label == command),
-            "the window's menu runs the app's {command}: {commands:?}",
+            listed.iter().any(|label| label == command),
+            "the window's menu runs the app's {command}: {listed:?}",
         );
     }
     // No menu is the shell's own: the bar's menus are the windows' and the shell's own, and the
@@ -611,6 +629,29 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
         !shell_menus.iter().any(|label| label == "File"),
         "no menu the shell made up: {shell_menus:?}"
     );
+
+    // The canvas keeps only the time, the notices and the person on its bar; each note's place
+    // carries the note's commands on its own handle, so none is out of reach.
+    let canvas = open(&r, scenario(&r, APP, "a canvas of spaces"));
+    assert!(
+        resource_menus(&canvas, "bar").is_empty(),
+        "the canvas's bar holds no window menu: {}",
+        card(&canvas)
+    );
+    let handles = resource_menus(&canvas, "plain");
+    assert_eq!(
+        handles.len(),
+        6,
+        "each note's place has its menu: {}",
+        card(&canvas)
+    );
+    for handle in &handles {
+        let listed = commands(handle);
+        assert!(
+            listed.iter().any(|label| label == "Delete"),
+            "a place's menu runs the app's Delete: {listed:?}",
+        );
+    }
 }
 
 /// Every surface that names a window reads the session's one answer: the window's own title and

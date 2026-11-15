@@ -560,14 +560,14 @@ fn views_of(
                 .find(|line| !line.is_empty())
                 .map(|line| said_of(words, &view.id, "doc", None, line));
             let is_primary = primary == Some(view.id.as_str());
+            let is_place = placed == Some(view.id.as_str());
             let opens = (!is_primary)
-                .then(|| open_with_type(&view.id, &name, &label, description.as_deref()));
+                .then(|| open_with_type(&view.id, &name, &label, description.as_deref(), is_place));
             let open_action = opens.as_ref().map_or("open", |opens| opens.id.as_str());
             let mut spec = ResourceViewSpec::new(view.id.clone(), label, open_action);
             if let Some(line) = description {
                 spec = spec.with_description(line);
             }
-            let is_place = placed == Some(view.id.as_str());
             (spec.with_primary(is_primary).with_place(is_place), opens)
         })
         .collect()
@@ -584,11 +584,17 @@ pub fn open_with_id(view: &str) -> String {
 /// [`OpenEffect::OpenWith`](crate::effects::OpenEffect::OpenWith) effect of the view `view` (an
 /// id) under its name `name`, so each view's open action is its alone. Built once per type and
 /// view; each resource binds it ([`open_with_spec`]).
+///
+/// A type's place view (`place`) is what a place shows the resource through standing on its own,
+/// never what a person turns the app's window into: the canvas and an agent's `place` stand it,
+/// so its open action is offered to agents and kept out of people's palette and menus, where it
+/// would replace the window's sidebar and bar with the bare view.
 fn open_with_type(
     view: &str,
     name: &str,
     label: &str,
     description: Option<&str>,
+    place: bool,
 ) -> Arc<ActionType> {
     use tilo_resource::Effect as _;
     let mut spec = crate::effects::OpenEffect::OpenWith {
@@ -601,6 +607,9 @@ fn open_with_type(
     ty.id = open_with_id(name);
     label.clone_into(&mut ty.label);
     ty.description = description.map(str::to_owned);
+    if place {
+        ty.contract.set_audience(tilo_actions::Audience::Agents);
+    }
     Arc::clone(spec.action_type())
 }
 

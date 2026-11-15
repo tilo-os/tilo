@@ -601,7 +601,11 @@ fn bar_lists_actions_for(s: Shell, roomy: Bool, traditional: Bool) -> Bool {
     if traditional or bar_is_traditional(s) {
         return true
     }
-    roomy and s.bar_parts.any(p -> p.slot == Slot.app_menu and p.shown)
+    // On the canvas the bar keeps no window menu (`canvas_keeps`), so its frames keep theirs.
+    roomy
+        and s.bar_parts.any(
+            p -> p.slot == Slot.app_menu and p.shown and (not frames_style() or canvas_keeps(p)),
+        )
 }
 
 /// Whether the bar is the traditional desktop's own (`traditional_bar`): its preset, unchanged
