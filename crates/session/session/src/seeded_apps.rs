@@ -58,10 +58,7 @@ pub fn seeded(
     catalog: &package_store::Catalog,
 ) -> Result<Vec<RecordService>, String> {
     let installed = installed_apps(catalog)?;
-    let host = Host::new(&tilo_resource::Doc::new(), Principal::new(person), || None)
-        .map_err(|e| e.to_string())?;
-    host.set_words(crate::i18n::SeededWords);
-    let mut services = vec![told(RecordService::new(host, person))];
+    let mut services = vec![session_document(person)?];
     for app in &installed {
         services.push(told(seeded_app(person, app)?));
     }
@@ -76,6 +73,21 @@ pub fn seeded(
 pub fn seeded_from_env(person: &str) -> Result<Vec<RecordService>, String> {
     let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
     seeded(person, &catalog)
+}
+
+/// The session's own document, which keeps the records of the packages the session runs itself
+/// (the shell, [`tilo_service::Service::share`]): what a session starts with whether or not it
+/// seeds any app, so the package the shell actually shows — the store's installed
+/// `so.tilo.shell`, else this build's stand-in (`docs/designs/app-language/shell.md` §6) — is one
+/// a REPL's or an agent's program names, as it is on a device whose store holds the shell.
+///
+/// # Errors
+/// The document's host does not open.
+pub fn session_document(person: &str) -> Result<RecordService, String> {
+    let host = Host::new(&tilo_resource::Doc::new(), Principal::new(person), || None)
+        .map_err(|e| e.to_string())?;
+    host.set_words(crate::i18n::SeededWords);
+    Ok(told(RecordService::session_document(host, person)))
 }
 
 /// The record of the installed app `app`: its root made and filled by its first scenario as

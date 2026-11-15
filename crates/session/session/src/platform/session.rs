@@ -1349,6 +1349,24 @@ impl Session {
         let keyboard = crate::keyboard::Keyboard::default();
         let mut started = std::mem::take(&mut options.services);
         started.push(Box::new(shell_service));
+        // The session's own document, which keeps the records of the package it runs itself: the
+        // shell's, whether the store holds one or this build's copy stands in for it
+        // (`docs/designs/app-language/shell.md` §6), so the package the shell shows is one a
+        // REPL's or an agent's program names, and its record is read by its app as Notes' is.
+        // A development session's seeded document is already one; the session runs that one
+        // rather than keeping the shell in a second.
+        if options.shell
+            && !started
+                .iter()
+                .any(|service| service.keeps_session_document())
+        {
+            match crate::seeded_apps::session_document(&options.person) {
+                Ok(document) => started.push(Box::new(document) as Box<dyn Service>),
+                Err(error) => {
+                    tracing::error!(%error, "the session's own document does not open");
+                }
+            }
+        }
         // A service that records who changed what records the person's, not
         // the id its caller made it with: the session knows who sits here
         // before it starts them.
