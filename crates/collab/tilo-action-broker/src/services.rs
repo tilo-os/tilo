@@ -931,6 +931,7 @@ impl HostServices {
         "audio_output",
         "workspace_memberships",
         "agents",
+        "agent_sessions",
         "native_certificates",
         "local_person",
         "record_changes",
