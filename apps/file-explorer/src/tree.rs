@@ -334,8 +334,13 @@ impl TreeBrowser {
             }
         } else if let Some(author) = node.author.as_deref() {
             // A tree that records no version here yet: the person or device
-            // the workspace names, as a name alone.
-            row = row.meta(self.people.name(author));
+            // the workspace names, as a name alone. One it does not name (the
+            // workspace's host, which writes the files of notes) is left
+            // unnamed rather than shown as its key.
+            let name = self.people.name(author);
+            if name != author {
+                row = row.meta(name);
+            }
         }
         if is_folder {
             let dispatch = self.dispatch.clone();

@@ -91,7 +91,7 @@ pub fn records(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<HistoryEntry>
             rows.push(HistoryEntry {
                 id: HistoryEntryId(*version.id.0.as_bytes()),
                 author,
-                entry_kind: crate::widget::EntryKind::Compaction,
+                entry_kind: kind_of(&version.provenance),
                 artifact_kind: collab_types::ArtifactKind::File,
                 timestamp: UNIX_EPOCH
                     .checked_add(Duration::from_millis(version.timestamp_ms))
@@ -105,4 +105,42 @@ pub fn records(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<HistoryEntry>
         }
     }
     rows
+}
+
+/// What a folder's change is, as History groups and marks it: what the file's newest
+/// version in the change did to it.
+fn kind_of(provenance: &fs_protocol::FileProvenance) -> crate::widget::EntryKind {
+    use crate::widget::EntryKind;
+    use fs_protocol::FileProvenance;
+    match provenance {
+        FileProvenance::Create | FileProvenance::Edit | FileProvenance::ConflictResolution => {
+            EntryKind::Details
+        }
+        FileProvenance::Rename | FileProvenance::Move => EntryKind::Move,
+        FileProvenance::Delete => EntryKind::Delete,
+        FileProvenance::Restore { .. } => EntryKind::Restore,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kind_of;
+    use crate::widget::EntryKind;
+    use fs_protocol::{FileProvenance, FileVersionId};
+
+    /// A folder's change is listed as what it did to the file, so History groups a run of
+    /// writes as edits, never as permission changes.
+    #[test]
+    fn a_folder_change_is_listed_as_what_it_did_to_the_file() {
+        assert_eq!(kind_of(&FileProvenance::Create), EntryKind::Details);
+        assert_eq!(kind_of(&FileProvenance::Edit), EntryKind::Details);
+        assert_eq!(kind_of(&FileProvenance::Rename), EntryKind::Move);
+        assert_eq!(kind_of(&FileProvenance::Delete), EntryKind::Delete);
+        assert_eq!(
+            kind_of(&FileProvenance::Restore {
+                from: FileVersionId(uuid::Uuid::nil())
+            }),
+            EntryKind::Restore
+        );
+    }
 }
