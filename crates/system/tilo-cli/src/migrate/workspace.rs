@@ -22,8 +22,10 @@ const ACTION_WAIT: Duration = Duration::from_secs(120);
 const PERSON_WAIT: Duration = Duration::from_secs(6 * 60);
 /// How often a step waiting for its person is asked how it stands.
 const STATUS_EVERY: Duration = Duration::from_secs(2);
-/// How often a step the workspace was too slow to answer is asked again.
-const ACTION_TRIES: u32 = 4;
+/// How often a step the workspace was too slow to answer is asked again, the pause doubling from
+/// two seconds each time (about four minutes in all): a connection busy carrying a large folder
+/// can keep the workspace from answering for a minute or more.
+const ACTION_TRIES: u32 = 7;
 /// The largest piece of an upload one call carries (the session's own bound).
 const PUT_CHUNK: usize = 512 * 1024;
 
@@ -202,10 +204,15 @@ pub(super) fn pending_or(answer: Result<String>) -> Result<String> {
     }
 }
 
-/// Whether the workspace said it was too slow to answer, rather than that it refused.
+/// Whether the workspace said it was too slow to answer, rather than that it refused. A step it
+/// does not know (`Unknown or unowned invocation`) never reached it while the connection was
+/// busy: asked again under its same id, it runs once.
 fn slow(error: &anyhow::Error) -> bool {
     let said = format!("{error:#}");
-    said.contains("did not answer within") || said.contains("not connected to the host")
+    said.contains("did not answer within")
+        || said.contains("not connected to the host")
+        || said.contains("did not answer in time")
+        || said.contains("Unknown or unowned invocation")
 }
 
 impl Workspace for Held {
@@ -228,8 +235,8 @@ impl Workspace for Held {
         let answer = loop {
             match self.tool("tilo_do", &call, Some(run.meta())) {
                 Err(error) if tries < ACTION_TRIES && slow(&error) => {
+                    std::thread::sleep(Duration::from_secs(2_u64 << tries.min(6)));
                     tries = tries.saturating_add(1);
-                    std::thread::sleep(Duration::from_secs(2));
                 }
                 other => break pending_or(other)?,
             }
@@ -303,5 +310,24 @@ impl Workspace for Held {
             bail!("the workspace kept the upload under no reference: {finished}");
         }
         Ok(reference)
+    }
+}
+
+#[cfg(test)]
+mod slow_tests {
+    use super::slow;
+
+    #[test]
+    fn a_step_a_busy_workspace_lost_is_asked_again_and_a_refusal_is_not() {
+        for said in [
+            "Unknown or unowned invocation",
+            "remote actions are unavailable: the device did not answer in time",
+            "the host did not answer within 30 s",
+        ] {
+            assert!(slow(&anyhow::anyhow!(said)), "{said}");
+        }
+        assert!(!slow(&anyhow::anyhow!(
+            "notes#import-markdown: no such page"
+        )));
     }
 }

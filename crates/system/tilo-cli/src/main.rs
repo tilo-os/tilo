@@ -356,7 +356,7 @@ enum Cmd {
         cmd: Option<folders::FoldersCmd>,
     },
     /// Bring your things over from this computer and the services you use: Thunderbird's
-    /// mail, contacts and calendars, Outline and Linear.
+    /// mail, contacts and calendars, Outline, Linear and Forgejo.
     #[command(
         after_help = "Examples:\n  tilo migrate sources\n  tilo migrate review thunderbird\n  \
                             tilo migrate choose thunderbird ada@example.com --only\n  \
