@@ -944,6 +944,27 @@ pub async fn start_serving_records(
     Ok(relay)
 }
 
+/// The workspaces of `workspaces` that hold a notebook: those whose notes a pass brings into
+/// step with their files.
+async fn with_notes(
+    workspaces: &crate::workspaces::Workspaces,
+) -> std::collections::BTreeSet<tilo_relay_protocol::WorkspaceId> {
+    let mut held = std::collections::BTreeSet::new();
+    for summary in workspaces.list().await {
+        let Ok(routes) = workspaces.record_routes(&summary.workspace).await else {
+            continue;
+        };
+        if routes
+            .iter()
+            .any(|(app, _)| WorkspaceActions::is_notebook(app))
+            && let Some(workspace_id) = tilo_relay_protocol::WorkspaceId::parse(&summary.workspace)
+        {
+            held.insert(workspace_id);
+        }
+    }
+    held
+}
+
 /// Give `workspaces` the records `relay` holds, joined as its own device.
 fn attach_records(
     actions: &WorkspaceActions,
@@ -990,11 +1011,15 @@ fn attach_records(
     // its folder brings the two into step, on this host, which holds both.
     if let Some(workspaces) = relay.workspaces() {
         let mut writes = workspaces.record_writes();
+        let workspaces = workspaces.clone();
         let actions = actions.clone();
         tokio::spawn(async move {
             // A workspace takes many writes a second (each keystroke in a note is one): the
-            // workspaces written to are brought into step once a second, together.
-            let mut written = std::collections::BTreeSet::new();
+            // workspaces written to are brought into step once a second, together. Each
+            // workspace that holds notes is brought into step once as the host starts, and
+            // again whenever writes were missed: a write that landed while the host was down,
+            // or one this task fell behind on, still reaches its note or file.
+            let mut written = with_notes(&workspaces).await;
             let mut every = tokio::time::interval(std::time::Duration::from_secs(1));
             every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
@@ -1008,7 +1033,9 @@ fn attach_records(
                                 written.insert(workspace_id);
                             }
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            written.extend(with_notes(&workspaces).await);
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     },
                     _ = every.tick() => {

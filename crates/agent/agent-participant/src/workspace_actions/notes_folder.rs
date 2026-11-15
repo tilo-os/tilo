@@ -32,6 +32,8 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
 use ui::tilo_resource::Resource as _;
 
+use tilo_lock::MutexRecover as _;
+
 use super::{Needs, Worker};
 use crate::participant::actions::record_provider;
 
@@ -380,16 +382,56 @@ fn make_file(tree: &mut Namespace, note: &Note, mtime: u64) {
     write_file(tree, &id, note, mtime);
 }
 
+/// How long a failed pass over a workspace's notes waits before it is tried again, the
+/// first time; each failure after doubles it, up to [`RETRY_MOST`].
+const RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(2);
+/// The longest a failed pass waits before it is tried again.
+const RETRY_MOST: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How long the pass that failed `failures` times in a row waits before it is tried again.
+fn retry_after(failures: u32) -> std::time::Duration {
+    RETRY_FIRST
+        .saturating_mul(1_u32 << failures.saturating_sub(1).min(16))
+        .min(RETRY_MOST)
+}
+
 impl Worker {
+    /// Run a pass over `workspace_id`'s notes and their files: one that fails (the
+    /// workspace not open yet after a restart, a note's edit refused) is tried again after
+    /// a wait, never left until the workspace's next write.
+    pub(super) fn notes_pass(&mut self, workspace_id: WorkspaceId) {
+        self.shared.projecting.lock_recover().remove(&workspace_id);
+        let Err(error) = self.project_notes(workspace_id) else {
+            self.notes_failures.remove(&workspace_id);
+            return;
+        };
+        let failures = self.notes_failures.entry(workspace_id).or_default();
+        *failures = failures.saturating_add(1);
+        let wait = retry_after(*failures);
+        tracing::warn!(%workspace_id, %error, failures = *failures, retry_in = ?wait,
+            "workspace actions: the notes and their files were not brought into step");
+        let shared = std::sync::Arc::clone(&self.shared);
+        let retried = std::thread::Builder::new()
+            .name("notes-retry".into())
+            .spawn(move || {
+                std::thread::sleep(wait);
+                shared.queue_notes_pass(workspace_id);
+            });
+        if let Err(error) = retried {
+            tracing::warn!(%workspace_id, %error, "workspace actions: a failed notes pass is not tried again");
+        }
+    }
+
     /// Make `edits` with Notes' own actions, each as its writer, and record what each
-    /// note and its file agree on once it is made.
+    /// note and its file agree on once it is made. Answers why, when one was not made.
     fn apply_note_edits(
         &mut self,
         workspace_id: WorkspaceId,
         notes_route: &DocumentRoute,
         tree: &mut Namespace,
         edits: Vec<NoteEdit>,
-    ) {
+    ) -> Result<(), String> {
+        let mut failed = None;
         for edit in edits {
             let request = InvokeRequest {
                 invocation: InvocationId::new(),
@@ -414,17 +456,20 @@ impl Worker {
                         tree.set_projection(&node, &source, &agreed);
                     }
                 }
-                Err(error) => tracing::warn!(
-                    page = %edit.page,
-                    action = edit.action,
-                    error = %match &error {
+                Err(error) => {
+                    let error = match &error {
                         crate::participant::actions::Outcome::Rejected(error) => error.to_string(),
-                        crate::participant::actions::Outcome::Failed(error) => error.message.clone(),
-                    },
-                    "a note file's change was not applied to its note"
-                ),
+                        crate::participant::actions::Outcome::Failed(error) => {
+                            error.message.clone()
+                        }
+                    };
+                    tracing::warn!(page = %edit.page, action = edit.action, %error,
+                        "a note file's change was not applied to its note");
+                    failed = Some(format!("{} of note {}: {error}", edit.action, edit.page));
+                }
             }
         }
+        failed.map_or(Ok(()), Err)
     }
 
     /// Bring `workspace_id`'s notes and their files in its folder into step
@@ -491,21 +536,22 @@ impl Worker {
             edits = edits.len(),
             "notes folder: a pass over the notes and their files"
         );
-        self.apply_note_edits(workspace_id, &notes_route, &mut tree, edits);
+        let applied = self.apply_note_edits(workspace_id, &notes_route, &mut tree, edits);
         if existing.is_some() && tree.heads() == loaded {
-            return Ok(());
+            return applied;
         }
         let mutation = if existing.is_some() {
             let change = tree.save_incremental();
             if change.is_empty() {
-                return Ok(());
+                return applied;
             }
             tracing::debug!(bytes = change.len(), "notes folder: the tree is written");
             DocumentMutation::Incremental(change)
         } else {
             DocumentMutation::Snapshot(tree.save())
         };
-        self.commit(workspace_id, &tree_route, &mutation)
+        self.commit(workspace_id, &tree_route, &mutation)?;
+        applied
     }
 }
 

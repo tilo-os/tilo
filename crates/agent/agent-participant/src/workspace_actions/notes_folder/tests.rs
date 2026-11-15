@@ -258,3 +258,12 @@ fn a_note_deleted_in_notes_takes_its_file_to_the_trash() {
     assert!(reconcile(&mut tree, &doc, &notes_of(&app), 2).is_empty());
     assert!(file(&mut tree, "Notes/Terms.md").is_none());
 }
+
+#[test]
+fn a_failed_pass_waits_longer_each_time_up_to_five_minutes() {
+    let waits: Vec<u64> = [1, 2, 3, 8, 9, 40]
+        .into_iter()
+        .map(|failures| super::retry_after(failures).as_secs())
+        .collect();
+    assert_eq!(waits, [2, 4, 8, 256, 300, 300]);
+}

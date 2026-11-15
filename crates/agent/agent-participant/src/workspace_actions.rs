@@ -415,17 +415,16 @@ impl WorkspaceActions {
     /// files in the folder into step ([`notes_folder`]). Writes that arrive while a pass
     /// waits to run are taken in by that pass.
     pub fn notes_folder_written(&self, workspace_id: WorkspaceId) {
-        if !self.shared.projecting.lock_recover().insert(workspace_id) {
-            return;
+        if self.shared.queue_notes_pass(workspace_id) {
+            self.join_ahead(workspace_id);
         }
-        self.join_ahead(workspace_id);
-        if let Some(jobs) = self.shared.jobs.lock_recover().as_ref()
-            && jobs
-                .send((Instant::now(), Job::NotesFolder(workspace_id)))
-                .is_err()
-        {
-            self.shared.projecting.lock_recover().remove(&workspace_id);
-        }
+    }
+
+    /// Whether `app`'s workspace record is the notebook whose notes are files in the
+    /// workspace's folder: a workspace without one has no notes to bring into step.
+    #[must_use]
+    pub fn is_notebook(app: &str) -> bool {
+        app == notes_folder::NOTES_APP
     }
 
     /// Whether a write to `app`'s record is one [`Self::notes_folder_written`] follows.
@@ -1315,6 +1314,9 @@ struct Worker {
     /// The registered reads listings offer, kept between them
     /// ([`canonical`]).
     canonical: canonical::CanonicalReads,
+    /// How many passes over each workspace's notes and their files failed in a row
+    /// ([`notes_folder`]): the next is tried again after a wait that grows with them.
+    notes_failures: HashMap<WorkspaceId, u32>,
 }
 
 /// The door's answer for an action it has nothing by that address.
@@ -1396,6 +1398,24 @@ fn take_all(
     Ok(taken)
 }
 
+impl Shared {
+    /// Queue a pass over `workspace_id`'s notes and their files, unless one waits to run
+    /// already, which takes in whatever this one would have: whether it was queued.
+    fn queue_notes_pass(&self, workspace_id: WorkspaceId) -> bool {
+        if !self.projecting.lock_recover().insert(workspace_id) {
+            return false;
+        }
+        let sent = self.jobs.lock_recover().as_ref().is_some_and(|jobs| {
+            jobs.send((Instant::now(), Job::NotesFolder(workspace_id)))
+                .is_ok()
+        });
+        if !sent {
+            self.projecting.lock_recover().remove(&workspace_id);
+        }
+        sent
+    }
+}
+
 impl Worker {
     fn new(link: &dyn WorkspaceRecordsLink, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
         let host_device = link.host_device();
@@ -1415,6 +1435,7 @@ impl Worker {
             clock: 0,
             handed: HashMap::new(),
             canonical: canonical::CanonicalReads::default(),
+            notes_failures: HashMap::new(),
         }
     }
 
@@ -1741,12 +1762,7 @@ impl Worker {
                     done,
                 } => done.complete(self.changes(workspace_id, &caller, after.as_deref())),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
-                Job::NotesFolder(workspace_id) => {
-                    self.shared.projecting.lock_recover().remove(&workspace_id);
-                    if let Err(error) = self.project_notes(workspace_id) {
-                        tracing::warn!(%workspace_id, %error, "workspace actions: the notes and their files were not brought into step");
-                    }
-                }
+                Job::NotesFolder(workspace_id) => self.notes_pass(workspace_id),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {
                     workspace_id,
