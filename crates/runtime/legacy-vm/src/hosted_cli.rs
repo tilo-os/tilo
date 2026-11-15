@@ -79,6 +79,15 @@ usage: tilo-legacy hosted <command>
                          with its status. For operators checking a host
   suspend --run DIR WORKSPACE ENVIRONMENT
   stop --run DIR WORKSPACE ENVIRONMENT
+  branch --run DIR --workspace ID --account ID --from WORKSPACE [--environment ID]
+         [--size SIZE]
+                         make the workspace's VM from the disk of FROM's VM as it
+                         is now (its tools, its tenant's home), in the account
+                         FROM's VM is the account's; it boots cold and forgets
+                         FROM's sessions before its first one
+  delete --run DIR WORKSPACE ENVIRONMENT
+                         stop the workspace's VM and remove its disk and
+                         snapshot; it no longer counts toward the account's VMs
   browser-open --run DIR --workspace ID --account ID [--size SIZE] [--store DIR]
                [--material JSON]
                          open or attach the browser session in a workspace's
@@ -194,6 +203,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
             };
             ask(&flags, &request)
         }
+        "branch" | "delete" => branch_or_delete(command, &Flags::parse(rest, &[])?),
         "suspend" | "stop" => {
             let flags = Flags::parse(rest, &[])?;
             let [workspace, environment] = flags.rest.as_slice() else {
@@ -219,6 +229,30 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         other => Err(format!("unknown hosted command {other:?}\n{USAGE}")),
     }
+}
+
+/// Make a workspace's VM a branch of another's, or delete one.
+fn branch_or_delete(command: &str, flags: &Flags) -> Result<ExitCode, String> {
+    let request = if command == "branch" {
+        Request::Branch {
+            vm: control::VmRequest {
+                workspace: flags.need("--workspace")?.to_string(),
+                environment: flags.get("--environment").unwrap_or("default").to_string(),
+                account: flags.need("--account")?.to_string(),
+                size: vm_size(flags)?,
+            },
+            from: flags.need("--from")?.to_string(),
+        }
+    } else {
+        let [workspace, environment] = flags.rest.as_slice() else {
+            return Err("delete: WORKSPACE ENVIRONMENT".to_string());
+        };
+        Request::Delete {
+            workspace: workspace.clone(),
+            environment: environment.clone(),
+        }
+    };
+    ask(flags, &request)
 }
 
 /// Fetch the pinned guest image and say what a VM boots: the kernel's path and the root

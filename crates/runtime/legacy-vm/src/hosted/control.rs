@@ -102,6 +102,19 @@ pub enum Request {
     StopApps {
         workspace: String,
     },
+    /// Make the VM `vm`, which must not exist, from the disk of workspace `from`'s VM in the same
+    /// environment, as it is now: its tools, its tenant's home. Only its disk: it boots cold, and
+    /// keeps nothing of `from`'s sessions. Answered [`Reply::Done`] once its disk is there.
+    Branch {
+        vm: VmRequest,
+        from: String,
+    },
+    /// Stop the VM and remove it, its disk and its snapshot: it no longer counts toward the
+    /// account's VMs. Deleting one there is not is [`Reply::Done`] too.
+    Delete {
+        workspace: String,
+        environment: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -350,7 +363,10 @@ mod tests {
                 },
                 b"\x04\x01a\x01\xac\x02".to_vec(),
             ),
-            (Request::Place { vm }, bytes(&[b"\x05", vm_bytes])),
+            (
+                Request::Place { vm: vm.clone() },
+                bytes(&[b"\x05", vm_bytes]),
+            ),
             (
                 Request::OpenBrowser {
                     browser: OpenBrowser {
@@ -386,6 +402,20 @@ mod tests {
                     workspace: "ws".into(),
                 },
                 b"\x09\x02ws".to_vec(),
+            ),
+            (
+                Request::Branch {
+                    vm,
+                    from: "src".into(),
+                },
+                bytes(&[b"\x0a", vm_bytes, b"\x03src"]),
+            ),
+            (
+                Request::Delete {
+                    workspace: "ws".into(),
+                    environment: "default".into(),
+                },
+                bytes(&[b"\x0b", named]),
             ),
         ]
     }

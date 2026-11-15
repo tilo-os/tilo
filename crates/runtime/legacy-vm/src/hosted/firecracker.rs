@@ -102,6 +102,13 @@ impl VmFiles {
         }
     }
 
+    /// Present while the VM is a branch whose guest has not yet forgotten the sessions of the VM it
+    /// was made from ([`branch_disk`]): beside the meter, never the VM's own to remove.
+    #[must_use]
+    pub fn branched(&self) -> PathBuf {
+        self.state.join("branched")
+    }
+
     #[must_use]
     pub fn api_socket(&self) -> PathBuf {
         self.run.join("api.sock")
@@ -251,6 +258,21 @@ pub fn clone_vm(template: &VmFiles, files: &VmFiles) -> io::Result<()> {
     let partial = files.disk().with_extension("raw.partial");
     copy_sparse(&template.disk(), &partial)?;
     std::fs::rename(&partial, files.disk())
+}
+
+/// Make `to`'s VM a branch of `from`'s: a copy of its disk alone, sharing its blocks where the
+/// filesystem can, grown to `size`. No memory, no vCPU state and no configuration go with it, so it
+/// boots cold. The disk is written under another name and renamed last, as a VM is what its disk
+/// says: a copy cut short leaves no disk.
+pub fn branch_disk(from: &VmFiles, to: &VmFiles, size: VmSize) -> io::Result<()> {
+    std::fs::create_dir_all(to.vmm())?;
+    let partial = to.disk().with_extension("raw.partial");
+    let made = copy_sparse(&from.disk(), &partial).and_then(|()| grow_disk(&partial, size));
+    if let Err(error) = made {
+        let _ = std::fs::remove_file(&partial);
+        return Err(error);
+    }
+    std::fs::rename(&partial, to.disk())
 }
 
 #[must_use]
@@ -608,6 +630,56 @@ mod tests {
         assert_eq!(std::fs::read(&from.memory).unwrap(), [1_u8; 8192]);
         let memory = std::fs::read(&to.memory).unwrap();
         assert_eq!((memory[0], memory[4096]), (1, 9));
+    }
+
+    #[test]
+    fn a_branch_is_its_sources_disk_alone_and_a_failed_one_leaves_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = files(&dir.path().join("source"));
+        let snapshot = source.snapshot();
+        std::fs::create_dir_all(source.vmm()).unwrap();
+        std::fs::write(source.disk(), b"the source's disk").unwrap();
+        std::fs::write(&snapshot.state, b"state").unwrap();
+        std::fs::write(&snapshot.memory, [1_u8; 8192]).unwrap();
+        std::fs::write(source.config(), b"{}").unwrap();
+        let branch = files(&dir.path().join("branch"));
+        branch_disk(&source, &branch, VmSize::Small).unwrap();
+        let mut head = [0_u8; 17];
+        std::fs::File::open(branch.disk())
+            .unwrap()
+            .read_exact_at(&mut head, 0)
+            .unwrap();
+        assert_eq!(&head, b"the source's disk");
+        assert_eq!(
+            std::fs::metadata(branch.disk()).unwrap().len(),
+            VmSize::Small.disk_bytes(),
+            "grown to the branch's size, its holes not stored"
+        );
+        let mut names: Vec<String> = std::fs::read_dir(branch.vmm())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["disk.raw"],
+            "its disk alone: no memory, state or configuration"
+        );
+        assert!(!branch.snapshot().valid(), "a branch boots cold");
+        std::fs::write(branch.disk(), b"the branch writes").unwrap();
+        assert_eq!(
+            std::fs::read(source.disk()).unwrap(),
+            b"the source's disk",
+            "a branch's writes are its own"
+        );
+
+        let gone = files(&dir.path().join("gone"));
+        let failed = files(&dir.path().join("failed"));
+        assert!(branch_disk(&gone, &failed, VmSize::Small).is_err());
+        assert!(
+            std::fs::read_dir(failed.vmm()).unwrap().next().is_none(),
+            "a copy cut short leaves no disk and no part of one"
+        );
     }
 
     fn files(dir: &Path) -> VmFiles {

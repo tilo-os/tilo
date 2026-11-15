@@ -391,6 +391,7 @@ impl HostedVm {
                 Action::AwaitAgent => {
                     self.await_agent()?;
                     self.life.agent_ready();
+                    self.forget_branch_source()?;
                 }
                 Action::SyncShares => self.sync_shares()?,
                 Action::DetachShares => {
@@ -401,6 +402,93 @@ impl HostedVm {
                 Action::Suspend => self.snapshot_and_exit()?,
             }
         }
+        Ok(())
+    }
+
+    /// Copy this VM's disk to `to`, grown to `size`, for a branch ([`firecracker::branch_disk`]):
+    /// the copy is a filesystem the branch boots from, holding everything a command in this VM had
+    /// finished writing. A running VM syncs its guest and is paused for the copy, then runs on. A
+    /// suspended one may hold in its saved memory what its disk does not, so it is woken for that
+    /// and suspended again. One that is off is copied as it is: stopping synced it. `Ok(false)`:
+    /// it has no disk, so nothing was copied.
+    pub fn branch_disk(&mut self, to: &VmFiles, size: VmSize) -> Result<bool, VmError> {
+        self.reap();
+        match self.life.phase() {
+            Phase::NotCreated => Ok(false),
+            Phase::Off => {
+                firecracker::branch_disk(&self.files, to, size)?;
+                Ok(true)
+            }
+            Phase::Running => {
+                self.copy_paused(to, size)?;
+                Ok(true)
+            }
+            Phase::Suspended => {
+                self.ensure(&[], false)?;
+                let copied = self.copy_paused(to, size);
+                let suspended = self.suspend();
+                copied?;
+                suspended?;
+                Ok(true)
+            }
+            Phase::Starting | Phase::Suspending => Err(LifecycleError::Busy.into()),
+        }
+    }
+
+    /// Sync the guest, pause it, copy its disk and let it run on. The sync puts on the disk what
+    /// the guest had written, and the pause holds the disk still while it is copied: a write after
+    /// the sync is either on the copy whole or a journal replays it away at the branch's boot.
+    fn copy_paused(&mut self, to: &VmFiles, size: VmSize) -> Result<(), VmError> {
+        self.sync_guest()?;
+        let api = Api::new(self.files.api_socket());
+        api.pause()?;
+        let copied = firecracker::branch_disk(&self.files, to, size);
+        if let Err(error) = api.resume().or_else(|_| api.resume()) {
+            // A VM that does not run on is no VM: end it, as a wake that failed half-way is.
+            self.fail();
+            return Err(error.into());
+        }
+        Ok(copied?)
+    }
+
+    /// A branch's guest forgets the sessions of the VM it was copied from before anything here is
+    /// told it is up: their device keys and certificates, their secrets, and Browser's whole
+    /// profile, so no session that starts in it holds them. The tenant's own files stay; they are
+    /// what a branch is for. Until the guest said it forgot them, the mark stays and the wake
+    /// fails, so the next wake asks again.
+    fn forget_branch_source(&self) -> Result<(), VmError> {
+        if !self.files.branched().exists() {
+            return Ok(());
+        }
+        let link = self.link.as_ref().ok_or(VmError::NotRunning)?;
+        let stream = link.connect(AGENT_PORT)?;
+        stream.set_read_timeout(Some(Duration::from_secs(60)))?;
+        let (mut out, mut err) = (std::io::sink(), Vec::new());
+        let status = client::launch(
+            stream,
+            &legacy_agent_protocol::Launch {
+                argv: forget_source_argv(),
+                cwd: Some("/".to_string()),
+                env: Vec::new(),
+                stdio: legacy_agent_protocol::Stdio::Null,
+                display: legacy_agent_protocol::Display::None,
+            },
+            client::LaunchIo {
+                stdin: None,
+                stdout: &mut out,
+                stderr: &mut err,
+                started: &mut |_| {},
+            },
+            |_| {},
+        )?;
+        if status.shell_code() != 0 {
+            return Err(std::io::Error::other(format!(
+                "the branch did not forget the sessions of the VM it was made from (status {})",
+                status.shell_code()
+            ))
+            .into());
+        }
+        std::fs::remove_file(self.files.branched())?;
         Ok(())
     }
 
@@ -842,6 +930,33 @@ impl Drop for HostedVm {
 /// The descriptor a share server gets its bound listener on.
 pub const LISTEN_FD: i32 = 3;
 
+/// What a branch's guest runs, as root through the tenant's `sudo`, before its first session: the
+/// sessions' own directories in the tenant's home (`~/.config/tilo` holds the device's key and
+/// certificate, `~/.local/share/tilo` its secrets and runtime, `~/.local/state/tilo` and
+/// `~/.cache/tilo` what the session keeps), and Browser's account's whole home, which is its
+/// profile, made again as the image makes it. It fails unless every one of them is gone.
+const FORGET_SOURCE: &str = "set -eu
+tenant=$(getent passwd tilo | cut -d: -f6)
+browser=$(getent passwd tilo-browser | cut -d: -f6)
+[ -n \"$tenant\" ]
+[ -n \"$browser\" ]
+for gone in \"$tenant/.config/tilo\" \"$tenant/.local/share/tilo\" \"$tenant/.local/state/tilo\" \"$tenant/.cache/tilo\"; do
+  rm -rf -- \"$gone\"
+  [ ! -e \"$gone\" ]
+done
+rm -rf -- \"$browser\"
+install -d -m 0700 -o tilo-browser -g tilo-browser \"$browser\"
+[ -z \"$(ls -A \"$browser\")\" ]
+sync
+";
+
+#[must_use]
+pub fn forget_source_argv() -> Vec<String> {
+    ["/usr/bin/sudo", "-n", "/bin/sh", "-c", FORGET_SOURCE]
+        .map(str::to_owned)
+        .to_vec()
+}
+
 fn record_in(ledger: Option<&Ledger>, record: Option<&UsageRecord>) -> Result<(), VmError> {
     match (ledger, record) {
         (Some(ledger), Some(record)) => Ok(ledger.append(record)?),
@@ -930,6 +1045,28 @@ fn kill_stray(files: &VmFiles, jail: Option<&Jail>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_branch_forgets_every_session_of_its_source_as_root_and_keeps_the_tenants_files() {
+        let argv = forget_source_argv();
+        assert_eq!(argv[..4], ["/usr/bin/sudo", "-n", "/bin/sh", "-c"]);
+        let script = &argv[4];
+        assert!(
+            script.starts_with("set -eu\n"),
+            "a step that fails fails it"
+        );
+        for gone in [
+            "$tenant/.config/tilo",
+            "$tenant/.local/share/tilo",
+            "$tenant/.local/state/tilo",
+        ] {
+            assert!(script.contains(&format!("\"{gone}\"")), "{gone}");
+        }
+        assert!(script.contains("rm -rf -- \"$browser\"\n"));
+        for kept in [".ssh", ".gitconfig", ".cargo", ".local/bin"] {
+            assert!(!script.contains(kept), "{kept} is the tenant's");
+        }
+    }
 
     #[test]
     fn a_share_server_is_confined_to_its_share() {

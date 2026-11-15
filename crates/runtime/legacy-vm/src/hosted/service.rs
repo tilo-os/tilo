@@ -23,10 +23,11 @@ use super::files::Served;
 use super::firecracker::VmFiles;
 use super::memory::{self, Budget};
 use super::meter::{Ledger, Meter, VmIdentity, summarize};
-use super::plan::{AwakeVm, Plans, admit};
+use super::plan::{AwakeVm, Plans, Refusal, admit};
 use super::size::VmSize;
 use super::valid_name;
 use super::vm::{Clock, HostedVm, Settings, VmError};
+use crate::lifecycle::Phase;
 use tilo_actions::remote::host_account;
 
 /// How often awake VMs are asked what runs in them.
@@ -49,6 +50,9 @@ const BROWSER_GRACE: Duration = Duration::from_secs(15);
 /// whoever waited for the template is still waiting: ten minutes is long past
 /// any check or placer that asked for it.
 const TEMPLATE_RETRY_MS: u64 = 60 * 1000;
+
+/// What a request for a VM that was deleted while it waited is told.
+const DELETED: &str = "the workspace's VM was deleted; ask again for a new one";
 
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
@@ -103,6 +107,8 @@ struct Entry {
     /// The apps session; the tenant's own, never the browser's.
     apps: Mutex<Option<Arc<Browser>>>,
     memory: Mutex<Measured>,
+    /// Deleted: its files are gone, and whoever still holds it wakes nothing.
+    gone: AtomicBool,
 }
 
 /// MiB the VM's process holds of this host's memory; `None` until it is measured since it woke.
@@ -147,6 +153,9 @@ pub struct Service {
     browser_limits: Limits,
     /// When each size's template was last tried: building, or failed.
     templates: Mutex<BTreeMap<VmSize, u64>>,
+    /// The VMs being made as branches of others, each with its account: no wake takes one, and
+    /// each counts toward its account's VMs.
+    branching: Mutex<BTreeMap<String, String>>,
 }
 
 #[derive(Debug)]
@@ -242,6 +251,7 @@ impl Service {
             waiting: Mutex::new(BTreeMap::new()),
             browser_limits: Limits::default(),
             templates: Mutex::new(BTreeMap::new()),
+            branching: Mutex::new(BTreeMap::new()),
             config,
         };
         let vms_dir = service.config.state.join("vms");
@@ -295,6 +305,7 @@ impl Service {
             browser: Mutex::new(None),
             apps: Mutex::new(None),
             memory: Mutex::new(Measured::default()),
+            gone: AtomicBool::new(false),
         });
         lock(&self.vms).insert(entry.id(), Arc::clone(&entry));
         Ok(entry)
@@ -334,6 +345,9 @@ impl Service {
             .collect::<Result<_, _>>()?;
         let entry = self.admit(request, true)?;
         let mut vm = lock(&entry.vm);
+        if entry.gone.load(Ordering::SeqCst) {
+            return Err(EnsureError::Invalid(DELETED.to_owned()));
+        }
         let result = (|| {
             vm.resize(request.size)?;
             *lock(&entry.size) = request.size;
@@ -379,6 +393,14 @@ impl Service {
                 u32::try_from(mine.len()).unwrap_or(u32::MAX),
             )
         };
+        let existing = existing.saturating_add(self.branches_of(&request.account));
+        if lock(&self.branching).contains_key(&id) {
+            return Err(EnsureError::Invalid(format!(
+                "the VM of workspace {} is being made from another workspace's; ask again in a \
+                 moment",
+                request.workspace
+            )));
+        }
         if let Some(entry) = &existing_entry
             && entry.account != request.account
         {
@@ -686,6 +708,9 @@ impl Service {
             })
             .collect();
         let mut vm = lock(&entry.vm);
+        if entry.gone.load(Ordering::SeqCst) {
+            return Err(BrowserError::Session(DELETED.to_owned()));
+        }
         let woke = (|| {
             vm.resize(size)?;
             *lock(&entry.size) = size;
@@ -845,6 +870,229 @@ impl Service {
         made
     }
 
+    /// The VMs being made as branches for `account`.
+    fn branches_of(&self, account: &str) -> u32 {
+        let count = lock(&self.branching)
+            .values()
+            .filter(|of| *of == account)
+            .count();
+        u32::try_from(count).unwrap_or(u32::MAX)
+    }
+
+    /// Make `request`'s VM, which must not exist, a branch of workspace `from`'s VM in the same
+    /// environment ([`Request::Branch`]): a copy of its disk as it is now ([`HostedVm::branch_disk`]),
+    /// which boots cold and whose guest forgets `from`'s sessions before its first one. It is the
+    /// account's whose `from`'s VM is, as this host recorded it, and the account's plan admits it
+    /// as any new VM; it is at least `from`'s size. A branch that could not be made leaves no VM.
+    pub fn branch(&self, request: &VmRequest, from: &str) -> Result<(), EnsureError> {
+        for (what, name) in [
+            ("workspace", request.workspace.as_str()),
+            ("environment", request.environment.as_str()),
+            ("account", request.account.as_str()),
+            ("workspace", from),
+        ] {
+            if !valid_name(name) {
+                return Err(EnsureError::Invalid(format!("{name:?} is not a {what} id")));
+            }
+        }
+        if from == request.workspace {
+            return Err(EnsureError::Invalid(format!(
+                "the VM of workspace {from} is not branched into itself"
+            )));
+        }
+        let id = format!("{}/{}", request.workspace, request.environment);
+        let source = self.reserve_branch(request, from, &id)?;
+        let made = self.make_branch(&source, request);
+        lock(&self.branching).remove(&id);
+        made
+    }
+
+    /// `from`'s VM, with `id` reserved for its branch, or why not.
+    fn reserve_branch(
+        &self,
+        request: &VmRequest,
+        from: &str,
+        id: &str,
+    ) -> Result<Arc<Entry>, EnsureError> {
+        let _admission = lock(&self.admission);
+        if self.evicting.load(Ordering::SeqCst) {
+            return Err(EnsureError::Moving);
+        }
+        let plans = Plans::load(&self.config.plans).map_err(EnsureError::Invalid)?;
+        let vms = lock(&self.vms);
+        let source = vms
+            .get(&format!("{from}/{}", request.environment))
+            .cloned()
+            .ok_or_else(|| EnsureError::Invalid(no_vm_yet(from)))?;
+        if source.account != request.account {
+            return Err(EnsureError::Invalid(format!(
+                "the VM of workspace {from} belongs to another account"
+            )));
+        }
+        let target = self.config.files(&request.workspace, &request.environment);
+        let mut branching = lock(&self.branching);
+        if vms.contains_key(id) || branching.contains_key(id) || target.disk().exists() {
+            return Err(EnsureError::Invalid(format!(
+                "workspace {} already has a VM; a branch is made as a new one",
+                request.workspace
+            )));
+        }
+        let at_least = *lock(&source.size);
+        if request.size < at_least {
+            return Err(EnsureError::Invalid(format!(
+                "the VM of workspace {from} is {at_least}, and a branch of it is no smaller"
+            )));
+        }
+        let existing = vms
+            .values()
+            .filter(|entry| entry.account == request.account)
+            .count()
+            .saturating_add(
+                branching
+                    .values()
+                    .filter(|account| **account == request.account)
+                    .count(),
+            );
+        drop(vms);
+        // A branch is made asleep: what runs is not its plan's question until it wakes.
+        match admit(
+            &plans,
+            &request.account,
+            id,
+            request.size,
+            &[],
+            u32::try_from(existing).unwrap_or(u32::MAX),
+            false,
+        ) {
+            Ok(()) | Err(Refusal::TooManyRunning { .. }) => {}
+            Err(refusal) => {
+                return Err(EnsureError::Refused(
+                    refusal.typed(plans.sells.as_ref(), &request.account),
+                ));
+            }
+        }
+        branching.insert(id.to_owned(), request.account.clone());
+        drop(branching);
+        Ok(source)
+    }
+
+    fn make_branch(&self, source: &Entry, request: &VmRequest) -> Result<(), EnsureError> {
+        let target = self.config.files(&request.workspace, &request.environment);
+        let from = source.workspace.clone();
+        // What an earlier branch cut short left holds no disk, so it is no VM.
+        remove_dir_if_present(&target.state).map_err(|error| EnsureError::Vm(error.into()))?;
+        let made = (|| {
+            // First, so a host that stops between the copy and the meter still has its guest
+            // forget `from`'s sessions at the branch's first wake.
+            std::fs::create_dir_all(&target.state).map_err(|e| EnsureError::Vm(e.into()))?;
+            std::fs::write(target.branched(), format!("{}\n", source.id()))
+                .map_err(|e| EnsureError::Vm(e.into()))?;
+            let mut vm = lock(&source.vm);
+            if source.gone.load(Ordering::SeqCst) {
+                return Ok(false);
+            }
+            if vm.phase() == Phase::Suspended {
+                // It wakes for the copy, and takes this host's memory while it is awake.
+                let _admission = lock(&self.admission);
+                if self.evicting.load(Ordering::SeqCst) {
+                    return Err(EnsureError::Moving);
+                }
+                if !self.room_for(self.budget.expected_mib(), &source.id()) {
+                    return Err(EnsureError::HostFull);
+                }
+                source.awake.store(true, Ordering::SeqCst);
+            }
+            let copied = vm.branch_disk(&target, request.size);
+            source.awake.store(vm.awake(), Ordering::SeqCst);
+            drop(vm);
+            copied.map_err(EnsureError::Vm)
+        })();
+        let made = match made {
+            Ok(true) => self
+                .insert(
+                    VmIdentity {
+                        vm: format!("{}/{}", request.workspace, request.environment),
+                        workspace: request.workspace.clone(),
+                        environment: request.environment.clone(),
+                        account: source.account.clone(),
+                        size: request.size,
+                    },
+                    target.clone(),
+                )
+                .map(drop)
+                .map_err(EnsureError::Vm),
+            Ok(false) => Err(EnsureError::Invalid(no_vm_yet(&from))),
+            Err(error) => Err(error),
+        };
+        if made.is_err()
+            && let Err(error) = remove_dir_if_present(&target.state)
+        {
+            eprintln!(
+                "tilo-legacy hosted: {}/{}: what a failed branch left: {error}",
+                request.workspace, request.environment
+            );
+        }
+        made
+    }
+
+    /// Delete the VM ([`Request::Delete`]): stop it as [`Self::stop`] does, closing its run and its
+    /// snapshot in the ledger, then remove its disk, snapshot and meter. The account's records stay
+    /// in the ledger. One there is not is deleted already.
+    pub fn delete(&self, workspace: &str, environment: &str) -> Result<(), EnsureError> {
+        for (what, name) in [("workspace", workspace), ("environment", environment)] {
+            if !valid_name(name) {
+                return Err(EnsureError::Invalid(format!("{name:?} is not a {what} id")));
+            }
+        }
+        let id = format!("{workspace}/{environment}");
+        let files = self.config.files(workspace, environment);
+        if self
+            .config
+            .settings
+            .templates
+            .as_ref()
+            .is_some_and(|templates| files.state.starts_with(templates))
+        {
+            return Err(EnsureError::Invalid(
+                "a template is the host's, not a workspace's VM".to_owned(),
+            ));
+        }
+        if lock(&self.branching).contains_key(&id) {
+            return Err(EnsureError::Invalid(format!(
+                "the VM of workspace {workspace} is being made; ask again in a moment"
+            )));
+        }
+        if let Some(entry) = self.entry(workspace, environment) {
+            end_sessions(&entry, BROWSER_GRACE);
+            // Held until its files are gone: a wake that waited for it finds it gone, never a VM
+            // half removed.
+            let mut vm = lock(&entry.vm);
+            let stopped = vm.stop();
+            entry.awake.store(vm.awake(), Ordering::SeqCst);
+            stopped.map_err(EnsureError::Vm)?;
+            entry.gone.store(true, Ordering::SeqCst);
+            self.forget(&id, &entry);
+            let removed = remove_dir_if_present(&files.state);
+            drop(vm);
+            removed.map_err(|error| EnsureError::Vm(error.into()))?;
+        } else {
+            remove_dir_if_present(&files.state).map_err(|error| EnsureError::Vm(error.into()))?;
+        }
+        let _ = remove_dir_if_present(&files.run);
+        Ok(())
+    }
+
+    /// No longer hold `entry` as `id`'s VM.
+    fn forget(&self, id: &str, entry: &Arc<Entry>) {
+        let _admission = lock(&self.admission);
+        let mut vms = lock(&self.vms);
+        if vms.get(id).is_some_and(|held| Arc::ptr_eq(held, entry)) {
+            vms.remove(id);
+        }
+        drop(vms);
+        lock(&self.waiting).remove(id);
+    }
+
     pub fn suspend(&self, workspace: &str, environment: &str) -> Result<(), VmError> {
         let Some(entry) = self.entry(workspace, environment) else {
             return Ok(());
@@ -1000,6 +1248,11 @@ impl Service {
             Request::Place { .. } => {
                 Reply::Error("a host runs VMs; a placer answers where".to_owned())
             }
+            Request::Branch { vm, from } => self.answer_branch(&vm, &from),
+            Request::Delete {
+                workspace,
+                environment,
+            } => self.answer_delete(&workspace, &environment),
             Request::Usage {
                 account,
                 from_ms,
@@ -1015,6 +1268,31 @@ impl Service {
                 }
                 Err(error) => Reply::Error(error.to_string()),
             },
+        }
+    }
+
+    fn answer_branch(&self, vm: &VmRequest, from: &str) -> Reply {
+        match self.branch(vm, from) {
+            Ok(()) => Reply::Done,
+            Err(EnsureError::Refused(refusal)) => Reply::Refused(refusal),
+            Err(EnsureError::HostFull) => Reply::Busy(format!(
+                "the VM of workspace {from} is asleep, and this host has no room to wake it for \
+                 the copy now; ask again in a minute"
+            )),
+            Err(EnsureError::Vm(error)) => Reply::Error(format!(
+                "the VM of workspace {from} could not be branched: {error}"
+            )),
+            Err(error) => Reply::Error(error.to_string()),
+        }
+    }
+
+    fn answer_delete(&self, workspace: &str, environment: &str) -> Reply {
+        match self.delete(workspace, environment) {
+            Ok(()) => Reply::Done,
+            Err(EnsureError::Vm(error)) => Reply::Error(format!(
+                "the VM of workspace {workspace} could not be deleted: {error}"
+            )),
+            Err(error) => Reply::Error(error.to_string()),
         }
     }
 
@@ -1121,6 +1399,21 @@ fn answer(mut stream: UnixStream, service: &Service) {
     if let Ok(Some(request)) = FRAMING.read_value::<_, Request>(&mut stream) {
         let reply = service.handle(request);
         let _ = FRAMING.write_value(&mut stream, &reply);
+    }
+}
+
+/// What a branch of `workspace`'s VM is told when it has none.
+fn no_vm_yet(workspace: &str) -> String {
+    format!(
+        "workspace {workspace} has no Linux VM yet, so there is nothing to branch: a new \
+         workspace's VM starts as every workspace's does, at its first Linux command"
+    )
+}
+
+fn remove_dir_if_present(dir: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
     }
 }
 
@@ -1817,5 +2110,331 @@ mod tests {
             });
             assert!(matches!(reply, Reply::Error(_)), "{reply:?}");
         }
+    }
+
+    /// A VM `account` keeps at `size`, off: its disk holds `disk`, and its Firecracker directory
+    /// also holds each of `beside`.
+    fn with_disk(
+        config: &ServiceConfig,
+        workspace: &str,
+        account: &str,
+        size: VmSize,
+        disk: &[u8],
+        beside: &[&str],
+    ) -> VmFiles {
+        let files = config.files(workspace, "default");
+        Meter::new(VmIdentity {
+            vm: format!("{workspace}/default"),
+            workspace: workspace.into(),
+            environment: "default".into(),
+            account: account.into(),
+            size,
+        })
+        .save(&files.meter())
+        .unwrap();
+        std::fs::create_dir_all(files.vmm()).unwrap();
+        std::fs::write(files.disk(), disk).unwrap();
+        for name in beside {
+            std::fs::write(files.vmm().join(name), name.as_bytes()).unwrap();
+        }
+        files
+    }
+
+    fn branch(
+        service: &Service,
+        workspace: &str,
+        account: &str,
+        size: VmSize,
+        from: &str,
+    ) -> Reply {
+        service.handle(Request::Branch {
+            vm: request(workspace, account, size),
+            from: from.into(),
+        })
+    }
+
+    fn delete(service: &Service, workspace: &str) -> Reply {
+        service.handle(Request::Delete {
+            workspace: workspace.into(),
+            environment: "default".into(),
+        })
+    }
+
+    fn head(path: &Path, len: usize) -> Vec<u8> {
+        use std::os::unix::fs::FileExt as _;
+        let mut bytes = vec![0_u8; len];
+        std::fs::File::open(path)
+            .unwrap()
+            .read_exact_at(&mut bytes, 0)
+            .unwrap();
+        bytes
+    }
+
+    fn held(service: &Service) -> Vec<(String, String, String)> {
+        service
+            .status()
+            .into_iter()
+            .map(|vm| (vm.vm, vm.account, vm.phase))
+            .collect()
+    }
+
+    fn error(reply: Reply) -> String {
+        match reply {
+            Reply::Error(message) => message,
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_branch_is_its_sources_disk_in_a_vm_of_its_own_that_boots_cold() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let source = with_disk(
+            &config,
+            "ws1",
+            "acct-1",
+            VmSize::Small,
+            b"the tenant's tools",
+            &["vm.mem", "firecracker.json"],
+        );
+        let service = open_at(&config, 0);
+        assert_eq!(
+            branch(&service, "ws2", "acct-1", VmSize::Default, "ws1"),
+            Reply::Done
+        );
+
+        let made = config.files("ws2", "default");
+        assert_eq!(head(&made.disk(), 18), b"the tenant's tools");
+        assert_eq!(
+            std::fs::metadata(made.disk()).unwrap().len(),
+            VmSize::Default.disk_bytes(),
+            "grown to the size it was asked at"
+        );
+        assert!(!made.snapshot().memory.exists(), "no memory of the source");
+        assert!(
+            !made.snapshot().state.exists(),
+            "no vCPU state of the source"
+        );
+        assert!(
+            !made.config().exists(),
+            "it boots from a configuration of its own"
+        );
+        assert!(
+            made.branched().is_file(),
+            "its guest forgets the source's sessions at its first wake"
+        );
+        let meter = Meter::load(&made.meter()).unwrap();
+        assert_eq!(
+            (meter.identity.account.as_str(), meter.identity.size),
+            ("acct-1", VmSize::Default)
+        );
+        assert_eq!(
+            held(&service),
+            [
+                ("ws1/default".into(), "acct-1".into(), "Off".into()),
+                ("ws2/default".into(), "acct-1".into(), "Off".into()),
+            ]
+        );
+        assert_eq!(std::fs::read(source.disk()).unwrap(), b"the tenant's tools");
+        assert!(source.snapshot().memory.is_file() && source.config().is_file());
+        drop(service);
+        assert_eq!(
+            held(&open_at(&config, 1_000)).len(),
+            2,
+            "the branch is a VM the host keeps"
+        );
+    }
+
+    #[test]
+    fn a_branch_of_a_workspace_without_a_vm_makes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        existing(&config, "ws-unbooted", "acct-1", None);
+        let service = open_at(&config, 0);
+        for from in ["ws-none", "ws-unbooted"] {
+            let message = error(branch(&service, "ws2", "acct-1", VmSize::Small, from));
+            assert!(
+                message.starts_with(&format!("workspace {from} has no Linux VM yet")),
+                "{message}"
+            );
+            assert!(
+                !config.files("ws2", "default").state.exists(),
+                "nothing was made"
+            );
+        }
+        assert_eq!(
+            held(&service),
+            [(
+                "ws-unbooted/default".into(),
+                "acct-1".into(),
+                "NotCreated".into()
+            )]
+        );
+        let message = error(branch(&service, "ws2", "acct-1", VmSize::Small, "../ws1"));
+        assert!(message.contains("is not a workspace id"), "{message}");
+    }
+
+    #[test]
+    fn a_branch_is_refused_onto_a_vm_for_another_account_or_smaller_than_its_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        with_disk(&config, "ws1", "acct-1", VmSize::Small, b"one", &[]);
+        let kept = with_disk(&config, "ws2", "acct-1", VmSize::Small, b"two", &[]);
+        with_disk(&config, "ws9", "acct-2", VmSize::Default, b"nine", &[]);
+        let service = open_at(&config, 0);
+        let message = error(branch(&service, "ws2", "acct-1", VmSize::Small, "ws1"));
+        assert!(message.contains("ws2 already has a VM"), "{message}");
+        assert_eq!(std::fs::read(kept.disk()).unwrap(), b"two");
+        assert!(!kept.branched().exists());
+
+        let message = error(branch(&service, "ws3", "acct-1", VmSize::Default, "ws9"));
+        assert!(message.contains("belongs to another account"), "{message}");
+        assert!(!config.files("ws3", "default").state.exists());
+
+        let message = error(branch(&service, "ws3", "acct-2", VmSize::Small, "ws9"));
+        assert!(
+            message.contains("is default, and a branch of it is no smaller"),
+            "{message}"
+        );
+        assert!(!config.files("ws3", "default").state.exists());
+        assert_eq!(service.status().len(), 3);
+    }
+
+    #[test]
+    fn a_branch_counts_toward_the_accounts_vms_and_a_delete_gives_its_room_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        std::fs::write(
+            &config.plans,
+            r#"{"default":{"max_running":1,"max_vms":2,"sizes":["small","default"]}}"#,
+        )
+        .unwrap();
+        with_disk(&config, "ws1", "acct-1", VmSize::Small, b"one", &[]);
+        with_disk(&config, "ws2", "acct-1", VmSize::Small, b"two", &[]);
+        let service = open_at(&config, 0);
+        let Reply::Refused(refusal) = branch(&service, "ws3", "acct-1", VmSize::Small, "ws1")
+        else {
+            panic!("a branch past the plan's VMs is refused");
+        };
+        assert_eq!(
+            refusal.reason,
+            host_account::Reason::TooManyVms {
+                limit: 2,
+                existing: 2
+            }
+        );
+        assert!(
+            refusal
+                .message
+                .starts_with("Your plan keeps at most 2 Linux VMs"),
+            "{}",
+            refusal.message
+        );
+        assert!(!config.files("ws3", "default").state.exists());
+        let Reply::Refused(refusal) = branch(&service, "ws3", "acct-1", VmSize::Large, "ws1")
+        else {
+            panic!("a size the plan does not include is refused");
+        };
+        assert!(matches!(
+            refusal.reason,
+            host_account::Reason::SizeNotInPlan { .. }
+        ));
+
+        assert_eq!(delete(&service, "ws2"), Reply::Done);
+        assert_eq!(
+            branch(&service, "ws3", "acct-1", VmSize::Small, "ws1"),
+            Reply::Done
+        );
+        assert_eq!(
+            held(&service)
+                .into_iter()
+                .map(|(vm, ..)| vm)
+                .collect::<Vec<_>>(),
+            ["ws1/default", "ws3/default"]
+        );
+    }
+
+    #[test]
+    fn a_branch_whose_copy_failed_leaves_no_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let source = with_disk(&config, "ws1", "acct-1", VmSize::Small, b"one", &[]);
+        let service = open_at(&config, 0);
+        // The disk goes after the host saw it: the copy fails half-way.
+        std::fs::remove_file(source.disk()).unwrap();
+        let message = error(branch(&service, "ws2", "acct-1", VmSize::Small, "ws1"));
+        assert!(
+            message.starts_with("the VM of workspace ws1 could not be branched"),
+            "{message}"
+        );
+        assert!(
+            !config.files("ws2", "default").state.exists(),
+            "no disk, no part of one and no meter for a later wake to take for a VM"
+        );
+        assert_eq!(service.status().len(), 1);
+        assert!(
+            lock(&service.branching).is_empty(),
+            "nothing stays reserved"
+        );
+        std::fs::write(source.disk(), b"one").unwrap();
+        assert_eq!(
+            branch(&service, "ws2", "acct-1", VmSize::Small, "ws1"),
+            Reply::Done
+        );
+    }
+
+    #[test]
+    fn a_deleted_vm_is_gone_from_the_host_and_deleting_it_again_is_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config(dir.path());
+        config.settings.templates = Some(config.state.join("vms").join("template"));
+        let files = with_disk(
+            &config,
+            "ws1",
+            "acct-1",
+            VmSize::Small,
+            b"one",
+            &["vm.mem", "vm.state"],
+        );
+        let template = with_disk(&config, "template", "", VmSize::Small, b"t", &[]);
+        let service = open_at(&config, 0);
+        assert_eq!(
+            held(&service)
+                .first()
+                .map(|(vm, _, phase)| (vm.as_str(), phase.as_str())),
+            Some(("template/default", "Off"))
+        );
+        assert_eq!(
+            service
+                .status()
+                .iter()
+                .find(|vm| vm.vm == "ws1/default")
+                .map(|vm| vm.phase.as_str()),
+            Some("Suspended")
+        );
+        assert_eq!(delete(&service, "ws1"), Reply::Done);
+        assert!(
+            !files.state.exists(),
+            "its disk, snapshot and meter are gone"
+        );
+        assert!(service.entry("ws1", "default").is_none());
+        assert_eq!(
+            delete(&service, "ws1"),
+            Reply::Done,
+            "deleting it again is done"
+        );
+        assert_eq!(delete(&service, "ws-never"), Reply::Done);
+
+        let message = error(delete(&service, "template"));
+        assert!(message.contains("a template is the host's"), "{message}");
+        assert!(template.disk().is_file());
+        drop(service);
+        assert!(
+            open_at(&config, 1_000)
+                .status()
+                .iter()
+                .all(|vm| vm.vm != "ws1/default"),
+            "a restarted host does not find it"
+        );
     }
 }
