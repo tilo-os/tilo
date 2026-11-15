@@ -1,14 +1,14 @@
-//! Record reads outside their app: how an agent task's host reads a workspace's records
+//! Record reads outside their app: how an agent reads a workspace's records
 //! (`docs/designs/app-language/agents.md`, "Reading records outside their app").
 //!
 //! A workspace's records are sealed per app: a connection holding that app's launch custody opens
-//! them. An agent task is not an app. Its host is admitted as the agent acting for the person
-//! who started it, never session-delegated and holding no app's route, and reads one record at
-//! a time through this door. Each read is decided by the check every reader of a record goes
-//! through (the lesser of the agent's grants and the person's), again for every read, so a
-//! grant revoked or a member removed in the middle of a task cuts the reads that follow. A read
-//! carries the record's committed content and nothing that writes to it: the task changes a
-//! record only by invoking actions.
+//! them. An agent is not an app. It is admitted acting for the person whose session it works in,
+//! never session-delegated and holding no app's route, and reads one record at a time through
+//! this door. Each read is decided by the check every reader of a record goes through (the lesser
+//! of the agent's grants and the person's), again for every read, so a grant revoked or a member
+//! removed in the middle of a session cuts the reads that follow. A read carries the record's
+//! committed content and nothing that writes to it: the agent changes a record only by invoking
+//! actions.
 
 use super::{ActionHostError, Caller};
 
@@ -18,8 +18,8 @@ pub const RECORD_READS_UNAVAILABLE: &str = "this host reads no records outside t
 /// What a caller is told about a record it may not read.
 pub const RECORD_READ_REFUSED: &str = "not allowed to read this record";
 
-/// What a caller that is neither a person nor an agent task acting for its person is told.
-pub const RECORD_READS_FOR_TASKS: &str = "only a person, an app acting for its person, or an agent \
+/// What a caller that is neither a person nor an agent acting for its person is told.
+pub const RECORD_READS_FOR_AGENTS: &str = "only a person, an app acting for its person, or an agent \
      acting for the person who admitted it, reads records outside their app; a person's device \
      hands its agents nothing here";
 

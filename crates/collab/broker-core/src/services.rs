@@ -44,8 +44,8 @@ pub trait LocalPersonServices: Send + Sync {
     }
 }
 
-/// The origin of a workspace's records on this device: it applies an agent task's change the broker
-/// admitted, running the action against the record as it is then.
+/// The origin of a workspace's records on this device: it applies the change an agent's
+/// invocation was admitted for, running the action against the record as it is then.
 pub trait RecordChangeServices: Send + Sync {
     /// Apply `change` in `workspace` as `invoker`'s step: the origin's answer.
     fn apply(

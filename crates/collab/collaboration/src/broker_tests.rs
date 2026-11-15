@@ -5831,7 +5831,7 @@ tilo_test_env::scenario! {
     {
         let context = tilo_actions::ActionContext::default()
             .with_purpose("Review the proposal")
-            .with_group("task:review", "Review", "task");
+            .with_group("agent-run:review", "Review", "agent-run");
         let json = serde_json::to_string(&context).unwrap();
         assert_eq!(parse_invocation_context(7, &json), Some(context));
         assert_eq!(parse_invocation_context(8, "  "), None);

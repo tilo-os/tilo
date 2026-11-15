@@ -1,6 +1,6 @@
-//! The record read door against a document owner that hands out what it holds: an agent task
+//! The record read door against a document owner that hands out what it holds: an agent
 //! acting for its person reads the records both may read, and nothing else, and a grant
-//! revoked in the middle of a task cuts the reads that follow and a capture under way.
+//! revoked in the middle of a read cuts the reads that follow and a capture under way.
 #![allow(
     clippy::significant_drop_tightening,
     reason = "fixtures hold the fake owner's state while asserting on it"
@@ -204,8 +204,8 @@ fn fixture_with(owner: Owner) -> Fixture {
 }
 
 impl Fixture {
-    /// The agent `agent`'s task, acting for the person, as the desktop's door admits it.
-    fn task(&self, agent: &str) -> Caller {
+    /// The agent `agent` acting for the person, as the desktop's door admits it.
+    fn agent(&self, agent: &str) -> Caller {
         Caller::local_agent(agent)
             .acting_for(self.person.clone())
             .in_workspace(self.workspace.clone())
@@ -236,18 +236,18 @@ fn own_record(person: &str) -> String {
 tilo_test_env::scenario! {
     fn records_are_read_here_as_the_workspace_allows;
 
-    phase an_agent_task_reads_the_workspace_records_and_its_persons_own;
+    phase an_agent_reads_the_workspace_records_and_its_persons_own;
     {
         let f = fixture();
-        let task = f.task("scribe");
+        let caller = f.agent("scribe");
         assert_eq!(
-            f.read(&task, NOTES, "").unwrap(),
+            f.read(&caller, NOTES, "").unwrap(),
             RecordCopy::Document(format!("{NOTES}/").into_bytes()),
             "the workspace's Notes record, with no Notes window anywhere"
         );
         let own = own_record(&f.person);
         assert_eq!(
-            f.read(&task, MAIL, &own).unwrap(),
+            f.read(&caller, MAIL, &own).unwrap(),
             RecordCopy::Document(format!("{MAIL}/{own}").into_bytes()),
             "the person's own Mail record, read acting for them"
         );
@@ -262,18 +262,18 @@ tilo_test_env::scenario! {
             }),
             ..Owner::default()
         });
-        let task = f.task("scribe");
+        let caller = f.agent("scribe");
         assert_eq!(
-            f.read(&task, NOTES, "").unwrap(),
+            f.read(&caller, NOTES, "").unwrap(),
             RecordCopy::Absent,
             "no app ever wrote the workspace's Notes record: the workspace has none yet"
         );
         assert_eq!(
-            f.read(&task, NOTES, "kept").unwrap(),
+            f.read(&caller, NOTES, "kept").unwrap(),
             RecordCopy::Document(format!("{NOTES}/kept").into_bytes()),
             "a record the workspace holds is read from its writes"
         );
-        let torn = f.read(&task, NOTES, "torn").unwrap_err();
+        let torn = f.read(&caller, NOTES, "torn").unwrap_err();
         assert!(
             torn.to_string().contains("build on changes"),
             "writes that make no whole record are not read as an empty one: {torn}"
@@ -283,23 +283,23 @@ tilo_test_env::scenario! {
     phase a_record_either_may_not_read_stays_unreadable;
     {
         let f = fixture();
-        let task = f.task("scribe");
+        let caller = f.agent("scribe");
         // Another member's own record: the person may not read it, so neither may their agent.
         let theirs = own_record(&"b2".repeat(32));
         assert!(
             matches!(
-                f.read(&task, MAIL, &theirs),
+                f.read(&caller, MAIL, &theirs),
                 Err(ActionHostError::Refused { .. })
             ),
             "another member's own record"
         );
         // A record the workspace denies the agent: its person's authority does not widen it.
         assert!(matches!(
-            f.read(&task, NOTES, "private"),
+            f.read(&caller, NOTES, "private"),
             Err(ActionHostError::Refused { .. })
         ));
         // An agent the workspace grants nothing reads nothing, whatever its person may.
-        assert!(f.read(&f.task("idle"), NOTES, "").is_err());
+        assert!(f.read(&f.agent("idle"), NOTES, "").is_err());
         assert_eq!(
             f.owner.captures.load(Ordering::Acquire),
             0,
@@ -307,11 +307,11 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_grant_revoked_mid_task_cuts_the_reads_that_follow_and_one_under_way;
+    phase a_grant_revoked_mid_read_cuts_the_reads_that_follow_and_one_under_way;
     {
         let f = fixture();
-        let task = f.task("scribe");
-        assert!(f.read(&task, NOTES, "").is_ok());
+        let caller = f.agent("scribe");
+        assert!(f.read(&caller, NOTES, "").is_ok());
         // Revoked while a capture is between its chunks: the capture stops.
         let (membership, grant) = (f.membership.clone(), f.scribe.clone());
         *f.owner.between.lock().unwrap() = Some(Box::new(move || {
@@ -319,23 +319,23 @@ tilo_test_env::scenario! {
         }));
         assert!(
             matches!(
-                f.read(&task, NOTES, ""),
+                f.read(&caller, NOTES, ""),
                 Err(ActionHostError::Refused { .. })
             ),
             "the capture under way is cut"
         );
         // And every read after it.
-        assert!(f.read(&task, NOTES, "").is_err());
+        assert!(f.read(&caller, NOTES, "").is_err());
         assert_eq!(f.owner.captures.load(Ordering::Acquire), 1);
     }
 
-    phase a_person_or_an_agent_task_acting_for_them_reads_records_here;
+    phase a_person_or_an_agent_acting_for_them_reads_records_here;
     {
         let f = fixture();
         let refused = |caller: &Caller| {
             matches!(
                 f.read(caller, NOTES, ""),
-                Err(ActionHostError::Refused { reason }) if reason == tilo_actions::remote::RECORD_READS_FOR_TASKS
+                Err(ActionHostError::Refused { reason }) if reason == tilo_actions::remote::RECORD_READS_FOR_AGENTS
             )
         };
         // The person reads their own workspace's records, as their apps do.
@@ -377,7 +377,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 f.read(&alone, NOTES, ""),
-                Err(ActionHostError::Refused { reason }) if reason == RECORD_READS_FOR_TASKS
+                Err(ActionHostError::Refused { reason }) if reason == RECORD_READS_FOR_AGENTS
             ),
             "an app acting for nobody reads nothing"
         );
@@ -427,13 +427,13 @@ fn change(app: &str) -> tilo_actions::remote::RecordChange {
 }
 
 tilo_test_env::scenario! {
-    fn records_are_changed_here_only_by_an_agent_task_for_its_person;
+    fn records_are_changed_here_only_by_an_agent_for_its_person;
 
-    phase an_agent_tasks_change_reaches_the_origin_acting_for_its_person;
+    phase an_agents_change_reaches_the_origin_acting_for_its_person;
     {
         let f = fixture();
         let changes = f.state.record_changes().expect("a host with an origin");
-        let answer = changes.apply(&f.task("scribe"), &change(NOTES)).unwrap();
+        let answer = changes.apply(&f.agent("scribe"), &change(NOTES)).unwrap();
         assert_eq!(answer["differs"], false);
         let handed = f.origin.0.lock().unwrap();
         let (workspace, applied, invoker) = handed.first().expect("the origin was handed the change");
@@ -449,13 +449,13 @@ tilo_test_env::scenario! {
         let f = fixture();
         let changes = f.state.record_changes().unwrap();
         assert!(matches!(
-            changes.apply(&f.task("scribe"), &change(MAIL)),
+            changes.apply(&f.agent("scribe"), &change(MAIL)),
             Err(ActionHostError::Refused { .. })
         ));
         assert!(f.origin.0.lock().unwrap().is_empty());
     }
 
-    phase only_an_agent_task_acting_for_its_person_changes_records_here;
+    phase only_an_agent_acting_for_its_person_changes_records_here;
     {
         let f = fixture();
         let changes = f.state.record_changes().unwrap();
@@ -465,7 +465,7 @@ tilo_test_env::scenario! {
         for caller in [person.clone(), person.delegated_to("scribe")] {
             assert!(matches!(
                 changes.apply(&caller, &change(NOTES)),
-                Err(ActionHostError::Refused { reason }) if reason == tilo_actions::remote::RECORD_READS_FOR_TASKS
+                Err(ActionHostError::Refused { reason }) if reason == tilo_actions::remote::RECORD_READS_FOR_AGENTS
             ));
         }
         assert!(f.origin.0.lock().unwrap().is_empty());

@@ -106,7 +106,7 @@ pub use nodes::{
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use record_read::{
-    HeldCopies, RECORD_READ_REFUSED, RECORD_READS_FOR_TASKS, RECORD_READS_UNAVAILABLE,
+    HeldCopies, RECORD_READ_REFUSED, RECORD_READS_FOR_AGENTS, RECORD_READS_UNAVAILABLE,
     RecordAddress, RecordAsk, RecordChange, RecordChanges, RecordCopy, RecordReadings, RecordReads,
     RecordWake, answer_read, read_records,
 };

@@ -840,8 +840,8 @@ mod identity_admin_tests {
         phase a_keyless_agent_or_person_takes_no_host_step_on_a_native_host;
         // On a native host (one with the person's seat), neither an agent nor a
         // person that carries no retained custody takes a host step: an agent
-        // takes one only in its task run (`task_run_host`), a person only
-        // through the seat. Neither is taken as an actor-only caller.
+        // takes one only inside an agent session, a person only through the
+        // seat. Neither is taken as an actor-only caller.
         {
             let host = Arc::new(Host::default());
             let owner = hex::encode([41; 32]);

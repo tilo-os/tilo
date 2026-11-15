@@ -1,5 +1,5 @@
-//! Record reads outside their app: the door an agent task's host reads a workspace's records
-//! through (`docs/designs/app-language/agents.md`, "Reading records outside their app").
+//! Record reads outside their app: the door an agent reads a workspace's records through
+//! (`docs/designs/app-language/agents.md`, "Reading records outside their app").
 //!
 //! The caller is the agent acting for the person who admitted it ([`Caller::acting_for`]),
 //! never one a person's device handed its session to, and holds no app's route. Each read is
@@ -14,7 +14,7 @@ use std::sync::{Arc, Weak};
 
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
-    ActionHostError, Caller, RECORD_READ_REFUSED, RECORD_READS_FOR_TASKS, RecordAddress,
+    ActionHostError, Caller, RECORD_READ_REFUSED, RECORD_READS_FOR_AGENTS, RecordAddress,
     RecordChange, RecordChanges, RecordCopy, RecordReads, RecordWake,
 };
 
@@ -85,10 +85,10 @@ impl RecordChanges for BrokerRecordChanges {
             .upgrade()
             .ok_or_else(|| unavailable("the broker stopped".into()))?;
         let (Some((person, workspace)), Some(agent)) =
-            (task_person(caller), caller.acting().agent_id())
+            (agent_person(caller), caller.acting().agent_id())
         else {
             return Err(ActionHostError::Refused {
-                reason: RECORD_READS_FOR_TASKS.into(),
+                reason: RECORD_READS_FOR_AGENTS.into(),
             });
         };
         super::action_host::check_execution(caller)?;
@@ -146,16 +146,16 @@ fn apply_record_change(
         .map_err(unavailable)
 }
 
-/// The person an agent task acts for, when `caller` is one: an agent the host admitted as a
-/// member acting for its person, confined to a workspace.
-fn task_person(caller: &Caller) -> Option<(&str, &str)> {
+/// The person an agent acts for, when `caller` is one: an agent the host admitted as a member
+/// acting for its person, confined to a workspace.
+fn agent_person(caller: &Caller) -> Option<(&str, &str)> {
     if !caller.acting().is_agent() || caller.is_session_delegated() {
         return None;
     }
     Some((caller.acting_for_person()?, caller.workspace()?))
 }
 
-/// Whose device certificate reads for `caller`, and in which workspace: an agent task's person,
+/// Whose device certificate reads for `caller`, and in which workspace: an agent's person,
 /// the person themself reading their own workspace's records (a view of them, a test), or an
 /// app on their device reading another app's records for them, as the workspace grants it.
 fn reader(caller: &Caller) -> Option<(&str, &str)> {
@@ -164,7 +164,7 @@ fn reader(caller: &Caller) -> Option<(&str, &str)> {
     }
     match caller.acting().person_id() {
         Some(person) if !caller.is_session_delegated() => Some((person, caller.workspace()?)),
-        _ => task_person(caller),
+        _ => agent_person(caller),
     }
 }
 
@@ -194,7 +194,7 @@ impl RecordReads for BrokerRecordReads {
             .ok_or_else(|| unavailable("the broker stopped".into()))?;
         let Some((person, workspace)) = reader(caller) else {
             return Err(ActionHostError::Refused {
-                reason: RECORD_READS_FOR_TASKS.into(),
+                reason: RECORD_READS_FOR_AGENTS.into(),
             });
         };
         state.may_read_record(caller, workspace, address)?;
@@ -224,7 +224,7 @@ impl RecordReads for BrokerRecordReads {
             })?;
         let Some((_, workspace)) = reader(caller) else {
             return Err(ActionHostError::Refused {
-                reason: RECORD_READS_FOR_TASKS.into(),
+                reason: RECORD_READS_FOR_AGENTS.into(),
             });
         };
         state.may_read_record(caller, workspace, address)?;
@@ -256,7 +256,7 @@ fn read_record(
         };
         let certificate = people.certificate(workspace, person).map_err(unavailable)?;
         drop(state);
-        let context = NativeDocumentReadContext::for_task(
+        let context = NativeDocumentReadContext::for_agent(
             CrdtRoute::record(address.app.clone(), workspace, address.record.clone()),
             certificate,
             revalidate,

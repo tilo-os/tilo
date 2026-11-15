@@ -1707,7 +1707,7 @@ async fn until_merged(read: &CommittedDocument, reads: &Reads, live: impl Fn() -
 /// Whether a route joined as `participant_kind` asks the broker for its
 /// committed document. The broker serves committed reads only to a process
 /// the launcher holds custody of for that app, which an agent never is, so it
-/// refuses an agent's open. An agent works through actions and task runs, not
+/// refuses an agent's open. An agent works through the actions its session invokes, not
 /// its own document; asking would fail its whole connection in a native workspace.
 /// A headless service (`CollaborationManager::for_service`) holds no document
 /// either: it publishes actions and answers them, and its workspace never holds a

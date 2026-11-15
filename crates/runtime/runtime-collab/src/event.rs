@@ -162,7 +162,7 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
         action: String,
         argument: Option<String>,
         actor: String,
-        /// Broker-owned task/session provenance. The concrete application
+        /// Broker-owned session provenance. The concrete application
         /// resource and action remain authoritative; this only supplies the
         /// surrounding purpose and work-group for durable history.
         context: Option<Box<tilo_actions::ActionContext>>,

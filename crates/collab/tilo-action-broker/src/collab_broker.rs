@@ -578,7 +578,7 @@ impl AppActionBroker {
             .unwrap_or_default()
     }
 
-    /// Current certified checkout of an attested local native task. This is
+    /// Current certified checkout of an attested local native worker. This is
     /// inert provenance for the owner state door, never an invocation grant.
     #[must_use]
     pub fn native_checkout(

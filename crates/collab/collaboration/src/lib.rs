@@ -2025,7 +2025,7 @@ mod local_document_report_tests {
                 group: Some(tilo_actions::WorkGroup {
                     id: "private-group".into(),
                     label: "Private work".into(),
-                    kind: "task".into(),
+                    kind: "issue".into(),
                     title: None,
                     declared_id: None,
                 }),

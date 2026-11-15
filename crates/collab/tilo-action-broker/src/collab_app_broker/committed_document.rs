@@ -32,10 +32,10 @@ mod changes_tests;
 #[path = "committed_document/service_session_tests.rs"]
 mod service_session_tests;
 impl NativeDocumentReadContext {
-    /// A read of `route` by an agent task acting for the person whose device certificate is
+    /// A read of `route` by an agent acting for the person whose device certificate is
     /// `certificate` (`record_read`): no launcher custody, only `revalidate`,
-    /// which decides the task's read of the record again. Only the broker can make one.
-    pub(super) fn for_task(
+    /// which decides the agent's read of the record again. Only the broker can make one.
+    pub(super) fn for_agent(
         route: CrdtRoute,
         certificate: tilo_user_identity::DeviceCert,
         revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,

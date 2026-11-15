@@ -19,7 +19,7 @@ path = "src/lib.rs"
 default = ["client"]
 # The wire client and the Unix-socket transport. Without it only the
 # portable vocabulary compiles (the wire's messages, action directory, nearby
-# transfer, Wi-Fi continuity, task runs, presence and workspace-control
+# transfer, Wi-Fi continuity, presence and workspace-control
 # types).
 client = ["dep:runtime-portal", "dep:tokio", "dep:ed25519-dalek", "wire-frame/tokio"]
 # An app's settings calls answered from a `settings_store::SettingsSource`, for

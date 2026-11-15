@@ -46,12 +46,11 @@ pub(super) fn host_set_invoker(
     Ok(Some(context))
 }
 
-/// `context` with the device a run's agent works from named on its invoker:
-/// `origin`, the device the MCP server verified the run's connection came
-/// from, as the host's own record of the run keeps it
-/// (`NativeTaskBinding::origin`). It follows [`host_set_invoker`], which
-/// discarded whatever device the envelope named, so an application is told
-/// of a device only by the host.
+/// `context` with the device the agent works from named on its invoker:
+/// `origin`, the device the host verified its agent session's connection
+/// came from, as the host's own record of the session keeps it. It follows
+/// [`host_set_invoker`], which discarded whatever device the envelope named,
+/// so an application is told of a device only by the host.
 pub(super) fn working_from(
     mut context: Option<tilo_actions::ActionContext>,
     origin: Option<&tilo_actions::InvokerDevice>,
@@ -119,7 +118,7 @@ mod tests {
                 Some(tilo_actions::ActionInvoker::agent("alpha"))
             );
             assert_eq!(invoker_participant(Some(&context)), None);
-            // An agent acting for its starter names them, with no caller to say so.
+            // An agent acting for a person names them, with no caller to say so.
             let started = BrokerActor::agent("agent:alpha").for_person("owner");
             let context = host_set_invoker(Some(forged()), &started, None, None).unwrap();
             let invoker = context.and_then(|context| context.invoker).unwrap();
@@ -207,17 +206,17 @@ mod tests {
             assert!(host_set_invoker(None, &actor, None, Some(&execution)).is_err());
         }
 
-        phase an_invoker_is_on_the_device_its_run_names_and_never_on_one_the_envelope_names;
+        phase an_invoker_is_on_the_device_its_session_names_and_never_on_one_the_envelope_names;
         {
             let laptop = tilo_actions::InvokerDevice::certified([0x5c; 32], "Studio laptop");
             let elsewhere = tilo_actions::InvokerDevice::certified([0x66; 32], "Somewhere else");
-            let actor = BrokerActor::agent("agent:task-7");
+            let actor = BrokerActor::agent("agent:alpha");
             let said = || {
                 Some(
                     tilo_actions::ActionContext::default()
                         .with_group("issue:42", "Prepare launch", "issue")
                         .with_invoker(
-                            tilo_actions::ActionInvoker::agent("task-7")
+                            tilo_actions::ActionInvoker::agent("alpha")
                                 .from_device(Some(elsewhere.clone())),
                         ),
                 )
@@ -230,12 +229,12 @@ mod tests {
             // The host's rewrite alone leaves the invoker on no device.
             let hosted = host_set_invoker(said(), &actor, None, None).unwrap();
             assert_eq!(device(hosted.clone()), None);
-            // The run's own record names the device, whatever the envelope said.
+            // The session's own record names the device, whatever the envelope said.
             assert_eq!(
                 device(working_from(hosted.clone(), Some(&laptop))),
                 Some(laptop)
             );
-            // A run of this device's own names none, and an envelope that was
+            // A session of this device's own names none, and an envelope that was
             // not rewritten keeps none either.
             assert_eq!(device(working_from(hosted, None)), None);
             assert_eq!(device(working_from(said(), None)), None);

@@ -221,10 +221,9 @@ impl AppBrokerState {
             None => {
                 // A transport key is not retained certificate custody. Do not
                 // silently downgrade a certified caller to actor-only ownership.
-                // A native host serves everyone through retained custody: a
-                // person through the seat's, an agent through its task run's
-                // admission (the session's MCP server takes host steps in
-                // its run, as `task_run_host` does).
+                // A host with a seat or native certificates serves everyone
+                // through retained custody, so a caller that arrives with no
+                // original admission is refused rather than downgraded.
                 if self.services.local_person.is_some()
                     || self.services.native_certificates.is_some()
                     || caller.device_public_key().is_some()

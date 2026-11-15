@@ -14675,7 +14675,7 @@ pub mod tests {
                 "Release brief",
             )
             .with_app("org.tilo.Writer", "Writer")
-            .with_group("task:release", "Release", "task"),
+            .with_group("agent-run:release", "Release", "agent-run"),
             last_activity: tilo_clock::now(),
             cancellation_requested_at: None,
             cancellation_fence: Arc::new(AtomicBool::new(false)),
@@ -14733,7 +14733,7 @@ pub mod tests {
                 .group
                 .as_ref()
                 .map(|group| group.id.as_str()),
-            Some("task:release")
+            Some("agent-run:release")
         );
         let durable = serde_json::to_string(receipts).expect("serialize receipts");
         assert!(!durable.contains("secret-value"));
