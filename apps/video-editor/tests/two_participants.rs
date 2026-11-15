@@ -98,7 +98,7 @@ impl Participant {
         let mut sent: usize = 0;
         let mut last = None;
         for _ in 0..8 {
-            let Some(frame) = self.app.harness().focus_presence_payload() else {
+            let Some(frame) = self.app.harness().focus_presence() else {
                 break;
             };
             if Some(&frame) == last.as_ref() {

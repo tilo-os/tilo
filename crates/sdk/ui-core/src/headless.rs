@@ -7874,22 +7874,6 @@ impl FrameHarness {
         &self.drawn_action_markers
     }
 
-    /// Outbound caret/selection presence of the widget holding keyboard focus (the same poll
-    /// [`crate::app::App`] broadcasts to peers).
-    pub fn focus_presence_payload(
-        &self,
-    ) -> Option<(
-        crate::presence::PresenceKey,
-        crate::collaboration::PresencePayload,
-    )> {
-        let node = self.focused?;
-        self.inspect_node(node, |widget| {
-            crate::presence::capability::presence_payload(widget)
-        })
-        .ok()
-        .flatten()
-    }
-
     /// Send wheel line-deltas at the last pointer position.
     /// Quiet: a wheel through `send`, which judges it.
     pub fn scroll(&mut self, dx: f64, dy: f64) {

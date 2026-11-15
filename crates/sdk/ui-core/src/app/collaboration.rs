@@ -412,12 +412,21 @@ impl App {
         }
     }
 
-    /// What the app is composing, and where: a conversation's "… is typing". Looked at on the
-    /// root every frame like the location: said while the person types, and a draft that
-    /// empties says so at once, so no reader is left typing after they stop.
+    /// What the app is composing, and where: a conversation's "… is typing". Looked at every
+    /// frame in the focused widget (a field typed in), else the root (an app keeping its own
+    /// composers): said while the person types, and a draft that empties or loses focus says so
+    /// at once, so no reader is left typing after they stop.
     #[cfg(feature = "native")]
     fn broadcast_composing_presence(&mut self) {
-        let draft = crate::presence::capability::composing_draft(self.root_widget.as_ref());
+        let focused = self.focused_node.and_then(|id| {
+            self.inspect_node(id, |widget| {
+                crate::presence::capability::composing_draft(widget)
+            })
+            .ok()
+            .flatten()
+        });
+        let draft = focused
+            .or_else(|| crate::presence::capability::composing_draft(self.root_widget.as_ref()));
         if let Some((key, payload)) = self.presence.composing.look(draft, crate::time::now()) {
             self.broadcast_presence(key, payload);
         }

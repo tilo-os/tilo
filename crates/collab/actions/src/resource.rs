@@ -117,6 +117,9 @@ pub struct ActionBinding<I> {
     /// the control's identity names instead of the one resource, which the
     /// window's business is ([`Self::identity`]).
     kind: String,
+    /// The app the resource is published by, when everyone in the workspace reads it rather than
+    /// only its person ([`ResourceSpec::personal`]): what [`Self::shared_record`] names.
+    shared_by: Option<String>,
     spec: ActionSpec,
     arguments: Arguments<I>,
 }
@@ -164,6 +167,7 @@ impl<I> ActionBinding<I> {
         Ok(Self {
             address: ActionAddress::new(resource.id.0.clone(), spec.id.clone()),
             kind: resource.kind.clone(),
+            shared_by: (!resource.personal).then(|| resource.app_id.clone().unwrap_or_default()),
             // Always retain the spec from the resource, even if a caller
             // passed an independently-created spec with the same id.
             spec: exported.clone(),
@@ -188,6 +192,19 @@ impl<I> ActionBinding<I> {
 
     pub fn address(&self) -> &ActionAddress {
         &self.address
+    }
+
+    /// The record a control bound here writes into for everyone in the workspace to read, as the
+    /// app publishing it, the resource and its kind: a change to a shared document (a message
+    /// sent into a conversation), never an effect, a view change or the person's own record.
+    #[must_use]
+    pub fn shared_record(&self) -> Option<(&str, &str, &str)> {
+        let app = self.shared_by.as_deref()?;
+        (self.spec.kind == OperationKind::Document).then_some((
+            app,
+            self.address.resource.as_str(),
+            self.kind.as_str(),
+        ))
     }
 
     /// What a control bound to it does, as a window publishes it: the kind of
@@ -216,6 +233,7 @@ impl<I> ActionBinding<I> {
         ActionBinding {
             address: self.address,
             kind: self.kind,
+            shared_by: self.shared_by,
             spec: self.spec,
             arguments: Arc::new(move |input| arguments(map(input))),
         }
