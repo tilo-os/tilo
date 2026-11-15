@@ -8,10 +8,10 @@ own, and reads every claim back off the session rather than off the clients:
 
   1. asking    each client opens with `initialize` and waits: nothing it asked
                for runs until the person answers the sheet the door puts up.
-  2. seats     the person answers each sheet, once per client; each agent is
+  2. admitted  the person answers each sheet, once per client; each agent is
                admitted as an agent session of its own (`Claude Code #1`) acting
                for the person, and shows on the shell as its own presence, a
-               seat of its own beside the person's runs.
+               session of its own beside the person's runs.
   3. acting    each admitted client is served as itself: its own tools answer,
                and what the shell offers a person's own socket is not what it is
                offered.
@@ -21,13 +21,13 @@ own, and reads every claim back off the session rather than off the clients:
                reader activates it: that connection alone ends, and the other
                agent still answers.
   6. taking    Take over on the other agent's card ends its work here: the
-               person is left with nobody seated, and the agent's connection is
+               person is left with nobody admitted, and the agent's connection is
                over.
   7. revoking  Revoke on a door-admitted agent's card ends its work here, and
                the next client of that program has to be answered for.
 
 Usage:
-  ./agent-seats-proof.py
+  ./agent-sessions-proof.py
 """
 import json
 import os
@@ -91,7 +91,7 @@ def runtime_directory(state: pathlib.Path) -> pathlib.Path:
     """The private runtime directory a session on `state` uses.
 
     The launcher picks it (a login's XDG_RUNTIME_DIR, the user's /run/user
-    seat, or a short directory of its own) and prints it, so no second copy of
+    session, or a short directory of its own) and prints it, so no second copy of
     that rule lives here. A socket path must fit the kernel's limit, which is
     why it is never left to whatever depth this proof's scratch home sits at."""
     printed = subprocess.run(
@@ -110,7 +110,7 @@ class Shell:
     """A headless session on a scratch home of its own, driven at its socket."""
 
     def __init__(self) -> None:
-        self.dir = pathlib.Path(tempfile.mkdtemp(prefix="tilo-agent-seats-proof-"))
+        self.dir = pathlib.Path(tempfile.mkdtemp(prefix="tilo-agent-sessions-proof-"))
         self.state = self.dir / "state"
         self.home = self.dir / "home"
         self.identity = self.dir / "identity"
@@ -199,7 +199,7 @@ class Shell:
         return [grant.get("id", "") for grant in policy.get("grants") or []]
 
     def agents(self) -> list[dict]:
-        """The agents the shell shows, as its bar seats them."""
+        """The agents the shell shows, as its bar lists them."""
         return (self.call({"op": "state_dump"}).get("state") or {}).get("agents") or []
 
     def targets(self) -> dict[str, list[float]]:
@@ -283,7 +283,7 @@ def main() -> int:
         sessions = {agent.get("name") for agent in shell.agents()}
         check("the shell shows both agent sessions, each as itself",
               sessions == {expected for _, expected in CLIENTS}, ", ".join(sorted(map(str, sessions))))
-        check("each seat is the person's own to end",
+        check("each session is the person's own to end",
               all(agent.get("stoppable") for agent in shell.agents()), json.dumps(shell.agents())[:160])
 
         print("\n[3] each agent acts as itself")
@@ -297,9 +297,9 @@ def main() -> int:
             check(f"{name}'s listing answers its own work", not failed,
                   text.splitlines()[0][:100] if text else "")
         # What the shell offers the person's own door as a write is not what an
-        # agent is offered: the seat's Stop is the person's.
+        # agent is offered: the session's Stop is the person's.
         stop = shell.stop_row()
-        check("the person's own door lists the seat's Stop", stop is not None)
+        check("the person's own door lists the session's Stop", stop is not None)
         text, failed = agents[0].call("tilo_do", {"path": "session#stop-agent",
                                                   "args": {"agent": shell.agents()[-1].get("key")}})
         check("an agent is not offered it", failed, text.splitlines()[0][:100] if text else "")
@@ -320,8 +320,8 @@ def main() -> int:
               reply.decode()[:140])
 
         print("\n[4] each agent's face on the bar opens its own card")
-        seats = {seat.get("name"): seat.get("key") for seat in shell.agents()}
-        for name in seats:
+        sessions = {session.get("name"): session.get("key") for session in shell.agents()}
+        for name in sessions:
             face = shell.targets().get(f"{name}, agent")
             opened = None
             if face is not None:
@@ -335,7 +335,7 @@ def main() -> int:
             close_card(shell)
         # A reader is told the same face, and presses it where a person does: the name it
         # publishes is the face, not the bar behind it.
-        for name in seats:
+        for name in sessions:
             shell.call({"op": "click_named", "name": f"{name}, agent"})
             until(lambda: f"{name}’s profile" in shell.targets(), 10)
             opened = [card.removesuffix("’s profile")
@@ -344,7 +344,7 @@ def main() -> int:
             close_card(shell)
 
         print("\n[5] the person stops one agent from its card, by name")
-        stopped_name = next(iter(seats))
+        stopped_name = next(iter(sessions))
         open_card(shell, stopped_name)
         check("its card offers Stop", "profile-agent-stop" in shell.targets())
         # The name a reader activates it by, as a person's pointer press reaches the same button.
@@ -361,19 +361,19 @@ def main() -> int:
         check("the other agent still answers", not failed,
               text.splitlines()[0][:100] if text else "")
         left = [agent.get("name") for agent in shell.agents()]
-        check("the shell keeps the other agent's seat alone", left == [keys[1 - gone]],
+        check("the shell keeps the other agent's session alone", left == [keys[1 - gone]],
               ", ".join(map(str, left)))
 
         print("\n[6] the person takes over the other agent's work")
-        # It works in this shell alone: nothing of it is left seated, and its
+        # It works in this shell alone: nothing of it is left admitted, and its
         # connection is over once the person takes its work on.
-        open_card(shell, next(iter([name for name in seats if name != stopped_name])))
+        open_card(shell, next(iter([name for name in sessions if name != stopped_name])))
         taken_at = shell.targets().get("profile-agent-take-over")
         check("its card offers Take over", taken_at is not None)
         pressed = shell.call({"op": "click_named", "name": "Take over"})
         check("Take over is a control a reader can name", "ok" in pressed, json.dumps(pressed)[:120])
         until(lambda: not shell.agents(), 10)
-        check("the shell seats nobody after taking the work on", not shell.agents(),
+        check("the shell sessions nobody after taking the work on", not shell.agents(),
               json.dumps(shell.agents())[:160])
         text, failed = other.call("tilo_ls", {})
         check("the agent it was taken from stopped working", failed,
@@ -399,7 +399,7 @@ def main() -> int:
         text, failed = again.call("tilo_ls", {})
         check("the revoked agent's connection is over", failed,
               text.splitlines()[0][:100] if text else "")
-        check("the shell seats nobody after the revoke", not shell.agents(),
+        check("the shell sessions nobody after the revoke", not shell.agents(),
               json.dumps(shell.agents())[:160])
         # What let it in is not the previous answer: the next client of that program is asked
         # about, and served once the person answers.

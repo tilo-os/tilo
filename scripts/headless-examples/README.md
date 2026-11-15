@@ -16,7 +16,7 @@ every claim back off that session rather than off the thing that asked for it.
 
 | Proof | What it asserts |
 |---|---|
-| `agent-seats-proof.py` | Two agents at the session's MCP server, each admitted as itself through the workspace's governance, each served its own tools, the shell's Stop ending one of their connections alone. |
+| `agent-sessions-proof.py` | Two agents at the session's MCP server, each admitted as itself through the workspace's governance, each served its own tools, the shell's Stop ending one of their connections alone. |
 | `session-lock-proof.py` | The shell's own lock action locks the session, the lock screen's own frame covers the shell, a password that is not the person's is refused, and the person's own password brings the shell back. |
 
 `agent-files-story.py` drives a desktop with the tree's own apps as an agent

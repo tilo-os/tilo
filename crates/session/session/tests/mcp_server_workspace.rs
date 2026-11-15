@@ -53,7 +53,7 @@ const STUDIO: &str = "8b0e8f5e-6c1f-4f4e-9d4a-1f2e3d4c5b6a";
 const SERVED: usize = 16;
 
 /// What this test's own processes are, when it starts itself as one of them.
-const ROLE: &str = "TILO_TEST_AGENT_DOOR_ROOM_ROLE";
+const ROLE: &str = "TILO_TEST_AGENT_WORKSPACE_ROLE";
 
 /// A process of this test's, started as the role [`ROLE`] names: a program inside the test's
 /// environment. Run as a test of its own, it does nothing.

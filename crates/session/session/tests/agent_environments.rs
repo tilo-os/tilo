@@ -53,7 +53,7 @@ const ELSEWHERE: &str = "f1e2d3c4-b5a6-4978-8a9b-0c1d2e3f4a5b";
 static ONE_SESSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// What this test's own processes are, when it starts itself as one of them.
-const ROLE: &str = "TILO_TEST_AGENT_DOOR_ROLE";
+const ROLE: &str = "TILO_TEST_AGENT_SESSION_ROLE";
 
 /// A process of this test's, started as the role [`ROLE`] names: an environment holding its
 /// door, or a program inside one. Run as a test of its own, it does nothing.
