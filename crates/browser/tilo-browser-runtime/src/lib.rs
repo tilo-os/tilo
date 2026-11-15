@@ -301,6 +301,13 @@ mod settings_link;
 // The person's settings sections the page keeps: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod kept_settings;
+// What a page keeps of a record its host sent: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser page replicates records")
+)]
+mod landing;
 #[cfg(target_arch = "wasm32")]
 pub use browser::{RENDERER_CODE, RendererCode, builtin_renderer_code};
 #[cfg(any(target_arch = "wasm32", test))]

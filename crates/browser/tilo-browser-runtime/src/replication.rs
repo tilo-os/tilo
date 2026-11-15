@@ -41,12 +41,11 @@ use tilo_sort::CompactSort as _;
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, WriteOp};
 use neighbour_wire::content::ContentWants;
-use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::engine::RecordReading;
 use tilo_session_client::{Events, Link};
-use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
+use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
 use ui::record::RecordSync;
 use ui::state::DocumentReplica;
@@ -1164,7 +1163,7 @@ impl Joined {
     }
 
     /// The host retains nothing of `route`, a record this page opened or
-    /// asked for: each store holding or wanting it tells what reads it
+    /// asked for, or holds it with no change in it: each store holding or wanting it tells what reads it
     /// ([`ui::record::RecordStore::note_workspace_answered`]), and a window
     /// that waited for it is built again, now on a new record.
     fn workspace_answered(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
@@ -1172,24 +1171,11 @@ impl Joined {
             return;
         }
         for (&id, mounted) in &self.mounts {
-            let mut answered = false;
-            for store in mounted.attachment.stores.borrow().iter() {
-                if store.app_and_home().0 != route.app_id {
-                    continue;
-                }
-                let record = store
-                    .open_records()
-                    .into_iter()
-                    .map(|checkout| checkout.id)
-                    .chain(store.wanted_records())
-                    .find(|record| {
-                        tilo_desktop_surface::host::records::wire_record(record) == route.record
-                    });
-                if let Some(record) = record {
-                    store.note_workspace_answered(record);
-                    answered = true;
-                }
-            }
+            let answered = crate::landing::answered(
+                &mounted.attachment.stores.borrow(),
+                &route.app_id,
+                &route.record,
+            );
             if answered {
                 if let Some((handle, shared)) = &mounted.attachment.desktop {
                     shared.retry_waiting(handle);
@@ -1258,13 +1244,17 @@ impl Joined {
         if merged {
             return Ok(());
         }
-        // The host takes up a record a member created with an empty
-        // document of its own before the member's content arrives: no
-        // record yet, which a page opening it would refuse.
-        let Some(heads) = self.store_unopened(&app, &record, bytes, heads)? else {
-            return Ok(());
-        };
-        self.kept_for_opening(&app, record, heads, woken);
+        let key = tilo_session::platform::records::storage_key(&app, &self.uuid, &record)
+            .ok_or("not a record id")?;
+        match crate::landing::keep(&*self.store, &key, bytes, heads)? {
+            crate::landing::Landed::Kept(heads) => {
+                self.kept_for_opening(&app, record, heads, woken);
+            }
+            // The host holds the record with nothing in it (a window founded it
+            // empty, or a member's content has yet to follow): that is all it
+            // holds, and a window waiting for it opens it as a new record.
+            crate::landing::Landed::Empty => self.workspace_answered(route, woken),
+        }
         Ok(())
     }
 
@@ -1354,63 +1344,6 @@ impl Joined {
             }
             woken.insert(id);
         }
-    }
-
-    /// Merge the replica's document `bytes`, which stands at `heads`, into the record's stored
-    /// document for whoever opens it next, and answer its heads once it holds any change. Into
-    /// an empty store it is kept as it came, unloaded: opening the record loads and checks it
-    /// once. A document with no change in it is no record yet and is not kept.
-    fn store_unopened(
-        &self,
-        app: &str,
-        record: &str,
-        bytes: Vec<u8>,
-        heads: &[[u8; 32]],
-    ) -> Result<Option<Vec<ui::automerge::ChangeHash>>, String> {
-        let key = tilo_session::platform::records::storage_key(app, &self.uuid, record)
-            .ok_or("not a record id")?;
-        let stored = self.store.read(&key).map_err(|error| error.to_string())?;
-        let writer = stored.as_ref().and_then(|stored| stored.writer.clone());
-        let stored = stored
-            .map(|stored| stored.bytes)
-            .filter(|bytes| !bytes.is_empty());
-        let Some(stored) = stored else {
-            if heads.is_empty() {
-                return Ok(None);
-            }
-            let heads = heads
-                .iter()
-                .copied()
-                .map(ui::automerge::ChangeHash)
-                .collect();
-            return self
-                .store
-                .write(&key, WriteOp::Replace(bytes), writer.as_deref())
-                .map(|_| Some(heads))
-                .map_err(|error| error.to_string());
-        };
-        let mut doc = AutoCommit::load(&stored).map_err(|error| error.to_string())?;
-        let incoming = AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-        let before = doc.get_heads();
-        let shared: Vec<_> = before
-            .iter()
-            .copied()
-            .filter(|head| incoming.get_change_by_hash(head).is_some())
-            .collect();
-        let mut incoming = incoming;
-        doc.load_incoming(&incoming.save_after(&shared))
-            .map_err(|error| error.to_string())?;
-        let heads = doc.get_heads();
-        if heads.is_empty() {
-            return Ok(None);
-        }
-        if heads == before {
-            return Ok(Some(heads));
-        }
-        self.store
-            .write(&key, WriteOp::Replace(doc.save()), writer.as_deref())
-            .map(|_| Some(heads))
-            .map_err(|error| error.to_string())
     }
 
     fn apply_desktop(&mut self, bytes: &[u8], woken: &mut HashSet<u64>) -> Result<(), String> {
