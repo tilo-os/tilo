@@ -37,7 +37,7 @@ def snapshot(path, limit):
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 0 < before.st_size <= limit:
             raise ValueError('bounded singly-linked regular signing file required')
-        result = stream.read(limit + 1)
+        result = stream.read(before.st_size + 1)
         after = os.fstat(stream.fileno())
         if len(result) != before.st_size or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             raise ValueError('signing file changed during snapshot')

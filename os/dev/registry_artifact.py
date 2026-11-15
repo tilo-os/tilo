@@ -38,9 +38,10 @@ def read_bounded(path, limit):
         before = os.fstat(descriptor)
         require(stat.S_ISREG(before.st_mode) and before.st_size <= limit, 'bounded regular input required')
         with os.fdopen(descriptor, 'rb', closefd=False) as stream:
-            data = stream.read(limit + 1)
+            data = stream.read(before.st_size + 1)
         after = os.fstat(descriptor)
-        require(len(data) <= limit and (before.st_size, before.st_mtime_ns, before.st_ctime_ns) ==
+        require(len(data) == before.st_size and
+                (before.st_size, before.st_mtime_ns, before.st_ctime_ns) ==
                 (after.st_size, after.st_mtime_ns, after.st_ctime_ns), 'input changed or exceeds size bound')
         return data
     finally:

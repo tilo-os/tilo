@@ -81,9 +81,14 @@ def command(argv, *, pass_fds=(), timeout=120, output_limit=4*1024*1024):
 def read(root, relative, limit=1024*1024):
     path = hardware.trusted_path(root, Path(relative), regular=True)
     with path.open('rb') as f:
-        value = f.read(limit + 1)
-    if len(value) > limit:
-        raise ValueError('installed metadata exceeds limit')
+        before = os.fstat(f.fileno())
+        if before.st_size > limit:
+            raise ValueError('installed metadata exceeds limit')
+        # One byte past the size it had, so a file that grew is refused
+        # without reading the whole limit into memory.
+        value = f.read(before.st_size + 1)
+    if len(value) != before.st_size:
+        raise ValueError('installed metadata changed while reading')
     return value
 
 

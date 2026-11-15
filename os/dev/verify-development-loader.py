@@ -29,8 +29,8 @@ def snapshot(source, destination, limit):
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= limit:
             raise ValueError('loader inputs must be bounded, nonempty regular files')
-        contents = stream.read(limit + 1)
-        if len(contents) != info.st_size or len(contents) > limit:
+        contents = stream.read(info.st_size + 1)
+        if len(contents) != info.st_size:
             raise ValueError('loader input changed size while reading')
     destination.write_bytes(contents)
     return contents

@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import stat
 import tempfile
 
 HERE = Path(__file__).resolve().parent
@@ -40,10 +41,15 @@ FIELDS = {'schema', 'purpose', 'kernel_version', 'generation', 'architecture',
 def bounded(path, limit):
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
-        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
-            result = stream.read(limit + 1)
-        if len(result) > limit:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
             raise ValueError('completion input exceeds size limit')
+        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+            # One byte past the size it had: a file that grew is refused
+            # without reading the whole limit into memory.
+            result = stream.read(before.st_size + 1)
+        if len(result) != before.st_size:
+            raise ValueError('completion input changed while reading')
         return result
     finally:
         os.close(descriptor)

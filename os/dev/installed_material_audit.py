@@ -213,7 +213,9 @@ def audit_installed_material(etc_root, var_root, esp_root, uki, *, architecture=
             info = os.fstat(source.fileno())
             if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= boot.UKI_LIMIT:
                 raise AuditError('bounded regular selected UKI required')
-            data = source.read(boot.UKI_LIMIT + 1)
+            data = source.read(info.st_size + 1)
+        if len(data) != info.st_size:
+            raise AuditError('selected UKI changed while reading')
         sections = boot.uki_sections(data, architecture)
         initrd = scanner.initramfs(sections['.initrd'])
     except (OSError, archive.VerificationError, ValueError) as error:

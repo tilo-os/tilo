@@ -35,9 +35,9 @@ def read_public(path):
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_size > LIMIT:
             raise ValueError(f'expected a bounded regular public input: {path.name}')
-        data = stream.read(LIMIT + 1)
+        data = stream.read(before.st_size + 1)
         after = os.fstat(stream.fileno())
-        if (len(data) != before.st_size or len(data) > LIMIT
+        if (len(data) != before.st_size
                 or (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
                 != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
             raise ValueError('public input changed during snapshot')
