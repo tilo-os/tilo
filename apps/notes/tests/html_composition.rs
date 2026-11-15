@@ -37,7 +37,7 @@ fn a_note_renders_as_its_own_elements() {
     let composition = app.harness().composition();
     let root = &composition.root;
 
-    let title = find(root, "EditableLabel");
+    let title = find(root, "TextInput");
     let Some(Own::Field { value, .. }) = title.first().and_then(|title| title.own.as_ref()) else {
         panic!("the note's title is a field: {title:?}");
     };
@@ -134,7 +134,7 @@ fn the_bar_is_html_and_its_notice_does_not_move_the_note() {
     let _ = app.harness().poll_frame();
     let title_at = |app: &mut ui::framework::testing::TestApp<notes::NotesShell>| {
         let composition = app.harness().composition();
-        find(&composition.root, "EditableLabel")
+        find(&composition.root, "TextInput")
             .first()
             .map(|title| title.rect[1])
             .expect("the note's title")

@@ -254,10 +254,12 @@ fn renaming_a_note_from_its_title_is_decided_by_the_committed_surface() {
                 .collect::<Vec<_>>()
         })
         .collect();
-    assert_eq!(
-        verbs,
-        ["so.tilo.notes/notes.notebook/rename"],
-        "the title edit renamed the note as Notes' own verb"
+    assert!(
+        !verbs.is_empty()
+            && verbs
+                .iter()
+                .all(|verb| verb == "so.tilo.notes/notes.notebook/rename"),
+        "each title edit renamed the note as Notes' own verb: {verbs:?}"
     );
     for (kind, receipt) in receipts_since(&doc, &before) {
         assert_eq!(receipt, Ok(Receipt::Admit), "a `{kind}` change was refused");

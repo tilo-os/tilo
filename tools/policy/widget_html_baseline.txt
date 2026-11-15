@@ -211,7 +211,6 @@ widget-without-html 1 crates/sdk/ui-core/src/widget/spinner.rs
 widget-without-html 2 crates/sdk/ui-core/src/widget/stat_tile.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/stepper.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/tabs.rs
-widget-without-html 1 crates/sdk/ui-core/src/widget/text_input.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/text_input_reveal.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/tile_host.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/time_picker.rs

@@ -4931,6 +4931,16 @@ impl Widget for TextInput {
             .filter(|shown| !shown.is_empty())
     }
 
+    /// The field as a page's: an input holding what it shows, a secret's as its mask, set in the
+    /// field's own style.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        let value = self.display_text();
+        let style = self.line_style(cx.theme().text_scale);
+        let look = crate::composition::TextLook::new(value.clone(), &style, None);
+        let placeholder = (!self.placeholder.is_empty()).then(|| self.placeholder.clone());
+        cx.field(value, self.multiline, placeholder, look);
+    }
+
     fn take_focus_request(&mut self) -> Option<String> {
         std::mem::take(&mut self.focus_wanted)
             .then(|| self.test_id().unwrap_or_default().to_owned())
