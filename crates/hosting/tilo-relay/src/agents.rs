@@ -986,6 +986,28 @@ fn attach_records(
         }
     }
     let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);
+    // A workspace's notes are also `.md` files in its folder: a write to its notebook or
+    // its folder brings the two into step, on this host, which holds both.
+    if let Some(workspaces) = relay.workspaces() {
+        let mut writes = workspaces.record_writes();
+        let actions = actions.clone();
+        tokio::spawn(async move {
+            loop {
+                match writes.recv().await {
+                    Ok(write) => {
+                        if WorkspaceActions::follows_notes_folder(&write.app)
+                            && let Some(workspace_id) =
+                                tilo_relay_protocol::WorkspaceId::parse(&write.workspace)
+                        {
+                            actions.notes_folder_written(workspace_id);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+    }
     actions
         .attach(Arc::new(RelayRecordsLink {
             shell,

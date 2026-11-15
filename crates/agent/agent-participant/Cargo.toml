@@ -151,6 +151,11 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # agent's video renders run in (the helper itself is its binary).
 tilo-video-render = { path = "../../media/video-render", default-features = false }
 
+# A workspace's notes as `.md` files in its folder: a note's body written as Markdown by
+# the codec the folder writes its `.md` files with.
+tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs" }
+tilo-doc = { path = "../../doc/tilo-doc" }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
@@ -208,9 +213,6 @@ tilo-test-env = { path = "../../dev/test-env", features = ["tokio"] }
 tokio = { workspace = true, features = ["full"] }
 # Reads the links the host mints back the way a page does.
 tilo-reference = { path = "../../collab/reference" }
-# Writes the Word files an agent uploads, and reads Writer's documents.
-tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs" }
-tilo-doc = { path = "../../doc/tilo-doc" }
 # The desktop's search over a workspace's record index, as a person finds a record.
 tilo-desktop-search = { path = "../../session/desktop-search" }
 # The subscriber the `api-on-relay` example traces with.

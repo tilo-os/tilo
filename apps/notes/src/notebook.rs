@@ -894,6 +894,34 @@ impl Notebook {
         Ok(())
     }
 
+    /// Write note
+    ///
+    /// Make the note read as `markdown`, as the fewest edits: a paragraph
+    /// that already reads so stays as it is, a changed one is edited in
+    /// place, and the rest are added or removed. What the note's file in the
+    /// workspace's folder was written to is applied this way, as the change
+    /// of whoever wrote the file.
+    #[action(item = pages, audience = "agents", step = "write")]
+    pub fn write_note(
+        &mut self,
+        page: &Id,
+        #[param("The note's whole body, as Markdown")] markdown: String,
+    ) -> Result<(), Refusal> {
+        check_markdown_import(&markdown).map_err(Refusal::new)?;
+        let note = self.pages.get(page).ok_or("no such note")?;
+        let (title, path) = (note.title.clone(), note.path.clone());
+        let markdown = crate::markdown::strip_matching_title_heading(&markdown, &title);
+        let blocks = self.seed(&markdown, page, &title, path.as_deref(), &HashMap::new());
+        let clips: Vec<ClipBlock> = blocks.iter().map(tilo_rich_text::clip_of_content).collect();
+        let note = self.pages.get_mut(page).ok_or("no such note")?;
+        note.body.perform(RichTextAction::SyncClips {
+            blocks: clips,
+            replace: None,
+            at: 0,
+        });
+        Ok(())
+    }
+
     /// A verb on a tag needs a tag to act on: until the notebook has one,
     /// "Delete tag" is not offered, rather than offered asking for a tag
     /// there is none of.

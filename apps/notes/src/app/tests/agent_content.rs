@@ -310,3 +310,36 @@ fn an_agents_append_is_marked_as_the_agents() {
         "the appended text is the agent's: {authors:?}"
     );
 }
+
+#[test]
+fn write_note_makes_the_note_read_as_the_markdown_keeping_what_reads_the_same() {
+    let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
+    note(&mut app, "Terms", "Payment due net 30.\n\nLate fees apply.");
+    let page = page_ids(&app.state())[0];
+    let before: Vec<(String, String)> =
+        app.read_document(|doc| crate::read::page_block_snapshots(doc, page));
+    app.call(
+        "write-note",
+        serde_json::json!({
+            "page": page.to_string(),
+            "markdown": "Payment due net 30.\n\nLate fees apply after 10 days.\n\n- signed by both",
+        }),
+    )
+    .unwrap();
+    app.settle();
+    let after: Vec<(String, String)> =
+        app.read_document(|doc| crate::read::page_block_snapshots(doc, page));
+    let texts: Vec<&str> = after.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "Payment due net 30.",
+            "Late fees apply after 10 days.",
+            "signed by both"
+        ]
+    );
+    assert_eq!(
+        after[0].0, before[0].0,
+        "the paragraph that reads the same is the same paragraph"
+    );
+}
