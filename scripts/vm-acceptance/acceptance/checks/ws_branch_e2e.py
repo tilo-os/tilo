@@ -72,7 +72,7 @@ CHAT_CHANNEL = "c_chat"
 # Chat's composer, as the person's assistive technology names it (chat en-US.ftl chat-composer).
 COMPOSER = "Message composer"
 # An app's own data in a workspace, on this device (launcher appdir.rs).
-APP_ROOMS = ".local/share/tilo-workspaces"
+WORKSPACE_DATA = ".local/share/tilo-workspaces"
 
 
 # -- the shell ------------------------------------------------------------------------------
@@ -274,7 +274,7 @@ def new_note(ctx, ws: dict, title: str) -> None:
             "journalctl --no-pager -o cat | sed 's/\\x1b\\[[0-9;]*m//g' | grep -a 'so.tilo.notes' "
             "| grep -avE 'FRAME-LIFECYCLE|paint-stats|andlock|DBUS_SESSION|optional service' "
             "| tail -n 120 | cut -c1-600", timeout=180, check=False)
-        kept = ctx.vm.exec(f'cd "$HOME/{APP_ROOMS}/{ws.get("id")}/{ae.NOTES}" 2>/dev/null && '
+        kept = ctx.vm.exec(f'cd "$HOME/{WORKSPACE_DATA}/{ws.get("id")}/{ae.NOTES}" 2>/dev/null && '
                            "find . -type f -printf '%s %p\\n' | sort -k2 | head -n 80", check=False)
         ctx.write(f"{ws.get('name')}-notes-said.txt", everything + "\n---\n" + kept)
         raise CheckFailed(f"{ws.get('name')}: Notes' new-note {title!r} did not succeed: {exc.reason()}; "
@@ -808,7 +808,7 @@ def chat_rows(ctx, operation: str) -> list[dict]:
 
 def chat_dir(ctx, ws: dict) -> bool:
     """Whether this device keeps Chat's data for `ws` (an app's data in a workspace)."""
-    out = ctx.vm.exec(f'[ -d "$HOME/{APP_ROOMS}/{ws["id"]}/{CHAT}" ] && echo E2E-YES || echo E2E-NO',
+    out = ctx.vm.exec(f'[ -d "$HOME/{WORKSPACE_DATA}/{ws["id"]}/{CHAT}" ] && echo E2E-YES || echo E2E-NO',
                       check=False)
     return "E2E-YES" in out
 

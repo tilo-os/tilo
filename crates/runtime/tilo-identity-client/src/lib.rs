@@ -258,7 +258,7 @@ mod presentation_wire_tests {
         phase presentation_negotiation_preserves_legacy_handshake_and_old_host_decode;
         {
             let legacy = Handshake {
-                workspace_id: "room".into(),
+                workspace_id: "w1".into(),
                 app_id: "app".into(),
                 surface: None,
             };
@@ -274,7 +274,7 @@ mod presentation_wire_tests {
             };
             let old_host: Handshake =
                 serde_json::from_slice(&serde_json::to_vec(&enabled).unwrap()).unwrap();
-            assert_eq!(old_host.workspace_id, "room");
+            assert_eq!(old_host.workspace_id, "w1");
             assert_eq!(old_host.app_id, "app");
             let new_host: PresentationHandshake = serde_json::from_slice(&legacy_bytes).unwrap();
             assert_eq!(new_host.presentation_version, 0);

@@ -494,13 +494,13 @@ fn copy_app_data(
     sources: &mut Sources,
     local: &mut Local,
 ) -> Result<Copied, String> {
-    let rooms = data_home.join(launcher::appdir::WORKSPACES_DIR);
+    let workspaces = data_home.join(launcher::appdir::WORKSPACES_DIR);
     let (from_id, to_id) = (from.to_string(), to.to_string());
-    let source = rooms.join(launcher::appdir::workspace_slug(Some(&from_id)));
+    let source = workspaces.join(launcher::appdir::workspace_slug(Some(&from_id)));
     if !source.is_dir() {
         return Ok(Copied::default());
     }
-    let target = rooms.join(launcher::appdir::workspace_slug(Some(&to_id)));
+    let target = workspaces.join(launcher::appdir::workspace_slug(Some(&to_id)));
     let mut copied = clone_tree(
         &source,
         &target,
@@ -961,8 +961,8 @@ mod tests {
             let home = tempfile::tempdir().unwrap();
             let data = home.path().join("data");
             let files = home.path().join("files");
-            let rooms = data.join("tilo-workspaces");
-            let notes = rooms
+            let workspaces = data.join("tilo-workspaces");
+            let notes = workspaces
                 .join(FROM)
                 .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
                 .join(FROM)
@@ -971,10 +971,10 @@ mod tests {
             std::fs::write(notes.join("state.automerge"), record(FROM, "plan").save()).unwrap();
             std::fs::write(notes.join("actor"), b"source writer").unwrap();
             std::fs::write(notes.join("writer.lock"), b"").unwrap();
-            let settings = rooms.join(FROM).join("so.tilo.notes/.config/notes.toml");
+            let settings = workspaces.join(FROM).join("so.tilo.notes/.config/notes.toml");
             std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
             std::fs::write(&settings, b"theme = 'dark'").unwrap();
-            let chat = rooms
+            let chat = workspaces
                 .join(FROM)
                 .join("so.tilo.chat/.local/share/so.tilo.chat/workspaces")
                 .join(FROM);
@@ -984,7 +984,7 @@ mod tests {
                 record(FROM, "hi").save(),
             )
             .unwrap();
-            let environment = rooms
+            let environment = workspaces
                 .join(FROM)
                 .join("so.tilo.terminal/.local/share/so.tilo.terminal/workspaces")
                 .join(FROM)
@@ -1008,7 +1008,7 @@ mod tests {
                 "only the environments, which the runtime branches, did not come"
             );
 
-            let copied = rooms
+            let copied = workspaces
                 .join(TO)
                 .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
                 .join(TO)
@@ -1022,15 +1022,15 @@ mod tests {
             );
             assert!(!copied.join("writer.lock").exists());
             assert_eq!(
-                std::fs::read(rooms.join(TO).join("so.tilo.notes/.config/notes.toml")).unwrap(),
+                std::fs::read(workspaces.join(TO).join("so.tilo.notes/.config/notes.toml")).unwrap(),
                 b"theme = 'dark'"
             );
             assert!(
-                !rooms.join(TO).join("so.tilo.chat").exists(),
+                !workspaces.join(TO).join("so.tilo.chat").exists(),
                 "chat stays behind"
             );
             assert!(
-                !rooms
+                !workspaces
                     .join(TO)
                     .join("so.tilo.terminal/.local/share/so.tilo.terminal/workspaces")
                     .join(TO)
@@ -1156,10 +1156,10 @@ mod tests {
             let mut party = record(FROM, "party-parrot");
             write(&engine, &keys, from, (CHAT, &emoji), &mut party);
             let home = tempfile::tempdir().unwrap();
-            let rooms = home.path().join("data/tilo-workspaces");
+            let workspaces = home.path().join("data/tilo-workspaces");
             // Where an app directory `app` keeps `owner`'s record `record` of `workspace`.
             let kept = |workspace: &str, app: &str, owner: &str, record: &str| {
-                rooms
+                workspaces
                     .join(workspace)
                     .join(app)
                     .join(".local/share")

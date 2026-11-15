@@ -64,10 +64,7 @@ pub(crate) struct StoredWorkspace {
     /// The workspace this device holds.
     pub workspace: WorkspaceId,
     /// The host this workspace's commits are ordered by: a device of its owner,
-    /// this device itself for a workspace its own host keeps. A file written
-    /// before the key was named for the workspace spells it `room_host`
-    /// ([`format::FORMAT`]'s version 4).
-    #[serde(rename = "workspace_host")]
+    /// this device itself for a workspace its own host keeps.
     pub workspace_host: DeviceCert,
     pub device: DeviceCert,
     /// How this device joined the workspace its host governs. A workspace it founded

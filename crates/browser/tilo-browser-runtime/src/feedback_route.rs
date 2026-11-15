@@ -59,7 +59,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_desktop_in_another_room_sends_through_the_homes_peer() {
+    fn a_desktop_in_another_workspace_sends_through_the_homes_peer() {
         assert_eq!(
             carrier(1),
             1,

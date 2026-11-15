@@ -132,7 +132,7 @@ fn reactions_follow_the_grant_and_a_viewer_sees_them_without_reacting() {
 }
 
 #[test]
-fn a_record_in_a_room_with_other_members_offers_reactions_while_they_are_away() {
+fn a_record_in_a_workspace_with_other_members_offers_reactions_while_they_are_away() {
     use tilo_app::permissions::{LOCAL_WORKSPACE, PermissionContext, Role, Standing, policy};
     let mut app = TestApp::<PosterApp>::new().unwrap();
     app.settle();

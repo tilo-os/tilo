@@ -371,7 +371,7 @@ impl DeviceStorage {
             Self {
                 roots: StorageRoots {
                     app_payloads: None,
-                    room_data: None,
+                    workspace_data: None,
                     app_cache: None,
                     sync_replica: None,
                 },
@@ -1350,7 +1350,7 @@ mod tests {
         let mut app = window_over(DeviceStorage {
             roots: StorageRoots {
                 app_payloads: None,
-                room_data: None,
+                workspace_data: None,
                 app_cache: None,
                 sync_replica: None,
             },
@@ -1398,7 +1398,7 @@ mod tests {
         let mut app = window_over(DeviceStorage {
             roots: StorageRoots {
                 app_payloads: None,
-                room_data: None,
+                workspace_data: None,
                 app_cache: None,
                 sync_replica: None,
             },
@@ -1495,7 +1495,7 @@ mod tests {
                     std::sync::Arc::new(DeviceStorage {
                         roots: StorageRoots {
                             app_payloads: None,
-                            room_data: None,
+                            workspace_data: None,
                             app_cache: Some(cache),
                             sync_replica: None,
                         },

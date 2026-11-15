@@ -326,7 +326,6 @@ fn broker_admits(
     match BrokerActor::for_caller(caller).admit_published_in(
         workspace,
         now_secs(),
-        None,
         (&surface, &action),
     ) {
         Ok((false, _)) => Admitted::Runs,

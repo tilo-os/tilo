@@ -722,7 +722,7 @@ mod tests {
                     .is_ok()
             );
             let mut elsewhere = submission.destination.clone();
-            elsewhere.workspace = "another-room".into();
+            elsewhere.workspace = "another-workspace".into();
             assert!(receipt_from_record(&store, &primary.id, &submission.id, &elsewhere).is_err());
             store
                 .with(&primary.id, |doc| {
@@ -768,7 +768,7 @@ mod tests {
                 crate::testing::item("messages", &message_id(&submission.id))
             );
             let mut elsewhere = submission.destination.clone();
-            elsewhere.workspace = "other-room".into();
+            elsewhere.workspace = "other-workspace".into();
             assert!(
                 durable_receipt(&doc, &submission.id, &elsewhere, &RecordSaveStatus::Saved).is_err()
             );

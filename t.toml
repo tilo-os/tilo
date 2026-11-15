@@ -125,7 +125,7 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # package .config/nextest-capabilities.toml names first runs the capability probe
 # (tools/ci/capability_filter.py), handed the same way (tools/tests/test_capability_filter.py
 # holds every such package to it).
-# The Lounge tests start the room service, which `tilo-relay` has only with `agents`, for both
+# The Lounge tests start the workspace service, which `tilo-relay` has only with `agents`, for both
 # packages whose tests start it: a featured artifact is built in an invocation of its own, so it
 # moves no unit of this family's build. The pam-tilo tests load the PAM module as libpam does:
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo.
@@ -1375,7 +1375,7 @@ on = ["dispatch"]
 [[check]]
 name = "security-isolation-{part}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  relay)\n    run -p tilo-relay --lib -E \"$(any workspace_access rooms:: compute_content host_authority)\"\n    run -p tilo-relay --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  relay-agents)\n    run -p tilo-relay --features agents --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: compute_content:: persistent_workspace::)\"\n    run -p tilo-relay --features agents --bin tilo-relay -E \"test(persistent_workspace_cli::tests::a_fresh_workspace_seeds_its_apps_and_keeps_them)\"\n    ;;\n  agent-participant)\n    run -p tilo-agent-participant --test it -E \"$(any worker_isolation::)\"\n    run -p tilo-agent-participant --test it -E \"$(any workspace_actions::governed_agent::)\"\n    ;;\nesac\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  relay)\n    run -p tilo-relay --lib -E \"$(any workspace_access compute_content host_authority)\"\n    run -p tilo-relay --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  relay-agents)\n    run -p tilo-relay --features agents --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: compute_content:: persistent_workspace::)\"\n    run -p tilo-relay --features agents --bin tilo-relay -E \"test(persistent_workspace_cli::tests::a_fresh_workspace_seeds_its_apps_and_keeps_them)\"\n    ;;\n  agent-participant)\n    run -p tilo-agent-participant --test it -E \"$(any worker_isolation::)\"\n    run -p tilo-agent-participant --test it -E \"$(any workspace_actions::governed_agent::)\"\n    ;;\nesac\n"
 env = { RUST_BACKTRACE = "1" }
 timeout_secs = 5400
 on = ["dispatch"]

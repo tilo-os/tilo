@@ -6,7 +6,7 @@
 # /usr/share/tilo-apps while architecture-dependent payloads live below
 # /usr/lib/tilo-apps. User packages with the same id still win.
 # That makes an RPM update replace only system-owned payloads; it never
-# rewrites ~/.local/share/tilo-apps, Tilo rooms, Flatpaks, or any host app.
+# rewrites ~/.local/share/tilo-apps, Tilo workspaces, Flatpaks, or any host app.
 set -euo pipefail
 
 usage() {

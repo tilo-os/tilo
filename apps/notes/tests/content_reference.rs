@@ -62,7 +62,7 @@ fn a_picture_larger_than_inline_arguments_is_kept_by_reference() {
 }
 
 #[test]
-fn a_reference_to_content_the_room_does_not_hold_is_refused() {
+fn a_reference_to_content_the_workspace_does_not_hold_is_refused() {
     let mut app = app();
     let picture = png(240, 180);
     // Put somewhere this workspace's store does not reach.

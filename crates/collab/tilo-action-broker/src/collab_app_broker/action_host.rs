@@ -1457,13 +1457,13 @@ impl AppBrokerState {
         providers: &mut Vec<CatalogueProvider>,
     ) -> RetainedAddresses {
         let workspace_id = workspace.id().to_string();
-        let in_room = self
+        let in_workspace = self
             .launchable
             .surfaces()
             .into_iter()
             .filter(|surface| surface.route.cluster_id == workspace_id)
             .collect::<Vec<_>>();
-        let retained = in_room
+        let retained = in_workspace
             .iter()
             .flat_map(|surface| {
                 surface.actions.iter().map(|action| {
@@ -1475,7 +1475,7 @@ impl AppBrokerState {
                 })
             })
             .collect::<RetainedAddresses>();
-        for surface in in_room.into_iter().filter(|surface| {
+        for surface in in_workspace.into_iter().filter(|surface| {
             !live_apps.contains(&surface.app_id)
                 && policy.may_in(
                     workspace,

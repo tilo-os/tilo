@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn an_agent_renders_what_the_project_places;
 
-    phase an_agent_renders_only_short_timelines_of_room_content;
+    phase an_agent_renders_only_short_timelines_of_workspace_content;
     {
         assert!(renderable(&placing(&content("ab"), 10.0)).is_ok());
         let file = renderable(&placing("/Users/you/footage.mp4", 10.0)).unwrap_err();

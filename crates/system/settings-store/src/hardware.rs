@@ -3113,7 +3113,7 @@ mod tests {
             let dir = crate::test_dir();
             let store = crate::profile(dir.path());
             let target = |resource: &str| ActionChordTarget {
-                provider: "workspace:room".into(),
+                provider: "workspace:w1".into(),
                 resource: resource.into(),
                 action: "run".into(),
             };

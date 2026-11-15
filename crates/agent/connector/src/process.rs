@@ -140,7 +140,7 @@ impl ConnectorProcess {
     }
 
     /// Keep `bytes` in the host's content store this connector reads, for
-    /// an op that names them in its `attach` list (a picture the room
+    /// an op that names them in its `attach` list (a picture the workspace
     /// holds in a record rather than as content). Their BLAKE3 hex hash.
     ///
     /// # Errors
@@ -273,7 +273,7 @@ impl ConnectorProcess {
         self.shared.audio.subscribe()
     }
 
-    /// Hand the worker one Opus frame the room's call heard from `speaker`.
+    /// Hand the worker one Opus frame the workspace's call heard from `speaker`.
     pub async fn send_audio(&self, speaker: String, opus: Vec<u8>) -> std::io::Result<()> {
         send(
             &self.shared,
@@ -426,15 +426,15 @@ pub fn metrics_text(queue_depth: u64, lag_seconds: f64, rate_limited_total: u64)
         0.0
     };
     format!(
-        "# HELP tilo_rooms_bridge_lag_seconds Age of the oldest op in flight or waiting on a rate limit.\n\
-         # TYPE tilo_rooms_bridge_lag_seconds gauge\n\
-         tilo_rooms_bridge_lag_seconds {lag:.3}\n\
-         # HELP tilo_rooms_bridge_queue_depth Ops in flight or waiting.\n\
-         # TYPE tilo_rooms_bridge_queue_depth gauge\n\
-         tilo_rooms_bridge_queue_depth {queue_depth}\n\
-         # HELP tilo_rooms_bridge_rate_limited_total Calls that hit a 429 or waited for a rate-limit bucket.\n\
-         # TYPE tilo_rooms_bridge_rate_limited_total counter\n\
-         tilo_rooms_bridge_rate_limited_total {rate_limited_total}\n"
+        "# HELP tilo_workspace_bridge_lag_seconds Age of the oldest op in flight or waiting on a rate limit.\n\
+         # TYPE tilo_workspace_bridge_lag_seconds gauge\n\
+         tilo_workspace_bridge_lag_seconds {lag:.3}\n\
+         # HELP tilo_workspace_bridge_queue_depth Ops in flight or waiting.\n\
+         # TYPE tilo_workspace_bridge_queue_depth gauge\n\
+         tilo_workspace_bridge_queue_depth {queue_depth}\n\
+         # HELP tilo_workspace_bridge_rate_limited_total Calls that hit a 429 or waited for a rate-limit bucket.\n\
+         # TYPE tilo_workspace_bridge_rate_limited_total counter\n\
+         tilo_workspace_bridge_rate_limited_total {rate_limited_total}\n"
     )
 }
 
@@ -548,19 +548,19 @@ mod tests {
         assert_eq!(
             samples,
             [
-                "tilo_rooms_bridge_lag_seconds 1.250",
-                "tilo_rooms_bridge_queue_depth 3",
-                "tilo_rooms_bridge_rate_limited_total 7",
+                "tilo_workspace_bridge_lag_seconds 1.250",
+                "tilo_workspace_bridge_queue_depth 3",
+                "tilo_workspace_bridge_rate_limited_total 7",
             ]
         );
-        assert!(text.contains("# TYPE tilo_rooms_bridge_rate_limited_total counter"));
+        assert!(text.contains("# TYPE tilo_workspace_bridge_rate_limited_total counter"));
         tilo_files::native::atomic::write_creating_parent(
             &path,
             metrics_text(0, f64::NAN, 7).as_bytes(),
         )
         .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("tilo_rooms_bridge_lag_seconds 0.000\n"));
+        assert!(text.contains("tilo_workspace_bridge_lag_seconds 0.000\n"));
         assert_eq!(
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             1

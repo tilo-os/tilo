@@ -60,7 +60,7 @@ fn context_receivers_learn_their_workspaces_verified_agents_and_each_change() {
     });
     let (state, _bridge) =
         AppBrokerState::test_state(Some(authority.clone()), HostServices::default());
-    let mut in_room = state.subscribe_context(
+    let mut in_workspace = state.subscribe_context(
         &CrdtRoute::record("so.tilo.notes", &workspace, "a").channel_key(),
         1,
         None,
@@ -71,7 +71,7 @@ fn context_receivers_learn_their_workspaces_verified_agents_and_each_change() {
         None,
     );
     assert_eq!(
-        history_frames(&mut in_room),
+        history_frames(&mut in_workspace),
         [vec![scribe("Scribe")]],
         "a receiver learns its workspace's agents as it subscribes"
     );
@@ -82,18 +82,21 @@ fn context_receivers_learn_their_workspaces_verified_agents_and_each_change() {
 
     state.refresh_history_agents();
     assert!(
-        history_frames(&mut in_room).is_empty(),
+        history_frames(&mut in_workspace).is_empty(),
         "nothing changed, so nothing is said again"
     );
 
     *authority.agents.lock().unwrap() = vec![scribe("Scribe II")];
     state.refresh_history_agents();
-    assert_eq!(history_frames(&mut in_room), [vec![scribe("Scribe II")]]);
+    assert_eq!(
+        history_frames(&mut in_workspace),
+        [vec![scribe("Scribe II")]]
+    );
     assert!(history_frames(&mut elsewhere).is_empty());
 
     // Governance withdrew trust in the delegation: the workspace's agents are
     // none, and the receiver is told so.
     authority.agents.lock().unwrap().clear();
     state.refresh_history_agents();
-    assert_eq!(history_frames(&mut in_room), [Vec::new()]);
+    assert_eq!(history_frames(&mut in_workspace), [Vec::new()]);
 }

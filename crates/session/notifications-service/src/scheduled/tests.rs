@@ -97,7 +97,7 @@ fn the_wire_arguments_make_a_request() {
 tilo_test_env::scenario! {
     fn the_ledger_keeps_deadlines_across_restarts_and_failed_writes;
 
-    phase a_ledger_written_under_the_room_key_still_delivers_its_deadline;
+    phase a_ledger_written_under_the_workspace_key_still_delivers_its_deadline;
     {
         let temp = tempfile::tempdir().expect("private fixture");
         let path = temp.path().join("schedules.json");
@@ -194,13 +194,12 @@ tilo_test_env::scenario! {
     )]
     fn a_rung_alarm_is_snoozed_and_dismissed_through_its_occurrence;
 
-    phase a_ringing_occurrence_carries_its_workspace_as_room;
+    phase a_ringing_occurrence_carries_its_workspace;
     {
         let due = at("2026-04-14T12:00:00+00:00");
         let (_ledger, occurrence) = rung(due, 127, None);
         let written = serde_json::to_value(&occurrence).expect("its data");
         assert_eq!(written["workspace"], "studio");
-        assert!(written.get("workspace").is_none());
     }
 
     phase a_snooze_survives_restart_and_rings_once;

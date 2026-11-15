@@ -127,7 +127,7 @@ repeats; `run.py test --rpms DIR --out OUT` then runs the test. `report.md`,
 
 A remembered home peer is a recovery lead, not evidence that a local Files
 workspace is empty. `home-peers.json` stores certified relay identities and
-numeric collaboration room IDs; it does not contain the Files namespace UUID
+numeric collaboration workspace IDs; it does not contain the Files namespace UUID
 or its ticket. The authenticated relay content-discovery response supplies
 that binding. An offline or unconfigured host must not be interpreted as
 "no existing files".

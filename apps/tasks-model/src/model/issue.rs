@@ -581,8 +581,7 @@ pub fn agent_assignee(id: &str) -> Atom {
     }
 }
 
-/// A task kept in the workspace's room before the tracker, as the import
-/// reads it.
+/// A task the workspace kept before the tracker, as the import reads it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Imported {
     /// The workspace task's id: the issue's id derives from it.

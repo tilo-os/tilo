@@ -149,7 +149,7 @@ fn a_confined_render_of_a_title_is_an_mp4_and_the_same_bytes_twice() {
 
 #[test]
 #[serial_test::serial(video_encode)]
-fn a_confined_render_reads_room_content_laid_out_by_hash() {
+fn a_confined_render_reads_workspace_content_laid_out_by_hash() {
     if !encoder_present() {
         return;
     }

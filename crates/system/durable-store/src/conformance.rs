@@ -28,7 +28,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 fn fresh(tag: &str) -> StorageKey {
     let n = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    StorageKey::document("so.tilo.conformance", "room", format!("{tag}-{n}"))
+    StorageKey::document("so.tilo.conformance", "w1", format!("{tag}-{n}"))
 }
 
 pub fn run(subject: &Subject<'_>) {
@@ -201,7 +201,7 @@ fn shared_leases_coexist_and_exclude_an_exclusive_owner(subject: &Subject<'_>) {
 fn one_claimant_wins_custody(subject: &Subject<'_>) {
     let store = subject.store;
     let package = format!("so.tilo.claim-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
-    let key = StorageKey::document(package.clone(), "room", "former");
+    let key = StorageKey::document(package.clone(), "w1", "former");
     let lease = store.lease_shared(&key).unwrap();
     store
         .write(&key, WriteOp::Replace(b"source".to_vec()), None)
@@ -214,7 +214,7 @@ fn one_claimant_wins_custody(subject: &Subject<'_>) {
         store.claim(&key, "successor-a").unwrap(),
         "the claimant may resume"
     );
-    let other = StorageKey::document(package, "room", "other");
+    let other = StorageKey::document(package, "w1", "other");
     assert!(
         store.claim(&other, "successor-b").unwrap(),
         "claims are per key"
@@ -225,9 +225,9 @@ fn keys_never_alias(subject: &Subject<'_>) {
     let store = subject.store;
     let record = format!("alias-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
     let keys = [
-        StorageKey::document("so.tilo.conformance", "room", record.clone()),
-        StorageKey::document("so.tilo.conformance", "other-room", record.clone()),
-        StorageKey::document("so.tilo.other", "room", record.clone()),
+        StorageKey::document("so.tilo.conformance", "w1", record.clone()),
+        StorageKey::document("so.tilo.conformance", "w2", record.clone()),
+        StorageKey::document("so.tilo.other", "w1", record.clone()),
         StorageKey::workspace_index("so.tilo.conformance", record.clone()),
         StorageKey::app(format!("so.tilo.alias-{record}")),
     ];
@@ -251,8 +251,8 @@ fn keys_never_alias(subject: &Subject<'_>) {
 fn views_round_trip(subject: &Subject<'_>) {
     let store = subject.store;
     let instance = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let key = StorageKey::view("device-a", "room", instance);
-    let neighbour = StorageKey::view("device-b", "room", instance);
+    let key = StorageKey::view("device-a", "w1", instance);
+    let neighbour = StorageKey::view("device-b", "w1", instance);
     assert_eq!(store.read(&key).unwrap(), None);
     store
         .write(&key, WriteOp::Replace(b"view".to_vec()), None)

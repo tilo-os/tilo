@@ -955,7 +955,7 @@ mod tests {
             ui::tilo_actions::ResultSpec::Json { .. }
         ));
         assert!(native.validate_declaration().is_empty());
-        native.result.validate(&ui::tilo_actions::ActionOutput {value: Some(serde_json::json!({"launch": {"adopted_window": {"surface_id": 73, "package_id": "so.tilo.calculator", "room": "room"}}})), ..Default::default()}).unwrap();
+        native.result.validate(&ui::tilo_actions::ActionOutput {value: Some(serde_json::json!({"launch": {"adopted_window": {"surface_id": 73, "package_id": "so.tilo.calculator", "workspace": "workspace"}}})), ..Default::default()}).unwrap();
         let flatpak = find(&resources, &format!("app:{flatpak}"))
             .unwrap()
             .actions

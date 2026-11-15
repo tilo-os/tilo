@@ -48,18 +48,18 @@ pub enum Level {
     Full,
 }
 
-/// Room a filesystem has left, in bytes.
+/// Free space a filesystem has, in bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Workspace {
+pub struct FreeSpace {
     pub capacity: u64,
     pub available: u64,
 }
 
-/// The level `room` is at, given the one before. Recovering needs half as much room again as falling
+/// The level `space` is at, given the one before. Recovering needs half as much room again as falling
 /// takes, so a filesystem hovering at a limit does not announce itself over and over.
 #[must_use]
-pub fn level(room: Workspace, before: Level) -> Level {
-    let low_limit = (room.capacity / 20).clamp(2 * GIB, 10 * GIB);
+pub fn level(space: FreeSpace, before: Level) -> Level {
+    let low_limit = (space.capacity / 20).clamp(2 * GIB, 10 * GIB);
     let full_limit = 512 * MIB;
     let (low, full) = match before {
         Level::Plenty => (low_limit, full_limit),
@@ -68,9 +68,9 @@ pub fn level(room: Workspace, before: Level) -> Level {
             full_limit.saturating_add(full_limit / 2),
         ),
     };
-    if room.available < full {
+    if space.available < full {
         Level::Full
-    } else if room.available < low {
+    } else if space.available < low {
         Level::Low
     } else {
         Level::Plenty
@@ -90,12 +90,12 @@ pub fn storage_notice(
     volume: Volume,
     before: Level,
     after: Level,
-    room: Workspace,
+    space: FreeSpace,
 ) -> Option<Notice> {
     if after <= before {
         return None;
     }
-    let free = ui::format::size(room.available);
+    let free = ui::format::size(space.available);
     let volume = match volume {
         Volume::Home => t("storage-volume-home"),
         Volume::System => t("storage-volume-system"),
@@ -290,9 +290,9 @@ pub(crate) fn paste_notice(outcome: &crate::clipboard::paste::Outcome) -> Option
 }
 
 /// Room `path` 's filesystem has left, when the path exists.
-fn room(path: &Path) -> Option<Workspace> {
+fn free_space(path: &Path) -> Option<FreeSpace> {
     let stat = rustix::fs::statvfs(path).ok()?;
-    Some(Workspace {
+    Some(FreeSpace {
         capacity: stat.f_blocks.saturating_mul(stat.f_frsize),
         available: stat.f_bavail.saturating_mul(stat.f_frsize),
     })
@@ -322,16 +322,16 @@ fn volumes() -> Vec<(Volume, PathBuf)> {
 
 /// One look at the watched filesystems; `tell` gets the notices that are due. Returns whether any
 /// is low or full, which decides how soon to look again.
-pub fn sweep_rooms(
-    watched: &[(Volume, Option<Workspace>)],
+pub fn sweep_storage(
+    watched: &[(Volume, Option<FreeSpace>)],
     levels: &mut [Level],
     mut tell: impl FnMut(Notice),
 ) -> bool {
     let mut low = false;
-    for ((volume, room), before) in watched.iter().zip(levels.iter_mut()) {
-        let Some(room) = room else { continue };
-        let after = level(*room, *before);
-        if let Some(notice) = storage_notice(*volume, *before, after, *room) {
+    for ((volume, space), before) in watched.iter().zip(levels.iter_mut()) {
+        let Some(space) = space else { continue };
+        let after = level(*space, *before);
+        if let Some(notice) = storage_notice(*volume, *before, after, *space) {
             tell(notice);
         }
         *before = after;
@@ -637,12 +637,12 @@ pub(crate) fn shell_not_shared_notice(
 pub(crate) fn tell_shell_not_taken(
     notifications: &std::cell::RefCell<crate::notifications::SessionNotifications>,
     tree: &tilo_desktop_model::Layout,
-    (room, why): (tilo_desktop_model::WorkspaceId, String),
+    (id, why): (tilo_desktop_model::WorkspaceId, String),
 ) {
     let workspace = tree
         .workspaces
         .iter()
-        .find(|workspace| workspace.id() == room)
+        .find(|workspace| workspace.id() == id)
         .map(|workspace| workspace.name.as_str());
     let reason = neighbour_wire::RefusalReason::of(&why);
     notifications
@@ -739,11 +739,11 @@ fn watch_storage(notifications: &Notifications) {
     let watched = volumes();
     let mut levels = vec![Level::Plenty; watched.len()];
     loop {
-        let rooms: Vec<(Volume, Option<Workspace>)> = watched
+        let spaces: Vec<(Volume, Option<FreeSpace>)> = watched
             .iter()
-            .map(|(volume, path)| (*volume, room(path)))
+            .map(|(volume, path)| (*volume, free_space(path)))
             .collect();
-        let low = sweep_rooms(&rooms, &mut levels, |notice| {
+        let low = sweep_storage(&spaces, &mut levels, |notice| {
             tell_daemon(&notice, notifications);
         });
         std::thread::sleep(if low {
@@ -761,8 +761,8 @@ mod tests {
     use tilo_notifications_service::Taken;
     use tilo_service::Service;
 
-    fn room(capacity_gib: u64, available_mib: u64) -> Workspace {
-        Workspace {
+    fn space(capacity_gib: u64, available_mib: u64) -> FreeSpace {
+        FreeSpace {
             capacity: capacity_gib.saturating_mul(GIB),
             available: available_mib.saturating_mul(MIB),
         }
@@ -773,29 +773,29 @@ mod tests {
 
         phase levels_follow_the_room_left;
         {
-            assert_eq!(level(room(500, 100 * 1024), Level::Plenty), Level::Plenty);
+            assert_eq!(level(space(500, 100 * 1024), Level::Plenty), Level::Plenty);
             // 5 % of 500 GB is capped at 10 GB.
-            assert_eq!(level(room(500, 9 * 1024), Level::Plenty), Level::Low);
+            assert_eq!(level(space(500, 9 * 1024), Level::Plenty), Level::Low);
             // A small disk still warns with 2 GB left.
-            assert_eq!(level(room(20, 1500), Level::Plenty), Level::Low);
-            assert_eq!(level(room(44, 20), Level::Plenty), Level::Full);
+            assert_eq!(level(space(20, 1500), Level::Plenty), Level::Low);
+            assert_eq!(level(space(44, 20), Level::Plenty), Level::Full);
         }
 
         phase hovering_at_a_limit_does_not_flap;
         {
-            let at_limit = room(44, 2300);
+            let at_limit = space(44, 2300);
             assert_eq!(level(at_limit, Level::Plenty), Level::Plenty);
             assert_eq!(
                 level(at_limit, Level::Low),
                 Level::Low,
                 "recovery needs more room than falling"
             );
-            assert_eq!(level(room(44, 4 * 1024), Level::Low), Level::Plenty);
+            assert_eq!(level(space(44, 4 * 1024), Level::Low), Level::Plenty);
         }
 
         phase only_getting_worse_is_announced;
         {
-            let full = room(44, 20);
+            let full = space(44, 20);
             assert!(storage_notice(Volume::System, Level::Plenty, Level::Low, full).is_some());
             assert!(storage_notice(Volume::System, Level::Low, Level::Full, full).is_some());
             assert!(storage_notice(Volume::System, Level::Full, Level::Full, full).is_none());
@@ -856,8 +856,8 @@ mod tests {
         {
             let notifications = Notifications::new();
             let mut levels = [Level::Plenty];
-            let watched = [(Volume::Home, Some(room(44, 300)))];
-            let low = sweep_rooms(&watched, &mut levels, |notice| {
+            let watched = [(Volume::Home, Some(space(44, 300)))];
+            let low = sweep_storage(&watched, &mut levels, |notice| {
                 tell_daemon(&notice, &notifications);
             });
             assert!(low);
@@ -870,7 +870,7 @@ mod tests {
             assert!(live[0].machine_wide, "the whole machine's news");
             assert_eq!(live[0].app_name, "Storage");
 
-            sweep_rooms(&watched, &mut levels, |_| {
+            sweep_storage(&watched, &mut levels, |_| {
                 panic!("the same room twice says nothing");
             });
 
@@ -889,7 +889,7 @@ mod tests {
         // back.
         {
             let mut levels = [Level::Low];
-            let low = sweep_rooms(&[(Volume::System, None)], &mut levels, |_| {
+            let low = sweep_storage(&[(Volume::System, None)], &mut levels, |_| {
                 panic!("nothing to say")
             });
             assert!(!low);

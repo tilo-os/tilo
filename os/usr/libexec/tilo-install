@@ -2112,7 +2112,7 @@ if [ -d /run/tilo-installer/setup-handoff ]; then
   # root-only copy makes the session fall back to the Unix account instead of
   # the enrolled person, and it never dials its peers.
   for public in user-identity/pubkey.bin device/cert.bin personal-device-peers.json \
-      personal-rooms.json home-peers.json; do
+      personal-workspaces.json home-peers.json; do
     path="$HANDOFF_VAR/lib/tilo/$public"
     if [ -f "$path" ] && [ ! -L "$path" ]; then
       chmod 0644 "$path"

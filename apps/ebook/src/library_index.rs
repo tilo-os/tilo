@@ -1015,7 +1015,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_books_index_segment_is_built_once_and_finds_its_paragraphs;
 
-        phase a_book_whose_index_the_room_did_not_take_is_not_built_again;
+        phase a_book_whose_workspace_did_not_take_its_index_is_not_built_again;
         {
             let pumped = ui::background::Pumped::new();
             let mut index = LibraryIndex::default().with_background(pumped.background());

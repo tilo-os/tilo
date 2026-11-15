@@ -3,7 +3,7 @@
 //!
 //! A call is held by whoever can put this device into the channel: the
 //! collaboration plane, where being in the channel is the presence everyone
-//! in the room reads. A factory prepares one session per call and says who is
+//! in the workspace reads. A factory prepares one session per call and says who is
 //! in the record's channels; the session says what the call's own state is,
 //! which microphone it sends, and stops when it ends.
 
@@ -20,7 +20,7 @@ pub const SCREEN_EVERY: std::time::Duration = std::time::Duration::from_millis(1
 /// current owner; these strings are not media authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallTarget {
-    /// The workspace (its room id) the app's call is in.
+    /// The workspace the app's call is in.
     pub workspace: String,
     /// The app the call belongs to.
     pub app: String,
@@ -44,14 +44,14 @@ pub trait MediaFactory: Send + Sync {
     /// state that follows from it.
     fn prepare(&self, target: CallTarget) -> Prepare;
     /// The calls of `target`'s record (its `channel` is unused) as the
-    /// carrier last heard them, sorted by channel. A factory without a room
-    /// knows none.
+    /// carrier last heard them, sorted by channel. A factory without a
+    /// workspace knows none.
     fn rosters(&self, _target: CallTarget) -> Rosters {
         Box::pin(async { Vec::new() })
     }
-    /// Woken whenever a room's call list may have changed, so a voice
-    /// channel shows a join or leave at once. A factory without a room has
-    /// none.
+    /// Woken whenever a workspace's call list may have changed, so a voice
+    /// channel shows a join or leave at once. A factory without a workspace
+    /// has none.
     fn rosters_changed(&self) -> Option<Arc<tokio::sync::Notify>> {
         None
     }

@@ -40,7 +40,7 @@ description = "Connect to databases and explore data with a native client."
 [apps.diffmerge]
 description = "Compare files and resolve changes with a side-by-side view."
 [apps.discord]
-description = "Bridge a Discord server and a Tilo room: channels, messages, reactions and moderation, both ways."
+description = "Bridge a Discord server and a Tilo workspace: channels, messages, reactions and moderation, both ways."
 [apps.disk-usage]
 description = "Find what uses space and reclaim it with confidence."
 [apps.disks]
@@ -86,7 +86,7 @@ description = "Read and navigate PDF documents with a focused viewer."
 [apps.photos]
 description = "Browse, organize, and enjoy the photos that matter to you."
 [apps.poker]
-description = "Play Texas hold'em with everyone in the room, each from their own window."
+description = "Play Texas hold'em with everyone in the workspace, each from their own window."
 [apps.print-centre]
 description = "Set up printers and keep print jobs moving."
 [apps.publisher]

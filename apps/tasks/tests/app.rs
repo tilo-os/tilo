@@ -405,7 +405,7 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn an_issues_page_picks_its_assignee_and_labels_and_is_the_page_every_view_opens;
 
-    phase an_issues_assignee_is_picked_among_the_rooms_people_and_agents;
+    phase an_issues_assignee_is_picked_among_the_people_and_agents_of_the_workspace;
     // The assignee is picked among the workspace's people and agents by name,
     // never typed as an id, and reads back as the person's name and face; the
     // "Nobody" choice clears it.

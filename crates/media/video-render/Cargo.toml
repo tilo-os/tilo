@@ -40,7 +40,7 @@ wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
-# The helper confines itself before it reads the room's document or footage.
+# The helper confines itself before it reads the workspace's document or footage.
 tilo-sandbox = { path = "../../platform/tilo-sandbox" }
 
 # The end-to-end tests render the editor's generated footage

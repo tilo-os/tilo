@@ -10,9 +10,9 @@ fn harness() -> (
     let cache = ui::portable_storage::PortableStorage::new("writer-test", "device").unwrap();
     let definition = word_processor::definition();
     let records = ui::record::RecordOwners::portable(cache.clone())
-        .open(definition.app_id(), "room")
+        .open(definition.app_id(), "w1")
         .unwrap();
-    let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "room").unwrap());
+    let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "w1").unwrap());
     let permissions = ui::permissions::SharedPermissions::new(
         ui::permissions::PermissionContext::member("author", ui::permissions::Role::Owner),
     );

@@ -1973,7 +1973,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(local_direct, vec![hex::encode(cert.device_public_key)]);
-        let rooms: Vec<String> = serde_json::from_slice(
+        let workspaces: Vec<String> = serde_json::from_slice(
             &std::fs::read(
                 tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
                     .with_file_name("personal-workspaces.json"),
@@ -1981,7 +1981,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(rooms, vec!["11111111-1111-4111-8111-111111111111"]);
+        assert_eq!(workspaces, vec!["11111111-1111-4111-8111-111111111111"]);
         let peers_bytes = std::fs::read(tilo_relay_protocol::home_peer_registry_path(
             &dir.path().join("var/lib/tilo"),
         ))

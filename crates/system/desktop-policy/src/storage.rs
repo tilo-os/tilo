@@ -14,7 +14,7 @@ pub struct StorageRoots {
     /// The package store root (`tilo-apps`); installed apps are read from its
     /// registry.
     pub app_payloads: Option<PathBuf>,
-    pub room_data: Option<PathBuf>,
+    pub workspace_data: Option<PathBuf>,
     pub app_cache: Option<PathBuf>,
     pub sync_replica: Option<PathBuf>,
 }
@@ -29,7 +29,7 @@ impl StorageRoots {
             .or_else(|| data.as_ref().map(|p| p.join("tilo-apps")));
         Self {
             app_payloads: payload_root,
-            room_data: data.as_ref().map(|p| p.join("tilo-workspaces")),
+            workspace_data: data.as_ref().map(|p| p.join("tilo-workspaces")),
             app_cache: cache.map(|p| p.join("tilo-apps")),
             // The sync filesystem owns this directory. Until it publishes
             // hydration state, all bytes are truthfully labelled replica data,
@@ -96,7 +96,7 @@ impl StorageSnapshot {
 pub fn scan_storage(roots: &StorageRoots) -> StorageSnapshot {
     let mut snapshot = StorageSnapshot::default();
     scan_installed_apps(&mut snapshot, roots.app_payloads.as_deref());
-    scan_room_apps(&mut snapshot, roots.room_data.as_deref());
+    scan_workspace_apps(&mut snapshot, roots.workspace_data.as_deref());
     scan_children(
         &mut snapshot,
         roots.app_cache.as_deref(),
@@ -175,18 +175,18 @@ fn scan_installed_apps(snapshot: &mut StorageSnapshot, root: Option<&Path>) {
     }
 }
 
-fn scan_room_apps(snapshot: &mut StorageSnapshot, root: Option<&Path>) {
+fn scan_workspace_apps(snapshot: &mut StorageSnapshot, root: Option<&Path>) {
     let Some(root) = root else {
         snapshot.unavailable.push(StorageCategory::AppData);
         return;
     };
-    let Ok(rooms) = std::fs::read_dir(root) else {
+    let Ok(workspaces) = std::fs::read_dir(root) else {
         snapshot.unavailable.push(StorageCategory::AppData);
         return;
     };
     let mut totals: BTreeMap<String, (u64, u64, PathBuf)> = BTreeMap::new();
-    for room in rooms.flatten().filter(|e| e.path().is_dir()) {
-        let Ok(apps) = std::fs::read_dir(room.path()) else {
+    for workspace in workspaces.flatten().filter(|e| e.path().is_dir()) {
+        let Ok(apps) = std::fs::read_dir(workspace.path()) else {
             continue;
         };
         for app in apps.flatten() {
@@ -452,7 +452,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, tree.join("link")).unwrap();
         let snap = scan_storage(&StorageRoots {
             app_payloads: Some(store),
-            room_data: None,
+            workspace_data: None,
             app_cache: None,
             sync_replica: None,
         });

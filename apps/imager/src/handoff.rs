@@ -259,7 +259,7 @@ pub fn apply_setup_handoff(
         if profile.user.username.trim().is_empty() {
             return Err("Choose the account name before enrolling this device.".into());
         }
-        let rooms = tilo_identity_host::provisioning::personal_workspaces_export_path()
+        let workspaces = tilo_identity_host::provisioning::personal_workspaces_export_path()
             .unwrap_or_else(|| PathBuf::from("/var/lib/tilo/peers/personal-workspaces.json"));
         tilo_identity_host::provisioning::enroll_from_local_identity(
             &tilo_identity_host::provisioning::JoinedDeviceLayout {
@@ -268,7 +268,7 @@ pub fn apply_setup_handoff(
                 local_identity_dir: local.identity_dir,
                 local_system: local.system,
                 local_home_peers: local.home_peers,
-                local_workspaces: &rooms,
+                local_workspaces: &workspaces,
             },
             &profile.user.full_name,
             label,

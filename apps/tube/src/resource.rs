@@ -266,8 +266,8 @@ mod tests {
         {
             use crate::history::WatchHistory;
             let person = "ad".repeat(32);
-            let room = "00000000-0000-4000-8000-0000000000ad";
-            let mut app = TestApp::<TubeShell>::for_person_in(&person, room).unwrap();
+            let workspace = "00000000-0000-4000-8000-0000000000ad";
+            let mut app = TestApp::<TubeShell>::for_person_in(&person, workspace).unwrap();
             app.effect(&TubeEffect::MarkWatched {
                 video: "vid_donut".into(),
             })
@@ -287,7 +287,7 @@ mod tests {
             let route = history.record().route().unwrap();
             assert_eq!(
                 route.cluster_id.to_string(),
-                room,
+                workspace,
                 "in the workspace Tube is open in"
             );
             let library = app.peer_document().save();

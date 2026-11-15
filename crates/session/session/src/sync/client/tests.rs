@@ -774,7 +774,7 @@ fn drawn_on(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64
 tilo_test_env::scenario! {
     fn pointers_faces_and_waves_reach_the_shell_they_are_for;
 
-    phase pointers_are_followed_on_the_room_tile;
+    phase pointers_are_followed_on_the_workspace_tile;
     {
         let (sync, _said) = session("Quinten", Some(0x04));
         sync.hear(hello(1, 0xaa, "Framework 16"));

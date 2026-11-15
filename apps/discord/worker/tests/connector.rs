@@ -173,7 +173,10 @@ async fn the_worker_binary_bridges_through_the_connector_host() {
     let text = until(|| std::fs::read_to_string(&metrics).ok())
         .await
         .expect("metrics file");
-    assert!(text.contains("tilo_rooms_bridge_queue_depth "), "{text}");
+    assert!(
+        text.contains("tilo_workspace_bridge_queue_depth "),
+        "{text}"
+    );
 
     process.stop().await;
 }

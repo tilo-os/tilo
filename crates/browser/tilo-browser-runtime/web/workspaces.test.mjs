@@ -661,7 +661,7 @@ const rules = answer => {
   return {runtime, asked};
 };
 
-test('the remembered workspaces are read as kept, and damaged or roomless entries are never offered', () => {
+test('the remembered workspaces are read as kept, and damaged entries and entries with no workspace are never offered', () => {
   const store = memoryStore();
   seed(store, [kept('https://globex.example', 'H', {name: 'Hank'}), kept('https://acme.example/', 'A', {unavailable: true})]);
   assert.deepEqual(enteredWorkspaces(store), [
@@ -917,7 +917,7 @@ test('an invitation to another workspace on the home\'s host leaves the home its
 
 test('a kept membership or entered workspace that names no workspace is left out, not opened half-read', () => {
   const store = new Map([[KEY, JSON.stringify({
-    'https://workspaces.example': {origin: 'https://workspaces.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)},
+    'https://workspaces.example': {origin: 'https://workspaces.example', workspaceName: 'WORKSPACE', userPublicKey: '11'.repeat(32)},
     'https://other.example': {origin: 'https://other.example', workspace: null, userPublicKey: '22'.repeat(32)},
   })]]);
   const memberships = {getItem: key => store.get(key)};

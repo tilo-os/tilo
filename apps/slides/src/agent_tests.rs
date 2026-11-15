@@ -75,7 +75,7 @@ fn verbs_taking_a_slide_take_its_number_and_refuse_one_past_the_end() {
 }
 
 #[test]
-fn a_picture_the_room_holds_goes_onto_a_slide_by_its_content_address() {
+fn a_picture_the_workspace_holds_goes_onto_a_slide_by_its_content_address() {
     let mut app = app();
     let hash = app.content().put(&crate::sample::photo_png()).unwrap();
     call(

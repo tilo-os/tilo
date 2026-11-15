@@ -1314,14 +1314,19 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
     );
     until(&mut session, |session| workspaces(session).len() == 2);
     let here = workspace_in_front(&session);
-    let (other_room, other_name) = workspaces(&session)
+    let (other_workspace, other_name) = workspaces(&session)
         .into_iter()
         .find(|(workspace, _)| *workspace != here)
         .expect("a workspace that is not the one in front");
     let document = home.home().join(QUARTERLY);
     std::fs::write(&document, "what the plan says").unwrap();
     let record = ui::record::RecordId::for_file(&document);
-    write_index(&home, NOTES, &other_room, &[(record.as_str(), "document")]);
+    write_index(
+        &home,
+        NOTES,
+        &other_workspace,
+        &[(record.as_str(), "document")],
+    );
 
     // The row says which workspace holds the record.
     let row = find_row(&mut session, "quarterly", QUARTERLY);

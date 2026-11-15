@@ -934,7 +934,7 @@ fn owners_and_editors_set_the_language_and_the_name() {
     }
 }
 
-/// A guest (an Editor in a public room) copies a snippet as the owner does: the copy lands
+/// A guest (an Editor in a public workspace) copies a snippet as the owner does: the copy lands
 /// on their own clipboard and touches nothing shared, so no one is asked first.
 #[test]
 fn a_guest_copies_a_snippet_without_being_asked() {

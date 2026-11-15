@@ -507,7 +507,7 @@ class CloudDeployTests(unittest.TestCase):
                 "browserRuntime": {"version": "131.0.6778.85"},
             },
             "services": services or {name: self.fake.digests[(name, revision)] for name in ("web-entry", "relay")},
-            "limits": {"roomsPerHost": {"value": 8, "unit": "rooms"},
+            "limits": {"workspacesPerHost": {"value": 8, "unit": "workspaces"},
                        "bootSeconds": {"value": 45, "unit": "seconds"}},
         }
         document["identities"].update(identities)
@@ -567,7 +567,7 @@ class CloudDeployTests(unittest.TestCase):
     def test_an_edited_manifest_is_refused_by_its_own_digest(self):
         path = self.qualification(self.target)
         document = json.loads(path.read_text())
-        document["limits"]["roomsPerHost"]["value"] = 1
+        document["limits"]["workspacesPerHost"]["value"] = 1
         path.write_text(json.dumps(document))
         code, _, err = self.plan("--qualification", str(path))
         self.assertEqual(code, 1)

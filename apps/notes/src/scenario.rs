@@ -570,10 +570,10 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
         }
         Some("slash") => driver.type_text("/"),
         Some("mention") => {
-            show_room(driver);
+            show_workspace(driver);
             driver.type_text("Ask @");
         }
-        Some("reactions") => show_room(driver),
+        Some("reactions") => show_workspace(driver),
         Some("slash_query") => driver.type_text("Groceries for Monday /c"),
         Some("slash_applied") => {
             driver.type_text("/h1");
@@ -734,7 +734,7 @@ fn show_collaborators(driver: &mut FrameHarness) -> Result<(), String> {
 }
 
 /// The workspace around the note: two people and an agent the `@` list offers.
-fn show_room(driver: &mut FrameHarness) {
+fn show_workspace(driver: &mut FrameHarness) {
     use ui::permissions::MemberId;
     use ui::presence::PresenceCtx;
     let mut presence = PresenceCtx::empty();

@@ -1,6 +1,6 @@
 //! The session's call service: which voice channel each app's call is in,
 //! who is in the record's channels for it to show, and this device's own
-//! call, as presence carries it to everyone in the room.
+//! call, as presence carries it to everyone in the workspace.
 //!
 //! Joining a voice channel is being in its call, muted and listening, with
 //! no prompt: nothing is captured until the person asks to be heard, and
@@ -168,7 +168,7 @@ struct Shared {
 /// The voice channel this device is in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OwnCall {
-    /// The workspace (its room id) the call is in.
+    /// The workspace the call is in.
     pub workspace: String,
     /// The app the call belongs to.
     pub app: String,
@@ -651,7 +651,7 @@ impl NativeMediaService {
                 }
                 tokio::select! {
                     () = &mut changed => {}
-                    // The room's calls changed: ask for this record's rosters,
+                    // The workspace's calls changed: ask for this record's rosters,
                     // whose arrival wakes `changed`.
                     () = &mut rosters => refresh = true,
                     () = tokio::time::sleep_until(hold) => {}

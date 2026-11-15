@@ -148,7 +148,7 @@ fn removing_anyones_emoji_sits_under_the_moderation_node() {
 }
 
 #[test]
-fn the_rooms_roles_decide_who_adds_and_who_moderates() {
+fn a_workspaces_roles_decide_who_adds_and_who_moderates() {
     let mut policy = WorkspacePolicy::new("r", ALICE);
     for (person, role) in [
         (BOB, Role::Editor),

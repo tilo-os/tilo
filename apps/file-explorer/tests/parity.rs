@@ -211,14 +211,14 @@ fn a_workspace_root_is_named_rather_than_spelled_out() {
 
     assert_eq!(file_explorer::model::workspace_label(&ws), "workspace");
 
-    let in_home = home.join("room");
+    let in_home = home.join("projects");
     let roots_in_home = vec![in_home.clone()];
     let labels: Vec<String> =
         breadcrumb_components(&in_home.join("notes"), Some(&home), &roots_in_home)
             .into_iter()
             .map(|(l, _)| l)
             .collect();
-    assert_eq!(labels, vec!["room", "notes"]);
+    assert_eq!(labels, vec!["projects", "notes"]);
 
     let labels: Vec<String> =
         breadcrumb_components(&PathBuf::from("/etc/hosts"), Some(&home), &roots)

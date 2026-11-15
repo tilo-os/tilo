@@ -435,14 +435,14 @@ fn wait_until_the_directory_is_done(session: &mut Session) {
 
 /// What the site lists: its own community workspace, a club, and the workspace this computer holds
 /// already.
-fn page_listing_the_workspace_on_this_shell(held_name: &str, held_room: &str) -> String {
+fn page_listing_the_workspace_on_this_shell(held_name: &str, held_workspace: &str) -> String {
     let mut entries = vec![community_entry(34, now_ms()), club_entry(now_ms())];
     entries.push(DirectoryEntry {
-        workspace: held_room.to_owned(),
+        workspace: held_workspace.to_owned(),
         name: held_name.to_owned(),
         description: "The one on this session".to_owned(),
         default_role: Role::Commenter,
-        door: door_path(held_room),
+        door: door_path(held_workspace),
         here: Vec::new(),
         here_count: 0,
         members: 3,
@@ -520,12 +520,12 @@ fn opening_the_directory_lists_the_community_sites_public_workspaces() {
     let _config = community_site(&mut env, &responder.url());
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
-    let (_held_id, held_name, held_room) = held(&session)
+    let (_held_id, held_name, held_workspace) = held(&session)
         .into_iter()
         .next()
         .expect("the session holds one workspace");
     *page.lock().expect("the page") =
-        page_listing_the_workspace_on_this_shell(&held_name, &held_room);
+        page_listing_the_workspace_on_this_shell(&held_name, &held_workspace);
     open_directory(&mut session);
     let sheet = session
         .workspace_directory()

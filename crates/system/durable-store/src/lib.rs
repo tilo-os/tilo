@@ -380,12 +380,12 @@ mod tests {
         // Phase `keys_display_every_identifying_component`.
         {
             assert_eq!(
-                StorageKey::document("pkg", "room", "rec").to_string(),
-                "document pkg/room/rec"
+                StorageKey::document("pkg", "w1", "rec").to_string(),
+                "document pkg/w1/rec"
             );
             assert_eq!(
-                StorageKey::view("dev", "room", 7).to_string(),
-                "view dev/room/7"
+                StorageKey::view("dev", "w1", 7).to_string(),
+                "view dev/w1/7"
             );
             assert_eq!(StorageKey::app("pkg").to_string(), "app pkg");
             assert_eq!(

@@ -270,15 +270,13 @@ async fn import_checks_roots_and_whole_selection_bounds_before_publication() {
 }
 
 #[test]
-fn a_request_names_its_scopes_under_the_stored_keys() {
+fn a_request_names_its_scopes_under_the_workspace_keys() {
     let (request, _) = action(vec!["ab".repeat(32)], 1024);
     let written = serde_json::to_string(&request).unwrap();
-    assert!(written.contains("\"source_room\""), "{written}");
-    assert!(written.contains("\"destination_room\""), "{written}");
-    assert!(!written.contains("\"source_workspace\""), "{written}");
-    let stored = written
-        .replace("\"source_room\"", "\"source_workspace\"")
-        .replace("\"destination_room\"", "\"destination_workspace\"");
-    let read: LegacyImportRequest = serde_json::from_str(&stored).unwrap();
+    assert!(written.contains("\"source_workspace\""), "{written}");
+    assert!(written.contains("\"destination_workspace\""), "{written}");
+    let read: LegacyImportRequest = serde_json::from_str(&written).unwrap();
     assert_eq!(read, request);
+    let old = written.replace("\"source_workspace\"", "\"source_room\"");
+    assert!(serde_json::from_str::<LegacyImportRequest>(&old).is_err());
 }

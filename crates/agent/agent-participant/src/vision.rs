@@ -63,17 +63,10 @@ pub const VISION_ENV: &str = "TILO_AGENT_VISION";
 /// an app rendered (a canvas look, a PDF page) are always shown.
 pub const WORKSPACE_PICTURES_ENV: &str = "TILO_AGENT_WORKSPACE_PICTURES";
 
-/// The name [`WORKSPACE_PICTURES_ENV`] was set under before: still read, so a
-/// host that sets it keeps showing the workspace's pictures.
-pub const WORKSPACE_PICTURES_ENV_RETIRED: &str = "TILO_AGENT_ROOM_PICTURES";
-
-/// The setting [`workspace_pictures_allowed`] reads: [`WORKSPACE_PICTURES_ENV`],
-/// or the name it was set under before ([`WORKSPACE_PICTURES_ENV_RETIRED`]).
+/// The setting [`workspace_pictures_allowed`] reads: [`WORKSPACE_PICTURES_ENV`].
 #[must_use]
 pub fn pictures_setting() -> Option<String> {
-    std::env::var(WORKSPACE_PICTURES_ENV)
-        .or_else(|_| std::env::var(WORKSPACE_PICTURES_ENV_RETIRED))
-        .ok()
+    std::env::var(WORKSPACE_PICTURES_ENV).ok()
 }
 
 /// The prefix of a content address.

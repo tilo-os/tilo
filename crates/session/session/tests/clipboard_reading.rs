@@ -133,19 +133,20 @@ fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
     let app_socket = root.path().join("app.sock");
     // Both apps speak from this process, and a session admits one app of it,
     // so each has a session of its own.
-    let (mut panel_session, panel_room) = session(&panel_socket, PANEL);
-    let (mut app_session, app_room) = session(&app_socket, APP);
+    let (mut panel_session, panel_workspace) = session(&panel_socket, PANEL);
+    let (mut app_session, app_workspace) = session(&app_socket, APP);
     copy(&mut panel_session, "the copied line");
 
     let (panel_sent, panel_received) = std::sync::mpsc::channel();
-    let panel = std::thread::spawn(move || app(&panel_socket, PANEL, &panel_room, &panel_sent));
+    let panel =
+        std::thread::spawn(move || app(&panel_socket, PANEL, &panel_workspace, &panel_sent));
     let panel_seen = until_the_app_is_done(&mut panel_session, &panel_received);
     panel.join().expect("the panel's thread");
 
     // The app that was granted nothing is refused as it asks: the session answers a read on its own
     // pass, and the workspace's grants decide it there.
     let (sent, received) = std::sync::mpsc::channel();
-    let ordinary = std::thread::spawn(move || app(&app_socket, APP, &app_room, &sent));
+    let ordinary = std::thread::spawn(move || app(&app_socket, APP, &app_workspace, &sent));
     let app_seen = until_the_app_is_done(&mut app_session, &received);
     ordinary.join().expect("the app's thread");
 

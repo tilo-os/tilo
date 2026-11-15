@@ -963,7 +963,8 @@ fn says(view: &mut ViewInstance, said: &str) -> bool {
 /// `Message` both declare is the same id with different fields, which is what takes the wrong
 /// schema.
 #[test]
-fn a_room_held_by_one_version_of_chat_is_read_and_changed_by_that_version_with_the_other_loaded() {
+fn a_workspace_held_by_one_version_of_chat_is_read_and_changed_by_that_version_with_the_other_loaded()
+ {
     // The current Chat loaded first, then the Chat before channels: each a package with its
     // own ids lock, as an upgraded workspace has them.
     let (mut current, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);

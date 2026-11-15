@@ -228,7 +228,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase another_room_holding_the_hash_reads_nothing;
+    phase another_workspace_holding_the_hash_reads_nothing;
     {
         let harness = Harness::start();
         let stored = harness

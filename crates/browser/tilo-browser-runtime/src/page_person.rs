@@ -45,7 +45,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_lobby_beside_the_room_leaves_the_persons_identity_alone() {
+    fn a_lobby_beside_the_workspace_leaves_the_persons_identity_alone() {
         assert!(claim(1), "the workspace's peer speaks for the person");
         assert!(!claim(2), "a lobby started beside it does not");
         assert!(speaks(1) && !speaks(2));

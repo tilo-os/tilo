@@ -26,7 +26,7 @@ function desktop() {
 }
 
 /** Ada's page in her workspace on her own machine, as the host answers it. */
-function adasRoom({owner = true, letsIn = owner, waitList = []} = {}) {
+function adasWorkspace({owner = true, letsIn = owner, waitList = []} = {}) {
   const calls = [];
   return {calls, peer: {
     origin: 'https://node.example:8443', workspace: WORKSPACE, userPublicKey: ADA, host: {hostCert: {user_public_key: bytes(ADA)}},
@@ -50,7 +50,7 @@ function adasRoom({owner = true, letsIn = owner, waitList = []} = {}) {
 
 test('the wait list is listed, gets no banner, and each address is invited with a link of its own', async () => {
   const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1000};
-  const {peer, calls} = adasRoom({owner: false, letsIn: true, waitList: [ed]});
+  const {peer, calls} = adasWorkspace({owner: false, letsIn: true, waitList: [ed]});
   const member = {...peer, userPublicKey: 'bb'.repeat(32),
     membership: {...peer.membership, mailInvite: async () => { throw new Error('this door sends no mail'); }}};
   const {mount, shown, banners} = desktop();
@@ -74,7 +74,7 @@ test('the wait list is listed, gets no banner, and each address is invited with 
 
 test('a host that sends mail mails the invitation to the address, and nothing is shared', async () => {
   const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1000};
-  const {peer, calls} = adasRoom({owner: false, letsIn: true, waitList: [ed]});
+  const {peer, calls} = adasWorkspace({owner: false, letsIn: true, waitList: [ed]});
   const member = {...peer, userPublicKey: 'bb'.repeat(32)};
   const {mount} = desktop();
   let listed = null;
@@ -87,7 +87,7 @@ test('a host that sends mail mails the invitation to the address, and nothing is
 });
 
 test('someone the workspace does not let invite is never offered the wait list', async () => {
-  const {peer, calls} = adasRoom({owner: false});
+  const {peer, calls} = adasWorkspace({owner: false});
   const {mount, shown} = desktop();
   const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)},
     inviteLink: sealedLink, ui: {}});
@@ -172,7 +172,7 @@ test('a person on a host that keeps workspaces of people’s own makes their nex
 });
 
 test('an invite link is made when it is pressed for, and never before', async () => {
-  const {peer, calls} = adasRoom({owner: false, letsIn: true});
+  const {peer, calls} = adasWorkspace({owner: false, letsIn: true});
   const copied = [];
   const shared = [];
   const {mount, shown} = desktop();
@@ -192,7 +192,7 @@ test('an invite link is made when it is pressed for, and never before', async ()
 });
 
 test('a site that keeps no link hands over no invitation text: the press says why', async () => {
-  const {peer} = adasRoom({owner: false, letsIn: true});
+  const {peer} = adasWorkspace({owner: false, letsIn: true});
   const failed = [];
   const actions = createWorkspaceActions({peer, inviteLink: async () => { throw new Error('the site kept nothing'); },
     onError: () => {},
@@ -204,7 +204,7 @@ test('a site that keeps no link hands over no invitation text: the press says wh
 });
 
 test('a press whose copy the browser refuses shows the link to copy by hand', async () => {
-  const {peer} = adasRoom({owner: false, letsIn: true});
+  const {peer} = adasWorkspace({owner: false, letsIn: true});
   const shared = [];
   const actions = createWorkspaceActions({peer, inviteLink: sealedLink,
     ui: {copy: async () => false, share: async offer => { shared.push(offer); },

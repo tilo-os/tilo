@@ -749,7 +749,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_device_the_room_does_not_hold_is_refused() {
+    async fn a_device_the_workspace_does_not_hold_is_refused() {
         let root = SigningKey::from_bytes(&[0x41; 32]);
         let there = device(&root, 0x42, "The other device");
         let stranger = device(

@@ -336,13 +336,13 @@ async fn a_host_app_is_handed_the_plain_path() {
     let folder = tempfile::tempdir().unwrap();
     let chosen = folder.path().join("notes.txt");
     std::fs::write(&chosen, b"x").unwrap();
-    // A host app, and a sandboxed one whose room the session does not
+    // A host app, and a sandboxed one whose workspace the session does not
     // know: neither has a view of the store, so both are handed the path.
-    let unknown_room = PortalCaller {
+    let unknown_workspace = PortalCaller {
         sandboxed: true,
         ..caller()
     };
-    for caller in [caller(), unknown_room] {
+    for caller in [caller(), unknown_workspace] {
         let (_, (code, results)) = picked_by(
             &caller,
             &tilo_documents::Documents::new(),

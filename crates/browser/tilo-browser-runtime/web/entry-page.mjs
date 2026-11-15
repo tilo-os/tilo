@@ -1461,7 +1461,7 @@ export async function startEntryPage({mode}) {
     // the shared desktop they landed in. A link into another workspace is that
     // workspace's, and is left alone.
     if (!embed && !firstRun && here?.kind === 'workspace' && readSetup()?.step !== 'done'
-        && page.peer?.workspace && page.peer.workspace === homeRoomOf(page.entry)) {
+        && page.peer?.workspace && page.peer.workspace === homeAdmissionWorkspace(page.entry)) {
       loadPage(page.entry.base);
       return;
     }
@@ -1682,7 +1682,7 @@ function rememberedWorkspace(scope) {
 
 /** The workspace the site's own door names, as its admission address spells it
  * (`<relay>/peer/v1/directory/<workspace>/`): the site's home. */
-function homeRoomOf(entry) {
+function homeAdmissionWorkspace(entry) {
   const admission = entry?.home?.admission;
   const match = typeof admission === 'string' ? admission.match(/\/directory\/([^/]+)\/?$/) : null;
   return match ? match[1] : null;

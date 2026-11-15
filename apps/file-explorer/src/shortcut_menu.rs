@@ -211,7 +211,7 @@ mod tests {
         let address = tilo_automation::shortcut_run_address(id);
         let resource = address.resource.clone();
         CatalogueRow {
-            provider: "workspace:room".into(),
+            provider: "workspace:w1".into(),
             app_id: SHORTCUTS_APP_ID.into(),
             parent_resource: String::new(),
             resource: CatalogueResource {
@@ -330,7 +330,7 @@ mod tests {
             else {
                 panic!("one invocation: {requests:?}");
             };
-            assert_eq!(request.target.provider, "workspace:room");
+            assert_eq!(request.target.provider, "workspace:w1");
             assert_eq!(
                 request.target.address,
                 tilo_automation::shortcut_run_address("archive")

@@ -550,7 +550,7 @@ mod tests {
                 .set_action(
                     chord("Super+Shift+Y"),
                     crate::hardware::ActionChordTarget {
-                        provider: "workspace:room".into(),
+                        provider: "workspace:w1".into(),
                         resource: "drafts".into(),
                         action: "publish".into(),
                     },
@@ -598,7 +598,7 @@ mod tests {
                 .set_action(
                     chord("Super+Space"),
                     crate::hardware::ActionChordTarget {
-                        provider: "workspace:room".into(),
+                        provider: "workspace:w1".into(),
                         resource: "drafts".into(),
                         action: "publish".into(),
                     },

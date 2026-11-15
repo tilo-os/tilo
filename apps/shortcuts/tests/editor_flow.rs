@@ -87,7 +87,7 @@ impl Workspace {
     fn new() -> Self {
         let library = |action: &str, params: Vec<ActionParam>| {
             row(
-                "workspace:room",
+                "workspace:w1",
                 APP_ID,
                 "shortcuts",
                 "shortcuts.library",
@@ -576,7 +576,7 @@ fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
 fn with_saved_note() -> Workspace {
     let mut host = Workspace::new();
     host.rows.push(row(
-        "workspace:room",
+        "workspace:w1",
         APP_ID,
         &tilo_automation::shortcut_resource_id("quick-note"),
         "shortcuts.shortcut",

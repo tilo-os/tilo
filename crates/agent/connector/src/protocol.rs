@@ -36,8 +36,8 @@ pub enum ToWorker {
     },
     Stop,
     /// The outside call the worker is to be in from now on (a voice
-    /// channel id of the service), carrying the room's call into it, and
-    /// the line it shows there about who is on the room's side; `call:
+    /// channel id of the service), carrying the workspace's call into it, and
+    /// the line it shows there about who is on the workspace's side; `call:
     /// None` leaves. It replaces the last one whole, and the host sends it
     /// again whenever the worker restarts. The worker answers with
     /// [`FromWorker::Calls`].
@@ -46,7 +46,7 @@ pub enum ToWorker {
         #[serde(default)]
         status: Option<String>,
     },
-    /// One Opus frame (48 kHz, 20 ms) the room's call heard from `speaker`
+    /// One Opus frame (48 kHz, 20 ms) the workspace's call heard from `speaker`
     /// (an id stable while they speak), for the outside call the worker is
     /// in. Several speakers at once are mixed by the worker; the host never
     /// sends a frame the outside call itself said.
