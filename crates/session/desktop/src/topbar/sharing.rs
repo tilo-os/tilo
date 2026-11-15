@@ -450,7 +450,7 @@ impl TopBarChrome {
                     .map_or_else(
                         || t("topbar-sharing-unknown-window"),
                         |(workspace, tab)| {
-                            let window = tilo_desktop_surface::window_name(tab);
+                            let window = tilo_desktop_surface::window_title(tab);
                             if workspace.id() == tree.active {
                                 window
                             } else {
