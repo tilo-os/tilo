@@ -46,7 +46,7 @@ use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{
-    durable, enrol, enter_page, start_workspace_host_relaying, wait_keyed, written,
+    admitted_to, durable, enrol, enter_page, start_workspace_host_relaying, wait_keyed, written,
 };
 
 /// The chain the chat keeps its posts in.
@@ -295,6 +295,11 @@ async fn a_guest_takes_in_a_crowded_chat_as_a_snapshot_and_the_writes_since() {
         .await;
         page.send(Cmd::Join(lounge.workspace_id)).unwrap();
         introducers.push(page);
+    }
+    // A page writes once its host let it into the workspace and replayed it: a write said before
+    // that can be refused for the governance the page does not hold yet, and is never answered.
+    for page in &introducers {
+        admitted_to(page, lounge.workspace_id).await;
     }
     let mut founding = AutoCommit::new();
     let founded = write(&mut founding, |doc| {
