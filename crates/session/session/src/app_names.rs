@@ -161,107 +161,112 @@ mod tests {
         assert_eq!(app_name("  "), "");
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_window_is_the_app_and_its_own_title_never_an_id() {
-        assert_eq!(
-            window_name("so.tilo.notes", "Groceries"),
-            "Groceries — Notes",
-            "the window's own title, then the app it shows"
-        );
-        assert_eq!(
-            window_name("so.tilo.file-explorer", "Downloads"),
-            "Downloads — Files"
-        );
-        assert_eq!(
-            window_name("org.example.Terminal", "quinten@host: ~"),
-            "quinten@host: ~ — Terminal",
-            "a window claiming no app id the device knows still reads as words"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn a_window_is_named_by_its_app_and_its_own_title;
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_sender_with_no_installed_app_is_never_named_by_its_path() {
-        // A process the session proved, with no app behind it, names itself;
-        // the bar and the banner say its name, never the file it runs from.
-        assert_eq!(
-            program_sender_name("/usr/bin/notify-send", "Notes", None),
-            "Notes",
-            "the name its sender gives is the app's own word"
-        );
-        assert_eq!(
-            program_sender_name("/usr/bin/notify-send", "a\u{7}b", None),
-            "ab",
-            "a name with control characters shows none of them"
-        );
-        assert_eq!(
-            program_sender_name("/usr/bin/notify-send", "/usr/bin/notify-send", None),
-            "Notify Send",
-            "a program that gives its path as its name is named by its file"
-        );
-    }
-
-    /// A command line sender that names itself by its program (`notify-send`) names nothing a
-    /// person reads: the centre says where it came from. A desktop entry the sender points at
-    /// names it instead, when the machine has that entry.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_command_line_sender_is_the_terminal_or_its_desktop_entry() {
-        assert_eq!(
-            program_sender_name("/usr/bin/notify-send", "notify-send", None),
-            "Terminal",
-            "a program naming itself by its file is a command run in a terminal"
-        );
-        assert_eq!(
-            program_sender_name("/usr/bin/notify-send", "", None),
-            "Terminal",
-            "a program naming nothing came from the terminal too"
-        );
-        assert_eq!(
-            program_sender_name(
-                "/usr/bin/notify-send",
-                "notify-send",
-                Some("no.such.Entry.desktop")
-            ),
-            "Terminal",
-            "an entry the machine does not have names nothing"
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_window_with_no_title_is_the_app_alone() {
-        assert_eq!(window_name("so.tilo.notes", ""), "Notes");
-        assert_eq!(window_name("so.tilo.notes", "   "), "Notes");
-        assert_eq!(
-            window_name("so.tilo.notes", "Notes"),
-            "Notes",
-            "the app's name is not said twice"
-        );
-    }
-
-    /// A window whose own title is its app's name under another spelling — the slug the launch
-    /// names (`chat`) or the id the client announces (`so.tilo.chat`) — is the app alone, never
-    /// the app's name joined to a slug or an id.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_window_naming_its_app_is_the_app_alone_never_a_slug_or_id() {
-        for said in ["chat", "Chat", "CHAT", "so.tilo.chat", " so.tilo.chat "] {
-            assert_eq!(window_name("so.tilo.chat", said), "Chat", "{said:?}");
+        phase a_window_is_the_app_and_its_own_title_never_an_id;
+        {
+            assert_eq!(
+                window_name("so.tilo.notes", "Groceries"),
+                "Groceries — Notes",
+                "the window's own title, then the app it shows"
+            );
+            assert_eq!(
+                window_name("so.tilo.file-explorer", "Downloads"),
+                "Downloads — Files"
+            );
+            assert_eq!(
+                window_name("org.example.Terminal", "quinten@host: ~"),
+                "quinten@host: ~ — Terminal",
+                "a window claiming no app id the device knows still reads as words"
+            );
         }
-        assert_eq!(
-            window_name("so.tilo.file-explorer", "file-explorer"),
-            "Files"
-        );
-        assert_eq!(
-            window_name("org.example.Terminal", "org.example.Terminal"),
-            "Terminal"
-        );
-        assert_eq!(
-            window_name("so.tilo.chat", "design"),
-            "design — Chat",
-            "a window naming a place in its app still says what it shows"
-        );
+
+        phase a_window_with_no_title_is_the_app_alone;
+        {
+            assert_eq!(window_name("so.tilo.notes", ""), "Notes");
+            assert_eq!(window_name("so.tilo.notes", "   "), "Notes");
+            assert_eq!(
+                window_name("so.tilo.notes", "Notes"),
+                "Notes",
+                "the app's name is not said twice"
+            );
+        }
+
+        phase a_window_naming_its_app_is_the_app_alone_never_a_slug_or_id;
+        // A window whose own title is its app's name under another spelling — the slug the launch
+        // names (`chat`) or the id the client announces (`so.tilo.chat`) — is the app alone, never
+        // the app's name joined to a slug or an id.
+        {
+            for said in ["chat", "Chat", "CHAT", "so.tilo.chat", " so.tilo.chat "] {
+                assert_eq!(window_name("so.tilo.chat", said), "Chat", "{said:?}");
+            }
+            assert_eq!(
+                window_name("so.tilo.file-explorer", "file-explorer"),
+                "Files"
+            );
+            assert_eq!(
+                window_name("org.example.Terminal", "org.example.Terminal"),
+                "Terminal"
+            );
+            assert_eq!(
+                window_name("so.tilo.chat", "design"),
+                "design — Chat",
+                "a window naming a place in its app still says what it shows"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn a_program_that_sends_is_named_in_words_or_as_the_terminal;
+
+        phase a_sender_with_no_installed_app_is_never_named_by_its_path;
+        {
+            // A process the session proved, with no app behind it, names itself;
+            // the bar and the banner say its name, never the file it runs from.
+            assert_eq!(
+                program_sender_name("/usr/bin/notify-send", "Notes", None),
+                "Notes",
+                "the name its sender gives is the app's own word"
+            );
+            assert_eq!(
+                program_sender_name("/usr/bin/notify-send", "a\u{7}b", None),
+                "ab",
+                "a name with control characters shows none of them"
+            );
+            assert_eq!(
+                program_sender_name("/usr/bin/notify-send", "/usr/bin/notify-send", None),
+                "Notify Send",
+                "a program that gives its path as its name is named by its file"
+            );
+        }
+
+        phase a_command_line_sender_is_the_terminal_or_its_desktop_entry;
+        // A command line sender that names itself by its program (`notify-send`) names nothing a
+        // person reads: the centre says where it came from. A desktop entry the sender points at
+        // names it instead, when the machine has that entry.
+        {
+            assert_eq!(
+                program_sender_name("/usr/bin/notify-send", "notify-send", None),
+                "Terminal",
+                "a program naming itself by its file is a command run in a terminal"
+            );
+            assert_eq!(
+                program_sender_name("/usr/bin/notify-send", "", None),
+                "Terminal",
+                "a program naming nothing came from the terminal too"
+            );
+            assert_eq!(
+                program_sender_name(
+                    "/usr/bin/notify-send",
+                    "notify-send",
+                    Some("no.such.Entry.desktop")
+                ),
+                "Terminal",
+                "an entry the machine does not have names nothing"
+            );
+        }
     }
 }

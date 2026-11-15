@@ -339,192 +339,196 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_window_notes_the_record_it_holds_beside_its_tab() {
-        let notes = Continuations::default();
-        let workspace = WorkspaceId::new();
-        let other = WorkspaceId::new();
-        let mut routes = held(workspace, 12, &["plan"]);
-        routes.extend(held(other, 30, &["budget"]));
-        notes.read(&routes, &notes_app(), &instances(&routes));
+    tilo_test_env::scenario! {
+        fn a_window_is_noted_by_the_one_record_of_its_app_it_shows;
 
-        assert_eq!(
-            notes.window_record(12),
-            Some(("plan".to_owned(), String::new()))
-        );
-        assert_eq!(
-            notes.of_workspace(workspace),
-            [(12, "plan".to_owned())],
-            "the layout places each window by the record it shows, and a layout record notes only the windows of its workspace"
-        );
-        assert_eq!(notes.of_workspace(other), [(30, "budget".to_owned())]);
-    }
+        phase a_window_notes_the_record_it_holds_beside_its_tab;
+        {
+            let notes = Continuations::default();
+            let workspace = WorkspaceId::new();
+            let other = WorkspaceId::new();
+            let mut routes = held(workspace, 12, &["plan"]);
+            routes.extend(held(other, 30, &["budget"]));
+            notes.read(&routes, &notes_app(), &instances(&routes));
 
-    #[test]
-    fn a_windows_own_channel_is_not_a_record_it_shows() {
-        let notes = Continuations::default();
-        let workspace = WorkspaceId::new();
-        let mut routes = held(workspace, 12, &["plan"]);
-        routes.push((
-            12,
-            CrdtRoute::record("so.tilo.notes", workspace.to_string(), "continuation:12"),
-        ));
-        notes.read(&routes, &notes_app(), &instances(&routes));
-        assert_eq!(
-            notes.of_workspace(workspace),
-            [(12, "plan".to_owned())],
-            "the route its app speaks the session on is no record"
-        );
+            assert_eq!(
+                notes.window_record(12),
+                Some(("plan".to_owned(), String::new()))
+            );
+            assert_eq!(
+                notes.of_workspace(workspace),
+                [(12, "plan".to_owned())],
+                "the layout places each window by the record it shows, and a layout record notes only the windows of its workspace"
+            );
+            assert_eq!(notes.of_workspace(other), [(30, "budget".to_owned())]);
+        }
 
-        notes.read(
-            &held(workspace, 12, &["continuation:12"]),
-            &notes_app(),
-            &instances(&held(workspace, 12, &["continuation:12"])),
-        );
-        assert!(
-            notes.of_workspace(workspace).is_empty(),
-            "a window holding only that route shows no record"
-        );
-    }
+        phase a_windows_own_channel_is_not_a_record_it_shows;
+        {
+            let notes = Continuations::default();
+            let workspace = WorkspaceId::new();
+            let mut routes = held(workspace, 12, &["plan"]);
+            routes.push((
+                12,
+                CrdtRoute::record("so.tilo.notes", workspace.to_string(), "continuation:12"),
+            ));
+            notes.read(&routes, &notes_app(), &instances(&routes));
+            assert_eq!(
+                notes.of_workspace(workspace),
+                [(12, "plan".to_owned())],
+                "the route its app speaks the session on is no record"
+            );
 
-    #[test]
-    fn a_window_holding_several_records_notes_none() {
-        let notes = Continuations::default();
-        let workspace = WorkspaceId::new();
-        notes.read(
-            &held(workspace, 12, &["plan", "index"]),
-            &notes_app(),
-            &instances(&held(workspace, 12, &["plan", "index"])),
-        );
-        assert!(
-            notes.of_workspace(workspace).is_empty(),
-            "which of them it shows is not something the broker says"
-        );
-        notes.read(
-            &held(workspace, 12, &["index"]),
-            &notes_app(),
-            &instances(&held(workspace, 12, &["index"])),
-        );
-        assert_eq!(
-            notes.window_record(12),
-            Some(("index".to_owned(), String::new())),
-            "and one record left is the one it shows"
-        );
-    }
+            notes.read(
+                &held(workspace, 12, &["continuation:12"]),
+                &notes_app(),
+                &instances(&held(workspace, 12, &["continuation:12"])),
+            );
+            assert!(
+                notes.of_workspace(workspace).is_empty(),
+                "a window holding only that route shows no record"
+            );
+        }
 
-    /// A window holds the session's records too (the workspace's layout, a service's): only the
-    /// record of the app it runs is what it shows, so its place and the person's are still named.
-    #[test]
-    fn a_window_notes_its_own_apps_record_and_no_other_apps() {
-        let notes = Continuations::default();
-        let workspace = WorkspaceId::new();
-        let mut routes = held(workspace, 12, &["plan"]);
-        routes.push((
-            12,
-            CrdtRoute::record("so.tilo.desktop", workspace.to_string(), "session"),
-        ));
-        notes.read(&routes, &notes_app(), &instances(&routes));
-        assert_eq!(
-            notes.window_record(12),
-            Some(("plan".to_owned(), String::new())),
-            "the record of the app its window runs"
-        );
-        // Two records of its own app still name none: nothing tells which it shows.
-        routes.push((
-            12,
-            CrdtRoute::record("so.tilo.notes", workspace.to_string(), "index"),
-        ));
-        notes.read(&routes, &notes_app(), &instances(&routes));
-        assert_eq!(notes.window_record(12), None);
-    }
+        phase a_window_holding_several_records_notes_none;
+        {
+            let notes = Continuations::default();
+            let workspace = WorkspaceId::new();
+            notes.read(
+                &held(workspace, 12, &["plan", "index"]),
+                &notes_app(),
+                &instances(&held(workspace, 12, &["plan", "index"])),
+            );
+            assert!(
+                notes.of_workspace(workspace).is_empty(),
+                "which of them it shows is not something the broker says"
+            );
+            notes.read(
+                &held(workspace, 12, &["index"]),
+                &notes_app(),
+                &instances(&held(workspace, 12, &["index"])),
+            );
+            assert_eq!(
+                notes.window_record(12),
+                Some(("index".to_owned(), String::new())),
+                "and one record left is the one it shows"
+            );
+        }
 
-    /// A window whose app names the record it shows is what it shows, however its channels name
-    /// it: an app that keeps one document for the whole workspace speaks on a channel that names
-    /// no record. The window that closes is forgotten with it.
-    #[test]
-    fn a_window_that_names_its_record_is_known_by_it() {
-        let notes = Continuations::default();
-        let workspace = WorkspaceId::new();
-        assert!(
-            notes.note(
+        phase a_window_notes_its_own_apps_record_and_no_other_apps;
+        // A window holds the session's records too (the workspace's layout, a service's): only the
+        // record of the app it runs is what it shows, so its place and the person's are still named.
+        {
+            let notes = Continuations::default();
+            let workspace = WorkspaceId::new();
+            let mut routes = held(workspace, 12, &["plan"]);
+            routes.push((
+                12,
+                CrdtRoute::record("so.tilo.desktop", workspace.to_string(), "session"),
+            ));
+            notes.read(&routes, &notes_app(), &instances(&routes));
+            assert_eq!(
+                notes.window_record(12),
+                Some(("plan".to_owned(), String::new())),
+                "the record of the app its window runs"
+            );
+            // Two records of its own app still name none: nothing tells which it shows.
+            routes.push((
+                12,
+                CrdtRoute::record("so.tilo.notes", workspace.to_string(), "index"),
+            ));
+            notes.read(&routes, &notes_app(), &instances(&routes));
+            assert_eq!(notes.window_record(12), None);
+        }
+
+        phase a_window_that_names_its_record_is_known_by_it;
+        // A window whose app names the record it shows is what it shows, however its channels name
+        // it: an app that keeps one document for the whole workspace speaks on a channel that names
+        // no record. The window that closes is forgotten with it.
+        {
+            let notes = Continuations::default();
+            let workspace = WorkspaceId::new();
+            assert!(
+                notes.note(
+                    12,
+                    "so.tilo.notes",
+                    &workspace.to_string(),
+                    "notes.notebook"
+                ),
+                "it is news"
+            );
+            assert!(
+                !notes.note(
+                    12,
+                    "so.tilo.notes",
+                    &workspace.to_string(),
+                    "notes.notebook"
+                ),
+                "the same window, once"
+            );
+            notes.read(
+                &[(12, CrdtRoute::app("so.tilo.notes", workspace.to_string()))],
+                &notes_app(),
+                &[12].into_iter().collect(),
+            );
+            assert_eq!(
+                notes.window_record(12),
+                Some(("notes.notebook".to_owned(), String::new())),
+                "the record it said it shows, not the app-scoped channel it speaks on"
+            );
+            assert_eq!(
+                notes.of_workspace(workspace),
+                [(12, "notes.notebook".to_owned())]
+            );
+            // A session drawn with no window at all says nothing of the kind: only a session showing other
+            // windows can say this one is gone.
+            notes.read(&[], &notes_app(), &std::collections::BTreeSet::new());
+            assert!(notes.window_record(12).is_some());
+            notes.read(&[], &notes_app(), &[13].into_iter().collect());
+            assert_eq!(notes.window_record(12), None, "gone with its window");
+            // Said again by a window the session has not heard of yet: it is news.
+            assert!(notes.note(
                 12,
                 "so.tilo.notes",
                 &workspace.to_string(),
                 "notes.notebook"
-            ),
-            "it is news"
-        );
-        assert!(
-            !notes.note(
-                12,
-                "so.tilo.notes",
-                &workspace.to_string(),
-                "notes.notebook"
-            ),
-            "the same window, once"
-        );
-        notes.read(
-            &[(12, CrdtRoute::app("so.tilo.notes", workspace.to_string()))],
-            &notes_app(),
-            &[12].into_iter().collect(),
-        );
-        assert_eq!(
-            notes.window_record(12),
-            Some(("notes.notebook".to_owned(), String::new())),
-            "the record it said it shows, not the app-scoped channel it speaks on"
-        );
-        assert_eq!(
-            notes.of_workspace(workspace),
-            [(12, "notes.notebook".to_owned())]
-        );
-        // A session drawn with no window at all says nothing of the kind: only a session showing other
-        // windows can say this one is gone.
-        notes.read(&[], &notes_app(), &std::collections::BTreeSet::new());
-        assert!(notes.window_record(12).is_some());
-        notes.read(&[], &notes_app(), &[13].into_iter().collect());
-        assert_eq!(notes.window_record(12), None, "gone with its window");
-        // Said again by a window the session has not heard of yet: it is news.
-        assert!(notes.note(
-            12,
-            "so.tilo.notes",
-            &workspace.to_string(),
-            "notes.notebook"
-        ));
-    }
+            ));
+        }
 
-    #[test]
-    fn a_window_that_closed_leaves_no_note() {
-        let notes = Continuations::default();
-        let workspace = WorkspaceId::new();
-        notes.read(
-            &held(workspace, 12, &["plan"]),
-            &notes_app(),
-            &instances(&held(workspace, 12, &["plan"])),
-        );
-        assert_eq!(
-            notes.window_record(12),
-            Some(("plan".to_owned(), String::new()))
-        );
-        notes.read(&[], &notes_app(), &std::collections::BTreeSet::new());
-        assert_eq!(notes.window_record(12), None);
-        assert!(notes.of_workspace(workspace).is_empty());
-    }
+        phase a_window_that_closed_leaves_no_note;
+        {
+            let notes = Continuations::default();
+            let workspace = WorkspaceId::new();
+            notes.read(
+                &held(workspace, 12, &["plan"]),
+                &notes_app(),
+                &instances(&held(workspace, 12, &["plan"])),
+            );
+            assert_eq!(
+                notes.window_record(12),
+                Some(("plan".to_owned(), String::new()))
+            );
+            notes.read(&[], &notes_app(), &std::collections::BTreeSet::new());
+            assert_eq!(notes.window_record(12), None);
+            assert!(notes.of_workspace(workspace).is_empty());
+        }
 
-    #[test]
-    fn a_members_record_notes_the_kind_of_resource_it_keeps() {
-        let notes = Continuations::default();
-        let workspace = WorkspaceId::new();
-        let person = "abababababababababababababababababababababababababababababababab";
-        let record = tilo_action_policy::member_record_id(person, "tilo.note");
-        notes.read(
-            &held(workspace, 12, &[&record]),
-            &notes_app(),
-            &instances(&held(workspace, 12, &[&record])),
-        );
-        assert_eq!(
-            notes.window_record(12),
-            Some((record, "tilo.note".to_owned())),
-            "a person's note is shared as the note it is"
-        );
+        phase a_members_record_notes_the_kind_of_resource_it_keeps;
+        {
+            let notes = Continuations::default();
+            let workspace = WorkspaceId::new();
+            let person = "abababababababababababababababababababababababababababababababab";
+            let record = tilo_action_policy::member_record_id(person, "tilo.note");
+            notes.read(
+                &held(workspace, 12, &[&record]),
+                &notes_app(),
+                &instances(&held(workspace, 12, &[&record])),
+            );
+            assert_eq!(
+                notes.window_record(12),
+                Some((record, "tilo.note".to_owned())),
+                "a person's note is shared as the note it is"
+            );
+        }
     }
 }

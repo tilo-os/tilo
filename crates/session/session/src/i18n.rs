@@ -136,33 +136,37 @@ mod tests {
     use super::*;
     use tilo_copy_lint::catalog;
 
-    #[test]
-    fn every_catalogue_entry_resolves_to_a_real_string() {
-        let keys = catalog::messages(CATALOGUES[0].1);
-        assert!(!keys.is_empty());
-        for key in keys.keys() {
-            let value = t(key);
-            assert_ne!(&value, key, "{key} has no entry in the catalogue");
-            assert!(!value.trim().is_empty(), "{key} resolves to nothing");
+    tilo_test_env::scenario! {
+        fn every_notice_has_real_words_in_every_locale;
+
+        phase every_catalogue_entry_resolves_to_a_real_string;
+        {
+            let keys = catalog::messages(CATALOGUES[0].1);
+            assert!(!keys.is_empty());
+            for key in keys.keys() {
+                let value = t(key);
+                assert_ne!(&value, key, "{key} has no entry in the catalogue");
+                assert!(!value.trim().is_empty(), "{key} resolves to nothing");
+            }
         }
-    }
 
-    /// A key only English defines would show English on a German desktop,
-    /// and a German key English lacks is dead copy.
-    #[test]
-    fn every_notice_is_translated_in_every_locale() {
-        catalog::check_translations(CATALOGUES);
-    }
+        phase every_notice_is_translated_in_every_locale;
+        // A key only English defines would show English on a German desktop,
+        // and a German key English lacks is dead copy.
+        {
+            catalog::check_translations(CATALOGUES);
+        }
 
-    #[test]
-    fn a_notice_interpolates_its_facts() {
-        let body = t_args(
-            "storage-low-body",
-            &[("free", "2.7 GB".into()), ("volume", "your files".into())],
-        );
-        assert!(body.starts_with("2.7 GB left for your files."), "{body}");
-        let froze = t_args("crash-notice-froze-body", &[("time", "22:52".into())]);
-        assert!(froze.contains("22:52"), "{froze}");
+        phase a_notice_interpolates_its_facts;
+        {
+            let body = t_args(
+                "storage-low-body",
+                &[("free", "2.7 GB".into()), ("volume", "your files".into())],
+            );
+            assert!(body.starts_with("2.7 GB left for your files."), "{body}");
+            let froze = t_args("crash-notice-froze-body", &[("time", "22:52".into())]);
+            assert!(froze.contains("22:52"), "{froze}");
+        }
     }
 
     #[test]

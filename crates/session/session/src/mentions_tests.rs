@@ -233,175 +233,228 @@ fn beas_notebook() -> (Device, Rc<Shown>, Mentions) {
     (device, shown, mentions)
 }
 
-#[test]
-fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
-    let (_held, shown, _mentions) = beas_notebook();
-    let up = shown.up.borrow();
-    assert_eq!(up.len(), 1, "{up:?}");
-    let notice = up.values().next().unwrap();
-    assert_eq!(notice.title, "Ada mentioned you in ‘Launch plan’");
-    assert_eq!(notice.body, "Ask @Bea about the date");
-    assert_eq!(notice.app, "Notes");
-    let place = notice.place.clone().expect("it opens what it names");
-    assert_eq!(
-        place,
-        Place {
-            app: NOTES.into(),
-            record: NOTE.into(),
-            resource: "notes.notebook/pages/p1".into(),
+tilo_test_env::scenario! {
+    fn a_mention_is_one_notice_for_the_person_it_names_and_opens_its_place;
+
+    phase a_mention_in_a_record_is_one_notice_for_the_reader_it_names;
+    {
+        let (_held, shown, _mentions) = beas_notebook();
+        let up = shown.up.borrow();
+        assert_eq!(up.len(), 1, "{up:?}");
+        let notice = up.values().next().unwrap();
+        assert_eq!(notice.title, "Ada mentioned you in ‘Launch plan’");
+        assert_eq!(notice.body, "Ask @Bea about the date");
+        assert_eq!(notice.app, "Notes");
+        let place = notice.place.clone().expect("it opens what it names");
+        assert_eq!(
+            place,
+            Place {
+                app: NOTES.into(),
+                record: NOTE.into(),
+                resource: "notes.notebook/pages/p1".into(),
+            }
+        );
+        assert_eq!(Place::from_activation(&place.activation()), Some(place));
+    }
+
+    phase a_mention_in_a_file_opened_as_a_record_opens_that_record;
+    // A document a file opened in is named by the file's path, and kept under its storage key: its
+    // write is noted by the record's route, and the notice opens that record.
+    {
+        let file = RecordId::for_file("/run/tilo/documents/Budget for Friday.txt");
+        let route = file.route().to_owned();
+        let written = notebook_at(&file, "Ask @Bea about the date", Some((4, 8, BEA)), ADA);
+        let device = Device::holding(&[(NOTES, &route, &written)]);
+        let shown = Rc::new(Shown::default());
+        device.role(&shown).step();
+
+        let up = shown.up.borrow();
+        assert_eq!(up.len(), 1, "{up:?}");
+        let place = up.values().next().unwrap().place.clone();
+        assert_eq!(
+            place.expect("it opens what it names").record,
+            route,
+            "the record by its route, not where it is kept"
+        );
+    }
+
+    phase a_mention_in_an_apps_own_record_is_told;
+    // An app's own record is the workspace's document, which also keeps its index, and travels
+    // under the empty route: a mention in it is read there, as any other record's is.
+    {
+        let device = Device::empty();
+        let shown = Rc::new(Shown::default());
+        let mentions = device.role(&shown);
+        let mut written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
+        Device::write_doc(
+            &device.store,
+            &StorageKey::workspace_index(NOTES, WORKSPACE),
+            &mut written,
+        );
+        mentions.step();
+        let up = shown.up.borrow();
+        assert_eq!(up.len(), 1, "{up:?}");
+        assert_eq!(
+            up.values().next().unwrap().title,
+            "Ada mentioned you in ‘Launch plan’"
+        );
+    }
+
+    phase nobody_else_in_the_workspace_is_told;
+    {
+        let written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
+        for other in [CAI, ADA] {
+            let device = Device::holding(&[(NOTES, NOTE, &written)]);
+            let theirs = Rc::new(Shown::default());
+            device.role_as(other, &theirs).step();
+            assert!(theirs.up.borrow().is_empty(), "{other}");
         }
-    );
-    assert_eq!(Place::from_activation(&place.activation()), Some(place));
-}
+    }
 
-/// A document a file opened in is named by the file's path, and kept under its storage key: its
-/// write is noted by the record's route, and the notice opens that record.
-#[test]
-fn a_mention_in_a_file_opened_as_a_record_opens_that_record() {
-    let file = RecordId::for_file("/run/tilo/documents/Budget for Friday.txt");
-    let route = file.route().to_owned();
-    let written = notebook_at(&file, "Ask @Bea about the date", Some((4, 8, BEA)), ADA);
-    let device = Device::holding(&[(NOTES, &route, &written)]);
-    let shown = Rc::new(Shown::default());
-    device.role(&shown).step();
+    phase choosing_a_notice_gives_the_place_the_host_opens;
+    {
+        let (_held, shown, mentions) = beas_notebook();
+        let place = shown
+            .up
+            .borrow()
+            .values()
+            .next()
+            .and_then(|notice| notice.place.clone())
+            .unwrap();
+        shown.chosen.borrow_mut().push(place.clone());
+        mentions.step();
+        assert_eq!(mentions.take_chosen(), vec![place]);
+        assert!(mentions.take_chosen().is_empty(), "a place is opened once");
+    }
 
-    let up = shown.up.borrow();
-    assert_eq!(up.len(), 1, "{up:?}");
-    let place = up.values().next().unwrap().place.clone();
-    assert_eq!(
-        place.expect("it opens what it names").record,
-        route,
-        "the record by its route, not where it is kept"
-    );
-}
+    phase a_message_in_a_chat_part_opens_the_message_in_the_chat;
+    {
+        chat_part_mention(&|part, span| {
+            let value = part.put_object(span, "value", ObjType::Map).unwrap();
+            part.put(&value, "$variant", "str").unwrap();
+            part.put(&value, "$field/str/0", BEA).unwrap();
+        });
+    }
 
-/// An app's own record is the workspace's document, which also keeps its index, and travels
-/// under the empty route: a mention in it is read there, as any other record's is.
-#[test]
-fn a_mention_in_an_apps_own_record_is_told() {
-    let device = Device::empty();
-    let shown = Rc::new(Shown::default());
-    let mentions = device.role(&shown);
-    let mut written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
-    Device::write_doc(
-        &device.store,
-        &StorageKey::workspace_index(NOTES, WORKSPACE),
-        &mut written,
-    );
-    mentions.step();
-    let up = shown.up.borrow();
-    assert_eq!(up.len(), 1, "{up:?}");
-    assert_eq!(
-        up.values().next().unwrap().title,
-        "Ada mentioned you in ‘Launch plan’"
-    );
-}
-
-#[test]
-fn nobody_else_in_the_workspace_is_told() {
-    let written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
-    for other in [CAI, ADA] {
-        let device = Device::holding(&[(NOTES, NOTE, &written)]);
-        let theirs = Rc::new(Shown::default());
-        device.role_as(other, &theirs).step();
-        assert!(theirs.up.borrow().is_empty(), "{other}");
+    phase a_mark_value_of_the_older_flat_layout_still_names_its_person;
+    {
+        chat_part_mention(&|part, span| {
+            let value = part.put_object(span, "value", ObjType::Map).unwrap();
+            part.put(&value, "$variant", "str").unwrap();
+            part.put(&value, "0", BEA).unwrap();
+        });
     }
 }
 
-#[test]
-fn reopening_or_reloading_tells_nothing_again() {
-    let (device, shown, mentions) = beas_notebook();
-    let mut written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
-    device.writes(NOTES, NOTE, &mut written);
-    look_again(&mentions);
-    assert_eq!(shown.up.borrow().len(), 1, "nothing is told twice");
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
+    fn a_mention_is_told_once_and_withdrawn_with_its_mark;
 
-    // The device restarted: what it told is kept in its store.
-    let after = Rc::new(Shown::default());
-    let restarted = device.role(&after);
-    device.writes(NOTES, NOTE, &mut written);
-    restarted.step();
-    assert!(
-        after.up.borrow().is_empty(),
-        "a restart tells nothing again"
-    );
-}
+    phase reopening_or_reloading_tells_nothing_again;
+    {
+        let (device, shown, mentions) = beas_notebook();
+        let mut written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
+        device.writes(NOTES, NOTE, &mut written);
+        look_again(&mentions);
+        assert_eq!(shown.up.borrow().len(), 1, "nothing is told twice");
 
-#[test]
-fn a_mention_edited_away_is_withdrawn() {
-    let mut written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
-    let device = Device::holding(&[(NOTES, NOTE, &written)]);
-    let shown = Rc::new(Shown::default());
-    let mentions = device.role(&shown);
-    mentions.step();
-    assert_eq!(shown.up.borrow().len(), 1);
+        // The device restarted: what it told is kept in its store.
+        let after = Rc::new(Shown::default());
+        let restarted = device.role(&after);
+        device.writes(NOTES, NOTE, &mut written);
+        restarted.step();
+        assert!(
+            after.up.borrow().is_empty(),
+            "a restart tells nothing again"
+        );
+    }
 
-    let block = notebook_block(&written);
-    written
-        .unmark(&block, MARK, 0, 8, ExpandMark::None)
-        .unwrap();
-    written.commit();
-    device.writes(NOTES, NOTE, &mut written);
-    look_again(&mentions);
-    assert!(
-        shown.up.borrow().is_empty(),
-        "the notice went with the mention"
-    );
-}
+    phase a_mention_edited_away_is_withdrawn;
+    {
+        let mut written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
+        let device = Device::holding(&[(NOTES, NOTE, &written)]);
+        let shown = Rc::new(Shown::default());
+        let mentions = device.role(&shown);
+        mentions.step();
+        assert_eq!(shown.up.borrow().len(), 1);
 
-#[test]
-fn a_mention_the_workspace_held_before_this_device_followed_it_is_not_news() {
-    let mut written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
-    let device = Device::empty();
-    device.already_held(NOTES, NOTE, &mut written);
-    let shown = Rc::new(Shown::default());
-    let mentions = device.role(&shown);
-    mentions.step();
-    assert!(shown.up.borrow().is_empty(), "{:?}", shown.up.borrow());
+        let block = notebook_block(&written);
+        written
+            .unmark(&block, MARK, 0, 8, ExpandMark::None)
+            .unwrap();
+        written.commit();
+        device.writes(NOTES, NOTE, &mut written);
+        look_again(&mentions);
+        assert!(
+            shown.up.borrow().is_empty(),
+            "the notice went with the mention"
+        );
+    }
 
-    // The record changes again: the same mention is not told twice.
-    let block = notebook_block(&written);
-    written.splice_text(&block, 0, 0, "Please ").unwrap();
-    written.commit();
-    device.writes(NOTES, NOTE, &mut written);
-    look_again(&mentions);
-    assert!(shown.up.borrow().is_empty());
-}
+    phase a_mention_the_workspace_held_before_this_device_followed_it_is_not_news;
+    {
+        let mut written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
+        let device = Device::empty();
+        device.already_held(NOTES, NOTE, &mut written);
+        let shown = Rc::new(Shown::default());
+        let mentions = device.role(&shown);
+        mentions.step();
+        assert!(shown.up.borrow().is_empty(), "{:?}", shown.up.borrow());
 
-#[test]
-fn choosing_a_notice_gives_the_place_the_host_opens() {
-    let (_held, shown, mentions) = beas_notebook();
-    let place = shown
-        .up
-        .borrow()
-        .values()
-        .next()
-        .and_then(|notice| notice.place.clone())
-        .unwrap();
-    shown.chosen.borrow_mut().push(place.clone());
-    mentions.step();
-    assert_eq!(mentions.take_chosen(), vec![place]);
-    assert!(mentions.take_chosen().is_empty(), "a place is opened once");
-}
+        // The record changes again: the same mention is not told twice.
+        let block = notebook_block(&written);
+        written.splice_text(&block, 0, 0, "Please ").unwrap();
+        written.commit();
+        device.writes(NOTES, NOTE, &mut written);
+        look_again(&mentions);
+        assert!(shown.up.borrow().is_empty());
+    }
 
-#[test]
-fn changes_arriving_in_a_burst_are_looked_at_together() {
-    let device = Device::empty();
-    let shown = Rc::new(Shown::default());
-    let mentions = device.role(&shown);
-    let first = ui::time::now();
-    let mut written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
-    device.writes(NOTES, NOTE, &mut written);
-    mentions.step_at(first);
-    assert_eq!(shown.up.borrow().len(), 1);
+    phase changes_arriving_in_a_burst_are_looked_at_together;
+    {
+        let device = Device::empty();
+        let shown = Rc::new(Shown::default());
+        let mentions = device.role(&shown);
+        let first = ui::time::now();
+        let mut written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
+        device.writes(NOTES, NOTE, &mut written);
+        mentions.step_at(first);
+        assert_eq!(shown.up.borrow().len(), 1);
 
-    let block = notebook_block(&written);
-    written.splice_text(&block, 0, 0, "Please ").unwrap();
-    written.commit();
-    device.writes(NOTES, NOTE, &mut written);
-    mentions.step_at(first + ui::time::Duration::from_millis(10));
-    mentions.step_at(first + ui::time::Duration::from_millis(LOOK_EVERY_MS));
-    assert_eq!(shown.up.borrow().len(), 1, "one record, one notice");
+        let block = notebook_block(&written);
+        written.splice_text(&block, 0, 0, "Please ").unwrap();
+        written.commit();
+        device.writes(NOTES, NOTE, &mut written);
+        mentions.step_at(first + ui::time::Duration::from_millis(10));
+        mentions.step_at(first + ui::time::Duration::from_millis(LOOK_EVERY_MS));
+        assert_eq!(shown.up.borrow().len(), 1, "one record, one notice");
+    }
+
+    phase a_records_tags_are_known_by_its_app_and_route;
+    {
+        let mut held = Held::default();
+        let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
+        let mut me = BTreeSet::new();
+        me.insert(BEA.to_owned());
+        let told = held.look(
+            &Look {
+                app: NOTES,
+                record: NOTE,
+                kind: "notes.notebook",
+                doc: &written,
+                tree: None,
+                quiet: false,
+                read: &reading_nothing,
+            },
+            &me,
+            &name,
+        );
+        assert_eq!(told.show.len(), 1);
+        assert!(held.knows(NOTES, NOTE));
+    }
 }
 
 /// A chat part whose message mentions Bea, its mark's value written by `write_value` into the
@@ -467,45 +520,4 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
             resource: "chat.workspace/messages/m1".into(),
         }
     );
-}
-
-#[test]
-fn a_message_in_a_chat_part_opens_the_message_in_the_chat() {
-    chat_part_mention(&|part, span| {
-        let value = part.put_object(span, "value", ObjType::Map).unwrap();
-        part.put(&value, "$variant", "str").unwrap();
-        part.put(&value, "$field/str/0", BEA).unwrap();
-    });
-}
-
-#[test]
-fn a_mark_value_of_the_older_flat_layout_still_names_its_person() {
-    chat_part_mention(&|part, span| {
-        let value = part.put_object(span, "value", ObjType::Map).unwrap();
-        part.put(&value, "$variant", "str").unwrap();
-        part.put(&value, "0", BEA).unwrap();
-    });
-}
-
-#[test]
-fn a_records_tags_are_known_by_its_app_and_route() {
-    let mut held = Held::default();
-    let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
-    let mut me = BTreeSet::new();
-    me.insert(BEA.to_owned());
-    let told = held.look(
-        &Look {
-            app: NOTES,
-            record: NOTE,
-            kind: "notes.notebook",
-            doc: &written,
-            tree: None,
-            quiet: false,
-            read: &reading_nothing,
-        },
-        &me,
-        &name,
-    );
-    assert_eq!(told.show.len(), 1);
-    assert!(held.knows(NOTES, NOTE));
 }

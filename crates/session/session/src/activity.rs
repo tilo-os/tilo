@@ -1449,44 +1449,93 @@ mod tests {
         assert!(budget.document.is_some(), "and its document is read");
     }
 
-    #[test]
-    fn the_line_says_what_kind_of_work_and_where_from_the_newest_step() {
-        use super::doing_now;
-        use tilo_actions::StepKind;
-        assert_eq!(doing_now(&[]), None, "no step lately, nothing to say");
-        let older = step(StepKind::Read, "Opened", "Plan", "Notes");
-        assert_eq!(
-            doing_now(&[
-                older.clone(),
-                step(StepKind::Write, "Posted a message", "#general", "Chat")
-            ])
-            .as_deref(),
-            Some("Writing in #general")
-        );
-        assert_eq!(
-            doing_now(&[step(StepKind::Create, "Created Agent issue", "", "Tasks")]).as_deref(),
-            Some("Creating in Tasks"),
-            "a step that makes something new names the app it makes it in"
-        );
-        assert_eq!(
-            doing_now(&[step(
-                StepKind::Edit,
-                "Edited the text",
-                "Launch plan",
-                "Notes"
-            )])
-            .as_deref(),
-            Some("Editing Launch plan"),
-            "the record it acted in, never its English title turned into a verb"
-        );
-        assert_eq!(doing_now(&[older]).as_deref(), Some("Reading Plan"));
-        let long = doing_now(&[step(StepKind::Edit, "Edited", &"é".repeat(200), "Notes")])
-            .expect("a line");
-        assert!(
-            long.len() <= collab_types::presence::MAX_ACTIVITY_BYTES,
-            "{long}"
-        );
-        assert!(long.ends_with('…'));
+    tilo_test_env::scenario! {
+        fn what_someone_is_doing_is_said_from_their_own_steps;
+
+        phase the_line_says_what_kind_of_work_and_where_from_the_newest_step;
+        {
+            use super::doing_now;
+            use tilo_actions::StepKind;
+            assert_eq!(doing_now(&[]), None, "no step lately, nothing to say");
+            let older = step(StepKind::Read, "Opened", "Plan", "Notes");
+            assert_eq!(
+                doing_now(&[
+                    older.clone(),
+                    step(StepKind::Write, "Posted a message", "#general", "Chat")
+                ])
+                .as_deref(),
+                Some("Writing in #general")
+            );
+            assert_eq!(
+                doing_now(&[step(StepKind::Create, "Created Agent issue", "", "Tasks")]).as_deref(),
+                Some("Creating in Tasks"),
+                "a step that makes something new names the app it makes it in"
+            );
+            assert_eq!(
+                doing_now(&[step(
+                    StepKind::Edit,
+                    "Edited the text",
+                    "Launch plan",
+                    "Notes"
+                )])
+                .as_deref(),
+                Some("Editing Launch plan"),
+                "the record it acted in, never its English title turned into a verb"
+            );
+            assert_eq!(doing_now(&[older]).as_deref(), Some("Reading Plan"));
+            let long = doing_now(&[step(StepKind::Edit, "Edited", &"é".repeat(200), "Notes")])
+                .expect("a line");
+            assert!(
+                long.len() <= collab_types::presence::MAX_ACTIVITY_BYTES,
+                "{long}"
+            );
+            assert!(long.ends_with('…'));
+        }
+
+        phase housekeeping_and_outside_content_are_not_what_someone_is_doing;
+        // What a person is doing, as the people here are told it, is their work: an app introducing
+        // them to a chat under the name they arrived with is its housekeeping, not something they did.
+        {
+            use tilo_actions::{ActionContext, ChangeKind};
+            use ui::widget::{ArtifactKind, EntryKind, HistoryAuthor, HistoryEntry, HistoryEntryId};
+            let entry = |context: Option<ActionContext>| HistoryEntry {
+                id: HistoryEntryId([0; 16]),
+                author: HistoryAuthor::new("Ada", 120.0, "deadbeef"),
+                entry_kind: EntryKind::Details,
+                artifact_kind: ArtifactKind::Note,
+                timestamp: ui::time::UNIX_EPOCH,
+                summary: String::new(),
+                text_delta: None,
+                diff_payload: None,
+                redaction: None,
+                context,
+            };
+            assert!(is_doing(&entry(None)));
+            assert!(is_doing(&entry(Some(ActionContext::default()))));
+            for kind in [ChangeKind::Housekeeping, ChangeKind::External] {
+                assert!(
+                    !is_doing(&entry(Some(ActionContext::default().with_change(kind)))),
+                    "{kind:?}"
+                );
+            }
+        }
+
+        phase a_step_is_named_by_the_shared_place_it_went_to;
+        // A step in a window's tree is named by the place its app recorded (a post's channel), else a
+        // channel it was done to; anything else (a direct conversation) is not named at all.
+        {
+            let post = tilo_actions::ActionContext::for_resource("chain", "chat.messages", "Messages")
+                .with_facet(tilo_actions::ActionFacet::new(
+                    tilo_actions::PLACE_FACET,
+                    "#general",
+                ));
+            assert_eq!(shared_part(&post).as_deref(), Some("#general"));
+            let channel = tilo_actions::ActionContext::for_resource("c1", "chat.channel", "design");
+            assert_eq!(shared_part(&channel).as_deref(), Some("#design"));
+            let direct =
+                tilo_actions::ActionContext::for_resource("chain", "chat.messages", "Messages");
+            assert_eq!(shared_part(&direct), None);
+        }
     }
 
     use tilo_actions::InvocationId;
@@ -2214,50 +2263,5 @@ mod tests {
             "the restore is a change on top: {:?}",
             feed.entries
         );
-    }
-
-    /// What a person is doing, as the people here are told it, is their work: an app introducing
-    /// them to a chat under the name they arrived with is its housekeeping, not something they did.
-    #[test]
-    fn housekeeping_and_outside_content_are_not_what_someone_is_doing() {
-        use tilo_actions::{ActionContext, ChangeKind};
-        use ui::widget::{ArtifactKind, EntryKind, HistoryAuthor, HistoryEntry, HistoryEntryId};
-        let entry = |context: Option<ActionContext>| HistoryEntry {
-            id: HistoryEntryId([0; 16]),
-            author: HistoryAuthor::new("Ada", 120.0, "deadbeef"),
-            entry_kind: EntryKind::Details,
-            artifact_kind: ArtifactKind::Note,
-            timestamp: ui::time::UNIX_EPOCH,
-            summary: String::new(),
-            text_delta: None,
-            diff_payload: None,
-            redaction: None,
-            context,
-        };
-        assert!(is_doing(&entry(None)));
-        assert!(is_doing(&entry(Some(ActionContext::default()))));
-        for kind in [ChangeKind::Housekeeping, ChangeKind::External] {
-            assert!(
-                !is_doing(&entry(Some(ActionContext::default().with_change(kind)))),
-                "{kind:?}"
-            );
-        }
-    }
-
-    /// A step in a window's tree is named by the place its app recorded (a post's channel), else a
-    /// channel it was done to; anything else (a direct conversation) is not named at all.
-    #[test]
-    fn a_step_is_named_by_the_shared_place_it_went_to() {
-        let post = tilo_actions::ActionContext::for_resource("chain", "chat.messages", "Messages")
-            .with_facet(tilo_actions::ActionFacet::new(
-                tilo_actions::PLACE_FACET,
-                "#general",
-            ));
-        assert_eq!(shared_part(&post).as_deref(), Some("#general"));
-        let channel = tilo_actions::ActionContext::for_resource("c1", "chat.channel", "design");
-        assert_eq!(shared_part(&channel).as_deref(), Some("#design"));
-        let direct =
-            tilo_actions::ActionContext::for_resource("chain", "chat.messages", "Messages");
-        assert_eq!(shared_part(&direct), None);
     }
 }

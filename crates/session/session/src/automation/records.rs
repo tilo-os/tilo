@@ -195,46 +195,59 @@ mod tests {
     use super::*;
     use automerge::transaction::{CommitOptions, Transactable as _};
 
-    #[test]
-    fn a_committed_verb_becomes_a_record_event_with_its_actor_and_facet() {
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "seed", 1).unwrap();
-        let before = doc.get_heads();
-        let context = ActionContext::for_app("so.tilo.chat", "Chat")
-            .with_invoker(tilo_actions::ActionInvoker::person("bob"))
-            .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-                tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
-                [],
-            )))
-            .with_facet(tilo_actions::ActionFacet::new(
-                tilo_actions::INCOMING_MESSAGE_FACET,
-                "true",
-            ));
-        doc.put(automerge::ROOT, "text", "hi").unwrap();
-        let hash = doc
-            .commit_with(CommitOptions::default().with_message(context.change_message().unwrap()))
-            .unwrap();
-        let events = record_events("workspace-1", "rec-1", "chat.workspace", &doc, &before);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-        assert_eq!(event.change, hash.to_string());
-        assert_eq!(event.actor, tilo_actions::Acting::person("bob"));
-        assert!(event.incoming_message);
-        assert_eq!(
-            tilo_automation::dispatch::verbs_of(&event.did),
-            vec!["post".to_string()]
-        );
-        // Nothing new after the last look.
-        assert!(
-            record_events(
-                "workspace-1",
-                "rec-1",
-                "chat.workspace",
-                &doc,
-                &doc.committed_heads()
-            )
-            .is_empty()
-        );
+    tilo_test_env::scenario! {
+        fn a_committed_change_is_a_record_event_only_with_its_entry;
+
+        phase a_committed_verb_becomes_a_record_event_with_its_actor_and_facet;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "seed", 1).unwrap();
+            let before = doc.get_heads();
+            let context = ActionContext::for_app("so.tilo.chat", "Chat")
+                .with_invoker(tilo_actions::ActionInvoker::person("bob"))
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
+                    [],
+                )))
+                .with_facet(tilo_actions::ActionFacet::new(
+                    tilo_actions::INCOMING_MESSAGE_FACET,
+                    "true",
+                ));
+            doc.put(automerge::ROOT, "text", "hi").unwrap();
+            let hash = doc
+                .commit_with(CommitOptions::default().with_message(context.change_message().unwrap()))
+                .unwrap();
+            let events = record_events("workspace-1", "rec-1", "chat.workspace", &doc, &before);
+            assert_eq!(events.len(), 1);
+            let event = &events[0];
+            assert_eq!(event.change, hash.to_string());
+            assert_eq!(event.actor, tilo_actions::Acting::person("bob"));
+            assert!(event.incoming_message);
+            assert_eq!(
+                tilo_automation::dispatch::verbs_of(&event.did),
+                vec!["post".to_string()]
+            );
+            // Nothing new after the last look.
+            assert!(
+                record_events(
+                    "workspace-1",
+                    "rec-1",
+                    "chat.workspace",
+                    &doc,
+                    &doc.committed_heads()
+                )
+                .is_empty()
+            );
+        }
+
+        phase a_change_without_an_entry_is_no_event;
+        {
+            let mut doc = AutoCommit::new();
+            let before = doc.get_heads();
+            doc.put(automerge::ROOT, "x", 1).unwrap();
+            doc.commit();
+            assert!(record_events("r", "rec", "k", &doc, &before).is_empty());
+        }
     }
 
     /// A record a file opened as, kept under a storage key its route does not spell: a change of it
@@ -294,14 +307,5 @@ mod tests {
         let events = feed.take();
         assert_eq!(events.len(), 1, "{events:?}");
         assert_eq!(events[0].record, id.route());
-    }
-
-    #[test]
-    fn a_change_without_an_entry_is_no_event() {
-        let mut doc = AutoCommit::new();
-        let before = doc.get_heads();
-        doc.put(automerge::ROOT, "x", 1).unwrap();
-        doc.commit();
-        assert!(record_events("r", "rec", "k", &doc, &before).is_empty());
     }
 }

@@ -69,83 +69,87 @@ mod tests {
     use super::*;
     use settings_store::hardware::ShortcutConfig;
 
-    /// An app asking for one shortcut reads the catalogue the guide shows: the row names its live
-    /// chords, canonically and as the layout spells them, and refuses everything that is not the
-    /// one action published.
-    #[test]
-    fn an_app_reads_the_shortcut_catalogue_through_the_door() {
-        let door = servable();
-        let keymap = ShortcutConfig::default();
-        assert_eq!(door.app_id(), "so.tilo.settings");
-        assert!(door.is_resource(catalogue::RESOURCE));
+    tilo_test_env::scenario! {
+        fn the_shortcut_catalogue_is_a_read_through_the_door;
 
-        let rows = door.catalogue_rows("shell", &keymap);
-        assert_eq!(rows.len(), 1, "one resource carries the catalogue");
-        let row = &rows[0];
-        assert_eq!(row.provider, "shell");
-        assert_eq!(row.resource.id, catalogue::RESOURCE);
-        assert!(!row.has_children);
-        assert_eq!(
-            row.action.as_ref().map(|action| &action.address),
-            Some(&ActionAddress::new(
-                catalogue::RESOURCE,
-                catalogue::LIST_ACTION
-            ))
-        );
+        phase an_app_reads_the_shortcut_catalogue_through_the_door;
+        // An app asking for one shortcut reads the catalogue the guide shows: the row names its live
+        // chords, canonically and as the layout spells them, and refuses everything that is not the
+        // one action published.
+        {
+            let door = servable();
+            let keymap = ShortcutConfig::default();
+            assert_eq!(door.app_id(), "so.tilo.settings");
+            assert!(door.is_resource(catalogue::RESOURCE));
 
-        let listed = door
-            .apply(
-                &keymap,
-                &ActionAddress::new(catalogue::RESOURCE, catalogue::LIST_ACTION),
-                None,
-            )
-            .expect("listing the catalogue is answered")
-            .value
-            .expect("the list is the answer");
-        let shortcuts = listed["shortcuts"]
-            .as_array()
-            .expect("the catalogue is a list");
-        assert!(
-            shortcuts.len() > settings_store::hardware::ShortcutAction::ALL.len(),
-            "every rebindable action and every fixed shortcut is listed"
-        );
-        let terminal = shortcuts
-            .iter()
-            .find(|row| row["id"] == settings_store::hardware::ShortcutAction::OpenTerminal.id())
-            .expect("the terminal shortcut is listed");
-        assert_eq!(terminal["rebindable"], true);
-        assert_eq!(terminal["defaults"], serde_json::json!(["Ctrl+Alt+T"]));
+            let rows = door.catalogue_rows("shell", &keymap);
+            assert_eq!(rows.len(), 1, "one resource carries the catalogue");
+            let row = &rows[0];
+            assert_eq!(row.provider, "shell");
+            assert_eq!(row.resource.id, catalogue::RESOURCE);
+            assert!(!row.has_children);
+            assert_eq!(
+                row.action.as_ref().map(|action| &action.address),
+                Some(&ActionAddress::new(
+                    catalogue::RESOURCE,
+                    catalogue::LIST_ACTION
+                ))
+            );
 
-        assert!(
-            door.apply(
-                &keymap,
-                &ActionAddress::new(catalogue::RESOURCE, "reset-all"),
+            let listed = door
+                .apply(
+                    &keymap,
+                    &ActionAddress::new(catalogue::RESOURCE, catalogue::LIST_ACTION),
+                    None,
+                )
+                .expect("listing the catalogue is answered")
+                .value
+                .expect("the list is the answer");
+            let shortcuts = listed["shortcuts"]
+                .as_array()
+                .expect("the catalogue is a list");
+            assert!(
+                shortcuts.len() > settings_store::hardware::ShortcutAction::ALL.len(),
+                "every rebindable action and every fixed shortcut is listed"
+            );
+            let terminal = shortcuts
+                .iter()
+                .find(|row| row["id"] == settings_store::hardware::ShortcutAction::OpenTerminal.id())
+                .expect("the terminal shortcut is listed");
+            assert_eq!(terminal["rebindable"], true);
+            assert_eq!(terminal["defaults"], serde_json::json!(["Ctrl+Alt+T"]));
+
+            assert!(
+                door.apply(
+                    &keymap,
+                    &ActionAddress::new(catalogue::RESOURCE, "reset-all"),
+                    None
+                )
+                .is_err(),
+                "changing a shortcut is the shortcuts settings section's action"
+            );
+            assert_eq!(
+                door.descriptor(
+                    &keymap,
+                    &ActionAddress::new(catalogue::RESOURCE, "reset-all")
+                ),
                 None
-            )
-            .is_err(),
-            "changing a shortcut is the shortcuts settings section's action"
-        );
-        assert_eq!(
-            door.descriptor(
-                &keymap,
-                &ActionAddress::new(catalogue::RESOURCE, "reset-all")
-            ),
-            None
-        );
-    }
+            );
+        }
 
-    /// The catalogue's contract is a read of this device's own settings: asking for it grants
-    /// nothing and writes nothing.
-    #[test]
-    fn the_catalogue_is_a_read_of_this_devices_settings() {
-        let descriptor = catalogue::descriptor();
-        assert_eq!(descriptor.contract.kind, tilo_actions::ActionKind::Read);
-        assert_eq!(descriptor.address.resource, catalogue::RESOURCE);
-        assert_eq!(descriptor.address.action, catalogue::LIST_ACTION);
-        assert_eq!(
-            catalogue::catalogue_rows("shell")[0].app_id,
-            "so.tilo.settings",
-            "the rows are checked against Settings, which administers them"
-        );
+        phase the_catalogue_is_a_read_of_this_devices_settings;
+        // The catalogue's contract is a read of this device's own settings: asking for it grants
+        // nothing and writes nothing.
+        {
+            let descriptor = catalogue::descriptor();
+            assert_eq!(descriptor.contract.kind, tilo_actions::ActionKind::Read);
+            assert_eq!(descriptor.address.resource, catalogue::RESOURCE);
+            assert_eq!(descriptor.address.action, catalogue::LIST_ACTION);
+            assert_eq!(
+                catalogue::catalogue_rows("shell")[0].app_id,
+                "so.tilo.settings",
+                "the rows are checked against Settings, which administers them"
+            );
+        }
     }
 }
