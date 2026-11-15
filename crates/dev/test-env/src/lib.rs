@@ -583,7 +583,9 @@ mod tests {
         let started = thread::spawn(|| {
             let mut command = Command::new("sleep");
             command.arg("60").dies_with_the_test();
-            command.spawn().expect("a program to outlive its test")
+            command
+                .spawn_locked()
+                .expect("a program to outlive its test")
         });
         let mut program = started.join().expect("the thread that started it");
         // A pidfd says the process ended; the wait then reaps it and says how.
