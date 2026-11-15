@@ -1345,9 +1345,11 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
         "hello from the cloud"
     );
     std::fs::write(mount.join("Docs/new.txt"), b"written by a POSIX tool").unwrap();
-    server.wait_for(|r| r.method == "PUT" && r.target.ends_with("/Docs/new.txt"));
+    // The write may land as one PUT or as an upload the server assembles and moves into place, so
+    // what is waited on is the file itself, never one of the requests that makes it.
     assert_eq!(
-        server.get("Docs/new.txt").unwrap(),
+        tilo_test_env::wait_for("the page's file on the server", || server
+            .get("Docs/new.txt")),
         b"written by a POSIX tool"
     );
 

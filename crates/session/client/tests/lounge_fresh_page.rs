@@ -779,9 +779,6 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
 
 /// How much more an agent's bridge may hold after a busy workspace's traffic than before it.
 const BRIDGE_GROWTH: isize = 1 << 20;
-/// The pointer moves the person's page says while the bridge is in the workspace: eleven minutes
-/// of a tab whose pointer moves thirty times a second.
-const POINTER_MOVES: u32 = 20_000;
 /// The pointer moves that fill the plane's window of recent groups first, at the rate this test
 /// says them (about a thousand a second): ten seconds of them.
 const WINDOW_MOVES: u32 = 10_000;
@@ -842,14 +839,23 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     heard += arriving.drain().len();
+    // A bridge that kept each frame would hold at least an event per frame: the busy window runs
+    // until that many frames have reached it, so the bound means the same on a busy machine as on
+    // a quiet one.
+    // One more than the bound divides into: `kept_each` must be over it, not level with it.
+    let enough =
+        usize::try_from(BRIDGE_GROWTH * 2).unwrap_or(usize::MAX) / std::mem::size_of::<Event>() + 1;
     let heard_before = heard;
     let before = tilo_test_env::held::bytes();
-    for n in 0..POINTER_MOVES {
+    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    let mut n = 0_u32;
+    while heard - heard_before < enough && std::time::Instant::now() < deadline {
         say(n);
-        if n % 50 == 0 {
+        if n.is_multiple_of(50) {
             heard += arriving.drain().len();
         }
         tokio::time::sleep(Duration::from_millis(1)).await;
+        n = n.saturating_add(1);
     }
     heard += arriving.drain().len();
     let after = tilo_test_env::held::bytes();
@@ -859,8 +865,8 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
         "the bridge heard {heard} presence frame(s); the process holds {before} bytes before and \
          {after} after ({grown} more)"
     );
-    // A bridge that kept each frame would hold at least an event per frame: the bound must be
-    // well under that, or it would not tell the two apart.
+    // The bound must be well under what the frames would cost the bridge if it kept them, or it
+    // would not tell the two apart.
     let kept_each = isize::try_from(heard * std::mem::size_of::<Event>()).unwrap_or(isize::MAX);
     assert!(
         kept_each > BRIDGE_GROWTH * 2,
