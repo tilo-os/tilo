@@ -93,11 +93,10 @@ fn fixture() -> Fixture {
 /// The workspace's owner, as this device holds it in `state` : what the session opens when it
 /// starts, with this device the one governing the workspace.
 fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &DeviceCert) {
-    let record = state.join("tilo").join("rooms.json");
-    std::fs::create_dir_all(record.parent().expect("the state's workspace directory"))
-        .expect("this device's state directory");
-    let owner = owner::open_file(&owner::owner_file_of(&record))
-        .expect("an owner for this device's workspace");
+    let owner = owner::open_file(
+        &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
+    )
+    .expect("an owner for this device's workspace");
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let governor = testing::enroll_interactive_governor_in(&owner, device, cert, WORKSPACE)
         .expect("this device governs the workspace it hosts");

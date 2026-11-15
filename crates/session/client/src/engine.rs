@@ -417,17 +417,11 @@ impl Engine {
         custody: Arc<dyn Custody>,
     ) -> Result<Self, String> {
         let state = state.ok_or("this session keeps no state, so it holds no workspace")?;
-        let path = record_path(state);
-        if let Some(directory) = path.parent() {
-            std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-        }
+        let path = owner_path(state)?;
         let shown = Arc::new(Shown(std::sync::Mutex::new(
             workspaces.into_iter().collect(),
         )));
-        let owner = open_file_with(
-            &owner_file_of(&path),
-            Arc::clone(&shown) as Arc<dyn FileHost>,
-        )?;
+        let owner = open_file_with(&path, Arc::clone(&shown) as Arc<dyn FileHost>)?;
         let mut engine = Self::holding(owner.clone(), shown, identity, custody);
         // What the workspaces' other devices reach this one at, keeping the frames each brings: a
         // device that holds a workspace is a store device of it.
@@ -1944,9 +1938,18 @@ pub fn revocations_of(engine: Option<&Arc<Engine>>) -> Revocations {
     Arc::new(Held(engine.cloned()))
 }
 
-/// Where this device's workspaces are kept under `state` .
-fn record_path(state: &Path) -> PathBuf {
-    state.join("tilo").join(FILE)
+/// The file this device's workspaces are kept in under `state`, its directory made: what a session
+/// started on `state` opens, and where a tool prepares the workspaces that session finds.
+///
+/// # Errors
+/// The directory cannot be made.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn owner_path(state: &Path) -> Result<PathBuf, String> {
+    let path = state.join("tilo").join(FILE);
+    if let Some(directory) = path.parent() {
+        std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    }
+    Ok(owner_file_of(&path))
 }
 
 /// Where this device keeps the frames of the workspaces it holds, for the devices of theirs that

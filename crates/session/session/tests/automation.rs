@@ -104,10 +104,10 @@ fn person_of(cert: &DeviceCert) -> String {
 /// This device's workspaces as it keeps them under `state`: the record the session's own engine
 /// opens, written by the same commits a session writes.
 fn held(state: &Path) -> NativeWorkspaceOwner {
-    let record = state.join("tilo").join("rooms.json");
-    std::fs::create_dir_all(record.parent().expect("the state's workspace directory"))
-        .expect("this device's state directory");
-    owner::open_file(&owner::owner_file_of(&record)).expect("this device's workspaces")
+    owner::open_file(
+        &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
+    )
+    .expect("this device's workspaces")
 }
 
 /// Found [`WORKSPACE`] in `owner` as this computer's device — its only member, the person its

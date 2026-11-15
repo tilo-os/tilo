@@ -621,11 +621,10 @@ fn workspace_held_here(
     cert: &DeviceCert,
     key: &SigningKey,
 ) {
-    let record = state.join("tilo").join("rooms.json");
-    std::fs::create_dir_all(record.parent().expect("the state's workspace directory"))
-        .expect("this device's state directory");
-    let owner = owner::open_file(&owner::owner_file_of(&record))
-        .expect("an owner for this device's workspace");
+    let owner = owner::open_file(
+        &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
+    )
+    .expect("an owner for this device's workspace");
     let governor = testing::enroll_interactive_governor_in(&owner, key, cert, workspace)
         .expect("this device governs the workspace it hosts");
     let host = governor.workspace_host().device_public_key;
