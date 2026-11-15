@@ -2273,7 +2273,7 @@
       "types": [
         {
           "name": "Style",
-          "doc": "A style: a view of the arrangement an installed package declares (shell.md §6).",
+          "doc": "A style: a view of the layout an installed package declares (shell.md §6).",
           "fields": [
             {
               "name": "style",
