@@ -4959,13 +4959,13 @@ impl FrameHarness {
         if !key_path.is_empty() {
             self.set_focused(Some(taffy_id));
         }
-        // Where the node is drawn: the press an activation or a menu it leaves to the pointer
-        // makes lands there, as it does in the window.
-        let drawn = self
+        // The node as it stands: the press an activation or a menu it leaves to the pointer lands
+        // where it is drawn, and a disabled node is refused, as in the window.
+        let acted_node = self
             .a11y_nodes()
             .into_iter()
             .find(|(id, _)| *id == target)
-            .and_then(|(_, node)| node.bounds());
+            .map(|(_, node)| node);
         // Who is acted on, as an identity that survives a rebuild the action
         // itself may cause.
         // SAFETY: the action below reaches this node through the same
@@ -5010,13 +5010,15 @@ impl FrameHarness {
             // What the widget left to the pointer — a control of its own, a row of a menu it
             // opens, a painted empty state — is pressed where the node is drawn. Any other
             // target its widget did not handle is refused.
-            let completion = self.pointer_completion(
-                action,
-                drawn,
-                taffy_id,
-                semantic_target.as_deref(),
-                &ordinal_path,
-            );
+            let completion = acted_node.as_ref().and_then(|node| {
+                self.pointer_completion(
+                    action,
+                    node,
+                    taffy_id,
+                    semantic_target.as_deref(),
+                    &ordinal_path,
+                )
+            });
             if completion.is_none()
                 && semantic_target
                     .as_deref()

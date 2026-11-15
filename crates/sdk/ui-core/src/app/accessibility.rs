@@ -1263,7 +1263,6 @@ impl App {
             }
             return None;
         }
-        let drawn = node.bounds();
         if self.dispatch_resource_a11y_action(target, action) {
             return None;
         }
@@ -1402,7 +1401,7 @@ impl App {
         // its own, a row of a menu it opens, a child its painting ancestor routes to.
         let (c, button) = self.pointer_completion(
             action,
-            drawn,
+            &node,
             taffy_id,
             semantic_target.as_deref(),
             &ordinal_path,

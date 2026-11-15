@@ -124,15 +124,17 @@ impl FrameHarness {
             )
         })?;
         let geometry = shell.geometry();
+        let front_is_sidebar = shell.front_pane() == NavPane::Sidebar;
         let bar = match button {
             Some(button) => button.shown,
-            // The bar shows the way back in the button's place, on a screen in front of the
-            // sidebar's own: the sidebar is hidden there.
-            None => false,
+            // The bar shows the way back in the button's place: hidden on a screen in front of
+            // the sidebar's own, shown on the sidebar's own screen, which is what Back there
+            // returns to.
+            None => geometry.sidebar == SidebarPlacement::Screen && front_is_sidebar,
         };
         let frame = match geometry.sidebar {
             SidebarPlacement::None => false,
-            SidebarPlacement::Screen => shell.front_pane() == NavPane::Sidebar,
+            SidebarPlacement::Screen => front_is_sidebar,
             SidebarPlacement::Docked | SidebarPlacement::Drawer => {
                 geometry.sidebar_column.width() > 0.5
             }

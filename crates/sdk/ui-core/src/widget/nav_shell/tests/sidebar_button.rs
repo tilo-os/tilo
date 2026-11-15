@@ -76,8 +76,8 @@ tilo_test_env::scenario! {
 
 /// A narrow window shows one screen at a time: the list the window opened on is a place, with
 /// no way back, and holds the bar's button that brings the places over it; the sidebar's own
-/// screen, in front then, holds the way back to the screen it covered, and the button stands
-/// aside for it.
+/// screen, in front then, holds that button too, to put it away, beside the way back to the
+/// screen it covered.
 #[test]
 fn a_sidebar_screen_holds_the_way_back_and_the_place_before_it_the_places() {
     let mut h = harness(
@@ -116,8 +116,9 @@ fn a_sidebar_screen_holds_the_way_back_and_the_place_before_it_the_places() {
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
     let toolbar = h.root::<NavShell>().window_toolbar();
     assert_eq!(
-        toolbar.sidebar, None,
-        "the sidebar's own screen holds the way back instead: {toolbar:?}"
+        toolbar.sidebar,
+        Some(true),
+        "the sidebar's own screen holds the toggle that puts it away: {toolbar:?}"
     );
     assert_eq!(
         toolbar.leading.len(),

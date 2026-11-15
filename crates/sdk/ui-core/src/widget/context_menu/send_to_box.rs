@@ -21,6 +21,8 @@ impl ContextMenu {
     /// which never opens rows of its own: the window hands it the pointer and
     /// the keys while it stands ([`Self::send_to_alone_open`]), draws it over
     /// everything and describes it. It stands beside `anchor`, in `viewport`.
+    /// Only the native window stands it ([`crate::app`]).
+    #[cfg(feature = "native")]
     pub(crate) fn open_window_box(
         &mut self,
         about: Option<crate::shared_selection::SharedSelection>,

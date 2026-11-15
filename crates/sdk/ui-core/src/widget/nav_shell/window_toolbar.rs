@@ -214,11 +214,11 @@ impl NavShell {
         use crate::window_toolbar::ToolbarAction;
         let lookup = crate::i18n::I18nManager::lookup_plain;
         let back = self.can_go_back();
-        let on_sidebar_screen = self.geometry.sidebar == SidebarPlacement::Screen
-            && self.front_pane() == NavPane::Sidebar;
-        let toggle_yields = back
-            && self.geometry.sidebar != SidebarPlacement::Docked
-            && (on_sidebar_screen || !self.is_sidebar_open());
+        // Back leads in the toggle's place while the sidebar is closed on a screen or in a
+        // drawer: it returns to the screen the person came from. The sidebar's own screen holds
+        // the toggle that puts it away, as the shell's own row does.
+        let toggle_yields =
+            back && self.geometry.sidebar != SidebarPlacement::Docked && !self.is_sidebar_open();
         let mut toolbar = WindowToolbar {
             sidebar: (self.has_sidebar() && !self.sidebar_folded() && !toggle_yields)
                 .then(|| self.is_sidebar_open()),

@@ -828,23 +828,35 @@ pub(crate) trait HostCore {
     /// What the person's own press completes at the exported node: an action a widget left to the
     /// pointer is a press where the node is drawn (else where its widget stands it), the left
     /// button for an activation and the secondary one for a menu. `None` when the action is not
-    /// the pointer's to complete.
+    /// the pointer's to complete: the node is disabled, or it is no checkable and the action
+    /// toggles.
     fn pointer_completion(
         &self,
         action: &crate::a11y::Action,
-        drawn: Option<accesskit::Rect>,
-        node: NodeId,
+        node: &accesskit::Node,
+        widget: NodeId,
         semantic_target: Option<&str>,
         ordinal_path: &[usize],
     ) -> Option<(vello::kurbo::Point, winit::event::MouseButton)> {
         use crate::a11y::Action;
+        if node.is_disabled() {
+            return None;
+        }
         let button = match action {
-            Action::Activate | Action::ToggleCheck => winit::event::MouseButton::Left,
+            Action::Activate => winit::event::MouseButton::Left,
+            Action::ToggleCheck => match node.role() {
+                accesskit::Role::CheckBox
+                | accesskit::Role::RadioButton
+                | accesskit::Role::Switch
+                | accesskit::Role::MenuItemCheckBox
+                | accesskit::Role::MenuItemRadio => winit::event::MouseButton::Left,
+                _ => return None,
+            },
             Action::ShowContextMenu => winit::event::MouseButton::Right,
             _ => return None,
         };
-        let point = drawn.map_or_else(
-            || self.exported_press_point(node, semantic_target, ordinal_path),
+        let point = node.bounds().map_or_else(
+            || self.exported_press_point(widget, semantic_target, ordinal_path),
             |drawn| {
                 vello::kurbo::Point::new(
                     f64::midpoint(drawn.x0, drawn.x1),

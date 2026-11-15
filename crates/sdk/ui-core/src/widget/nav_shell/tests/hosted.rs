@@ -103,8 +103,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             h.root::<NavShell>().window_toolbar().sidebar,
-            None,
-            "and the toggle stands aside for it"
+            Some(true),
+            "and the toggle puts the places away"
         );
     }
 

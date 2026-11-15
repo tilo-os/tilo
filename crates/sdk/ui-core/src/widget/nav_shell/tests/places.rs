@@ -37,9 +37,9 @@ fn go_back(h: &mut FrameHarness, input: BackInput) {
 tilo_test_env::scenario! {
     fn the_places_screen_goes_back_to_where_the_person_was;
 
-    // A window whose toolbar is its bar's keeps Back there: the places' screen offers it in the bar
-    // and the sidebar's toggle stands aside for it, so the one leading control is the way back.
-    phase a_places_screen_in_the_window_bar_offers_back_alone;
+    // A window whose toolbar is its bar's keeps Back there: the places' screen offers the way
+    // back in the bar beside the toggle that puts the places away.
+    phase a_places_screen_in_the_window_bar_offers_back_beside_its_toggle;
     {
         let _settled = crate::motion::testing::settled();
         let mut h = harness(
@@ -62,8 +62,9 @@ tilo_test_env::scenario! {
         settle(&mut h, W, H);
         let toolbar = h.root::<NavShell>().window_toolbar();
         assert_eq!(
-            toolbar.sidebar, None,
-            "the places hold no toggle: {toolbar:?}"
+            toolbar.sidebar,
+            Some(true),
+            "the places hold the toggle that puts them away: {toolbar:?}"
         );
         assert_eq!(
             toolbar.leading.len(),
