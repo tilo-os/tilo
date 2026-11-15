@@ -84,7 +84,6 @@ impl Source<'_> {
         }
     }
 
-    #[cfg(feature = "video")]
     fn as_path(&self) -> Option<&Path> {
         match self {
             Source::Path(p) => Some(p),
@@ -134,6 +133,47 @@ pub fn pdf_previews() -> bool {
     PDF_RASTERISER.get().is_some()
 }
 
+/// One open video: a filmstrip asks it for many frames without opening the
+/// source again for each.
+pub trait VideoFrames {
+    fn path(&self) -> &Path;
+    fn duration_ms(&self) -> Option<u64>;
+    /// The frame at `at_ms`, fitted to `size`. `None` when the source has no
+    /// picture near that time.
+    fn frame_at(&mut self, at_ms: u64, size: ThumbSize) -> Option<RgbaThumb>;
+}
+
+/// Opens a video for its frames; `None` when it cannot be decoded.
+pub type VideoOpener = fn(&Path) -> Option<Box<dyn VideoFrames>>;
+
+static VIDEO_OPENER: std::sync::OnceLock<VideoOpener> = std::sync::OnceLock::new();
+
+/// Give videos frame previews from now on. An app that links a video decoder
+/// (`tilo-video-thumbnail`) hands its opener over once at start; until then,
+/// and in every other program, a video gets a type badge. The first call wins.
+pub fn set_video_opener(open: VideoOpener) {
+    let _ = VIDEO_OPENER.set(open);
+}
+
+/// `path` opened for its frames, when a decoder was handed over.
+pub fn open_video(path: &Path) -> Option<Box<dyn VideoFrames>> {
+    VIDEO_OPENER.get()?(path)
+}
+
+/// Where a video's preview frame is taken: a second in, past a fade from black,
+/// when the video is long enough.
+const REPRESENTATIVE_MS: u64 = 1_000;
+
+/// A preview of the video at `path`: its frame at [`REPRESENTATIVE_MS`].
+pub fn video_thumb(path: &Path, size: impl Into<ThumbSize>) -> Option<RgbaThumb> {
+    let mut frames = open_video(path)?;
+    let at = match frames.duration_ms() {
+        Some(d) if d > REPRESENTATIVE_MS * 2 => REPRESENTATIVE_MS,
+        _ => 0,
+    };
+    frames.frame_at(at, size.into())
+}
+
 /// Generate a preview for `source`, dispatching on `category`. Returns `None`
 /// for a badge-only category, an unreadable source, or a decode failure — the
 /// caller then falls back to a type badge.
@@ -151,16 +191,7 @@ pub fn generate(
             let (rgba, width, height) = rasterise(&source.read()?, size.width, size.height)?;
             rgba_to_thumb(rgba, width, height, size)
         }
-        FileCategory::Video => {
-            #[cfg(feature = "video")]
-            {
-                crate::video::video_thumb(source.as_path()?, size)
-            }
-            #[cfg(not(feature = "video"))]
-            {
-                None
-            }
-        }
+        FileCategory::Video => video_thumb(source.as_path()?, size),
         _ => None,
     }
 }

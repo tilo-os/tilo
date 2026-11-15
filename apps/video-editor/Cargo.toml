@@ -77,7 +77,7 @@ thin = ["dep:runtime-dylib"]
 default = ["decode", "gst"]
 # Decode and waveform support for the preview canvas through
 # `media::MediaEngine` and its appsink.
-decode = ["media/decode", "tilo-thumbnail/video"]
+decode = ["media/decode"]
 # GStreamer encode and mux support. Kept separate so preview-only builds can
 # use `--no-default-features --features decode`.
 gst = ["media/encode", "media/decode"]

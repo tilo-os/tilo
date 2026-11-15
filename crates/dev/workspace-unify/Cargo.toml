@@ -1332,7 +1332,7 @@ doc = false
 "tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
 "tilo-theme-bauhaus" = { path = "../../../crates/sdk/themes/bauhaus", default-features = false, features = [] }
 "tilo-theme-sdk" = { path = "../../../crates/sdk/theme-sdk", default-features = false, features = [] }
-"tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = ["default", "video"] }
+"tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = [] }
 "tilo-tray-host" = { path = "../../../crates/session/tray-host", default-features = false, features = [] }
 "tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../../crates/platform/tilo-typst-fonts", default-features = false, features = [] }
@@ -2542,7 +2542,7 @@ doc = false
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
 "tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
 "tilo-theme-sdk" = { path = "../../../crates/sdk/theme-sdk", default-features = false, features = [] }
-"tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = ["default", "video"] }
+"tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = [] }
 "tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
 "tilo-ui" = { path = "../../../crates/sdk/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "realtime-video", "syntax-definitions", "test-support"] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
@@ -4050,7 +4050,7 @@ doc = false
 "tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
 "tilo-theme-bauhaus" = { path = "../../../crates/sdk/themes/bauhaus", default-features = false, features = [] }
 "tilo-theme-sdk" = { path = "../../../crates/sdk/theme-sdk", default-features = false, features = [] }
-"tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = ["default", "video"] }
+"tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = [] }
 "tilo-tray-host" = { path = "../../../crates/session/tray-host", default-features = false, features = [] }
 "tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../../crates/platform/tilo-typst-fonts", default-features = false, features = [] }
@@ -5257,7 +5257,7 @@ doc = false
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
 "tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
 "tilo-theme-sdk" = { path = "../../../crates/sdk/theme-sdk", default-features = false, features = [] }
-"tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = ["default", "video"] }
+"tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = [] }
 "tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
 "tilo-ui" = { path = "../../../crates/sdk/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "realtime-video", "syntax-definitions", "test-support"] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }

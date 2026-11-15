@@ -48,6 +48,8 @@ pub mod seed;
 pub mod shot;
 pub mod thumbnail;
 pub mod timecode;
+#[cfg(feature = "decode")]
+mod video_frames;
 pub mod waveform;
 
 pub use app::VideoEditorApp;

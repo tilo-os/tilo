@@ -1,4 +1,4 @@
-//! Frames from a video (feature `video`), on the shared `media` `GStreamer` engine
+//! Frames from a video for the filmstrip, on the shared `media` `GStreamer` engine
 //! rather than a second codec stack: a [`FrameSession`] keeps one pipeline open across a
 //! whole filmstrip instead of standing one up per cell.
 
@@ -6,9 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use media::MediaEngine;
-
-use crate::generate::{RgbaThumb, ThumbSize, rgba_to_thumb};
+use ::media::MediaEngine;
+use thumbnail::{RgbaThumb, ThumbSize, VideoFrames, rgba_to_thumb};
 
 const FRAME_TIMEOUT: Duration = Duration::from_secs(6);
 const PREROLL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -18,15 +17,12 @@ const SEEK_SLOP_MS: u64 = 100;
 const FALLBACK_SLOP_MS: u64 = 2_000;
 /// Poll interval while a pipeline works. The engine exposes no blocking wait.
 const POLL: Duration = Duration::from_millis(20);
-const REPRESENTATIVE_MS: u64 = 1_000;
 
-pub fn video_thumb(path: &Path, size: impl Into<ThumbSize>) -> Option<RgbaThumb> {
-    let mut session = FrameSession::open(path)?;
-    let at = match session.duration_ms() {
-        Some(d) if d > REPRESENTATIVE_MS * 2 => REPRESENTATIVE_MS,
-        _ => 0,
-    };
-    session.frame_at(at, size.into())
+/// Hand the thumbnail service this decoder, so filmstrips show frames.
+pub fn install() {
+    thumbnail::set_video_opener(|path| {
+        FrameSession::open(path).map(|session| Box::new(session) as Box<dyn VideoFrames>)
+    });
 }
 
 /// One open source: the engine plus the last frame timestamp it handed back,
@@ -46,7 +42,7 @@ impl FrameSession {
         if !engine.is_real_decode() {
             return None;
         }
-        engine.open(media::Source::for_path(path));
+        engine.open(::media::Source::for_path(path));
         // Grabbing a frame drives the pipeline with `play`, and the shared
         // engine always builds a real audio sink — an unmuted thumbnail worker
         // would play the clip out loud and hold an output device while it
@@ -60,14 +56,6 @@ impl FrameSession {
         };
         session.await_preroll();
         Some(session)
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub fn duration_ms(&self) -> Option<u64> {
-        self.engine.duration_ms()
     }
 
     // Let the pipeline finish coming up before anything is asked of it: a seek into a
@@ -84,9 +72,20 @@ impl FrameSession {
         }
     }
 
+}
+
+impl VideoFrames for FrameSession {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn duration_ms(&self) -> Option<u64> {
+        self.engine.duration_ms()
+    }
+
     /// Seek to `at_ms` and return the frame there, fitted to `size`. `None`
     /// only when the pipeline produced no picture near that time.
-    pub fn frame_at(&mut self, at_ms: u64, size: ThumbSize) -> Option<RgbaThumb> {
+    fn frame_at(&mut self, at_ms: u64, size: ThumbSize) -> Option<RgbaThumb> {
         self.engine.seek_ms(at_ms);
         self.engine.play();
         let start = Instant::now();

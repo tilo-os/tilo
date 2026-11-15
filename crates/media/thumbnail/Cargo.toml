@@ -20,12 +20,6 @@ description = "Shared thumbnail generation and content-addressed caching for fil
 name = "thumbnail"
 path = "src/lib.rs"
 
-[features]
-default = []
-# Video keyframe extraction through the shared GStreamer media engine; off by
-# default to keep hermetic builds free of the GStreamer stack.
-video = ["dep:media", "media/decode"]
-
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Crash-safe replacement of on-disk thumbnails.
@@ -46,9 +40,6 @@ hex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 # The staged compute request a batch job reads.
 serde_json.workspace = true
-
-# Optional decoders — see [features] above.
-media = { version = "0.1.0", package = "tilo-media", path = "../../platform/tilo-media", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

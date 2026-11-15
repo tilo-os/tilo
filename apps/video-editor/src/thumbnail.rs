@@ -208,6 +208,8 @@ impl ThumbnailCache {
         let service = if cfg!(test) || !cfg!(feature = "decode") {
             ThumbnailService::ephemeral(MAX_WORKERS)
         } else {
+            #[cfg(feature = "decode")]
+            crate::video_frames::install();
             ThumbnailService::open_default(MAX_WORKERS)
                 .unwrap_or_else(|_| ThumbnailService::ephemeral(MAX_WORKERS))
         };

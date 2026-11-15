@@ -83,7 +83,7 @@ pub fn name_surface(planned: &Planned) {
         return;
     }
     match app_catalogue::apps::signed_surface_of_from_env(&planned.app) {
-        Ok(Some(surface)) => collaboration::app_surface::register_package(&planned.app, &surface),
+        Ok(Some(surface)) => collab_types::app_surface::register_package(&planned.app, &surface),
         Ok(None) => tracing::debug!(
             app = %planned.app,
             "the package ships no signed surface; it declares no person records"
@@ -103,7 +103,7 @@ pub fn name_installed_surfaces() {
     match app_catalogue::apps::signed_surfaces_from_env() {
         Ok(surfaces) => {
             for (app, _name, surface) in surfaces {
-                collaboration::app_surface::register_package(&app, &surface);
+                collab_types::app_surface::register_package(&app, &surface);
             }
         }
         Err(error) => tracing::warn!(%error, "the installed apps' surfaces are unreadable"),

@@ -545,32 +545,22 @@ impl ThumbnailService {
 
 #[derive(Default)]
 struct VideoPipeline {
-    #[cfg(feature = "video")]
-    session: Option<crate::video::FrameSession>,
-    #[cfg(not(feature = "video"))]
-    session: Option<PathBuf>,
+    session: Option<Box<dyn crate::generate::VideoFrames>>,
 }
 
 impl VideoPipeline {
     fn open_path(&self) -> Option<PathBuf> {
-        #[cfg(feature = "video")]
-        {
-            self.session.as_ref().map(|s| s.path().to_path_buf())
-        }
-        #[cfg(not(feature = "video"))]
-        {
-            self.session.clone()
-        }
+        self.session.as_ref().map(|s| s.path().to_path_buf())
     }
 
     fn close(&mut self) {
         self.session = None;
     }
 
-    #[cfg(feature = "video")]
+    /// Without a decoder no frame is ever produced — never a synthesised one.
     fn frame(&mut self, path: &std::path::Path, at_ms: u64, size: ThumbSize) -> Option<RgbaThumb> {
         if self.session.as_ref().is_none_or(|s| s.path() != path) {
-            self.session = crate::video::FrameSession::open(path);
+            self.session = crate::generate::open_video(path);
         }
         let frame = self.session.as_mut()?.frame_at(at_ms, size);
         if frame.is_none() {
@@ -578,14 +568,6 @@ impl VideoPipeline {
             self.close();
         }
         frame
-    }
-
-    /// Without a decoder no frame is ever produced — never a synthesised one.
-    #[cfg(not(feature = "video"))]
-    fn frame(&mut self, path: &std::path::Path, at_ms: u64, size: ThumbSize) -> Option<RgbaThumb> {
-        let _ = (path, at_ms, size);
-        self.close();
-        None
     }
 }
 
@@ -1003,7 +985,6 @@ mod tests {
         rx.recv_timeout(SETTLE).unwrap();
     }
 
-    #[cfg(not(feature = "video"))]
     #[test]
     fn a_video_frame_without_a_decoder_settles_as_a_badge() {
         let (_dir, svc) = service();
