@@ -98,8 +98,8 @@ class AccountKeys:
         no) lets the key operate web pages in its workspace's Browser —
         navigating, filling in, selecting and clicking — without asking the
         person each time; submitting a page still asks them. Raises
-        `AskPending` with the link they approve it at; `await ask.wait()` is
-        the `Key` once they do.
+        `AskPending` with the link they approve it at; `ask.wait()` is the
+        `Key` once they do.
         """
         return self.client.handoff(
             self.client._key_create(name, workspace, expires_in, browser_pages)
@@ -227,7 +227,11 @@ class AsyncTilo:
         if not self.sync:
             return value
         if inspect.isawaitable(value):
-            return self.loop.run(value)
+            try:
+                return self.loop.run(value)
+            except AskPending as ask:
+                ask._on_sync_loop(self.loop)
+                raise
         if hasattr(value, "__anext__"):
             from ._sync import SyncIterator
 

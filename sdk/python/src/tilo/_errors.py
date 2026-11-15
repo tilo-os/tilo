@@ -72,8 +72,8 @@ class AskPending(Exception):
 
     `invocation_id` is the run they are answering, `url` where they answer it
     when the API names one, and `question` what they are asked.
-    `await ask.wait()` follows the run until they decide, and returns its
-    answer.
+    `ask.wait()` follows the run until they decide, and returns its answer: the
+    answer itself from the sync client, a coroutine to await from the async one.
     """
 
     def __init__(
@@ -91,6 +91,7 @@ class AskPending(Exception):
         self.question = question
         self._follow = follow
         self._convert = convert
+        self._loop: Any = None
 
     @staticmethod
     def _describe(url: str | None, invocation_id: str | None) -> str:
@@ -101,14 +102,24 @@ class AskPending(Exception):
             parts.append(f"at {url}")
         return ": ".join([parts[0], ", ".join(parts[1:])]) if len(parts) > 1 else parts[0]
 
-    async def wait(self) -> Any:
+    def wait(self) -> Any:
         """Follow the run until the person decides, then its answer."""
+        if self._loop is None:
+            return self._wait()
+        return self._loop.run(self._wait())
+
+    async def _wait(self) -> Any:
         if self._follow is None:
             raise ProtocolError("this ask cannot be waited on: it names no run")
         answer = self._follow()
         if inspect.isawaitable(answer):
             answer = await answer
         return self._convert(answer) if self._convert is not None else answer
+
+    def _on_sync_loop(self, loop: Any) -> AskPending:
+        """Make `wait()` hand back the answer here, run on the client's `loop`."""
+        self._loop = loop
+        return self
 
     def _then(self, convert: Callable[[Any], Any]) -> AskPending:
         self._convert = convert

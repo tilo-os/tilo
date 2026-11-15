@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tilo import Key, Refused, Resource, Run, Tilo
+from tilo import AskPending, Key, Refused, Resource, Run, Tilo
 
 from fake_api import PDF, TODO, WORKSPACE_ID, FakeApi
 
@@ -91,3 +91,23 @@ def test_a_sync_key_is_minted_and_listed(api):
 
         key: Key = tilo.keys.list()[0]
         assert key.grant == "g-root"
+
+
+def test_a_sync_ask_waits_where_the_sync_client_runs(api):
+    with Tilo(key=api.key, url=URL, http=api.client(URL)) as tilo:
+        with pytest.raises(AskPending) as raised:
+            tilo.keys.create("nightly", workspace=WORKSPACE_ID)
+        ask = raised.value
+        assert api.new_key_asked == {"name": "nightly", "workspace": WORKSPACE_ID}
+
+        api.asked_key = {
+            "key": "tilo_sk_new",
+            "grant": "g-new",
+            "name": "nightly",
+            "scope": "account",
+        }
+        key = ask.wait()
+
+        assert isinstance(key, Key)
+        assert key.token == "tilo_sk_new"
+        assert api.polls_of_key >= 1
