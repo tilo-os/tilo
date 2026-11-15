@@ -28,7 +28,7 @@ import time
 from .. import core, session_unit
 from ..core import CheckFailed, Unobservable, check, expect
 from ..vm import VmError, wait_until
-from .basics import _settings, search_query, seat_keyboard, write_input_settings
+from .basics import search_query, set_layouts
 from .window import _app_groups, _ensure_unlocked, _group_rect, _locked, _two_windows
 
 AREA = "input"
@@ -74,17 +74,11 @@ def plugged(ctx, *profiles: str):
 @contextlib.contextmanager
 def layouts(ctx, layout: str = "de:nodeadkeys", *more: str):
     """The session's keyboard layout set to `layout` (and `more`, in order) for the block."""
-    doc = _settings(ctx)
-    saved = dict(doc.get("input") or {})
-    keyboard = seat_keyboard(ctx)
-    doc.setdefault("input", {}).update(keyboard_layout=layout, keyboard_layouts=[layout, *more])
+    set_layouts(ctx, [layout, *more], layout)
     try:
-        write_input_settings(ctx, doc)
         yield
     finally:
-        doc = _settings(ctx)
-        doc["input"] = saved
-        write_input_settings(ctx, doc, back_to=keyboard)
+        set_layouts(ctx, ["us"], "us")
 
 
 def search_text(ctx, *combos: str) -> str:
@@ -92,7 +86,7 @@ def search_text(ctx, *combos: str) -> str:
     ctx.close_overlays()
     ctx.vm.key("super+space")
     try:
-        ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
+        ctx.wait_state(lambda s: core.overlays(s).get("search") is True, 5, "search open")
     except CheckFailed as exc:
         raise CheckFailed(f"{exc}: {keyboard_diagnosis(ctx)}") from exc
     for combo in combos:
@@ -260,7 +254,7 @@ def stuck_modifiers(ctx, res):
             for modifier in ("shift", "ctrl", "alt", "super"):
                 ctx.vm.input("hold", modifier)
                 held.append(modifier)
-                ctx.vm.invoke("session", "lock")
+                ctx.vm.invoke(core.SESSION, core.SESSION_LOCK)
                 ctx.wait_state(lambda s: s["chrome"].get("session_locked"), 10, f"locked with {modifier} down")
                 # The key comes up behind the lock: the release reaches the compositor before
                 # the passcode typed on the same keyboard.
@@ -281,8 +275,8 @@ def stuck_modifiers(ctx, res):
         _ensure_unlocked(ctx, PASSCODE)
 
 
-def _modality(st) -> str:
-    return (st["chrome"].get("input") or {}).get("modality", "")
+def _pointer(st) -> tuple:
+    return tuple((st.get("shared_input") or {}).get("pointer") or ())
 
 
 def _notes_groups(st) -> list:
@@ -321,24 +315,18 @@ def touchpad_scroll(ctx, res):
     with plugged(ctx, TOUCHPAD):
         r = _group_rect(ctx, g1)
         x, y = int(r[0] + r[2] / 2), int(r[1] + r[3] * 0.6)
-        st = ctx.state()
-        sid = core.active_strip(st)["id"]
-
-        def scroll_x():
-            return next(s for s in ctx.state()["chrome"]["strip_scroll"] if s["strip"] == sid)["scroll_x"]
-
         moved = {}
         for dx in (60, -60):  # whichever way the scroll direction setting points, one has room
-            before = scroll_x()
+            before = _group_rect(ctx, g1)[0]
             ctx.vm.input("move", str(x), str(y))
             ctx.vm.input("touchpad", "swipe", str(dx), "0", "--fingers", "2")
             # A clamped direction never moves: bounded, then the other one.
-            wait_until(lambda: abs(scroll_x() - before) > 20, 2, 0.2)
+            wait_until(lambda: abs(_group_rect(ctx, g1)[0] - before) > 20, 2, 0.2)
             ctx.wait_still()
-            moved[dx] = [round(before, 1), round(scroll_x(), 1)]
+            moved[dx] = [round(before, 1), round(_group_rect(ctx, g1)[0], 1)]
             if abs(moved[dx][1] - moved[dx][0]) > 20:
                 break
-        res.metrics["scroll_x_by_dx_mm"] = moved
+        res.metrics["window_x_by_dx_mm"] = moved
         expect(any(abs(b - a) > 20 for a, b in moved.values()),
                f"a two-finger horizontal touchpad scroll did not pan the strip ({moved})")
 
@@ -348,25 +336,30 @@ def touchpad_scroll(ctx, res):
        + "; libinput may not pair a uinput keyboard and touchpad for typing at all, which this would show")
 def disable_while_typing(ctx, res):
     ctx.reset()
+
+    def pointer_moved(before) -> bool:
+        return _pointer(ctx.state()) != before
+
     with plugged(ctx, KEYBOARD, TOUCHPAD):
         ctx.vm.input("move", "400", "300")
         # Baseline: with no key in use the pad moves the pointer.
         ctx.vm.key("Escape")
-        ctx.wait_state(lambda s: _modality(s) == "keyboard", 5, "keyboard in use after a key")
         # libinput's disable-while-typing runs on timers of its own, which the session does
         # not report: the pauses here are those timers, not waits for the session.
         time.sleep(1.5)
+        before = _pointer(ctx.state())
         ctx.vm.input("touchpad", "swipe", "20", "0", "--duration", "100")
-        ctx.wait_state(lambda s: _modality(s) == "pointer", 5, "the pad moved the pointer with no key in use")
+        expect(wait_until(lambda: pointer_moved(before), 5, 0.2),
+               "the pad did not move the pointer with no key in use")
         # A key held down: libinput keeps the pad off while it is, and for a moment after.
         ctx.vm.input("hold", "a")
         try:
-            ctx.wait_state(lambda s: _modality(s) == "keyboard", 5, "keyboard in use while a key is held")
             time.sleep(0.5)
+            before = _pointer(ctx.state())
             ctx.vm.input("touchpad", "swipe", "20", "0", "--duration", "100")
             # Suppression is the pad's motion not arriving: watched for a fixed window.
             time.sleep(0.8)
-            suppressed = _modality(ctx.state()) == "keyboard"
+            suppressed = not pointer_moved(before)
         finally:
             ctx.vm.input("release", "a")
         res.metrics["suppressed_while_typing"] = suppressed
@@ -374,9 +367,10 @@ def disable_while_typing(ctx, res):
                            "disable-while-typing did not engage")
         # Past libinput's disable-while-typing timeout after the release.
         time.sleep(2.0)
+        before = _pointer(ctx.state())
         ctx.vm.input("touchpad", "swipe", "-20", "0", "--duration", "100")
-        ctx.wait_state(lambda s: _modality(s) == "pointer", 5,
-                       "the pad moved the pointer again after the key was released")
+        expect(wait_until(lambda: pointer_moved(before), 5, 0.2),
+               "the pad did not move the pointer again after the key was released")
         ctx.close_overlays()
 
 

@@ -66,14 +66,13 @@ class Context:
         return got
 
     def wait_still(self, timeout: float = 3.0) -> dict:
-        """The state once nothing asks for animation frames (the dump's `animating` is
-        empty: an overlay's fade or a resize has ended), or the latest one after
+        """The state once the shell has no transition running, or the latest one after
         `timeout`."""
         last = {}
 
         def still():
             last["s"] = self.vm.state()
-            return last["s"] if not (last["s"].get("chrome") or {}).get("animating") else None
+            return last["s"] if (last["s"].get("chrome") or {}).get("in_transition") is not True else None
 
         return wait_until(still, timeout, interval=0.2) or last["s"]
 
@@ -108,33 +107,29 @@ class Context:
             wait_until(lambda: core.open_surfaces(self.vm.state()) != before, 3, 0.2)
 
     def close_all_windows(self, timeout: float = 20) -> None:
-        """Close every window group through its own close action.
+        """Close every window group through the shell's close action.
 
         A group whose close action fails outright is recorded in facts["unclosable"] and
         left alone: the check that owns it reports it, the others go on."""
         deadline = time.monotonic() + timeout
         stuck = self.facts.setdefault("unclosable", {})
         while True:
-            closers = [a for a in self.vm.actions()
-                       if a["provider"] == "desktop-windows" and a["id"].startswith("group.close:")
-                       and a["id"] not in stuck]
-            if not closers:
+            gids = [str(g["id"]) for g in core.all_groups(self.vm.state())
+                    if str(g["id"]) not in stuck]
+            if not gids:
                 return
             if time.monotonic() >= deadline:
                 raise core.CheckFailed("windows still open after closing every group")
-            closing = set()
-            for a in closers:
+            for gid in gids:
                 try:
-                    self.vm.invoke(a["provider"], a["id"], {"confirm": True}
-                                   if a.get("params") else None)
-                    closing.add(a["id"].removeprefix("group.close:"))
+                    self.vm.invoke(core.SESSION, core.CHROME_CLOSE_WINDOW, {"group": gid})
                 except VmError as exc:
                     if "action_failed" in str(exc):
-                        stuck[a["id"]] = a.get("title")
+                        stuck[gid] = True
 
             def closed():
                 live = {str(g["id"]) for g in core.all_groups(self.vm.state())}
-                return not closing & live
+                return not set(gids) - stuck.keys() & live
 
             # A close a client did not act on is asked for again.
             wait_until(closed, max(0.0, min(5.0, deadline - time.monotonic())), 0.25)
@@ -171,7 +166,11 @@ class Context:
 
     def new_terminal_window(self):
         before = {g["id"] for g in core.all_groups(self.vm.state())}
-        self.vm.invoke("actions", "window.new.terminal")
+        self.vm.invoke(core.SESSION, core.CHROME_OPEN_APP, {"app": "so.tilo.terminal"})
         st = self.wait_state(lambda s: [g for g in core.all_groups(s) if g["id"] not in before],
                              10, "a new Terminal window")
         return [g for g in core.all_groups(st) if g["id"] not in before][0]
+
+    def search(self) -> dict:
+        """The shell's search now: its query, its rows and whether it is still searching."""
+        return self.vm.search()

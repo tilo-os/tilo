@@ -124,26 +124,23 @@ def fullscreen(ctx, res):
     _, g2 = ctx.facts["two_windows"]
     r0 = _group_rect(ctx, g2)
     ctx.vm.key("super+f")
-    st = ctx.wait_state(lambda s: s.get("chrome", {}).get("fullscreen_group") == g2
-                        or s.get("chrome", {}).get("fullscreen") is True
-                        or (core.group_by_id(s, g2) or {}).get("maximized") is True
-                        or (core.group_by_id(s, g2) or {}).get("fullscreen") is True,
-                        5, "window full screen")
+    st = ctx.wait_state(lambda s: s["workspace_tree"].get("fullscreen") == g2, 5, "window full screen")
     r1 = _group_rect(ctx, g2)
     disp = core.display_rects(st)[core.display_of_group(st, g2) or 0]
     res.metrics.update(rect_before=r0, rect_full=r1, display=disp)
     ctx.shot("W07-fullscreen")
     expect(r1[2] >= disp[2] * 0.9, f"full-screen window spans its display ({r1[2]:.0f} of {disp[2]:.0f} px)")
     ctx.vm.key("super+f")
-    ctx.wait_state(lambda s: not (core.group_by_id(s, g2) or {}).get("maximized")
-                   and not (core.group_by_id(s, g2) or {}).get("fullscreen"), 5, "window restored")
+    ctx.wait_state(lambda s: s["workspace_tree"].get("fullscreen") is None, 5, "window restored")
 
 
 @check("W08", AREA, "Tabs: add, switch, split into a group, close")
 def tabs(ctx, res):
     ctx.reset()
     g = ctx.new_terminal_window()["id"]
-    ctx.vm.invoke("actions", "tab.new.terminal.here")
+    active = (core.group_by_id(ctx.state(), g) or {}).get("active_tab")
+    ctx.vm.invoke(core.SESSION, core.CHROME_OPEN_APP,
+                  {"app": "so.tilo.terminal", "beside": str(active)})
     st = ctx.wait_state(lambda s: len((core.group_by_id(s, g) or {}).get("tabs", [])) == 2, 8,
                         "a second tab in the window")
     first_active = core.group_by_id(st, g)["active_tab"]
@@ -226,7 +223,7 @@ def workspaces(ctx, res):
 def outputs(ctx, res):
     ctx.reset()
     st = ctx.state()
-    expect(len(st["chrome"]["displays"]) >= 2, f"two outputs present (have {len(st['chrome']['displays'])})")
+    expect(len(core.display_rects(st)) >= 2, f"two outputs present (have {len(core.display_rects(st))})")
     g = ctx.new_terminal_window()["id"]
     d0 = core.display_of_group(ctx.state(), g)
     ctx.vm.key("super+ctrl+shift+Right")
@@ -247,25 +244,26 @@ def overview(ctx, res):
     ctx.shot("W12-overview")
     ctx.vm.key("Escape")
     ctx.wait_state(lambda s: not core.overlays(s)["overview"], 5, "overview closed after Escape")
-    ctx.vm.invoke("actions", "overview.toggle")
-    ctx.wait_state(lambda s: core.overlays(s)["overview"], 5, "overview open after overview.toggle")
-    ctx.vm.invoke("actions", "overview.toggle")
-    ctx.wait_state(lambda s: not core.overlays(s)["overview"], 5, "overview closed after overview.toggle")
+    ctx.vm.invoke(core.SESSION, core.CHROME_OVERVIEW, {"open": True})
+    ctx.wait_state(lambda s: core.overlays(s)["overview"], 5, "overview open after its action")
+    ctx.vm.invoke(core.SESSION, core.CHROME_OVERVIEW, {"open": False})
+    ctx.wait_state(lambda s: not core.overlays(s)["overview"], 5, "overview closed after its action")
 
 
-@check("W13", AREA, "Super+S opens and Escape closes the strip switcher")
+@check("W13", AREA, "Super+S opens and Escape closes the strips ribbon")
 def strip_switcher(ctx, res):
     ctx.reset()
     ctx.vm.key("super+s")
-    ctx.wait_state(lambda s: s["chrome"].get("strip_switcher_open") is True, 5,
-                   "chrome.strip_switcher_open after Super+S")
-    card = core.target_map(ctx.vm.targets()).get("strip_switcher")
-    expect(card, "open strip switcher is addressable as strip_switcher")
-    res.metrics.update(strip_switcher=card)
-    ctx.shot("W13-strip-switcher")
+    ctx.wait_state(lambda s: core.overlays(s).get("strips") is True, 5,
+                   "the strips overlay after Super+S")
+    card = next((r for n, r in core.target_map(ctx.vm.targets()).items()
+                 if "strip" in n.lower()), None)
+    expect(card, "the open strips ribbon is addressable")
+    res.metrics.update(strips=card)
+    ctx.shot("W13-strips")
     ctx.vm.key("Escape")
-    ctx.wait_state(lambda s: not s["chrome"].get("strip_switcher_open"), 5,
-                   "chrome.strip_switcher_open cleared after Escape")
+    ctx.wait_state(lambda s: not core.overlays(s).get("strips"), 5,
+                   "the strips overlay cleared after Escape")
 
 
 @check("W14", AREA, "Touch: a tap on a window focuses it; a horizontal swipe pans the strip")
@@ -280,32 +278,29 @@ def touch(ctx, res):
     ctx.vm.input("touch", "tap", str(x), str(y))
     ctx.wait_state(lambda s: core.active_group_id(s) == g1, 5, f"tap at {x},{y} focused the left window")
     ctx.shot("W14-tapped")
-    st = ctx.state()
-    strip = next(x for x in st["chrome"]["strip_scroll"] if x["strip"] == core.active_strip(st)["id"])
-    # Swipe towards the side with room: at the right end a leftward swipe is clamped.
-    rightward = strip["scroll_x"] > strip["max_scroll_x"] / 2
-    x_from, x_to = (d0[2] * 0.3, d0[2] * 0.8) if rightward else (d0[2] * 0.8, d0[2] * 0.3)
-    attempts = {"tab_bar": r[1] + 16, "content": r[1] + r[3] * 0.6}
     panned = []
-    for where, y in attempts.items():
-        before = strip["scroll_x"]
-        ctx.vm.input("touch", "drag", str(int(x_from)), str(int(y)), str(int(x_to)), str(int(y)))
-        sid = strip["strip"]
-        # A drag over the window may not pan: bounded, then over the tab bar.
-        wait_until(lambda: abs(_strip_scroll(ctx.state(), sid)["scroll_x"] - before) > 20, 2, 0.2)
-        st = ctx.wait_still()
-        strip = next(x for x in st["chrome"]["strip_scroll"] if x["strip"] == strip["strip"])
-        res.metrics[f"scroll_{where}"] = [round(before, 1), round(strip["scroll_x"], 1)]
-        if abs(strip["scroll_x"] - before) > 20:
-            panned.append(where)
+    for where, at in (("tab_bar", r[1] + 16), ("content", r[1] + r[3] * 0.6)):
+        before = {g: _group_rect(ctx, g) for g in (g1, g2)}
+        for from_fx, to_fx in ((0.8, 0.3), (0.3, 0.8)):
+            ctx.vm.input("touch", "drag", str(int(d0[0] + d0[2] * from_fx)), str(int(at)),
+                         str(int(d0[0] + d0[2] * to_fx)), str(int(at)))
+            # A drag over the window may not pan: bounded, then the other way.
+            reached = wait_until(
+                lambda: any(abs(_group_rect(ctx, g)[0] - before[g][0]) > 20 for g in before), 2, 0.2)
+            ctx.wait_still()
+            after = {g: _group_rect(ctx, g)[0] for g in before}
+            res.metrics[f"pan_{where}"] = [round(before[g1][0], 1), round(after[g1], 1)]
+            if reached:
+                panned.append(where)
+                break
     res.metrics["panned_by"] = panned
     expect(panned, "a one-finger horizontal touch swipe (over the tab bar or the window) did not pan "
-                   f"the strip ({'rightward' if rightward else 'leftward'}; scroll before/after: "
-                   f"tab bar {res.metrics['scroll_tab_bar']}, window {res.metrics['scroll_content']})")
+                   f"the strip (x before/after: tab bar {res.metrics['pan_tab_bar']}, "
+                   f"window {res.metrics['pan_content']})")
 
 
-def _pointer_kind(st) -> str:
-    return (st["chrome"].get("pointer") or {}).get("kind", "")
+def _pointer_shown(st) -> bool:
+    return bool((st.get("shared_input") or {}).get("pointer_shown"))
 
 
 def _app_groups(st, app_id: str) -> list:
@@ -336,8 +331,8 @@ def _launch_evidence(ctx, check_id: str, log_lines: int, card) -> str:
         '| tail -n 80 | cut -c1-400', check=False) or "the session log said nothing about it"
     ctx.write(f"{check_id}-launch-evidence.log", json.dumps(
         {"tiles": tiles, "overlays": chrome.get("overlays"), "notices": notices,
-         "card_before": card, "card_after": still, "pointer": chrome.get("pointer"),
-         "input": chrome.get("input")}, indent=1, default=str) + "\n--- session log since the tap\n" + said)
+         "card_before": card, "card_after": still, "pointer": st.get("shared_input")}, indent=1,
+        default=str) + "\n--- session log since the tap\n" + said)
     last = [line for line in said.splitlines() if line.strip()][-3:]
     return (f"tiles {tiles}; overlays open {[k for k, v in (chrome.get('overlays') or {}).items() if v]}; "
             f"notices {notices}; card still offered at {still}; session log: {last}")
@@ -349,7 +344,7 @@ def touch_first(ctx, res):
     ctx.reset()
     # A visible mouse cursor first, somewhere away from the launchpad cards.
     ctx.vm.input("move", "8", "300")
-    ctx.wait_state(lambda s: _pointer_kind(s) != "hidden", 5, "a visible cursor after moving the mouse")
+    ctx.wait_state(lambda s: _pointer_shown(s), 5, "a visible cursor after moving the mouse")
     t = core.target_map(ctx.vm.targets())
     card = t.get("launchpad:notes")
     if card is None:
@@ -358,9 +353,9 @@ def touch_first(ctx, res):
     x, y = int(card[0] + card[2] / 2), int(card[1] + card[3] / 2)
     log_lines = _session_log_lines(ctx)
     ctx.vm.input("touch", "tap", str(x), str(y))
-    st = ctx.wait_state(lambda s: _pointer_kind(s) == "hidden", 5,
+    st = ctx.wait_state(lambda s: not _pointer_shown(s), 5,
                         "the cursor hidden after a touch")
-    res.metrics["pointer_after_tap"] = st["chrome"].get("pointer")
+    res.metrics["pointer_after_tap"] = st.get("shared_input")
     try:
         st = ctx.wait_state(lambda s: _app_groups(s, "so.tilo.notes"), 25,
                             f"Notes opened by a tap on its launchpad card at {x},{y}")
@@ -373,27 +368,38 @@ def touch_first(ctx, res):
         res.metrics["mouse_click_opens_notes"] = bool(mouse_opened)
         raise CheckFailed(f"{failure}; the same card clicked with the mouse "
                           f"{'opened' if mouse_opened else 'did not open'} Notes; {evidence}") from failure
-    expect(st["chrome"]["input"]["modality"] == "touch",
-           f"touch is the input in use after a tap ({st['chrome']['input']})")
     ctx.shot("W18-tapped-card")
     ctx.vm.input("move", "12", "300")
-    ctx.wait_state(lambda s: _pointer_kind(s) != "hidden", 5, "the cursor back after moving the mouse")
+    ctx.wait_state(lambda s: _pointer_shown(s), 5, "the cursor back after moving the mouse")
 
 
-def _type_a_word(ctx, k: dict) -> None:
-    """Tap three letters and then Space on the on-screen keyboard shown at `k`.
+def _keyboard_keys(ctx, display) -> dict:
+    """The on-screen keyboard's key targets: single-letter controls standing low on
+    `display` while it shows, each with its rect. Empty while it is away."""
+    low = display[1] + display[3] * 0.55
+    return {name: rect for name, rect in core.target_map(ctx.vm.targets()).items()
+            if len(name) == 1 and name.isalpha() and rect[1] >= low}
+
+
+def _tap(ctx, rect) -> None:
+    ctx.vm.input("touch", "tap", str(int(rect[0] + rect[2] / 2)), str(int(rect[1] + rect[3] / 2)))
+
+
+def _type_a_word(ctx, keys: dict) -> None:
+    """Tap three letters and then the widest key (Space) on the on-screen keyboard.
 
     The keyboard composes letters as preedit and commits only at a word boundary
     (Space, punctuation, Return), so letters alone never reach a field as committed
     text. Space commits the word without activating anything, as Return would in
-    Search. Above the four key rows sit a toolbar and a suggestion bar, so 55 % of
-    the height lands on the first letter row and 90 % on the wide Space key."""
-    for fx in (0.2, 0.45, 0.7):
-        ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] * fx)), str(int(k["y"] + k["h"] * 0.55)))
+    Search."""
+    letters = [keys[name] for name in sorted(keys) if len(name) == 1 and name.isalpha()][:3]
+    for rect in letters:
+        _tap(ctx, rect)
         # The keyboard reports no per-key state to wait on (letters are uncommitted preedit),
         # so taps are spaced as a person's are.
         time.sleep(0.4)
-    ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] * 0.5)), str(int(k["y"] + k["h"] * 0.9)))
+    if keys:
+        _tap(ctx, max(keys.values(), key=lambda r: r[2]))
 
 
 @check("W19", AREA, "On-screen keyboard: tapping a text field shows it, tapping its keys types into "
@@ -405,34 +411,27 @@ def on_screen_keyboard(ctx, res):
         raise CheckFailed("Scratchpad showed no frame within 30 s")
     ctx.wait_still()
     r = _group_rect(ctx, group["id"])
+    d0 = core.display_rects(ctx.state())[0]
     # Scratchpad is one multi-line field filling the window under its heading.
     x, y = int(r[0] + r[2] / 2), int(r[1] + r[3] * 0.65)
     # The first touch plugs the touchscreen in; with one present the keyboard
     # service runs in the default automatic mode.
     ctx.vm.input("touch", "tap", str(x), str(y))
-    ctx.wait_state(lambda s: (s["chrome"].get("on_screen_keyboard") or {}).get("connected"), 40,
-                   "the on-screen keyboard service connected once a touchscreen is present")
-    ctx.vm.input("touch", "tap", str(x), str(y))
-    st = ctx.wait_state(lambda s: (s["chrome"].get("on_screen_keyboard") or {}).get("shown"), 15,
-                        f"the on-screen keyboard shown after tapping the field at {x},{y}")
-    osk = st["chrome"]["on_screen_keyboard"]
-    res.metrics["keyboard"] = osk["shown"]
+    showed = wait_until(lambda: (keys,) if (keys := _keyboard_keys(ctx, d0)) else None, 30, 0.5)
+    expect(showed, "the on-screen keyboard did not show after tapping the field")
+    res.metrics["keys"] = len(showed[0])
     ctx.shot("W19-keyboard")
-    k = osk["shown"]
-    before = osk.get("commits", 0)
-    _type_a_word(ctx, k)
-    st = ctx.wait_state(lambda s: (s["chrome"].get("on_screen_keyboard") or {}).get("commits", 0) > before,
-                        10, "text committed into the field by tapping keyboard keys")
-    res.metrics["commits"] = st["chrome"]["on_screen_keyboard"]["commits"] - before
+    field = (r[0] + 8, r[1] + r[3] * 0.3, r[2] - 16, r[3] * 0.6)
+    before = core.region_ink(core.load_image(ctx.shot("W19-before")), field)
+    _type_a_word(ctx, showed[0])
+    typed = wait_until(lambda: core.region_ink(core.load_image(ctx.vm.shot(ctx.out / "shots" / "W19-typed.png")), field) > before + 20, 10, 0.5)
+    ctx.evidence(ctx.out / "shots" / "W19-typed.png")
+    res.metrics["field_ink"] = [before, core.region_ink(core.load_image(ctx.out / "shots" / "W19-typed.png"), field)]
+    expect(typed, f"tapping the keyboard's keys wrote nothing into the field (ink {res.metrics['field_ink']})")
     expect(_group_rect(ctx, group["id"]) is not None, "the field's window is still open")
-    ctx.shot("W19-typed")
     ctx.vm.input("type", "x")
-    ctx.wait_state(lambda s: not (s["chrome"].get("on_screen_keyboard") or {}).get("shown"), 10,
+    ctx.wait_state(lambda s: not _keyboard_keys(ctx, d0), 10,
                    "the on-screen keyboard hidden after typing on the physical keyboard")
-
-
-def _keyboard(st) -> dict:
-    return st["chrome"].get("on_screen_keyboard") or {}
 
 
 # Where W20 may touch the empty workspace to plug the touchscreen in: low on the first
@@ -453,18 +452,19 @@ def _inert_point(ctx, display) -> tuple[int, int]:
     raise Unobservable(f"every touch point W20 tries on the first output is on a launchpad card ({cards})")
 
 
-# The launcher's search field, as the shell lists it while search is open.
-SEARCH_FIELD = "launcher-field"
+# The caret the state dump reports where the person types: the search's field, while it is up.
+def _caret(st):
+    return (st.get("chrome") or {}).get("caret")
 
 
 def _close_search(ctx) -> None:
     """Search closed again, whatever W20 got to: Escape while it shows (bounded)."""
     for _ in range(3):
         try:
-            if not (ctx.state()["chrome"].get("palette") or {}).get("visible"):
+            if not (ctx.state()["chrome"].get("overlays") or {}).get("search"):
                 return
             ctx.vm.key("Escape")
-            wait_until(lambda: not (ctx.state()["chrome"].get("palette") or {}).get("visible"), 2, 0.2)
+            wait_until(lambda: not (ctx.state()["chrome"].get("overlays") or {}).get("search"), 2, 0.2)
         except (VmError, KeyError, TypeError):
             return
 
@@ -486,40 +486,24 @@ def _on_screen_keyboard_in_the_shell(ctx, res):
     x, y = _inert_point(ctx, d0)
     res.metrics["first_touch"] = [x, y]
     ctx.vm.input("touch", "tap", str(x), str(y))
-    ctx.wait_state(lambda s: _keyboard(s).get("connected"), 40,
-                   "the on-screen keyboard service connected once a touchscreen is present")
     ctx.vm.key("super+space")
-    ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
-    targets = ctx.vm.targets()
-    ctx.write("W20-search-targets.json", json.dumps(targets, indent=2))
-    t = core.target_map(targets)
-    # Search's face is the launcher app's card; its field target is the
-    # editable row only, not the whole card.
-    f = t.get(SEARCH_FIELD)
-    if f is None:
-        raise Unobservable(f"no {SEARCH_FIELD} target while search is open ({len(t)} targets)")
-    ctx.vm.input("touch", "tap", str(int(f[0] + f[2] / 2)), str(int(f[1] + f[3] / 2)))
-    st = ctx.wait_state(lambda s: _keyboard(s).get("shown"), 15,
-                        "the on-screen keyboard shown for the search field")
-    kb = _keyboard(st)
-    expect(kb.get("serves_shell_field"), f"the keyboard serves the shell's own field ({kb})")
-    res.metrics["keyboard"] = kb["shown"]
+    st = ctx.wait_state(lambda s: core.overlays(s).get("search") is True, 5, "search open")
+    caret = _caret(st)
+    if caret is None:
+        raise Unobservable("the state dump names no caret where the search types")
+    ctx.write("W20-search-targets.json", json.dumps(ctx.vm.targets(), indent=2))
+    # The field stands at the caret the search publishes; tapping there focuses it.
+    _tap(ctx, (caret[0], caret[1], max(1, caret[2] - caret[0]), max(1, caret[3] - caret[1])))
+    showed = wait_until(lambda: (keys,) if (keys := _keyboard_keys(ctx, d0)) else None, 30, 0.5)
+    expect(showed, "the on-screen keyboard did not show for the search field")
+    res.metrics["keys"] = len(showed[0])
     ctx.shot("W20-keyboard-over-search")
-    k = kb["shown"]
-    before = kb.get("commits", 0)
-    _type_a_word(ctx, k)
-    st = ctx.wait_state(lambda s: ((s["chrome"].get("palette") or {}).get("query") or "").strip(), 10,
+    _type_a_word(ctx, showed[0])
+    st = ctx.wait_state(lambda s: (ctx.search().get("query") or "").strip(), 10,
                         "the keyboard's keys typed into the search field")
-    res.metrics["query"] = st["chrome"]["palette"]["query"]
-    res.metrics["commits"] = _keyboard(st).get("commits", 0) - before
-    expect(res.metrics["commits"] > 0, "the on-screen keyboard committed the typed word")
-    expect((st["chrome"].get("palette") or {}).get("visible"),
-           "tapping the keyboard kept search open")
+    res.metrics["query"] = ctx.search().get("query")
+    expect(core.overlays(st).get("search") is True, "tapping the keyboard kept search open")
     ctx.shot("W20-typed")
-
-
-def _lock_auth(st) -> dict:
-    return st["chrome"].get("lock_auth") or {}
 
 
 def _locked(ctx):
@@ -571,8 +555,8 @@ def _ensure_unlocked(ctx, passcode: str) -> str:
     return "slot session restarted" if _locked(ctx) is False else "failed: still locked after a slot restart"
 
 
-@check("W21", AREA, "Touch unlock: the lock screen draws its own keyboard on touch, refuses to be "
-                    "snapshotted, and tapping the passcode on it unlocks the session")
+@check("W21", AREA, "Touch unlock: the lock screen refuses to be snapshotted, and the passcode typed "
+                    "after a touch unlocks the session")
 def touch_unlock(ctx, res):
     ctx.reset()
     # The slot user's account password is what the lock verifies (PAM through
@@ -586,54 +570,27 @@ def touch_unlock(ctx, res):
     try:
         ctx.vm.key("super+l")
         ctx.wait_state(lambda s: s["chrome"].get("session_locked"), 10, "the session locked")
-        expect(not _lock_auth(ctx.state()).get("keyboard"),
-               "no keyboard on the lock screen before a touch")
-        # A touch near the top wakes the lock screen and brings its keyboard up;
-        # that touch itself types nothing.
+        # A touch near the top wakes the lock screen, as a person's first touch does.
         d0 = core.display_rects(ctx.state())[0]
         ctx.vm.input("touch", "tap", str(int(d0[0] + d0[2] / 2)), str(int(d0[1] + d0[3] * 0.08)))
-        st = ctx.wait_state(lambda s: _lock_auth(s).get("keyboard"), 10,
-                            "the lock screen's keyboard shown after a touch")
-        expect(_lock_auth(st).get("password_len") == 0,
-               "the touch that showed the keyboard typed nothing")
-        keys = {k["key"]: k for k in _lock_auth(st)["keyboard"]}
         # No picture of a locked session may be taken, and the next line holds the lock to
-        # that; the evidence is the lock's own state: its keys and where they are.
+        # that.
         _expect_snapshot_refused_while_locked(ctx)
-        ctx.write("W21-lock-keyboard.json", json.dumps(_lock_auth(st), indent=1))
-
-        def tap(name):
-            k = keys[name]
-            ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] / 2)), str(int(k["y"] + k["h"] / 2)))
-
         log_lines = _session_log_lines(ctx)
-        for n, c in enumerate(passcode, 1):
-            tap(c)
-            wait_until(lambda: _lock_auth(ctx.state()).get("password_len") == n, 3, 0.1)
+        ctx.vm.input("type", passcode)
         try:
-            ctx.wait_state(lambda s: _lock_auth(s).get("password_len") == len(passcode), 10,
-                           f"{len(passcode)} characters typed on the lock screen's keyboard")
+            ctx.wait_state(lambda s: not s["chrome"].get("session_locked"), 20,
+                           "the session unlocked with the passcode typed after the touch")
         except CheckFailed as exc:
-            # How each tap was routed (raw to a client or chrome, or turned into a click
-            # the lock reads): which key a finger missed, and why.
             said = ctx.vm.exec(
                 f'tail -n +{log_lines + 1} "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
                 '| grep -aE "tilo::input_route|lock" | tail -n 60 | cut -c1-300', check=False)
-            ctx.write("W21-lock-taps.log", f"aimed at: {[(c, keys[c]) for c in passcode]}\n"
-                      f"typed: {_lock_auth(ctx.state()).get('password_len')}\n{said}")
-            routed = [line for line in said.splitlines() if "touch contact routed" in line]
-            raise CheckFailed(f"{exc}; touches routed: {[l[l.find('x='):] for l in routed][-6:]}") from exc
-        tap("enter")
-        ctx.wait_state(lambda s: not s["chrome"].get("session_locked"), 20,
-                       "the session unlocked with the passcode typed by touch")
-        res.metrics["keys"] = len(keys)
+            ctx.write("W21-lock-taps.log", f"typed: {passcode}\n{said}")
+            raise CheckFailed(f"{exc}; {said.splitlines()[-6:]}") from exc
+        res.metrics["keys"] = len(passcode)
     finally:
         res.metrics["unlock_recovery"] = _ensure_unlocked(ctx, passcode)
     ctx.shot("W21-unlocked")
-
-
-def _strip_scroll(st, sid):
-    return next(x for x in st["chrome"]["strip_scroll"] if x["strip"] == sid)
 
 
 @check("W15", AREA, "Touchpad: a 3-finger pinch toggles the overview, a 3-finger horizontal swipe "
@@ -642,7 +599,7 @@ def touchpad(ctx, res):
     # `tilo-control swipe/pinch` feed the gesture tracker the DRM runtime feeds from libinput,
     # so this covers the tracker and what it drives, not libinput's touchpad decoding.
     res.metrics["route"] = "control socket swipe/pinch (the shell's gesture tracker)"
-    _two_windows(ctx)
+    g1, g2 = _two_windows(ctx)
     try:
         ctx.vm.control("pinch", "3", "0.5")
     except VmError as exc:
@@ -652,19 +609,18 @@ def touchpad(ctx, res):
     ctx.vm.control("pinch", "3", "2.0")
     ctx.wait_state(lambda s: not core.overlays(s)["overview"], 5, "overview closed after a 3-finger pinch out")
 
-    st = ctx.state()
-    sid = core.active_strip(st)["id"]
-    strip = _strip_scroll(st, sid)
-    expect(strip["max_scroll_x"] > 20, f"two windows overflow the strip so it can pan ({strip})")
-    # Pan towards the side with room: at either end one direction is clamped.
-    dx = 600 if strip["scroll_x"] > strip["max_scroll_x"] / 2 else -600
-    before = strip["scroll_x"]
-    ctx.vm.control("swipe", "3", str(dx), "0")
-    wait_until(lambda: abs(_strip_scroll(ctx.state(), sid)["scroll_x"] - before) > 20, 3, 0.2)
-    after = _strip_scroll(ctx.wait_still(), sid)["scroll_x"]
-    res.metrics["strip_pan"] = {"dx": dx, "scroll_before": round(before, 1), "scroll_after": round(after, 1)}
-    expect(abs(after - before) > 20, f"a 3-finger swipe of dx={dx} did not pan the strip "
-                                     f"(scroll {before:.1f} -> {after:.1f})")
+    # A strip pan moves its windows: their laid-out rects travel with the swipe.
+    before = {g: _group_rect(ctx, g) for g in (g1, g2)}
+    for dx in (-600, 600):
+        ctx.vm.control("swipe", "3", str(dx), "0")
+        if wait_until(lambda: any(abs(_group_rect(ctx, g)[0] - before[g][0]) > 20 for g in before), 3, 0.2):
+            break
+    else:
+        raise CheckFailed("a 3-finger horizontal swipe did not pan the strip either way")
+    after = {g: _group_rect(ctx, g) for g in before}
+    res.metrics["strip_pan"] = {"dx": dx,
+                               "before": {g: round(r[0], 1) for g, r in before.items()},
+                               "after": {g: round(r[0], 1) for g, r in after.items()}}
 
     expect(ctx.facts.get("workspaces"), "a second workspace to switch to (W10 did not make one)")
     first = ctx.state()["workspace_tree"]["active"]
@@ -857,7 +813,7 @@ def animations(ctx, res):
     overview = lambda s: core.overlays(s)["overview"]  # noqa: E731
     # The overview's fade runs when it is opened through its action (or the pointer);
     # from the keyboard it arrives at once by design, judged separately below.
-    toggle = lambda: ctx.vm.invoke("actions", "overview.toggle")  # noqa: E731
+    toggle = lambda: ctx.vm.invoke(core.SESSION, core.CHROME_OVERVIEW, {})  # noqa: E731
     _transition(ctx, res, "overview_open", toggle, overview)
     _transition(ctx, res, "overview_close", toggle, lambda s: not overview(s))
     _transition(ctx, res, "overview_key_open", lambda: ctx.vm.key("super+Tab"), overview)

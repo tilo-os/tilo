@@ -7,20 +7,17 @@ import json
 import re
 
 from .. import core
-from ..core import CheckFailed, Unobservable, check, expect
+from ..core import CheckFailed, check, expect
 
 AREA = "ui"
 
-# Each theme as the palette rows that select it, by provider and id: a mode
-# leaves high contrast, and the high contrast switch then turns it on.
+# Each theme and the appearance action's arguments that select it.
 THEMES = {
-    "light": (("actions", "appearance.theme.light"),),
-    "dark": (("actions", "appearance.theme.dark"),),
-    "high-contrast": (
-        ("actions", "appearance.theme.dark"),
-        ("settings-pages", "setting:appearance.high_contrast"),
-    ),
+    "light": {"on": False},
+    "dark": {"on": True},
 }
+
+APPEARANCE = core.action("settings:settings.appearance", "set-dark-mode")
 
 # Chrome only: window contents scroll out of view by design.
 NOT_CHROME = re.compile(r"GroupRow|foreign-surface|^tab:|tabbar_new_tab|TileHost|WindowGroup")
@@ -31,12 +28,11 @@ SETTINGS = "so.tilo.settings"
 
 
 def set_theme(ctx, name: str) -> None:
-    """Select the theme through shell actions, which persist it and repaint chrome on the
-    next paint. An open Settings window repaints in it once the change reaches it: wait for
-    that frame, bounded, as a theme that is already set repaints nothing."""
+    """Select the theme through the appearance action, which persists it and repaints chrome
+    on the next paint. An open Settings window repaints in it once the change reaches it:
+    wait for that frame, bounded, as a theme that is already set repaints nothing."""
     seq = ctx.frame_seq(SETTINGS)
-    for provider, action in THEMES[name]:
-        ctx.vm.invoke(provider, action)
+    ctx.vm.invoke(core.SESSION, APPEARANCE, THEMES[name])
     if seq is not None:
         ctx.wait_presented(SETTINGS, 2.5, after_seq=seq)
     ctx.wait_still()
@@ -80,9 +76,9 @@ def layout_problems(targets: list[dict], displays: dict) -> dict:
 
 SURFACES = [
     ("desktop", None, None),
-    ("quick-settings", ("actions", "quick-settings.open"), "quick_settings"),
-    ("workspace-settings", ("actions", "settings.open"), "ws_settings"),
-    ("overview", ("actions", "overview.toggle"), "overview"),
+    ("quick-settings", (core.CHROME_QUICK_SETTINGS, {}), "quick-settings"),
+    ("workspace-menu", (core.CHROME_WORKSPACE_MENU, {}), "workspace-menu"),
+    ("overview", (core.CHROME_OVERVIEW, {"open": True}), "overview"),
 ]
 
 
@@ -92,7 +88,7 @@ def _surface_pass(ctx, res, label):
     for name, action, overlay in SURFACES:
         ctx.close_overlays()
         if action:
-            ctx.vm.invoke(*action)
+            ctx.vm.invoke(core.SESSION, action[0], action[1])
             try:
                 ctx.wait_state(lambda s: core.overlays(s).get(overlay), 5, f"{name} open")
             except CheckFailed as exc:
@@ -170,7 +166,7 @@ def semantic(ctx, res):
     expect(not missing, f"no action sets: {missing} (Settings exports none; Theme Studio only opens)")
 
 
-@check("U02", AREA, "Chrome, quick settings, workspace settings and Settings in light/dark/high-contrast (English)")
+@check("U02", AREA, "Chrome, quick settings, the workspace menu and Settings in light and dark (English)")
 def matrix_en(ctx, res):
     _matrix(ctx, res, "en")
 
@@ -183,9 +179,10 @@ def matrix_de(ctx, res):
 @check("U04", AREA, "German session: shell strings and action titles are German", needs=("locale_de",))
 def german_strings(ctx, res):
     titles = {a["id"]: a["title"] for a in ctx.vm.actions()}
-    sample = {k: titles.get(k) for k in ("overview.toggle", "settings.open", "quick-settings.open")}
+    sample = {k: titles.get(k) for k in (core.CHROME_OVERVIEW, core.CHROME_OPEN_SETTINGS,
+                                         core.CHROME_QUICK_SETTINGS)}
     res.metrics["titles"] = sample
-    english = {"Show workspace overview", "Open workspace settings", "Open quick settings"}
+    english = {"Overview", "Open Settings", "Quick Settings"}
     still = [v for v in sample.values() if v in english]
     expect(all(sample.values()), f"actions missing: {sample}")
     expect(not still, f"English titles in a German session: {still}")

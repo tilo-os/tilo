@@ -403,51 +403,17 @@ LEFT_OPEN = "left a dialog open"
 # surfaces one each.
 DISMISS_ESCAPES = 4
 
-# Shell surfaces the state dump reports under `input_capture`, beside `overlays`.
-_CAPTURING = (("onboarding", "first-login onboarding"),
-              ("shortcut_help", "the shortcut help"),
-              ("projection", "the projection picker"))
-
 
 def open_surfaces(state: dict) -> list[str]:
-    """Every modal, overlay, prompt or dialog the state dump shows open, by name.
+    """Every surface the state dump shows standing over the windows, by name.
 
-    Each of these takes the keyboard from the window behind it (the compositor's
-    `chrome_captures_input`), so one left open by a check receives the next check's typing:
-    run 89618's A01 typed its Terminal command into the Invite composer W20 had opened.
-    `input_capture.chrome` is that same predicate, so it catches a capturing surface the
-    dump has no field of its own for; pointer hover over a maximized window's controls
-    (`maximized_controls`) is part of it too, and is not a dialog."""
+    Each of these takes the keyboard from the window behind it, so one left open by a
+    check receives the next check's typing: run 89618's A01 typed its Terminal command
+    into the Invite composer W20 had opened. The shell publishes the stack it shows in
+    `chrome.overlays`, one flag per slot."""
     chrome = state.get("chrome") or {}
-    found = [f"the {name.replace('_', ' ')} overlay"
-             for name, on in (chrome.get("overlays") or {}).items() if on]
-    if (chrome.get("palette") or {}).get("visible"):
-        found.append("search")
-    if (chrome.get("window_switcher") or {}).get("open"):
-        found.append("the window switcher")
-    peer = chrome.get("peer_sync") or {}
-    if peer.get("invite_name") is not None:
-        found.append("the Invite someone composer")
-    elif peer.get("invite_token") is not None:
-        found.append("an invite card showing a live token")
-    if peer.get("connect_input") is not None:
-        found.append("the Join card")
-    portal = chrome.get("portal_dialog")
-    if portal:
-        kind = portal.get("kind") if isinstance(portal, dict) else None
-        found.append(f"a portal dialog ({kind})" if kind else "a portal dialog")
-    if chrome.get("pending_grants_count"):
-        found.append("a permission prompt")
-    if chrome.get("editing_workspace_name") is not None:
-        found.append("the workspace-name editor")
-    capture = chrome.get("input_capture") or {}
-    found += [label for key, label in _CAPTURING if capture.get(key)]
-    # The power menu is an inner surface the overlays already name.
-    if capture.get("inner_surface") and not (chrome.get("overlays") or {}).get("power_menu"):
-        found.append("a modal shell surface (screenshot markup or capture)")
-    if not found and capture.get("chrome") and not capture.get("maximized_controls"):
-        found.append("a shell surface that captures input")
-    return found
+    return [f"the {name.replace('_', ' ').replace('-', ' ')} overlay"
+            for name, on in (chrome.get("overlays") or {}).items() if on]
 
 
 def dismiss_surfaces(ctx) -> str:
@@ -562,6 +528,9 @@ def tab_app(tab: dict) -> str | None:
         return tile["Foreign"].get("app_id")
     if "AppPlaceholder" in tile:
         return "placeholder:" + str(tile["AppPlaceholder"].get("kind"))
+    for held in ("LocalApp", "HostedWindow"):
+        if held in tile:
+            return tile[held].get("app_id")
     return next(iter(tile), None)
 
 
@@ -569,11 +538,61 @@ def overlays(state: dict) -> dict:
     return state["chrome"]["overlays"]
 
 
+# The provider the session publishes its own resources under, each action addressed as
+# `<resource>\x1f<action>`.
+SESSION = "so.tilo.session"
+
+
+def action(resource: str, name: str) -> str:
+    return f"{resource}\x1f{name}"
+
+
+# The shell's chrome: the shells over the windows, the workspaces and their strips.
+CHROME = "desktop:chrome"
+CHROME_OPEN_APP = action(CHROME, "open-app")
+CHROME_CLOSE_WINDOW = action(CHROME, "close-window")
+CHROME_OVERVIEW = action(CHROME, "overview")
+CHROME_QUICK_SETTINGS = action(CHROME, "quick-settings")
+CHROME_WORKSPACE_MENU = action(CHROME, "workspace-menu")
+CHROME_OPEN_SETTINGS = action(CHROME, "open-settings")
+CHROME_ACTIVITY = action(CHROME, "activity")
+CHROME_CLOSE_ACTIVITY = action(CHROME, "close-activity")
+CHROME_NEW_WORKSPACE = action(CHROME, "new-workspace")
+CHROME_SWITCH_WORKSPACE = action(CHROME, "switch-workspace")
+# The session's screen, whose lock the session keeps, and its displays.
+SESSION_SCREEN = "session:screen"
+SESSION_LOCK = action(SESSION_SCREEN, "lock")
+DISPLAYS = "session:displays"
+DISPLAYS_SET_MODE = action(DISPLAYS, "set-mode")
+
+
+def is_action(row: dict, resource_action: str) -> bool:
+    """Whether a listed row is `resource_action`, published by the session."""
+    return row.get("provider") == SESSION and row.get("id") == resource_action
+
+
 def display_of_group(state: dict, gid):
-    for d in state["chrome"]["displays"]:
-        if gid in d.get("groups", []):
+    """The display showing `gid`: its home monitor, matched back to the output's id."""
+    outputs = state["workspace_tree"]["outputs"]
+    monitor = (outputs.get("home") or {}).get(str(gid))
+    if monitor is None:
+        return None
+    return next((d["id"] for d in outputs.get("displays") or [] if d.get("monitor") == monitor), None)
+
+
+def display_at(state: dict, point):
+    """The display `point` stands on, or None when it is on none of them."""
+    x, y = point
+    for d in state["workspace_tree"]["outputs"].get("displays") or []:
+        if d["x"] <= x < d["x"] + d["width"] and d["y"] <= y < d["y"] + d["height"]:
             return d["id"]
     return None
+
+
+def focused_display(state: dict):
+    """The display the person works on: the one their pointer is on, as the session follows it."""
+    pointer = (state.get("shared_input") or {}).get("pointer")
+    return display_at(state, pointer) if pointer else None
 
 
 def display_rects(state: dict) -> dict:

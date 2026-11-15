@@ -148,6 +148,11 @@ class TiloVm:
     def state(self) -> dict:
         return self.control_json("state-dump")
 
+    def search(self) -> dict:
+        """What the shell's search shows now: `query`, `rows` (each its title, subtitle, kind
+        and facts) and whether it still waits for sources (`searching`)."""
+        return self.raw({"op": "search_rows"})["answer"]
+
     def actions(self, query: str = "", *, programmatic: bool = False) -> list[dict]:
         """Every row the desktop lists for `query`, page after page. A page holds 200 rows
         unless asked for more, and an open app's own actions can push the window closers

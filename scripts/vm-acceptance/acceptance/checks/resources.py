@@ -915,7 +915,7 @@ def idle_apps(ctx, res):
     # trace's labels leave out, and each window's frame state (presented,
     # last frame, size against its tile).
     try:
-        motion = {"animating": (ctx.vm.state().get("chrome") or {}).get("animating"),
+        motion = {"in_transition": (ctx.vm.state().get("chrome") or {}).get("in_transition"),
                   "windows": ctx.vm.windows()}
     except VmError as e:
         motion = {"error": str(e)}
@@ -1593,7 +1593,7 @@ SHARED_SESSION_LOG = (
 
 def _select_workspace(ctx, wid) -> None:
     if ctx.state()["workspace_tree"]["active"] != wid:
-        ctx.vm.invoke("actions", f"workspace.select.{wid}")
+        ctx.vm.invoke(core.SESSION, core.CHROME_SWITCH_WORKSPACE, {"workspace": str(wid)})
         ctx.wait_state(lambda s: s["workspace_tree"]["active"] == wid, 8, f"workspace {wid} active")
 
 
@@ -1607,7 +1607,7 @@ def held_here(state: dict, workspace) -> bool:
 def new_hosted_workspace(ctx) -> dict:
     """Create a workspace, make it active and return it once this device holds it."""
     before = {w["id"] for w in ctx.state()["workspace_tree"]["workspaces"]}
-    ctx.vm.invoke("actions", "workspace.create", {"name": SHARED_WORKSPACE})
+    ctx.vm.invoke(core.SESSION, core.CHROME_NEW_WORKSPACE, {"name": SHARED_WORKSPACE})
     st = ctx.wait_state(lambda s: [w for w in s["workspace_tree"]["workspaces"] if w["id"] not in before],
                         8, "a new workspace")
     made = next(w for w in st["workspace_tree"]["workspaces"] if w["id"] not in before)

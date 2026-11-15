@@ -7,8 +7,8 @@ configures Claude Code: `{"command": "tilo-runtime", "args": ["--connect"]}`. Th
 `claude-code`; what it sends comes from the harness, one request at a time, standing in for
 the model. The person answers each admission on the sheet.
 
-Everything goes through the production paths: `workspace.create` and `workspace.select.*`,
-Terminal opened from the app catalogue, its own actions (`create-environment`, `open-in`,
+Everything goes through the production paths: the shell's `new-workspace` and
+`switch-workspace`, Terminal opened from the app catalogue, its own actions (`create-environment`, `open-in`,
 `run`, `read`), the sheet's own answers (`so.tilo.portal-sheet`) and the shell's Stop
 (`session:agents` `stop-agent`). The harness reads the agents' transcripts and the workspace
 trees through the slot's own account (`tilo-vm slot exec`), never through ush or the door.

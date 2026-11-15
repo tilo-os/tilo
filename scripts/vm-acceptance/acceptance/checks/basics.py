@@ -3,9 +3,6 @@ layout import, display arrangement and hotplug."""
 
 from __future__ import annotations
 
-import json
-import shlex
-
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
 from ..vm import VmError, wait_until
@@ -37,20 +34,12 @@ def _availability(action: dict) -> dict:
     return (action.get("contract") or {}).get("availability") or UNDECLARED
 
 
-# The provider of Settings' pages: its `page:<slug>` rows open Settings at that page.
-SETTINGS_PAGES = "settings-pages"
-
-
 def _shows_only(action: dict) -> bool:
     """Whether a row only changes what is shown, so it is no toggle of the hardware: a view
-    or navigation (`operation_kind` View), an action whose contract only reads, or a row
-    that opens a Settings page (`page:bluetooth`, which launches Settings there and
-    declares no contract)."""
+    or navigation (`operation_kind` View), or an action whose contract only reads."""
     if str(action.get("operation_kind", "")).lower() == "view":
         return True
-    if (action.get("contract") or {}).get("kind") == "read":
-        return True
-    return action.get("provider") == SETTINGS_PAGES and str(action.get("id", "")).startswith("page:")
+    return (action.get("contract") or {}).get("kind") == "read"
 
 
 def _offered(ctx, names) -> list:
@@ -66,8 +55,8 @@ def _action(ctx, query, action):
 
 def _qs_targets(ctx, words):
     ctx.close_overlays()
-    ctx.vm.invoke("actions", "quick-settings.open")
-    ctx.wait_state(lambda s: core.overlays(s)["quick_settings"], 5, "quick settings open")
+    ctx.vm.invoke(core.SESSION, core.CHROME_QUICK_SETTINGS, {})
+    ctx.wait_state(lambda s: core.overlays(s).get("quick-settings") is True, 5, "quick settings open")
     ctx.wait_still()
     names = [t["name"] for t in ctx.vm.targets()]
     return [n for n in names if any(w in n.lower() for w in words)]
@@ -84,7 +73,7 @@ def _no_hardware_control(ctx, res, kind, query, action, args, words):
     if a and _availability(a).get("state") == "available":
         action_id = a["id"]
         try:
-            out = ctx.vm.invoke(a.get("provider", "actions"), action_id, args)
+            out = ctx.vm.invoke(a.get("provider", core.SESSION), action_id, args)
             state = out.get("receipt", {}).get("update", {}).get("state")
             res.metrics["invoke_result"] = out.get("receipt")
             if state == "succeeded":
@@ -146,77 +135,44 @@ def bluetooth(ctx, res):
     expect(not live, f"Bluetooth actions offered as available with no adapter: {live}")
 
 
-def _settings(ctx) -> dict:
-    raw = ctx.vm.exec('tilo settings dump 2>/dev/null || echo "{}"')
-    return json.loads("\n".join(l for l in raw.splitlines() if not l.startswith("receipt:")) or "{}")
+OUTPUT = "settings:settings.input"
+LAYOUTS = core.action(OUTPUT, "set-layouts")
 
 
-def seat_keyboard(ctx) -> dict:
-    """The XKB sources the seat keymap is compiled from, as the state dump reports them."""
-    keyboard = (ctx.state().get("chrome") or {}).get("seat_keyboard")
-    if keyboard is None:
-        raise Unobservable("the state dump does not report the seat keyboard's XKB sources "
-                           "(chrome.seat_keyboard), so a layout change cannot be seen arriving")
-    return keyboard
-
-
-def write_input_settings(ctx, doc: dict, back_to: dict | None = None) -> None:
-    """Write `doc` as the session's settings and wait until the seat keymap is compiled
-    from it: from its `input.keyboard_layouts`, or, restoring, back to the `back_to`
-    snapshot of `seat_keyboard`."""
-    if back_to is None:
-        want = list((doc.get("input") or {}).get("keyboard_layouts") or [])
-        reached = lambda k: k.get("sources") == want  # noqa: E731
-        what = f"the seat keyboard on {want}"
-    else:
-        reached = lambda k: k == back_to  # noqa: E731
-        what = f"the seat keyboard back on {back_to.get('sources')}"
-        # Writers merge sections, they never remove keys, so a leaf the check added and
-        # the snapshot did not have is cleared explicitly: null is the leaf's default,
-        # the layout the machine was set up with.
-        restored = doc.setdefault("input", {})
-        for leaf in (_settings(ctx).get("input") or {}):
-            restored.setdefault(leaf, None)
-    for section, values in doc.items():
-        if isinstance(values, dict):
-            ctx.vm.exec(f"tilo settings set {shlex.quote(section)} {shlex.quote(json.dumps(values))}")
-    ctx.wait_state(lambda s: reached((s.get("chrome") or {}).get("seat_keyboard") or {}), 10, what)
+def set_layouts(ctx, layouts: list[str], active: str) -> None:
+    """Type with `layouts`, switching between them in that order, `active` in use."""
+    ctx.vm.invoke(core.SESSION, LAYOUTS, {"layouts": layouts, "active": active})
 
 
 def search_query(ctx) -> str:
-    return (ctx.state()["chrome"].get("palette") or {}).get("query") or ""
+    return ctx.search().get("query") or ""
 
 
 def _typed_in_search(ctx, key: str) -> str:
-    """The text a physical key press puts into the search field (read back from state-dump)."""
+    """The text a physical key press puts into the search field (read back from the search)."""
     ctx.close_overlays()
     ctx.vm.key("super+space")
-    ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
+    ctx.wait_state(lambda s: core.overlays(s).get("search") is True, 5, "search open")
     ctx.vm.key(key)
     query = wait_until(lambda: search_query(ctx), 3, 0.2) or ""
     ctx.close_overlays()
     return query
 
 
-@check("B04", AREA, "Keyboard layout: de nodeadkeys with a compose key applies to the physical keys")
+@check("B04", AREA, "Keyboard layout: de nodeadkeys applies to the physical keys")
 def keyboard_layout(ctx, res):
     ctx.reset()
-    doc = _settings(ctx)
-    saved = dict(doc.get("input") or {})
-    keyboard = seat_keyboard(ctx)
     res.metrics["us_y"] = _typed_in_search(ctx, "y")
-    doc.setdefault("input", {}).update(keyboard_layout="de:nodeadkeys",
-                                       keyboard_layouts=["de:nodeadkeys"], compose_key="ralt")
+    set_layouts(ctx, ["de:nodeadkeys"], "de:nodeadkeys")
+    typed = None
     try:
-        write_input_settings(ctx, doc)
         # The physical Y key is `z` on a German layout; a US one types `y`.
-        typed = _typed_in_search(ctx, "y")
+        typed = wait_until(
+            lambda: (text := _typed_in_search(ctx, "y")) == "z" and text, 20, 1.0) or _typed_in_search(ctx, "y")
         res.metrics["de_y"] = typed
         ctx.shot("B04-layout-de")
     finally:
-        doc = _settings(ctx)
-        doc["input"] = saved
-        write_input_settings(ctx, doc, back_to=keyboard)
+        set_layouts(ctx, ["us"], "us")
     expect(res.metrics["us_y"] == "y", f"with the default layout the Y key typed {res.metrics['us_y']!r}")
     expect(typed == "z", f"with de:nodeadkeys the physical Y key typed {typed!r}, not 'z'")
 
@@ -228,21 +184,22 @@ def keyboard_layout(ctx, res):
 # compose:ralt and requires the session to import them.
 
 
-@check("B05", AREA, "Display arrangement: mirror and extend apply, and revert restores")
+@check("B05", AREA, "Display arrangement: mirror and extend apply, and extending restores the layout")
 def arrangement(ctx, res):
     ctx.reset()
     st = ctx.state()
     before = core.display_rects(st)
     expect(len(before) >= 2, "needs two outputs")
-    ctx.vm.invoke("actions", "display.layout.mirror")
+    ctx.vm.invoke(core.SESSION, core.DISPLAYS_SET_MODE, {"mode": "mirror"})
     try:
         st = ctx.wait_state(lambda s: len({r[:2] for r in core.display_rects(s).values()}) == 1, 10,
                             "both outputs at the same origin (mirrored)")
     finally:
         ctx.shot("B05-mirror")
     res.metrics["mirrored"] = core.display_rects(st)
-    ctx.vm.invoke("actions", "display.change.revert")
-    st = ctx.wait_state(lambda s: core.display_rects(s) == before, 10, "the extended layout restored by revert")
+    ctx.vm.invoke(core.SESSION, core.DISPLAYS_SET_MODE, {"mode": "extend"})
+    st = ctx.wait_state(lambda s: core.display_rects(s) == before, 10,
+                        "the extended layout restored")
     res.metrics["restored"] = core.display_rects(st)
 
 

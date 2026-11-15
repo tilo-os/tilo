@@ -98,10 +98,8 @@ def close_app_windows(ctx, app: str) -> bool:
     whether they all went (a window whose app ended may offer no close of its own)."""
     gids = {str(g["id"]) for g in core.all_groups(ctx.state())
             if any(app in str(core.tab_app(t)) for t in g.get("tabs") or [])}
-    for row in ctx.vm.actions():
-        if row["provider"] == "desktop-windows" and row["id"].removeprefix("group.close:") in gids \
-                and row["id"].startswith("group.close:"):
-            ctx.vm.invoke(row["provider"], row["id"], {"confirm": True} if row.get("params") else None)
+    for gid in gids:
+        ctx.vm.invoke(core.SESSION, core.CHROME_CLOSE_WINDOW, {"group": gid})
     return bool(wait_until(lambda: not {str(g["id"]) for g in core.all_groups(ctx.state())} & gids or None, 20,
                            interval=0.5))
 
@@ -650,13 +648,6 @@ def branch_said(ctx, name: str, workspace: str) -> dict:
                         check=False)
     shown = []
     if any("is not complete" in n for n in notices):
-        # The shell's notices, as its state says them: the one about this branch, its body
-        # naming what did not come along.
-        try:
-            toasts = (ctx.state().get("chrome") or {}).get("notifications") or []
-        except VmError:
-            toasts = []
-        shown += [json.dumps(t)[:1500] for t in toasts if name in json.dumps(t)][-3:]
         # Anywhere in the shell's state: the notice's body, one missing part a line.
         try:
             state = ctx.state()

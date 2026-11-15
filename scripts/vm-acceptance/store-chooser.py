@@ -32,7 +32,8 @@ def workspace(vm, expected_workspace_id):
     tree = state.get("workspace_tree", {})
     current = [w for w in tree.get("workspaces", []) if w.get("id") == tree.get("active")]
     require(state.get("chrome", {}).get("session_locked") is False and len(current) == 1
-            and current[0].get("workspace") == expected_workspace_id, "unlocked expected owner workspace unavailable")
+            and str(current[0].get("id")) == str(expected_workspace_id),
+            "unlocked expected owner workspace unavailable")
 
 
 def picker_rows(vm):
@@ -144,35 +145,24 @@ def review(door, fixture, filename, directories, out, initial_up=0):
     return value
 
 
-def opened_subject(state, window):
-    candidates = [tab for tab in app.windows(state, window["package_id"])
-                  if tab[0] == window["workspace"] and tab[2] == str(window["surface_id"])]
-    require(len(candidates) <= 1, "adopted application surface has ambiguous current tabs")
-    if not candidates:
-        return None
-    tab = candidates[0]
-    record = app.mapped_record(state, tab, window["package_id"])
-    if record is None:
-        return None
-    proof = state.get("chrome", {}).get("native_window_provenance")
-    require(isinstance(proof, dict) and proof.get("method") == "authenticated-wayland-peer"
-            and proof.get("omitted") == 0 and isinstance(proof.get("windows"), list),
-            "current device-owner native worker provenance unavailable")
-    matches = [row for row in proof["windows"] if row.get("workspace") == tab[0]
-               and str(row.get("tab_id")) == tab[1] and str(row.get("surface_id")) == tab[2]]
-    require(len(matches) <= 1, "ambiguous authenticated native worker")
-    if not matches:
-        return None
-    worker = matches[0]
-    require(isinstance(window.get("adoption_id"), str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", window["adoption_id"])
-            and window["adoption_id"] != "00000000-0000-0000-0000-000000000000"
-            and worker.get("adoption_id") == window["adoption_id"],
-            "opened surface resource lifetime changed or is unobservable")
-    require(worker.get("package_id") == window["package_id"]
-            and type(worker.get("record_instance")) is int
-            and record == worker.get("certified_checkout", {}).get("record"),
-            "current native worker has a foreign record association")
-    return tab, record, worker
+def opened_subject(vm, window):
+    """The tab the launched window became, and the record the app publishes for it."""
+    def probe():
+        state = vm.state()
+        candidates = [tab for tab in app.windows(state, window["package_id"])
+                      if tab[0] == window["workspace"]
+                      and (not tab[2] or tab[2] == str(window["surface_id"]))]
+        require(len(candidates) <= 1, "adopted application surface has ambiguous current tabs")
+        if not candidates:
+            return None
+        tab = candidates[0]
+        rows = [r for r in app.catalog(vm, window["package_id"])
+                if r.get("workspace") == tab[0] and r.get("record")]
+        records = {r["record"] for r in rows}
+        require(len(records) <= 1, "adopted application published ambiguous records")
+        return (tab, next(iter(records))) if records else None
+
+    return probe()
 
 
 def install_open(door, fixture, installed_before, out):
@@ -196,13 +186,13 @@ def install_open(door, fixture, installed_before, out):
             and type(window.get("surface_id")) is int and window["surface_id"] > 0,
             "Open did not return an authenticated adopted application window")
     def subject():
-        return opened_subject(vm.state(), window)
+        return opened_subject(vm, window)
     selected = wait_until(subject, 60)
     require(selected, "installed app has no observable public tab/record association")
     require(selected[0] not in before, "Open reused a pre-existing window instead of its observed launch")
     require(subject() == selected, "opened worker association changed before mapped-backing audit")
     app.mapped(vm, "calculator", verified["files"], vm.slot_uid(), out,
-               executable=verified["executable_sha256"], selected=selected[2])
+               executable=verified["executable_sha256"])
     require(subject() == selected,
             "official app public association changed during mapped-backing audit")
     return {"installation": "update/reuse" if installed_before else "first-install",

@@ -39,7 +39,6 @@ def session(ctx, res):
     st = ctx.state()
     displays = st["workspace_tree"]["outputs"]["displays"]
     res.metrics["displays"] = [(d["monitor"], d["width"], d["height"]) for d in displays]
-    res.metrics["identity"] = st["chrome"].get("local_user_id")
     want = ctx.config["outputs"]
     # Displays are laid out in logical pixels: a mode at scale S spans mode / S.
     got = [f"{round(d['width'])}x{round(d['height'])}" for d in sorted(displays, key=lambda d: (d["x"], d["y"]))]

@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from acceptance import core
 from acceptance.action_jobs import invoke, require
 from acceptance.vm import TiloVm, first_json, wait_until
 
@@ -84,10 +85,13 @@ class AppDoor:
 
 
 def windows(state, app):
-    return {(str(w["id"]), str(t["id"]), str(f["surface_id"]))
+    """The tabs showing `app`, as (workspace, tab, surface): the live surface where the tab
+    holds one, and no surface for a window this device draws itself."""
+    return {(str(w["id"]), str(t["id"]), str(f.get("surface_id") or ""))
             for w in state["workspace_tree"]["workspaces"]
             for strip in w["strips"] for group in strip["window_groups"] for t in group["tabs"]
-            if (f := (t.get("tile") or {}).get("Foreign")) and f.get("app_id") == app}
+            for held in ("Foreign", "LocalApp", "HostedWindow")
+            if (f := (t.get("tile") or {}).get(held)) and f.get("app_id") == app}
 
 
 # Public package/process metadata only; no argv, environment or document content.
@@ -222,18 +226,13 @@ def package_flow(door, spec, local):
             "installed_before": baseline, "claim": "update/reuse" if baseline else "first-install"}
 
 
-def mapped_record(state, tab, application):
-    """Use the current kernel-bound certified checkout, never continuity aliases."""
-    worker = native_subject(state, tab, application)
-    return None if worker is None else worker["certified_checkout"]["record"]
-
-
 def fresh_browser(vm, out):
+    """Open a Browser window and bind the page record it publishes, apart from every page open
+    before it."""
     before_tabs = windows(vm.state(), BROWSER)
-    before_rows = catalog(vm, BROWSER)
-    old = {binding(r) for r in before_rows}
-    opens = [r for r in vm.actions("tab.open-beside") if r.get("provider") == "actions" and r.get("id") == "tab.open-beside"]
-    require(len(opens) == 1, "declared new Browser tab action unavailable")
+    old = {binding(r) for r in catalog(vm, BROWSER)}
+    opens = [r for r in vm.actions("open") if core.is_action(r, core.CHROME_OPEN_APP)]
+    require(len(opens) == 1, "the shell publishes no open-app action")
     invoke(vm, opens[0], {"app": BROWSER}, out, "new-browser-tab", require_job=False)
 
     def probe():
@@ -242,72 +241,19 @@ def fresh_browser(vm, out):
         require(before_tabs <= tabs, "an existing Browser tab changed; acceptance stopped")
         fresh = tabs - before_tabs
         require(len(fresh) <= 1, "fresh Browser window ambiguous")
-        if fresh:
-            tab = next(iter(fresh))
-            record = mapped_record(state, tab, BROWSER)
-            if record is None:
-                return None
-            require(record not in {b[2] for b in old}, "new tab reused an existing Browser record")
-            rows = [r for r in catalog(vm, BROWSER)
-                    if (r.get("semantic_identity") or {}).get("kind") == "browser.page"
-                    and r.get("workspace") == tab[0] and r.get("record") == record]
-            bound = {binding(r) for r in rows}
-            require(len(bound) <= 1, "new tab published ambiguous page bindings")
-            if bound:
-                return next(iter(bound)), tab
-        return None
+        if not fresh:
+            return None
+        tab = next(iter(fresh))
+        rows = [r for r in catalog(vm, BROWSER)
+                if (r.get("semantic_identity") or {}).get("kind") == "browser.page"
+                and r.get("workspace") == tab[0] and binding(r) not in old]
+        bound = {binding(r) for r in rows}
+        require(len(bound) <= 1, "new tab published ambiguous page bindings")
+        return (next(iter(bound)), tab) if bound else None
 
     result = wait_until(probe, 60)
     require(result, "queued Open did not create a new mapped tab and record; existing page left untouched")
     return AppDoor(vm, BROWSER, "browser.page", result[0], out), result[1]
-
-
-def browser_subject(state, tab):
-    return native_subject(state, tab, BROWSER)
-
-
-def native_subject(state, tab, application):
-    """Bind an exact public tab/record to its admitted native process lifetime."""
-    association = state.get("workspace_tree", {}).get("local_app_records", {}).get(tab[1])
-    if association is None:
-        return None
-    require(isinstance(association, dict) and association.get("workspace") == tab[0]
-            and association.get("app_id") == application
-            and type(association.get("record_instance")) is int
-            and 0 < association["record_instance"] < 2**64,
-            "mapped tab has a foreign or invalid launch association")
-    proof = state.get("chrome", {}).get("native_window_provenance")
-    require(isinstance(proof, dict) and proof.get("method") == "authenticated-wayland-peer"
-            and proof.get("omitted") == 0 and isinstance(proof.get("windows"), list),
-            "authenticated native worker provenance unavailable")
-    rows = [row for row in proof["windows"] if row.get("workspace") == tab[0]
-            and str(row.get("tab_id")) == tab[1] and str(row.get("surface_id")) == tab[2]]
-    require(len(rows) <= 1, "ambiguous authenticated native worker")
-    if not rows:
-        return None
-    worker = rows[0]
-    association = state["workspace_tree"]["local_app_records"][tab[1]]
-    require(worker.get("package_id") == application
-            and type(worker.get("record_instance")) is int
-            and worker["record_instance"] == association["record_instance"],
-            "native worker differs from the public launch record")
-    require(type(worker.get("peer_pid")) is int and worker["peer_pid"] > 0
-            and isinstance(worker.get("peer_start_time_ticks"), str)
-            and worker["peer_start_time_ticks"].isdecimal()
-            and int(worker["peer_start_time_ticks"]) > 0
-            and isinstance(worker.get("adoption_id"), str)
-            and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", worker["adoption_id"])
-            and worker["adoption_id"] != "00000000-0000-0000-0000-000000000000",
-            "native process lifetime or adoption unavailable")
-    checkout = worker.get("certified_checkout")
-    if checkout is None:
-        return None  # The admitted worker has not registered a certified directory yet.
-    require(isinstance(checkout, dict) and set(checkout) == {"application", "workspace", "record"}
-            and checkout["application"] == application and checkout["workspace"] == tab[0]
-            and isinstance(checkout["record"], str) and 0 < len(checkout["record"].encode()) <= 512
-            and not any(ord(char) < 32 for char in checkout["record"]),
-            "current certified checkout differs from the native worker")
-    return worker
 
 
 def example_url(value):

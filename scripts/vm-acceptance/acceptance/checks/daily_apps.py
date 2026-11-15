@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
 from ..vm import wait_until
-from .apps import AREA, _app_procs, _close, _notifications, _procs, close_group
+from .apps import AREA, _app_procs, _close, _procs, close_group
 
 FIRST_FRAME_S = 45
 NON_FLAT_S = 25
@@ -172,8 +172,7 @@ def _open(ctx, res, app: DailyApp):
     Returns (group id, surface id, its processes, notifications before)."""
     ctx.reset()
     st0 = ctx.state()
-    toasts0 = len(_notifications(st0))
-    focused_display = next(d["id"] for d in st0["chrome"]["displays"] if d.get("focused"))
+    focused_display = core.focused_display(st0)
     surfaces0 = {f["window"] for f in ctx.vm.windows()}
     before = _procs(ctx)
     ctx.facts[f"groups_before:{app.label}"] = {g["id"] for g in core.all_groups(st0)}
@@ -249,7 +248,7 @@ def _open(ctx, res, app: DailyApp):
         xw = [c.cmd for c in _procs(ctx).values() if "Xwayland" in c.cmd or "xwayland" in c.cmd]
         res.metrics["xwayland"] = xw[:2]
         expect(xw, f"no Xwayland server is running while {app.name} is open")
-    return gid, sid, procs, toasts0
+    return gid, sid, procs
 
 
 def group_of_surface(st, sid):
@@ -427,12 +426,12 @@ def _daily(app: DailyApp, interact, after_open=None):
         _require_installed(ctx, res, app)
         if app.program == "chromium-browser":
             _no_running(ctx, res, app)
-        gid, sid, procs, toasts0 = _open(ctx, res, app)
+        gid, sid, procs = _open(ctx, res, app)
         if after_open:
             after_open(ctx, res)
         _across_outputs(ctx, res, app, gid, sid)
         interact(ctx, res, app, sid)
-        _close(ctx, res, app.label, gid, procs, toasts0)
+        _close(ctx, res, app.label, gid, procs)
     return body
 
 
@@ -456,9 +455,7 @@ check("A12", AREA, "alacritty (winit, OpenGL): window, focus, content, fractiona
 
 
 def _fullscreen_state(s, gid) -> bool:
-    g = core.group_by_id(s, gid) or {}
-    return (s.get("chrome", {}).get("fullscreen_group") == gid or g.get("fullscreen") is True
-            or g.get("maximized") is True)
+    return s["workspace_tree"].get("fullscreen") == gid
 
 
 def _fullscreen(ctx, res, app: DailyApp, sid, gid) -> None:
@@ -537,14 +534,14 @@ def _fullscreen(ctx, res, app: DailyApp, sid, gid) -> None:
 def gl_x11(ctx, res):
     app = GLXGEARS
     _require_installed(ctx, res, app)
-    gid, sid, procs, toasts0 = _open(ctx, res, app)
+    gid, sid, procs = _open(ctx, res, app)
     _across_outputs(ctx, res, app, gid, sid)
     _fullscreen(ctx, res, app, sid, gid)
-    _close(ctx, res, app.label, gid, procs, toasts0)
+    _close(ctx, res, app.label, gid, procs)
 
     # The keyboard: glxgears quits on Escape, so a key that reaches it closes its window.
     first = dict(res.metrics)
-    gid, sid, procs, toasts0 = _open(ctx, res, app)
+    gid, sid, procs = _open(ctx, res, app)
     relaunch = {k: res.metrics.get(k) for k in ("seconds_to_window", "seconds_to_first_frame")}
     res.metrics.clear()
     res.metrics.update(first, escape_launch=relaunch)

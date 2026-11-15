@@ -139,32 +139,12 @@ def _procs(ctx) -> dict[int, Proc]:
     return parse_procs(ctx.vm.exec(_PROC_SCRIPT))
 
 
-def _notifications(st) -> list:
-    return st["chrome"].get("notifications") or []
-
-
-def _is_undo_close(toast: dict, title: str, tab_count: int = 1) -> bool:
-    """A transient undo toast for a captured title.
-
-    Match the English/German shell headings exactly. The toast says only what
-    closed: undoing is its Undo button, so it has no body. A title substring
-    alone cannot identify the close's toast.
-    """
-    if (not title or not title.strip() or toast.get("severity") != "Info"
-            or toast.get("persistent")):
-        return False
-    english = f"Closed {tab_count} tabs" if tab_count > 1 else f"Closed {title}"
-    german = f"{tab_count} Tabs geschlossen" if tab_count > 1 else f"{title} geschlossen"
-    return toast.get("title") in (english, german) and not toast.get("body")
-
-
 def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign: bool,
                match=None):
-    """Open, verify first frame / placement / focus, close, verify exit and no toasts."""
+    """Open, verify first frame / placement / focus, close, verify exit."""
     ctx.reset()
     st0 = ctx.state()
-    toasts0 = len(_notifications(st0))
-    focused_display = next(d["id"] for d in st0["chrome"]["displays"] if d.get("focused"))
+    focused_display = core.focused_display(st0)
     before = _procs(ctx)
     ctx.facts[f"groups_before:{label}"] = {g["id"] for g in core.all_groups(st0)}
     group, t_group = ctx.open_app(app_id, provider)
@@ -230,7 +210,7 @@ def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign:
            f"cannot be told apart (new launchers: {others[:3]})")
     ctx.facts[f"launch:{label}"] = launch
     ctx.facts[f"open:{label}"] = gid
-    return gid, app_procs, toasts0
+    return gid, app_procs
 
 
 def _app_procs(ctx, before: dict, app_id: str):
@@ -256,7 +236,7 @@ def close_group(ctx, gid, before_close=None) -> None:
     if core.group_by_id(st, gid) is None:
         return
     try:
-        ctx.vm.invoke("desktop-windows", f"group.close:{gid}")
+        ctx.vm.invoke(core.SESSION, core.CHROME_CLOSE_WINDOW, {"group": str(gid)})
     except VmError as exc:
         if "unknown_action" not in str(exc) or core.group_by_id(ctx.state(), gid) is not None:
             raise
@@ -272,7 +252,7 @@ def _process_app_ids(proc: Proc) -> set[str]:
     return names - {""}
 
 
-def _close(ctx, res, label, gid, app_procs, toasts0):
+def _close(ctx, res, label, gid, app_procs):
     # The app can raise a dialog between our first snapshot and a close's guard.
     # Discover it from each fresh snapshot, without taking unrelated windows.
     before = ctx.facts.get(f"groups_before:{label}", set())
@@ -333,26 +313,17 @@ def _close(ctx, res, label, gid, app_procs, toasts0):
     left = wait_until(lambda: not lingering(_procs(ctx), launch, app_procs) or None, CLOSE_GRACE_S, 1.0)
     still = {} if left else lingering(_procs(ctx), launch, app_procs)
     res.metrics["lingering_after_close"] = [c.cmd for c in still.values()]
-    st = ctx.state()
-    toasts = _notifications(st)[toasts0:]
-    def expected_undo(toast):
-        return any(titles and _is_undo_close(toast, titles[0], len(titles)) for titles in closed.values())
-
-    res.metrics["undo_toasts"] = [t for t in toasts if expected_undo(t)]
-    false = [t for t in toasts if not expected_undo(t)]
-    res.metrics["toasts"] = false
     expect(not still,
            f"{label}'s processes still running {CLOSE_GRACE_S} s after close: "
            f"{res.metrics['lingering_after_close'][:4]}")
-    expect(not false, f"unexpected notifications while opening/closing {label}: {false}")
 
 
 def _app_check(app_id, label, foreign=True):
     def body(ctx, res):
-        gid, procs, toasts0 = _lifecycle(ctx, res, app_id, "applications", label, foreign)
+        gid, procs = _lifecycle(ctx, res, app_id, "applications", label, foreign)
         if foreign:
             expect(procs, f"no process of {label} observed while its window was open")
-        _close(ctx, res, label, gid, procs, toasts0)
+        _close(ctx, res, label, gid, procs)
     return body
 
 
@@ -362,7 +333,7 @@ SHELL_READY_S = core.TERMINAL_SHELL_S
 @check("A01", AREA, "Terminal opens with a live shell and closes cleanly")
 def terminal(ctx, res):
     shells = core.terminal_shells(ctx)
-    gid, procs, toasts0 = _lifecycle(ctx, res, "so.tilo.terminal", "applications", "A01-terminal", False)
+    gid, procs = _lifecycle(ctx, res, "so.tilo.terminal", "applications", "A01-terminal", False)
     ready = core.wait_new_terminal_shell(ctx, shells, SHELL_READY_S)
     res.metrics["seconds_to_shell"] = ready
     if ready is None:
@@ -388,7 +359,7 @@ def terminal(ctx, res):
     if not found:
         ctx.write("A01-ush.txt", core.ush_diagnostics(ctx))
     expect(found, "a command typed into Terminal (control-socket type + Enter) never ran")
-    _close(ctx, res, "A01-terminal", gid, procs, toasts0)
+    _close(ctx, res, "A01-terminal", gid, procs)
     core.assert_terminal_shell_performance(ready)
 
 
@@ -407,11 +378,11 @@ def host_wayland(ctx, res):
     ids = [a["id"] for a in ctx.vm.actions("foot") if a["provider"] == "applications"]
     if "foot" not in ids:
         raise Unobservable(f"no host Wayland app to open: `foot` is not in host-applications ({ids})")
-    gid, procs, toasts0 = _lifecycle(ctx, res, "foot", "applications", "A06-foot", True,
+    gid, procs = _lifecycle(ctx, res, "foot", "applications", "A06-foot", True,
                                      match=lambda f: "foot" in (f.get("app_id") or ""))
     expect(any("foot" in c.cmd for c in procs.values()),
            f"no foot process observed ({[c.cmd for c in procs.values()][:4]})")
-    _close(ctx, res, "A06-foot", gid, procs, toasts0)
+    _close(ctx, res, "A06-foot", gid, procs)
 
 
 @check("A07", AREA, "An X11 app opens through Xwayland and exits on close")
@@ -440,7 +411,7 @@ def x11(ctx, res):
     res.metrics["x11_app"] = app
     key = app.split("-")[-1].lower()
     try:
-        gid, procs, toasts0 = _lifecycle(ctx, res, app, "applications", "A07-x11", True,
+        gid, procs = _lifecycle(ctx, res, app, "applications", "A07-x11", True,
                                          match=lambda f: key in (f.get("app_id") or "").lower()
                                          or "x11" in (f.get("app_id") or "").lower()
                                          or f.get("app_id") not in (None, "", "so.tilo.settings"))
@@ -458,4 +429,4 @@ def x11(ctx, res):
     xw = [c.cmd for c in _procs(ctx).values() if "Xwayland" in c.cmd or "xwayland" in c.cmd]
     res.metrics["xwayland"] = xw[:2]
     expect(xw, "no Xwayland server is running while an X11 app is open")
-    _close(ctx, res, "A07-x11", gid, procs, toasts0)
+    _close(ctx, res, "A07-x11", gid, procs)

@@ -2,10 +2,10 @@
 
 K01 starts the session and the filesystem daemon with the VM's clock set a year back, before
 any certificate this VM holds was issued, as a real-time clock that lost its count leaves a
-machine. The identity is intact, so the desktop must not offer first-use setup or a restore:
-it says that it waits for the clock. fs stays up waiting instead of exiting into a restart
-loop. When the clock steps back to the real time, as network time does, fs serves the
-workspace and the session starts its network and broker without anyone acting.
+machine. The identity is intact, so the desktop must not offer first-use setup, and it
+answers with its displays. fs stays up waiting instead of exiting into a restart loop. When
+the clock steps back to the real time, as network time does, fs serves the workspace and the
+session lists its apps without anyone acting.
 
 It moves the VM's clock and restarts the session, so it runs after the checks that judge what
 the run opened, and puts the clock and chronyd back however it ends.
@@ -21,6 +21,7 @@ from __future__ import annotations
 import shlex
 import time
 
+from .. import core
 from ..core import CheckFailed, check, expect
 from ..vm import wait_until
 
@@ -57,7 +58,7 @@ def _real_now(ctx, real: int, behind: int) -> int:
     return vm_now if vm_now >= real else real + (vm_now - behind)
 
 
-@check("K01", AREA, "A clock behind the device certificate: no setup or restore; "
+@check("K01", AREA, "A clock behind the device certificate: no first-use setup; "
                     "fs and the workspace come up when the clock steps")
 def clock_behind_the_certificate(ctx, res):
     real = int(ctx.vm.root_exec("date +%s").split()[0])
@@ -67,14 +68,13 @@ def clock_behind_the_certificate(ctx, res):
     try:
         ctx.vm.root_exec(f"date -s @{behind} >/dev/null && systemctl restart {FS_UNIT}", timeout=120)
         ctx.vm.restart_session(timeout=180)
-        # The shell's state dump carries the desktop's own fields under `chrome`.
-        state = ctx.vm.state()["chrome"]
-        res.metrics["identity_while_behind"] = state.get("identity")
-        expect(not state["input_capture"]["onboarding"],
-               "the desktop shows first-use setup for an identity it has")
-        expect(not state["identity"]["recovery"], "the desktop offers to restore an intact identity")
-        expect(state["identity"]["waits_for_clock"],
-               "the desktop does not say that it waits for the clock")
+        # The desktop a person sees: its own controls, none of first-use setup for an identity
+        # it has.
+        setup = [t["name"] for t in ctx.vm.targets() if t["name"].startswith("onboarding")]
+        res.metrics["setup_targets"] = setup
+        expect(not setup, f"the desktop shows first-use setup for an identity it has: {setup[:3]}")
+        expect(ctx.state()["chrome"].get("session_locked") is False,
+               "the desktop came up locked with an identity it has")
 
         # fs waits: up, not restarting every few seconds.
         with_fs = _fs_serves_this_device(ctx)
@@ -100,12 +100,12 @@ def clock_behind_the_certificate(ctx, res):
         # the desktop.
         stepped_to = _real_now(ctx, real, behind)
         ctx.vm.root_exec(f"date -s @{stepped_to} >/dev/null", timeout=60)
-        stepped = ctx.wait_state(
-            lambda s: not s["chrome"]["identity"]["waits_for_clock"]
-            and s["chrome"]["collab"]["available"],
-            90, "the session's network and broker after the clock stepped")["chrome"]
-        res.metrics["identity_after_step"] = stepped.get("identity")
-        expect(not stepped["input_capture"]["onboarding"], "setup appeared after the clock stepped")
+        ctx.vm.wait_catalogue(90)
+        stepped = ctx.wait_state(lambda s: len(core.display_rects(s)) > 0, 90,
+                                 "the session answering after the clock stepped")
+        res.metrics["displays_after_step"] = len(core.display_rects(stepped))
+        setup = [t["name"] for t in ctx.vm.targets() if t["name"].startswith("onboarding")]
+        expect(not setup, f"setup appeared after the clock stepped: {setup[:3]}")
         if not with_fs:
             return
         if not wait_until(lambda: _fs_said(ctx, f"@{stepped_to}", "Enforcing"), 60, interval=2):

@@ -3,11 +3,12 @@ actions, files) and the history / activity views."""
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 
 from .. import core
-from ..core import CheckFailed, Unobservable, check, expect
+from ..core import CheckFailed, check, expect
 from ..vm import VmError, wait_until
 
 AREA = "search"
@@ -18,14 +19,14 @@ DE_NAMES = [("Terminal", "so.tilo.terminal"), ("Dateien", "so.tilo.file-explorer
             ("Einstellungen", "so.tilo.settings"), ("Notizen", "so.tilo.notes")]
 
 
-def _palette(st) -> dict:
-    return st["chrome"].get("palette") or {}
+def _search_open(st) -> bool:
+    return core.overlays(st).get("search") is True
 
 
 def _open_palette(ctx):
     ctx.close_overlays()
     ctx.vm.key("super+space")
-    return ctx.wait_state(lambda s: _palette(s).get("visible"), 5, "search open after Super+Space")
+    return ctx.wait_state(_search_open, 5, "search open after Super+Space")
 
 
 def _app_title(ctx, query, app):
@@ -43,9 +44,9 @@ def _palette_rows(ctx, query, timeout: float = 6.0):
     last = {"rows": None}
 
     def settled():
-        pal = _palette(ctx.state())
-        rows = pal.get("rows") or []
-        if pal.get("query") != query or not rows:
+        shown = ctx.search()
+        rows = shown.get("rows") or []
+        if shown.get("query") != query or not rows or shown.get("searching"):
             last["rows"] = None
             return None
         if rows == last["rows"]:
@@ -55,7 +56,7 @@ def _palette_rows(ctx, query, timeout: float = 6.0):
 
     rows = wait_until(settled, timeout, 0.4)
     if rows is None:
-        rows = _palette(ctx.state()).get("rows") or []
+        rows = ctx.search().get("rows") or []
     ctx.close_overlays()
     return rows
 
@@ -87,16 +88,15 @@ def empty_view(ctx, res):
     seen = {}
 
     def listed():
-        seen["st"] = ctx.state()
-        return bool(_palette(seen["st"]).get("rows"))
+        seen["rows"] = ctx.search().get("rows") or []
+        return bool(seen["rows"])
 
     # Bounded: an empty view is what this check reports.
     wait_until(listed, 5, 0.2)
-    st = seen["st"]
-    rows = _palette(st).get("rows") or []
+    rows = seen["rows"]
     res.metrics["rows"] = len(rows)
     res.metrics["row_sample"] = rows[:8]
-    ctx.write("S01-palette.json", __import__("json").dumps(_palette(st), indent=1))
+    ctx.write("S01-search.json", json.dumps(ctx.search(), indent=1))
     ctx.shot("S01-empty-query")
     ctx.close_overlays()
     expect(rows, "the empty-query search view lists nothing")
@@ -118,11 +118,11 @@ def palette_open(ctx, res):
     ctx.reset()
     _open_palette(ctx)
     ctx.vm.control("type", "Notes")
-    st = ctx.wait_state(lambda s: any("Notes" in str(r) for r in (_palette(s).get("rows") or [])), 6,
-                        "Notes among the search rows")
-    res.metrics["rows"] = (_palette(st).get("rows") or [])[:5]
+    ctx.wait_state(lambda s: any("Notes" in str(r) for r in (ctx.search().get("rows") or [])), 6,
+                   "Notes among the search rows")
+    res.metrics["rows"] = (ctx.search().get("rows") or [])[:5]
     ctx.shot("S04-typed")
-    before = {g["id"] for g in core.all_groups(st)}
+    before = {g["id"] for g in core.all_groups(ctx.state())}
     ctx.vm.key("Return")
     st = ctx.wait_state(lambda s: [g for g in core.all_groups(s) if g["id"] not in before], 20,
                         "a window opened from search")
@@ -140,8 +140,10 @@ def windows(ctx, res):
 
     def window_rows():
         got["results"] = ctx.vm.actions("Terminal")
-        return [a for a in got["results"] if a["provider"] == "desktop-windows"
-                and not a["id"].startswith(("tab.close", "group.close"))]
+        return [a for a in got["results"]
+                if a["provider"] == core.SESSION and a.get("kind") == "Actions"
+                and str(a["id"]).startswith("desktop:tab:")
+                and str(a["id"]).endswith("\x1ffocus")]
 
     wins = wait_until(window_rows, 5, 0.3) or []
     results = got["results"]
@@ -156,7 +158,8 @@ def actions(ctx, res):
     results = ctx.vm.actions("overview")
     head = [(a["provider"], a["id"]) for a in results[:3]]
     res.metrics["top"] = head
-    expect(("actions", "overview.toggle") in head, f"overview.toggle not in the top 3: {head}")
+    expect((core.SESSION, core.CHROME_OVERVIEW) in head,
+           f"the overview action is not in the top 3: {head}")
 
 
 @check("S07", AREA, "A file in the home folder is found by name")
@@ -181,13 +184,16 @@ def files(ctx, res):
 @check("S08", AREA, "Workspace activity opens, shows content and closes")
 def activity(ctx, res):
     ctx.reset()
-    before = {g["id"] for g in core.all_groups(ctx.state())}
-    ctx.vm.invoke("actions", "workspace.activity.open")
-    # The activity view is an overlay in some builds and a window tile in others.
-    st = ctx.wait_state(lambda s: core.overlays(s)["room_activity"]
-                        or any(g["id"] not in before for g in core.all_groups(s)), 5, "activity view open")
-    tile = next((g for g in core.all_groups(st) if g["id"] not in before), None)
-    res.metrics["presented_as"] = core.tab_app(tile["tabs"][0]) if tile else "overlay"
+    st = ctx.state()
+    before = {g["id"] for g in core.all_groups(st)}
+    workspace = str(core.active_workspace(st)["id"])
+    ctx.vm.invoke(core.SESSION, core.CHROME_ACTIVITY, {"workspace": workspace, "view": "catch-up"})
+    st = ctx.wait_state(lambda s: any(g["id"] not in before for g in core.all_groups(s)), 10,
+                        "the activity window open")
+    tile = next(g for g in core.all_groups(st) if g["id"] not in before)
+    shown = core.tab_app(tile["tabs"][0])
+    res.metrics["window_app"] = shown
+    expect(shown == "so.tilo.activity", f"the activity window shows {shown}")
     ctx.wait_still()
     d = core.display_rects(st)[0]
     region = (d[0] + d[2] * 0.25, d[1] + 60, d[2] * 0.5, d[3] * 0.6)
@@ -205,11 +211,8 @@ def activity(ctx, res):
     stats = got["stats"]
     res.metrics["center_pixels"] = stats
     expect(stats["stddev"] > 0.03, f"the activity view's centre is blank (stddev {stats['stddev']})")
-    if tile is None:
-        ctx.close_overlays()
-        return
     try:
-        ctx.vm.invoke("desktop-windows", f"group.close:{tile['id']}")
+        ctx.vm.invoke(core.SESSION, core.CHROME_CLOSE_ACTIVITY, {"workspace": workspace})
     except VmError as exc:
         raise CheckFailed(f"the activity window cannot be closed: {exc.reason()}") from exc
     ctx.wait_state(lambda s: core.group_by_id(s, tile["id"]) is None, 5, "activity window closed")
