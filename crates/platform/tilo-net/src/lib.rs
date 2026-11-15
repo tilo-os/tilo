@@ -43,10 +43,7 @@ pub fn secure_origin(url: &Url) -> bool {
     match url.scheme() {
         "https" => true,
         "http" => match url.host() {
-            Some(url::Host::Domain(name)) => {
-                let name = name.trim_end_matches('.').to_ascii_lowercase();
-                name == "localhost" || name.ends_with(".localhost")
-            }
+            Some(url::Host::Domain(name)) => loopback_name(name),
             Some(url::Host::Ipv4(address)) => address.is_loopback(),
             Some(url::Host::Ipv6(address)) => address.is_loopback(),
             None => false,
@@ -55,9 +52,32 @@ pub fn secure_origin(url: &Url) -> bool {
     }
 }
 
+/// Whether `name` is a name of this machine: `localhost` and every name under it, which a
+/// browser resolves to loopback itself. The local stack serves the site as `tilo.localhost`.
+#[must_use]
+pub fn loopback_name(name: &str) -> bool {
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    name == "localhost" || name.ends_with(".localhost")
+}
+
 #[cfg(test)]
 mod secure_origin_tests {
-    use super::{Url, secure_origin};
+    use super::{Url, loopback_name, secure_origin};
+
+    #[test]
+    fn a_name_under_localhost_is_this_machine() {
+        for name in ["localhost", "tilo.localhost", "a.b.localhost", "LOCALHOST."] {
+            assert!(loopback_name(name), "{name}");
+        }
+        for name in [
+            "localhost.tilo.sh",
+            "tilo.sh",
+            "notlocalhost",
+            "localhost.example",
+        ] {
+            assert!(!loopback_name(name), "{name}");
+        }
+    }
 
     #[test]
     fn https_anywhere_and_http_only_on_this_machine() {
@@ -133,7 +153,10 @@ pub mod http {
     )]
     pub fn client() -> reqwest::ClientBuilder {
         crate::install_crypto_provider();
-        let builder = reqwest::Client::builder().gzip(false).brotli(false);
+        let builder = reqwest::Client::builder()
+            .gzip(false)
+            .brotli(false)
+            .dns_resolver(LoopbackNames);
         #[cfg(target_os = "android")]
         let builder = builder.tls_certs_only(system_certificates());
         builder
@@ -148,10 +171,72 @@ pub mod http {
         crate::install_crypto_provider();
         let builder = reqwest::blocking::Client::builder()
             .gzip(false)
-            .brotli(false);
+            .brotli(false)
+            .dns_resolver(std::sync::Arc::new(LoopbackNames));
         #[cfg(target_os = "android")]
         let builder = builder.tls_certs_only(system_certificates());
         builder
+    }
+
+    /// Resolution for Tilo's clients: a name under `localhost` is this machine's
+    /// ([`crate::loopback_name`]), whoever the machine's resolver is, and every
+    /// other name is the system resolver's, as reqwest's own is.
+    struct LoopbackNames;
+
+    impl reqwest::dns::Resolve for LoopbackNames {
+        fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            let host = name.as_str().to_owned();
+            if crate::loopback_name(&host) {
+                let addrs: Vec<std::net::SocketAddr> = vec![
+                    std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
+                    std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 0)),
+                ];
+                let addrs: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+                return Box::pin(std::future::ready(Ok(addrs)));
+            }
+            Box::pin(async move {
+                let addresses = tokio::task::spawn_blocking(move || {
+                    use std::net::ToSocketAddrs as _;
+                    (host.as_str(), 0).to_socket_addrs()
+                })
+                .await
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+                Ok(Box::new(addresses) as reqwest::dns::Addrs)
+            })
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use reqwest::dns::{Name, Resolve as _};
+
+        #[test]
+        #[allow(
+            clippy::expect_used,
+            reason = "a test's own name and runtime are fixtures"
+        )]
+        fn a_name_under_localhost_is_this_machine() {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("a runtime");
+            for host in [
+                "localhost",
+                "tilo.localhost",
+                "a.b.localhost",
+                "TILO.Localhost.",
+            ] {
+                let addrs: Vec<std::net::SocketAddr> = runtime
+                    .block_on(super::LoopbackNames.resolve(host.parse::<Name>().expect("a name")))
+                    .expect("loopback needs no resolver")
+                    .collect();
+                assert!(!addrs.is_empty(), "{host}");
+                assert!(
+                    addrs.iter().all(|address| address.ip().is_loopback()),
+                    "{host}"
+                );
+            }
+        }
     }
 
     /// Android's platform verifier aborts without the app's JVM context, so

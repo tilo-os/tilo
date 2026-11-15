@@ -276,13 +276,17 @@ struct Fetched {
 /// `url` as a browser asks for it: the site answers a command-line client at `/` with its
 /// installer script, as `curl https://tilo.sh | sh` gets it.
 fn fetch(url: &str, accept: &str) -> Result<Fetched, String> {
-    let out = Command::new("curl")
-        .args(["-sS", "--max-time", "30", "--compressed"])
+    let mut curl = Command::new("curl");
+    curl.args(["-sS", "--max-time", "30", "--compressed"])
         .args([
             "-A",
             "Mozilla/5.0 (X11; Linux x86_64) tilo-local page check",
         ])
-        .args(["-H", &format!("Accept: {accept}")])
+        .args(["-H", &format!("Accept: {accept}")]);
+    if let Some(site) = loopback_authority(url) {
+        curl.args(["--resolve", &site]);
+    }
+    let out = curl
         .args(["-w", "\n%{http_code} %{content_type}", url])
         .output()
         .map_err(|error| format!("curl: {error}"))?;
@@ -305,6 +309,20 @@ fn fetch(url: &str, accept: &str) -> Result<Fetched, String> {
         kind: kind.to_owned(),
         body,
     })
+}
+
+/// Where a name under `localhost` is (`HOST:PORT:ADDRESS`, curl's `--resolve`), for the stack
+/// serves the site as `tilo.localhost` and a resolver on the machine need not know that.
+fn loopback_authority(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split('/').next()?;
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().ok()?),
+        None => (authority, if scheme == "https" { 443 } else { 80 }),
+    };
+    let name = host.trim_end_matches('.').to_ascii_lowercase();
+    let loopback = !host.starts_with('[') && (name == "localhost" || name.ends_with(".localhost"));
+    loopback.then(|| format!("{host}:{port}:127.0.0.1"))
 }
 
 /// `reference` resolved against `base` (a URL ending in a file or a `/`).
@@ -455,7 +473,21 @@ fn verify(origin: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{named_files, resolve};
+    use super::{loopback_authority, named_files, resolve};
+
+    #[test]
+    fn sends_a_name_under_localhost_to_this_machine() {
+        assert_eq!(
+            loopback_authority("http://tilo.localhost:24320/entry.json").as_deref(),
+            Some("tilo.localhost:24320:127.0.0.1")
+        );
+        assert_eq!(
+            loopback_authority("http://localhost/").as_deref(),
+            Some("localhost:80:127.0.0.1")
+        );
+        assert_eq!(loopback_authority("https://tilo.sh/"), None);
+        assert_eq!(loopback_authority("http://127.0.0.1:24320/"), None);
+    }
 
     #[test]
     fn resolves_like_a_browser() {
