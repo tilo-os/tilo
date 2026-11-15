@@ -42,6 +42,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::time::Duration;
 use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui::widget::solve_built_layout;
 use tilo_ui::widget::toggle_group::{Segment, SegmentedStyle};
 use tilo_ui::widget::toolbar::Orientation;
 use tilo_ui::widget::{
@@ -793,21 +794,12 @@ fn stamp(canvas: &mut Canvas<'_>, cell: Rect, widget: &mut dyn Widget, st: St, f
         style.size.width = taffy::style_helpers::length(cell.width() as f32);
         let _ = taffy.set_style(root, style);
     }
-    let _ = taffy.compute_layout_with_measure(
-        root,
-        Size {
-            width: AvailableSpace::Definite(cell.width() as f32),
-            height: AvailableSpace::Definite(cell.height() as f32),
-        },
-        |known, available, node, _, _| {
-            nodes.get(&node).map_or(Size::ZERO, |&widget| {
-                // SAFETY: the node map was filled by `build_layout` above
-                // from widgets `widget` owns, and nothing else touches them
-                // while layout runs.
-                unsafe { (*widget).measure(known, available, tr) }
-            })
-        },
-    );
+    let available = Size {
+        width: AvailableSpace::Definite(cell.width() as f32),
+        height: AvailableSpace::Definite(cell.height() as f32),
+    };
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    let _ = unsafe { solve_built_layout(&*widget, &mut taffy, root, &nodes, tr, available) };
     let size = taffy.layout(root).map(|l| l.size).unwrap_or_default();
     let origin = Point::new(
         cell.x0,

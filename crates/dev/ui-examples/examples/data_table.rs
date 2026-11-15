@@ -22,6 +22,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui::widget::solve_built_layout;
 
 #[derive(Clone)]
 struct Proc {
@@ -89,20 +90,12 @@ fn build() -> (DataTable<Proc>, TaffyTree<()>, NodeId) {
             &[tnode],
         )
         .unwrap_or(tnode);
-    let _ = taffy.compute_layout_with_measure(
-        root,
-        Size {
-            width: AvailableSpace::Definite(width_f32),
-            height: AvailableSpace::Definite(full_h),
-        },
-        |known, available, node_id, _, _| {
-            if let Some(&ptr) = node_map.get(&node_id) {
-                unsafe { (*ptr).measure(known, available, &mut tr) }
-            } else {
-                Size::ZERO
-            }
-        },
-    );
+    let available = Size {
+        width: AvailableSpace::Definite(width_f32),
+        height: AvailableSpace::Definite(full_h),
+    };
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    let _ = unsafe { solve_built_layout(&table, &mut taffy, root, &node_map, &mut tr, available) };
     table.apply_layout(&taffy, tnode, Point::ZERO);
     table.set_viewport(BODY_VP, ROW_H);
     (table, taffy, tnode)

@@ -17,6 +17,7 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::DrawChild;
+use tilo_ui::widget::solve_built_layout;
 use tilo_ui::widget::{Row, UndoButton, Widget};
 
 const WIDTH: u32 = 300;
@@ -84,19 +85,12 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
 
     row.sync(&state.doc, &state.root);
     let node = row.build_layout(&mut taffy, theme, &mut node_map);
-    taffy
-        .compute_layout_with_measure(
-            node,
-            Size {
-                width: AvailableSpace::Definite(300.0),
-                height: AvailableSpace::Definite(64.0),
-            },
-            |known, available, node_id, _, _| {
-                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                    (*p).measure(known, available, &mut tr)
-                })
-            },
-        )
+    let available = Size {
+        width: AvailableSpace::Definite(300.0),
+        height: AvailableSpace::Definite(64.0),
+    };
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    unsafe { solve_built_layout(&row, &mut taffy, node, &node_map, &mut tr, available) }
         .map_err(|error| format!("layout failed: {error}"))?;
     row.apply_layout(&taffy, node, Point::new(16.0, 16.0));
 

@@ -20,6 +20,7 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::Widget;
+use tilo_ui::widget::solve_built_layout;
 use tilo_ui::widget::table::{self, Table};
 
 const MARGIN: f64 = 28.0;
@@ -77,18 +78,13 @@ fn frame(
     let mut tr = TextRenderer::new();
     let node = table.build_layout(&mut taffy, &theme, &mut nm);
     // The table node carries an explicit size; max-content lets it resolve to it.
-    let layout_result = taffy.compute_layout_with_measure(
-        node,
-        Size {
-            width: AvailableSpace::MaxContent,
-            height: AvailableSpace::MaxContent,
-        },
-        |known, available, node_id, _, _| {
-            nm.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                (*p).measure(known, available, &mut tr)
-            })
-        },
-    );
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    let available = Size {
+        width: AvailableSpace::MaxContent,
+        height: AvailableSpace::MaxContent,
+    };
+    let layout_result =
+        unsafe { solve_built_layout(&*table, &mut taffy, node, &nm, &mut tr, available) };
     if let Err(e) = layout_result {
         eprintln!("table_shots: layout failed: {e}");
         return None;

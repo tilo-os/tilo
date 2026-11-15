@@ -25,6 +25,7 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
 use tilo_ui::widget::DrawChild;
+use tilo_ui::widget::solve_built_layout;
 use tilo_ui::widget::{
     FilterCount, Filterable, FindBar, FindMatch, FindOptions, Findable, SearchField,
     SearchResultsView, Widget, paint_find_match,
@@ -138,18 +139,13 @@ fn lay_out_field(field: &mut SearchField, theme: &Theme, width: f64, origin: Poi
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = field.build_layout(&mut taffy, theme, &mut node_map);
-    let layout_result = taffy.compute_layout_with_measure(
-        node,
-        Size {
-            width: AvailableSpace::Definite(to_f32(width)),
-            height: AvailableSpace::Definite(to_f32(FIELD_H)),
-        },
-        |known, available, id, _, _| {
-            node_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
-                (*p).measure(known, available, &mut tr)
-            })
-        },
-    );
+    let available = Size {
+        width: AvailableSpace::Definite(to_f32(width)),
+        height: AvailableSpace::Definite(to_f32(FIELD_H)),
+    };
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    let layout_result =
+        unsafe { solve_built_layout(&*field, &mut taffy, node, &node_map, &mut tr, available) };
     if let Err(e) = layout_result {
         eprintln!("search_showcase: layout failed: {e}");
         return;

@@ -21,6 +21,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
 use tilo_ui::wake::WakeScope;
 use tilo_ui::widget::DrawChild;
+use tilo_ui::widget::solve_built_layout;
 use tilo_ui::widget::{Mark, MarkSpan, RichTextLine, Widget};
 use tilo_ui::workspace_emoji::{CustomEmoji, EmojiSource, WorkspaceEmoji};
 use vello::Scene;
@@ -186,25 +187,20 @@ fn workspace_emoji() -> WorkspaceEmoji {
     ])
 }
 
-/// Lay `line` out `width` wide at `origin` through the real taffy pass;
+/// Lay `line` out `width` wide at `origin` through the toolkit's solver;
 /// returns its height.
 fn place(line: &mut RichTextLine, theme: &Theme, origin: Point, width: f32) -> f64 {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let mut text = TextRenderer::new();
     let node = line.build_layout(&mut taffy, theme, &mut nodes);
-    let laid_out = taffy.compute_layout_with_measure(
-        node,
-        Size {
-            width: AvailableSpace::Definite(width),
-            height: AvailableSpace::MaxContent,
-        },
-        |known, available, node_id, _, _| {
-            nodes.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                (*p).measure(known, available, &mut text)
-            })
-        },
-    );
+    let available = Size {
+        width: AvailableSpace::Definite(width),
+        height: AvailableSpace::MaxContent,
+    };
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    let laid_out =
+        unsafe { solve_built_layout(&*line, &mut taffy, node, &nodes, &mut text, available) };
     if let Err(error) = laid_out {
         eprintln!("line layout: {error}");
         return 0.0;

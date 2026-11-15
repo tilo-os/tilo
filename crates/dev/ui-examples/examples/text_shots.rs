@@ -19,9 +19,10 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::DrawChild;
+use tilo_ui::widget::solve_built_layout;
 use tilo_ui::widget::{ColorPicker, NumberInput, TextInput, Widget};
 
-/// Lay a single widget out at `origin` through the real taffy pass and return
+/// Lay a single widget out at `origin` through the toolkit's solver and return
 /// nothing (the widget stores its own rect). Used for the widgets whose
 /// `build_layout` carries an intrinsic size (`NumberInput`, `ColorPicker`).
 fn layout_one(w: &mut dyn Widget, origin: Point) {
@@ -30,18 +31,13 @@ fn layout_one(w: &mut dyn Widget, origin: Point) {
     let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let mut tr = TextRenderer::new();
     let node = w.build_layout(&mut taffy, &theme, &mut nm);
-    let layout_result = taffy.compute_layout_with_measure(
-        node,
-        Size {
-            width: AvailableSpace::MaxContent,
-            height: AvailableSpace::MaxContent,
-        },
-        |known, available, node_id, _, _| {
-            nm.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                (*p).measure(known, available, &mut tr)
-            })
-        },
-    );
+    let available = Size {
+        width: AvailableSpace::MaxContent,
+        height: AvailableSpace::MaxContent,
+    };
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    let layout_result =
+        unsafe { solve_built_layout(&*w, &mut taffy, node, &nm, &mut tr, available) };
     if let Err(e) = layout_result {
         eprintln!("layout failed: {e}");
         return;

@@ -10,7 +10,6 @@ use taffy::prelude::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use crate::bound_dispatch::BoundNodeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::offscreen::OffscreenRenderer;
 use crate::permissions::PermissionContext;
@@ -118,18 +117,16 @@ impl ShotFrame {
             width: AvailableSpace::Definite(w),
             height: AvailableSpace::Definite(h),
         };
-        let mut bindings = BoundNodeMap::new();
-        // SAFETY: `widget`, `taffy`, `child` and `node_map` come from the
-        // build above and stay exclusively borrowed for layout.
+        // SAFETY: the tree, its node map and the text renderer above stay
+        // exclusively borrowed for the layout.
         unsafe {
-            bindings.rebuild(widget, &self.taffy, child, &self.node_map);
-            crate::widget::compute_widget_layout(
+            crate::widget::solve_built_layout(
+                widget,
                 &mut self.taffy,
                 root,
-                available,
                 &self.node_map,
-                &bindings,
                 &mut self.text,
+                available,
             )?;
         }
         widget.apply_layout(&self.taffy, child, Point::ORIGIN);

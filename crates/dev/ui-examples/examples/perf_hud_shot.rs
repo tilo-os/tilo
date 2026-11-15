@@ -16,6 +16,7 @@ use tilo_ui::state::State;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
+use tilo_ui::widget::solve_built_layout;
 
 use super::gallery_scene;
 use tilo_ui::widget::DrawChild;
@@ -68,12 +69,17 @@ pub fn run(_args: &[String]) {
             width: AvailableSpace::Definite(WIDTH as f32),
             height: AvailableSpace::Definite(HEIGHT as f32),
         };
-        let layout_result =
-            taffy.compute_layout_with_measure(node, viewport, |known, available, node_id, _, _| {
-                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                    (*p).measure(known, available, &mut tr)
-                })
-            });
+        // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+        let layout_result = unsafe {
+            solve_built_layout(
+                root.as_ref(),
+                &mut taffy,
+                node,
+                &node_map,
+                &mut tr,
+                viewport,
+            )
+        };
         if let Err(e) = layout_result {
             eprintln!("layout failed: {e}");
             return;

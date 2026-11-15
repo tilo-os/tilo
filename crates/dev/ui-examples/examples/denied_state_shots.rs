@@ -17,6 +17,7 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::DrawChild;
+use tilo_ui::widget::solve_built_layout;
 use tilo_ui::widget::{Button, Checkbox, Toggle, Widget};
 
 const WIDTH: u32 = 760;
@@ -48,19 +49,12 @@ fn stamp(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     widget.sync(&state.doc, &state.root);
     let node = widget.build_layout(&mut taffy, theme, &mut node_map);
-    taffy
-        .compute_layout_with_measure(
-            node,
-            Size {
-                width: AvailableSpace::Definite(280.0),
-                height: AvailableSpace::Definite(44.0),
-            },
-            |known, available, node_id, _, _| {
-                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                    (*p).measure(known, available, tr)
-                })
-            },
-        )
+    let available = Size {
+        width: AvailableSpace::Definite(280.0),
+        height: AvailableSpace::Definite(44.0),
+    };
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    unsafe { solve_built_layout(&*widget, &mut taffy, node, &node_map, tr, available) }
         .map_err(|error| format!("layout failed: {error}"))?;
     widget.apply_layout(&taffy, node, origin);
     let presence = PresenceCtx::default();

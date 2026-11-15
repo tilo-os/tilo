@@ -414,6 +414,39 @@ pub unsafe fn compute_widget_layout(
     unsafe { compute_widget_layout_depth(taffy, root, available, nodes, bindings, text, 0) }
 }
 
+/// Solve a layout [`Widget::build_layout`] just produced, admitting the tree's
+/// nodes for the call.
+///
+/// A caller that lays the tree out once — a shot, a benchmark frame, a test
+/// fixture — uses this instead of a bare Taffy solve, which answers no widget's
+/// [`Widget::layout_measured`] and leaves every widget that asks layout-dirty.
+///
+/// # Errors
+/// The same as [`compute_widget_layout`].
+///
+/// # Safety
+/// `root`, `taffy`, `node` and `nodes` must be one live tree that the caller
+/// exclusively owns throughout the call, as [`compute_widget_layout`] requires.
+#[allow(
+    clippy::implicit_hasher,
+    reason = "bound dispatch uses the existing default-hasher node map"
+)]
+pub unsafe fn solve_built_layout(
+    root: &dyn Widget,
+    taffy: &mut TaffyTree<()>,
+    node: NodeId,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    text: &mut TextRenderer,
+    available: Size<AvailableSpace>,
+) -> Result<(), WidgetLayoutError> {
+    let mut bindings = BoundNodeMap::new();
+    // SAFETY: forwards the caller's exact live-tree ownership contract.
+    unsafe {
+        bindings.rebuild(root, taffy, node, nodes);
+        compute_widget_layout(taffy, node, available, nodes, &bindings, text)
+    }
+}
+
 /// A node's measured size from its known dimensions and the space offered.
 pub(crate) type MeasureNode<'a> =
     dyn FnMut(Size<Option<f32>>, Size<AvailableSpace>, NodeId) -> Size<f32> + 'a;

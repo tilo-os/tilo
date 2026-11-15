@@ -17,6 +17,7 @@ use tilo_ui::scale::{composite_transform, physical_len};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
+use tilo_ui::widget::solve_built_layout;
 
 use super::gallery_scene;
 use tilo_ui::widget::DrawChild;
@@ -67,19 +68,22 @@ fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: &
     root.sync(&state.doc, &state.root);
     let node = root.build_layout(&mut taffy, &theme, &mut node_map);
 
+    let available = Size {
+        width: AvailableSpace::Definite(to_f32(LOGICAL_W)),
+        height: AvailableSpace::Definite(to_f32(LOGICAL_H)),
+    };
     // Layout in LOGICAL px — device scale never enters the solver.
-    let layout_result = taffy.compute_layout_with_measure(
-        node,
-        Size {
-            width: AvailableSpace::Definite(to_f32(LOGICAL_W)),
-            height: AvailableSpace::Definite(to_f32(LOGICAL_H)),
-        },
-        |known, available, node_id, _, _| {
-            node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                (*p).measure(known, available, &mut tr)
-            })
-        },
-    );
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    let layout_result = unsafe {
+        solve_built_layout(
+            root.as_ref(),
+            &mut taffy,
+            node,
+            &node_map,
+            &mut tr,
+            available,
+        )
+    };
     if let Err(e) = layout_result {
         eprintln!("fractional_scale_shots: layout failed: {e}");
         return;

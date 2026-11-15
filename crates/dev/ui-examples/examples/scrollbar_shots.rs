@@ -23,6 +23,7 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::DrawChild;
+use tilo_ui::widget::solve_built_layout;
 use tilo_ui::widget::{Column, Row, ScrollAxis, Scrollable, Text, Widget};
 
 const WIDTH: u32 = 460;
@@ -124,18 +125,13 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool, frame: Frame) {
 
     scroll.sync(&state.doc, &state.root);
     let node = scroll.build_layout(&mut taffy, theme, &mut node_map);
-    let layout_result = taffy.compute_layout_with_measure(
-        node,
-        Size {
-            width: AvailableSpace::Definite(WIDTH_F32),
-            height: AvailableSpace::Definite(HEIGHT_F32),
-        },
-        |known, available, node_id, _, _| {
-            node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                (*p).measure(known, available, &mut tr)
-            })
-        },
-    );
+    let available = Size {
+        width: AvailableSpace::Definite(WIDTH_F32),
+        height: AvailableSpace::Definite(HEIGHT_F32),
+    };
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    let layout_result =
+        unsafe { solve_built_layout(&scroll, &mut taffy, node, &node_map, &mut tr, available) };
     if let Err(e) = layout_result {
         eprintln!("layout failed: {e}");
         return;

@@ -187,10 +187,6 @@ impl Bench {
         } = self;
         let (root_node, canvas_w, canvas_h) = (*root_node, *canvas_w, *canvas_h);
         let t_compute = tilo_ui::time::now();
-        // Repeat the App's lambda exactly — taffy borrows the node_map
-        // immutably while letting the measure closure mutate the text
-        // renderer.
-        let tr = &mut *text_renderer;
         #[allow(
             clippy::cast_precision_loss,
             reason = "canvas_w/canvas_h are small fixed pixel dimensions, exact in f32"
@@ -199,17 +195,17 @@ impl Bench {
             width: AvailableSpace::Definite(canvas_w as f32),
             height: AvailableSpace::Definite(canvas_h as f32),
         };
-        let layout_result = taffy.compute_layout_with_measure(
-            root_node,
-            viewport,
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = node_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    Size::ZERO
-                }
-            },
-        );
+        // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+        let layout_result = unsafe {
+            tilo_ui::widget::solve_built_layout(
+                root.as_ref(),
+                taffy,
+                root_node,
+                node_map,
+                text_renderer,
+                viewport,
+            )
+        };
         if let Err(e) = layout_result {
             eprintln!("layout failed: {e}");
             return;

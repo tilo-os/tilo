@@ -18,6 +18,7 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
+use tilo_ui::widget::solve_built_layout;
 
 use super::gallery_scene;
 use tilo_ui::widget::DrawChild;
@@ -55,18 +56,21 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
         clippy::cast_precision_loss,
         reason = "WIDTH/HEIGHT are small fixed logical-pixel constants, far below f32's exact-integer range"
     )]
-    let _ = taffy.compute_layout_with_measure(
-        node,
-        Size {
-            width: AvailableSpace::Definite(WIDTH as f32),
-            height: AvailableSpace::Definite(HEIGHT as f32),
-        },
-        |known, available, node_id, _, _| {
-            node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                (*p).measure(known, available, &mut tr)
-            })
-        },
-    );
+    let available = Size {
+        width: AvailableSpace::Definite(WIDTH as f32),
+        height: AvailableSpace::Definite(HEIGHT as f32),
+    };
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    let _ = unsafe {
+        solve_built_layout(
+            root.as_ref(),
+            &mut taffy,
+            node,
+            &node_map,
+            &mut tr,
+            available,
+        )
+    };
     root.apply_layout(&taffy, node, Point::ZERO);
 
     let mut scene = Scene::new();

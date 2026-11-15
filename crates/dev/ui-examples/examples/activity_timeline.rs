@@ -11,6 +11,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::widget::ActivityTimeline;
 use tilo_ui::widget::DrawChild;
+use tilo_ui::widget::solve_built_layout;
 use tilo_ui::{App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -193,27 +194,24 @@ fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
             return;
         }
     };
-    {
-        let measure_map = node_map.clone();
-        let trr = &mut tr;
-        let layout_result = taffy.compute_layout_with_measure(
+    let available = Size {
+        width: AvailableSpace::Definite(w as f32),
+        height: AvailableSpace::Definite(h as f32),
+    };
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    let layout_result = unsafe {
+        solve_built_layout(
+            widget.as_ref(),
+            &mut taffy,
             root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, trr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        );
-        if let Err(err) = layout_result {
-            eprintln!("activity_timeline: failed to compute layout: {err}");
-            return;
-        }
+            &node_map,
+            &mut tr,
+            available,
+        )
+    };
+    if let Err(err) = layout_result {
+        eprintln!("activity_timeline: failed to compute layout: {err}");
+        return;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 

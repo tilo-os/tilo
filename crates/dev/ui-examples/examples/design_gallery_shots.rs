@@ -28,6 +28,7 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::{Density, TextRole};
 use tilo_ui::widget::DrawChild;
+use tilo_ui::widget::solve_built_layout;
 use tilo_ui::widget::toggle_group::SegmentedFace;
 use tilo_ui::widget::{
     AvatarFace, BannerContent, BannerKind, BarControlFace, Button, ButtonFace, ButtonRole,
@@ -532,50 +533,24 @@ fn stamp(p: &mut Page, mut widget: Box<dyn Widget>, area: Rect) -> f64 {
     widget.set_motion_reduced(true);
     let mut taffy = TaffyTree::<()>::new();
     let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let root = widget.build_layout(&mut taffy, &p.theme, &mut nodes);
-    if let Ok(style) = taffy.style(root) {
-        let mut style = style.clone();
-        style.size.width = taffy::style_helpers::length(area.width() as f32);
-        let _ = taffy.set_style(root, style);
-    }
     let tr = &mut p.tr;
-    let _ = taffy.compute_layout_with_measure(
-        root,
-        Size {
-            width: AvailableSpace::Definite(area.width() as f32),
-            height: AvailableSpace::MaxContent,
-        },
-        |known, available, node, _, _| {
-            nodes.get(&node).map_or(Size::ZERO, |&w| {
-                // SAFETY: the node map was filled by `build_layout` above
-                // from widgets `widget` owns, and nothing else touches them
-                // while layout runs.
-                unsafe { (*w).measure(known, available, tr) }
-            })
-        },
-    );
-    widget.apply_layout(&taffy, root, area.origin());
+    let available = Size {
+        width: AvailableSpace::Definite(area.width() as f32),
+        height: AvailableSpace::MaxContent,
+    };
     // A disclosure learns its body's height from its first layout.
-    let root = widget.build_layout(&mut taffy, &p.theme, &mut nodes);
-    if let Ok(style) = taffy.style(root) {
-        let mut style = style.clone();
-        style.size.width = taffy::style_helpers::length(area.width() as f32);
-        let _ = taffy.set_style(root, style);
+    for _ in 0..2 {
+        let root = widget.build_layout(&mut taffy, &p.theme, &mut nodes);
+        if let Ok(style) = taffy.style(root) {
+            let mut style = style.clone();
+            style.size.width = taffy::style_helpers::length(area.width() as f32);
+            let _ = taffy.set_style(root, style);
+        }
+        // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+        let _ =
+            unsafe { solve_built_layout(widget.as_ref(), &mut taffy, root, &nodes, tr, available) };
+        widget.apply_layout(&taffy, root, area.origin());
     }
-    let _ = taffy.compute_layout_with_measure(
-        root,
-        Size {
-            width: AvailableSpace::Definite(area.width() as f32),
-            height: AvailableSpace::MaxContent,
-        },
-        |known, available, node, _, _| {
-            nodes.get(&node).map_or(Size::ZERO, |&w| {
-                // SAFETY: as above.
-                unsafe { (*w).measure(known, available, tr) }
-            })
-        },
-    );
-    widget.apply_layout(&taffy, root, area.origin());
     let presence = PresenceCtx::default();
     widget.draw_child(
         &mut p.scene,

@@ -16,6 +16,7 @@ use tilo_ui::widget::Widget;
 
 use super::chart_gallery_scene;
 use tilo_ui::widget::DrawChild;
+use tilo_ui::widget::solve_built_layout;
 
 fn shoot(theme: &Theme, width: u32, height: u32, inspected: bool, out: &Path) {
     let mut root = if inspected {
@@ -30,18 +31,13 @@ fn shoot(theme: &Theme, width: u32, height: u32, inspected: bool, out: &Path) {
     let mut taffy = TaffyTree::<()>::new();
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = root.build_layout(&mut taffy, theme, &mut map);
-    let _ = taffy.compute_layout_with_measure(
-        node,
-        Size {
-            width: AvailableSpace::Definite(f32_of_u32(width)),
-            height: AvailableSpace::Definite(f32_of_u32(height)),
-        },
-        |known, available, id, _, _| {
-            map.get(&id).map_or(Size::ZERO, |&widget| unsafe {
-                (*widget).measure(known, available, &mut text)
-            })
-        },
-    );
+    let available = Size {
+        width: AvailableSpace::Definite(f32_of_u32(width)),
+        height: AvailableSpace::Definite(f32_of_u32(height)),
+    };
+    // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
+    let _ =
+        unsafe { solve_built_layout(root.as_ref(), &mut taffy, node, &map, &mut text, available) };
     root.apply_layout(&taffy, node, Point::ZERO);
     let mut scene = Scene::new();
     root.draw_child(
