@@ -257,6 +257,8 @@ tilo_test_env::scenario! {
                 text(profile.path("run/tilo/files-storage/storage.sock")),
                 "--blob-sock".into(),
                 text(run.join("fs-blobs.sock")),
+                "--session-link".into(),
+                text(run.join("fs-session-link")),
             ]
         );
         assert_eq!(

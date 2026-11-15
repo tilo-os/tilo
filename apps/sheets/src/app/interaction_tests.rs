@@ -91,7 +91,7 @@ fn the_window_bar_names_the_workbook_and_the_sheet_in_view() {
 fn a_comment_wears_the_colour_the_member_list_announces_for_its_author() {
     let (mut app, mut doc, mut tr, theme) = painted();
     let sheet = app.sheet_ids[0].clone();
-    let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+    let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone()).as_author("amira");
     book.apply(Workbook::COMMENT.with(crate::resource::verbs::Comment {
         sheet,
         range: "C3".into(),

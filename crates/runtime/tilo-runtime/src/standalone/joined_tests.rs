@@ -1166,13 +1166,10 @@ fn the_workspaces_the_desktop_session_enrolled_are_refused() {
             .path()
             .join(super::super::workspace::DESKTOP_WORKSPACE),
     );
-    std::fs::write(
-        &record,
-        br#"{"revision": 1, "workspaces": {}, "pending": {}}"#,
-    )
-    .unwrap();
-    assert!(desktop_enrolled(directory.path()).unwrap().is_empty());
-    std::fs::write(&record, b"not an owner record").unwrap();
+    // The record's index, in the directory beside the record file.
+    let index = record.with_extension("workspaces").join("index.json");
+    std::fs::create_dir_all(index.parent().unwrap()).unwrap();
+    std::fs::write(&index, b"not an owner record").unwrap();
     assert!(
         desktop_enrolled(directory.path()).is_err(),
         "an unreadable desktop record refuses rather than guesses"

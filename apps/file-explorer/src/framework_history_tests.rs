@@ -16,6 +16,14 @@ fn hosted() -> (TestApp<FileExplorerShell>, FileHistorySource) {
     (app, source)
 }
 
+/// The timeline row a file version is, as the widget names it.
+fn entry_of(version: fs_protocol::FileVersionId) -> String {
+    format!(
+        "timeline-entry:{}",
+        ui::widget::history_group::hex16(&ui::HistoryEntryId(*version.0.as_bytes()))
+    )
+}
+
 #[derive(Default)]
 struct SubmitReturns(std::sync::atomic::AtomicUsize);
 impl SubmitReturns {
@@ -230,7 +238,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     driver.relayout();
     let original_heads = driver.state_mut().doc.get_heads();
     source.open(None);
-    let target = format!("timeline-entry:{}", old.0.simple());
+    let target = entry_of(old);
     wait(driver, &target);
     driver
         .perform_semantic_named(
@@ -519,7 +527,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         source.set_target(Some(target(&a, record_a, "A")));
         let driver = app.harness();
         source.open(None);
-        let select = format!("timeline-entry:{}", version_a.0.simple());
+        let select = entry_of(version_a);
         wait(driver, &select);
         driver
             .perform_semantic_named(
@@ -546,7 +554,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         .unwrap();
         xattr::remove(&a, CHECKED_HISTORY_RESTORE_XATTR).unwrap();
         source.set_target(Some(target(&b, record_b, "B")));
-        wait(driver, &format!("timeline-entry:{}", version_b.0.simple()));
+        wait(driver, &entry_of(version_b));
         source.set_target(Some(target(&a, record_a, "A again")));
         wait(driver, &select);
         assert!(
@@ -622,7 +630,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         driver.click_named("history-files-result").unwrap();
         wait(driver, "Restored version");
         source.set_target(Some(target(&b, record_b, "B again")));
-        wait(driver, &format!("timeline-entry:{}", version_b.0.simple()));
+        wait(driver, &entry_of(version_b));
         source.set_target(Some(target(&a, record_a, "A third")));
         wait(driver, "history-files-undo");
         wait(driver, &select);

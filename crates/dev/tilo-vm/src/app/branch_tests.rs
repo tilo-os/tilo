@@ -1579,7 +1579,7 @@ fn the_dev_image_gives_the_nic_the_address_tilo_vm_computes() {
         "{rules}"
     );
     assert!(
-        rules.contains("ENV{SYSTEMD_WANTS}+=\"tilo-vm-lan.service\""),
+        rules.contains("RUN+=\"/usr/bin/systemctl --no-block start tilo-vm-lan.service\""),
         "{rules}"
     );
     let unit = std::fs::read_to_string(repo_file(

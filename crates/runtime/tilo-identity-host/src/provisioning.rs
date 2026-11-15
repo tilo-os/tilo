@@ -1859,13 +1859,34 @@ mod tests {
             relay_endpoint: None,
             label: "home".into(),
             user_public_key: identity_id.clone(),
-            device_cert: None,
+            device_cert: Some(local_cert.clone()),
             relay_workspace_ids: vec![WorkspaceId::from_u128(1)],
         };
+        // Another person's peer, kept in the registry beside this person's and
+        // left out of the copy: a registration this build writes carries the
+        // certificate it was enrolled with.
+        let other_root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let other_device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let mut other_cert = DeviceCert {
+            user_public_key: other_root.verifying_key().to_bytes(),
+            device_public_key: other_device.verifying_key().to_bytes(),
+            device_label: "other".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut other_cert, &other_root).unwrap();
         let other = HomePeerRegistration {
-            user_public_key: hex::encode([9_u8; 32]),
+            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
+            device_node_id: hex::encode(other_cert.device_public_key),
+            relay_service_node_id: hex::encode([8_u8; 32]),
+            relay_endpoint: None,
             label: "other".into(),
-            ..own.clone()
+            user_public_key: hex::encode(other_cert.user_public_key),
+            device_cert: Some(other_cert),
+            relay_workspace_ids: vec![WorkspaceId::from_u128(1)],
         };
         std::fs::write(
             &peers,
@@ -1994,11 +2015,9 @@ mod tests {
         );
         let local_registry: Vec<HomePeerRegistration> =
             serde_json::from_slice(&std::fs::read(&peers).unwrap()).unwrap();
-        assert!(
-            local_registry
-                .iter()
-                .any(|entry| entry.user_public_key == hex::encode([9_u8; 32]))
-        );
+        assert!(local_registry.iter().any(
+            |entry| entry.user_public_key == hex::encode(other_root.verifying_key().to_bytes())
+        ));
 
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", dir.path().join("var/home/quser/.config"));
@@ -2047,7 +2066,7 @@ mod tests {
                 relay_endpoint: None,
                 label: "home".into(),
                 user_public_key: identity_id,
-                device_cert: None,
+                device_cert: Some(local_cert.clone()),
                 relay_workspace_ids: vec![WorkspaceId::from_u128(1)],
             }])
             .unwrap(),
