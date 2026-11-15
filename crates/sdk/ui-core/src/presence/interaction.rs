@@ -359,6 +359,12 @@ impl PresenceCtx {
         )
     }
 
+    /// When a frame first drew `invocation`'s current phase: a person's edit after it, where it
+    /// wrote, puts its mark away.
+    pub fn interaction_drawn_at(&self, invocation: InvocationId) -> Option<Instant> {
+        self.interactions.get(&invocation)?.drawn_at.get()
+    }
+
     /// A frame drew `invocation`'s current phase at `now`: its dwell, and the fade of what it
     /// wrote, count from the first such frame.
     pub fn note_drawn(&self, invocation: InvocationId, now: Instant) {
@@ -404,20 +410,6 @@ impl PresenceCtx {
                 .cmp(&right.interaction.actor.by.key())
         });
         entries
-            .into_iter()
-            .map(|entry| entry.interaction.clone())
-            .collect()
-    }
-
-    /// Visible activity excluding invocations already projected onto exact
-    /// action loci. This keeps a resolved marker/outline from also appearing
-    /// as a generic fallback card.
-    pub fn visible_interactions_excluding(
-        &self,
-        now: Instant,
-        resolved: &[InvocationId],
-    ) -> Vec<SemanticInteraction> {
-        self.visible_entries_excluding(now, resolved)
             .into_iter()
             .map(|entry| entry.interaction.clone())
             .collect()
@@ -1751,10 +1743,8 @@ mod tests {
             unresolved.actor = tilo_actions::Acting::agent("another-agent");
             presence.apply_interaction_at(resolved.clone(), at).unwrap();
             presence
-                .apply_interaction_at(unresolved.clone(), at)
+                .apply_interaction_at(unresolved, at)
                 .unwrap();
-            let remaining = presence.visible_interactions_excluding(at, &[resolved.invocation]);
-            assert_eq!(remaining, vec![unresolved]);
             let cards = presence.interaction_card_layout_excluding(
                 Rect::new(0.0, 0.0, 800.0, 600.0),
                 at,
@@ -2327,7 +2317,11 @@ pub(crate) fn written_in(
     if region.is_some_and(|region| region != written) {
         return None;
     }
-    let range = ranges.iter().find(|range| range.block == block)?;
+    // A caller may name a block by the start of its id, as the document resolves it: a write that
+    // landed named one block only.
+    let range = ranges.iter().find(|range| {
+        range.block == block || (!range.block.is_empty() && block.starts_with(&range.block))
+    })?;
     let chars = text.chars().count();
     let start = usize::try_from(range.start).ok()?.min(chars);
     let end = usize::try_from(range.end).ok()?.min(chars).max(start);

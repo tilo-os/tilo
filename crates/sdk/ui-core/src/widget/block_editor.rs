@@ -752,6 +752,9 @@ pub struct BlockEditor {
     /// An empty canonical list has a local paragraph until the first effective edit.
     canonical_empty: bool,
     interception_before: Option<Vec<BlockSnapshot>>,
+    /// The block the person last edited here, and when: what someone else wrote there before then
+    /// no longer glows as theirs.
+    edited_at: Option<(String, crate::time::Instant)>,
     /// Operations initiated by a synthetic accessibility control. Unlike
     /// pointer/key input there is no enclosing window event for `MainPanel` to
     /// drain, so retain them until the app's next sync dispatches the same
@@ -950,6 +953,7 @@ impl BlockEditor {
             canonical_existing: false,
             canonical_empty: false,
             interception_before: None,
+            edited_at: None,
             pending_semantic_ops: Vec::new(),
             replace_enabled: false,
             find_replace: None,
@@ -1019,6 +1023,9 @@ impl BlockEditor {
     /// Note the blocks as they are before an edit, unless an earlier edit the
     /// owner has not taken yet is already noted.
     fn begin_edit(&mut self) {
+        if let Some(block) = self.focused.and_then(|index| self.blocks.get(index)) {
+            self.edited_at = Some((block.id.clone(), crate::time::now()));
+        }
         if self.interception_before.is_none() {
             self.interception_before = Some(self.block_snapshot());
         }

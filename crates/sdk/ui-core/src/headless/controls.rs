@@ -739,27 +739,12 @@ mod locus_tests {
     }
 
     fn interaction(resource: &str) -> tilo_actions::SemanticInteraction {
-        tilo_actions::SemanticInteraction {
-            version: tilo_actions::INTERACTION_VERSION,
-            invocation: tilo_actions::InvocationId::new(),
-            sequence: 1,
-            actor: tilo_actions::Acting::person("synthetic-test-only"),
-            phase: tilo_actions::InteractionPhase::Applying,
-            action: tilo_actions::InteractionAction {
-                id: "edit".into(),
-                label: "Edit".into(),
-                app: None,
-                step: None,
-                creates: None,
-            },
-            resource: tilo_actions::ActionResource {
-                id: resource.into(),
-                kind: "example".into(),
-                label: "Same label".into(),
-            },
-            anchor: tilo_actions::InteractionAnchor::Resource,
-            group: None,
-        }
+        let mut event = super::agent_acting(resource, "edit");
+        event.actor = tilo_actions::Acting::person("synthetic-test-only");
+        event.action.label = "Edit".into();
+        event.resource.kind = "example".into();
+        event.resource.label = "Same label".into();
+        event
     }
 
     #[test]

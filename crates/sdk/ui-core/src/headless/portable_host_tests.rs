@@ -1074,40 +1074,26 @@ fn changed_pixels(
 }
 
 fn written_interaction(start: u64, end: u64) -> tilo_actions::SemanticInteraction {
-    tilo_actions::SemanticInteraction {
-        version: tilo_actions::INTERACTION_VERSION,
-        invocation: tilo_actions::InvocationId::new(),
-        sequence: 1,
-        actor: tilo_actions::Acting::agent("scribe"),
-        phase: tilo_actions::InteractionPhase::Applying,
-        action: tilo_actions::InteractionAction {
-            id: "insert".into(),
-            label: "Write".into(),
-            app: None,
-            step: None,
-            creates: None,
-        },
-        resource: tilo_actions::ActionResource {
-            id: "so.tilo.notes/note".into(),
-            kind: "so.tilo.notes/note".into(),
-            label: "Note".into(),
-        },
-        anchor: tilo_actions::InteractionAnchor::Text {
-            region: "body".into(),
-            ranges: vec![tilo_actions::InteractionTextRange {
-                block: "b1".into(),
-                start,
-                end,
-            }],
-        },
-        group: None,
-    }
+    let mut event = crate::headless::agent_acting("so.tilo.notes/note", "insert");
+    event.actor = tilo_actions::Acting::agent("scribe");
+    event.action.label = "Write".into();
+    event.resource.label = "Note".into();
+    event.anchor = tilo_actions::InteractionAnchor::Text {
+        region: "body".into(),
+        ranges: vec![tilo_actions::InteractionTextRange {
+            block: "b1".into(),
+            start,
+            end,
+        }],
+    };
+    event
 }
 
 fn note_frame(text: &str) -> FrameHarness {
     use crate::widget::{BlockContent, BlockEditor};
     let mut editor = BlockEditor::new();
-    editor.present_blocks(&[BlockContent::paragraph("b1", text)]);
+    // The agent's writes name it `b1`, the start of its id, as the document lets a caller.
+    editor.present_blocks(&[BlockContent::paragraph("b1c2d3e4", text)]);
     let mut frame = frame(Box::new(
         Container::new()
             .with_padding(100.0)
@@ -1124,7 +1110,7 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
     use crate::permissions::MemberId;
     use crate::presence::SelectionRange;
     let text = "The quick brown fox jumps";
-    let key = crate::widget::block_editor::block_presence_key("b1");
+    let key = crate::widget::block_editor::block_presence_key("b1c2d3e4");
     let (start, end) = (4u64, 9u64); // "quick"
     let bytes = (4usize, 9usize);
 
@@ -1203,7 +1189,7 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
 fn an_agent_writing_wears_one_tag_at_its_caret() {
     use crate::permissions::MemberId;
     let text = "The quick brown fox jumps";
-    let key = crate::widget::block_editor::block_presence_key("b1");
+    let key = crate::widget::block_editor::block_presence_key("b1c2d3e4");
     let mut frame = note_frame(text);
     let event = written_interaction(4, 9);
     let at = crate::time::now()
@@ -1232,6 +1218,20 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
         tags,
         vec!["Ada: added text".to_owned()],
         "one tag, saying who and what it did to the text"
+    );
+    // The person typing in that paragraph puts the agent's write away.
+    frame.click_at(112.0, 110.0);
+    frame.type_text("x");
+    frame.poll_frame().unwrap();
+    frame.relayout();
+    frame.render_rgba();
+    assert!(
+        frame
+            .presence()
+            .caret_tags()
+            .iter()
+            .all(|tag| tag.label != "Ada: added text"),
+        "the agent's write is no longer drawn"
     );
 }
 

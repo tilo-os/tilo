@@ -42,7 +42,7 @@ pub use layer::{PresenceLayer, WidgetPresence};
 pub use mark::PresenceMark;
 pub use placed::PlacedPointer;
 pub use render::{
-    FOLLOWED_POINTER_REACH, PeerCursor, PillPlacement, PillRequest, contrast_ink, contrast_ink_dim,
+    FOLLOWED_POINTER_REACH, PeerCursor, PillPlacement, PillRequest, contrast_ink,
     draw_peer_cursors, draw_peer_presence, draw_remote_cursors, draw_remote_presence,
     layout_peer_pills, paint_follow_frame, paint_followed_pointer, paint_own_chat_bubble,
     paint_reaction, paint_speaking_ring,

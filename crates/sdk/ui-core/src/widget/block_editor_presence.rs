@@ -61,7 +61,8 @@ impl BlockEditor {
         }
         // What an invocation writes here glows in its actor's colour, exactly
         // the characters it wrote, with its caret where they end: the marks a
-        // person's typing leaves, from an action rather than from keys.
+        // person's typing leaves, from an action rather than from keys. The
+        // person editing this block afterwards puts it away.
         // Whose action caret stands on this line: the one tag it wears says who and what, so their
         // own caret here draws no second one.
         let mut acting: Vec<crate::permissions::MemberId> = Vec::new();
@@ -71,6 +72,14 @@ impl BlockEditor {
             else {
                 continue;
             };
+            let drawn = ctx.presence.interaction_drawn_at(interaction.invocation);
+            if let (Some((edited, at)), Some(drawn)) = (&self.edited_at, drawn)
+                && *edited == b.id
+                && *at >= drawn
+            {
+                ctx.presence.note_shown(interaction.invocation);
+                continue;
+            }
             let Some(alpha) = ctx.presence.interaction_fade(interaction.invocation, now) else {
                 continue;
             };
