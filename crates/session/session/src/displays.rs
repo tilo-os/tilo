@@ -1327,4 +1327,50 @@ mod tests {
             assert!(matches!(error, DoorError::InvalidArguments(_)), "{error:?}");
         }
     }
+
+    #[test]
+    fn the_ends_of_zero_to_one_are_levels() {
+        let dials = Dials::with(&[("eDP-1", 0.5)]);
+        let mut service = showing(Some(dials.clone()), &[("eDP-1", "Built-in")]);
+        for level in [0.0_f32, 1.0] {
+            invoke(
+                &mut service,
+                "set-brightness",
+                &Map::from_iter([("level".to_owned(), Value::from(f64::from(level)))]),
+            )
+            .expect("the end of the range is a level");
+            assert!(
+                close(dials.at("eDP-1"), level),
+                "the display is at {level}: {:?}",
+                dials.at("eDP-1")
+            );
+        }
+    }
+
+    #[test]
+    fn a_level_for_a_display_with_nothing_to_dim_is_refused_and_moves_no_other() {
+        let dials = Dials::with(&[("eDP-1", 0.5)]);
+        let mut service = showing(
+            Some(dials.clone()),
+            &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")],
+        );
+        let error = invoke(
+            &mut service,
+            "set-display-brightness",
+            &Map::from_iter([
+                ("display".to_owned(), Value::from("HDMI-A-1")),
+                ("level".to_owned(), Value::from(0.9)),
+            ]),
+        )
+        .expect_err("that display has nothing to dim");
+        assert!(
+            matches!(&error, DoorError::Unavailable { code, .. } if code == "unknown-display"),
+            "{error:?}"
+        );
+        assert!(
+            dials.0.borrow().set.is_empty(),
+            "no display was set in its place"
+        );
+        assert!(close(dials.at("eDP-1"), 0.5));
+    }
 }
