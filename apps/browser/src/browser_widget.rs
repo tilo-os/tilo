@@ -5907,7 +5907,7 @@ impl BrowserWidget {
         operation: BrowserOperation,
     ) -> Result<ui::framework::Effected, String> {
         let actor = invoker.and_then(|invoker| ui::webview::PageActor::named(&invoker.key()));
-        self.admitted_to_page(actor.as_ref(), invoker, &operation);
+        self.admitted_to_page(invocation, actor.as_ref(), invoker, &operation);
         if matches!(operation, BrowserOperation::ReadServiceSession) {
             if let Some(pending) = &self.service_forget {
                 return Ok(ui::framework::Effected::value(pending.report()));

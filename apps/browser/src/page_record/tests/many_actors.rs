@@ -18,7 +18,7 @@ use crate::page_record::MAX_ACTORS;
 /// Start the page action `effect` for `invoker`, as the host does for an
 /// agent it admitted, and do not wait for it: its invocation, or what the
 /// tab turned it away with at once.
-fn start(
+pub(super) fn start(
     app: &mut App,
     invoker: &ActionInvoker,
     effect: &BrowserEffect,
@@ -56,7 +56,7 @@ fn ended_as(app: &mut App, invocation: InvocationId) -> Option<Result<(), String
 }
 
 /// Wait for the job `invocation` to end, and say how it did.
-fn ended(app: &mut App, invocation: InvocationId) -> Result<(), String> {
+pub(super) fn ended(app: &mut App, invocation: InvocationId) -> Result<(), String> {
     app.harness()
         .wait_until(ui::time::Duration::from_secs(30), |harness| {
             harness
@@ -73,12 +73,12 @@ fn crowd(n: usize) -> ActionInvoker {
 }
 
 /// What `tab`'s record holds, as a reader of it is answered.
-fn entries(record: &PersonRecord<PageRecord>, tab: &str) -> Vec<Value> {
+pub(super) fn entries(record: &PersonRecord<PageRecord>, tab: &str) -> Vec<Value> {
     record.with(|state| state.page(tab, 0).entries)
 }
 
 /// The device each change an agent authored in the record's history names.
-fn devices_in_history(record: &PersonRecord<PageRecord>) -> Vec<Option<InvokerDevice>> {
+pub(super) fn devices_in_history(record: &PersonRecord<PageRecord>) -> Vec<Option<InvokerDevice>> {
     record
         .record()
         .read(|doc| {
@@ -95,12 +95,12 @@ fn devices_in_history(record: &PersonRecord<PageRecord>) -> Vec<Option<InvokerDe
 
 /// Who set a field, as the engine's review of the page says it: by name and
 /// place alone.
-fn set_by(actor: &str, seq: u64) -> Value {
+pub(super) fn set_by(actor: &str, seq: u64) -> Value {
     json!({"how": "action", "by": actor, "seq": seq})
 }
 
 /// A field of the page's form as the engine's review lists it.
-fn reviewed_field(name: &str, set: &Value) -> Value {
+pub(super) fn reviewed_field(name: &str, set: &Value) -> Value {
     json!({"element": "d1e2", "role": "textbox", "name": name, "value": name,
         "form": "form1", "question": name, "set": set})
 }

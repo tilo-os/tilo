@@ -42,8 +42,12 @@ device, and the action system tells Browser the device with every action of
 the run. Browser takes the device from there and from nowhere else: not from
 what the caller says of itself, and not from the engine, which is passed the
 name alone. An actor on the device that runs the page has no device beside
-its name. So two agents of one device are two actors, and one agent is the
-same actor in everything it does.
+its name. An agent is the same actor in everything it does, and every session
+of one MCP client is that one agent: two programs of one client act under one
+name, on one device or on two. The device beside the name tells apart the
+ones that work from different devices. Nothing in an entry tells apart two
+sessions on one device; the record's history does, where each change is
+authored by the session that did it.
 
 Direct input is not an action. A person typing into the page, at the device
 or through a shared window, is the page's own input and is told apart from
@@ -110,7 +114,15 @@ actors it admitted last, and for every actor whose page action is running,
 waiting its turn, or answered and not yet written into the record, however
 many were admitted after it. So a crowd that asks for a busy tab, most of it
 turned away and asking again the moment an action answers, costs the actors
-working in it nothing. What the engine sets down under a name the window no
+working in it nothing. One name may be several sessions, so an action is set
+down as the invoker of the invocation that ran it, not as whoever was
+admitted under its name last: the engine's answer to a page action names the
+place it set the action down at, and the window knows whom it admitted that
+invocation for. What no answer places, a hold and how it ended, is its
+actor's as the name was admitted last. While an action admitted under that
+name from another place is still to be answered or written, such an entry
+may be either session's, and says `device_unknown` rather than name a device
+that may be the other's. What the engine sets down under a name the window no
 longer remembers is still set down as that actor's, and the entry says
 `device_unknown`: where the actor worked from is not known. Such an entry
 names no device and is not read as an actor on the device that runs the page.
