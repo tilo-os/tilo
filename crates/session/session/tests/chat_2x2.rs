@@ -441,6 +441,48 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
 /// opens it from the applications list and its window comes. On that box it left no window, no
 /// process and no word; a refusal by the session or the app's end is what this says when it does
 /// not come.
+/// Chat opens as the first app of a workspace made straight after the session restarted, the way
+/// the e2e-ws-branch box opens it (WB01): through the applications action, its window an app
+/// window of that workspace.
+#[test]
+fn chat_opens_first_in_a_workspace_made_after_the_session_restarted() {
+    let ada = Person::new("Ada");
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.install_chat();
+    laptop.start();
+    tilo_test_env::wait_for("the laptop showing a workspace", || laptop.showing());
+    laptop.stop();
+    laptop.start();
+    tilo_test_env::wait_for("the restarted laptop showing a workspace", || {
+        laptop.showing()
+    });
+    let made = laptop.act_wait(
+        "so.tilo.session",
+        "desktop:chrome\u{1f}new-workspace",
+        &serde_json::json!({"name": "Research"}),
+    );
+    assert!(
+        made.get("err").is_none(),
+        "a workspace of the person's: {made}"
+    );
+    tilo_test_env::wait_for("Research in front", || {
+        laptop.showing().filter(|shown| !shown.is_empty())
+    });
+    laptop.open("so.tilo.chat");
+    laptop.wait_for_window("so.tilo.chat");
+    let windows = laptop.ask(&serde_json::json!({"op": "windows"}));
+    let chat = windows["answer"]["windows"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["app_id"] == "so.tilo.chat"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        (chat["kind"].as_str(), chat["workspace"].as_str()),
+        (Some("Foreign"), Some("Research")),
+        "Chat's window is an app window of Research: {windows}"
+    );
+}
+
 #[test]
 fn chat_opens_on_a_device_alone_in_a_workspace_it_made_and_in_its_branch() {
     let ada = Person::new("Ada");
