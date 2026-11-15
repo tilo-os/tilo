@@ -103,6 +103,7 @@ export function nameEntered(runtime, {origin, workspace, name}, store = globalTh
   if (typeof name !== 'string' || !name) return;
   let at;
   try { at = originOf(origin); } catch { return; }
+  if (typeof workspace !== 'string') return;
   keep(store, runtime.nameEntered(stored(store), JSON.stringify({origin: at, workspace}), name));
 }
 
@@ -111,6 +112,7 @@ export function nameEntered(runtime, {origin, workspace, name}, store = globalTh
 export function markUnavailable(runtime, {origin, workspace}, store = globalThis.localStorage) {
   let at;
   try { at = originOf(origin); } catch { return; }
+  if (typeof workspace !== 'string') return;
   keep(store, runtime.markEnteredUnavailable(stored(store), JSON.stringify({origin: at, workspace})));
 }
 

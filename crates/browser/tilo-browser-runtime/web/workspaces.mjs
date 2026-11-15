@@ -476,8 +476,15 @@ export async function waitListStanding({workspace, fetch = globalThis.fetch, sto
   return standing;
 }
 
+/** The memberships this browser keeps, by host origin. One that names no workspace field at all
+ * (not even `null`) is not one this page keeps, and is left out rather than opened half-read. */
 const readMemberships = store => {
-  try { return JSON.parse(store?.getItem(MEMBERSHIPS) ?? '{}') ?? {}; } catch { return {}; }
+  let all;
+  try { all = JSON.parse(store?.getItem(MEMBERSHIPS) ?? '{}') ?? {}; } catch { return {}; }
+  if (typeof all !== 'object' || Array.isArray(all)) return {};
+  return Object.fromEntries(Object.entries(all)
+    .filter(([, kept]) => kept && typeof kept === 'object' && 'workspace' in kept
+      && (kept.workspace === null || typeof kept.workspace === 'string')));
 };
 
 /** Who this browser joined `workspace`'s host as, and in which workspace, or `null`. */

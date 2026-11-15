@@ -867,3 +867,19 @@ test('an invitation to another workspace on the home\'s host leaves the home its
   keepJoinedHost({origin: 'https://lounge.example', workspace: 'customer', userPublicKey: 'ef'.repeat(32)}, store);
   assert.equal(keptMembership(home, store).workspace, 'customer');
 });
+
+test('a kept membership or entered workspace that names no workspace is left out, not opened half-read', () => {
+  const store = new Map([[KEY, JSON.stringify({
+    'https://workspaces.example': {origin: 'https://workspaces.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)},
+    'https://other.example': {origin: 'https://other.example', workspace: null, userPublicKey: '22'.repeat(32)},
+  })]]);
+  const memberships = {getItem: key => store.get(key)};
+  assert.equal(keptMembership(commons, memberships), null);
+  assert.deepEqual(keptMembership({host: {origin: 'https://other.example'}}, memberships),
+    {origin: 'https://other.example', workspace: null, userPublicKey: '22'.repeat(32)});
+  // Naming or marking a workspace the caller could not name asks the runtime nothing.
+  const runtime = new Proxy({}, {get: (_, rule) => () => { throw new Error(`asked ${String(rule)}`); }});
+  const entered = {getItem: () => '[]', setItem: () => {}};
+  nameEntered(runtime, {origin: 'https://workspaces.example', workspace: undefined, name: 'Tilo'}, entered);
+  markUnavailable(runtime, {origin: 'https://workspaces.example', workspace: undefined}, entered);
+});
