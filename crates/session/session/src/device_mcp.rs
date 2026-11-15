@@ -11,7 +11,7 @@
 //!
 //! A connection the server admits takes one of the MCP server's places as it arrives, and waits
 //! in it for the session's pass ([`crate::mcp_server::Room`]): it waits no longer than the
-//! server serves, and one there is no place for is refused here, where the dialer would
+//! server has places, and one there is no place for is refused here, where the dialer would
 //! otherwise be told the connection opened.
 //!
 //! The person may let such agents in without being asked here — on a box

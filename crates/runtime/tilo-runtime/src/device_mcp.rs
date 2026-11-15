@@ -19,7 +19,7 @@
 //! standalone runtime, whichever holds A's device key and endpoint
 //! ([`OtherDevices`]). A `--connect --device NAME` client asks it with one
 //! [`Forward`] line on its local server ([`ask_forward`]), reads whether B's server
-//! opened, and from then on its stdio is B's server.
+//! admitted it, and from then on its stdio is B's server.
 //!
 //! The wire is newline-delimited JSON on one bi-directional stream: the
 //! dialer's [`Hello`], B's [`Answer`], then MCP JSON-RPC both ways until either
