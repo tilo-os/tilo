@@ -1446,7 +1446,9 @@ start_native_discord() {
 # which step and where to read why, instead of hanging on the whole check's
 # timeout.
 wait_relay() {
-  wait_for 'relay (its readiness probe, /mode)' "http://127.0.0.1:$routes_port/mode" 30
+  # A relay opens every workspace its state holds before it answers: one whose
+  # workspaces hold a repository's files takes a minute, as the image's does.
+  wait_for 'relay (its readiness probe, /mode)' "http://127.0.0.1:$routes_port/mode" 300
   wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 30
 }
 
