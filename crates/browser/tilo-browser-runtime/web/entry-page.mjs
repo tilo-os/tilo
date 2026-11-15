@@ -2362,9 +2362,12 @@ async function openOwnAfterSignIn({page, status}) {
 async function ensureOwnWorkspace(page, store = globalThis.localStorage) {
   const peer = page.peer;
   const origin = new URL(peer.origin).origin;
+  const named = namedOwnWorkspace(origin, peer.userPublicKey, {store});
   const own = await peer.enterOwnWorkspace({
-    // The one this browser named for an agent, before the host made it.
-    workspace: namedOwnWorkspace(origin, peer.userPublicKey, {create: false, store}),
+    // The one this browser names here if it named none yet, for an agent to
+    // be handed the same one: a page that let the host pick a name would give
+    // its agent a workspace the host does not know.
+    workspace: named,
     entered: id => enteredWorkspaces(store).some(kept => kept.origin === origin && kept.workspace === id),
   });
   const name = own.name || null;
