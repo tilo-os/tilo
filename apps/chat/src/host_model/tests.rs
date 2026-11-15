@@ -293,13 +293,13 @@ tilo_test_env::scenario! {
         let name = app.message_author_name(&message);
         assert!(matches!(app.message_author(&message, &name, "", None),
             ui::author::Author::Bot { appearance: Some(shown), .. } if shown.name == "Another person"));
-        assert!(!app.is_provider_output(&message));
+        assert!(!crate::host_model::is_provider_output(&message));
         let label = app.model_message_label(&message);
         assert!(label.starts_with("Another person (bot:"));
         assert!(!label.contains("model output"));
-        message.author = "agent-task:actual".into();
-        app.agent_authors
-            .insert(message.author.clone(), "Actual agent".into());
+        message.author = "agent:actual".into();
+        app.workspace_agent_names
+            .insert("actual".to_owned(), "Actual agent".into());
         let name = app.message_author_name(&message);
         assert_eq!(name, app.user_name(&message.author));
         assert!(name.starts_with("Actual agent"));
@@ -310,7 +310,7 @@ tilo_test_env::scenario! {
                 ..
             }
         ));
-        assert!(!app.is_provider_output(&message));
+        assert!(!crate::host_model::is_provider_output(&message));
     }
 
     phase completed_stream_is_not_duplicated_and_model_tool_calls_are_inert;

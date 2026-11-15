@@ -168,27 +168,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_agent_is_named_once_for_everyone;
-    {
-        const AGENT: &str = "agent-task:33333333-3333-4333-8333-333333333333";
-        let mut ada = workspace();
-        ada.apply(Chat::NAME_AGENT.with(chat::NameAgent {
-            participant: AGENT.into(),
-            name: "Tide".parse().unwrap(),
-        }))
-        .unwrap();
-        assert!(
-            ada.apply(Chat::NAME_AGENT.with(chat::NameAgent {
-                participant: BO.into(),
-                name: "Not an agent".parse().unwrap(),
-            }))
-            .is_err()
-        );
-        let names = ada.state().unwrap().agent_authors();
-        assert_eq!(names.get(AGENT).map(String::as_str), Some("Tide"));
-        assert_eq!(names.len(), 1);
-    }
-
     phase only_the_author_edits_or_deletes_and_a_moderator_removes;
     {
         let mut ada = Talk::new();
@@ -1680,7 +1659,7 @@ tilo_test_env::scenario! {
 
     phase an_agent_records_its_work_on_its_own_reply_to_the_summons;
     {
-        const AGENT: &str = "agent-task:22222222-2222-4222-8222-222222222222";
+        const AGENT: &str = "agent:tide";
         let mut ada = Talk::new();
         ada.apply(post("@Tide chart the revenue")).unwrap();
         let summons = ada.said("@Tide chart the revenue");
@@ -1716,11 +1695,6 @@ tilo_test_env::scenario! {
         assert_eq!(reply.author, AGENT);
         assert_eq!(reply.parent.as_deref(), Some(summons.as_str()));
         assert_eq!(reply.text, "On it.");
-        assert!(
-            reply
-                .author
-                .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
-        );
         let work = reply.work.expect("the reply carries the work");
         assert!(matches!(
             work.state,

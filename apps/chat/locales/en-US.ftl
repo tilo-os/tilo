@@ -184,7 +184,6 @@ chat-person-relative-name = { $name } ({ $tag })
 ## History: what each change did, by verb and by field
 chat-begin-chat = Started the chat
 chat-introduce = Introduced themselves as { $name }
-chat-name-agent = Named an agent { $name }
 chat-create-category = Created the category { $name }
 chat-create-channel = Created the channel #{ $name }
 chat-create-channel-with-id = Created the channel #{ $name }
@@ -238,7 +237,6 @@ chat-chat-feedback = { $op ->
     [remove] Removed a feedback report
    *[other] Changed the feedback reports
 }
-chat-chat-agent-names = Changed the agents' names
 chat-chat-read = Changed the read marks
 chat-chat-drafts-drafts = { $op ->
     [splice] Typed in a draft
@@ -472,7 +470,6 @@ chat-messages-record-work = Record agent work
 chat-messages-carry-counts = Carry the counts of the parts before
 chat-messages-stream-output = Record an answer as it arrives
 chat-workspace-introduce = Introduce yourself
-chat-workspace-name-agent = Name an agent
 chat-workspace-create-category = New category
 chat-workspace-create-channel = New channel
 chat-workspace-create-channel-with-id = New channel with an id

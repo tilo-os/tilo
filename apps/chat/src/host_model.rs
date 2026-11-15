@@ -74,6 +74,19 @@ impl HostModel {
         }
     }
 }
+
+/// Stream output keeps the authenticated invoker for custody, but is not that
+/// person's speech. Appearance supplies only the model's display name.
+pub(crate) fn is_provider_output(message: &crate::model::Message) -> bool {
+    !message.author.starts_with("bot:")
+        && !crate::views::is_agent(&message.author)
+        && message
+            .work
+            .as_ref()
+            .and_then(|work| work.stream.as_ref())
+            .is_some()
+}
+
 impl ChatApp {
     pub(crate) fn model_message_label(&self, message: &crate::model::Message) -> String {
         let author = self.message_author_label(message, crate::identity::RoleWord::InName);
@@ -124,24 +137,8 @@ impl ChatApp {
         label
     }
 
-    /// Stream output keeps the authenticated invoker for custody, but is not
-    /// that person's speech. Appearance supplies only the model's display name.
-    pub(crate) fn is_provider_output(&self, message: &crate::model::Message) -> bool {
-        !message.author.starts_with("bot:")
-            && !crate::views::is_agent(&message.author)
-            && !message
-                .author
-                .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
-            && !self.agent_authors.contains_key(&message.author)
-            && message
-                .work
-                .as_ref()
-                .and_then(|work| work.stream.as_ref())
-                .is_some()
-    }
-
     pub(crate) fn message_author_name(&self, message: &crate::model::Message) -> String {
-        if self.is_provider_output(message) {
+        if is_provider_output(message) {
             message
                 .appearance
                 .as_ref()
@@ -182,7 +179,7 @@ impl ChatApp {
         word: crate::identity::RoleWord,
     ) -> String {
         let name = self.message_author_name(message);
-        if self.is_provider_output(message) {
+        if is_provider_output(message) {
             crate::i18n::t_args(
                 "chat-model-attribution",
                 &[

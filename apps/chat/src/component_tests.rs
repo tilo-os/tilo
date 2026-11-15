@@ -992,7 +992,6 @@ fn consecutive_typed_sends_leave_an_empty_composer_each_time() {
     reason = "one conversation between a visitor and an agent, asserted end to end"
 )]
 fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
-    use tilo_actions::ParticipantId;
     let cache = ui::portable_storage::PortableStorage::new("chat-agent-mount", "device").unwrap();
     let (mut visitor, records, checkout) = component_mount(&cache, "Visitor", 1);
     let chain = crate::testing::chain();
@@ -1012,12 +1011,22 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         serde_json::json!({"channel": "c_chat", "text": "Where does Odysseus wake up?"}),
     );
 
-    let (mut agent, _, _) = component_mount(&cache, "agent-task:reading", 2);
-    agent.join_participant(
-        &ParticipantId::new("agent-task:reading").unwrap(),
-        "Reading agent",
+    // The agent introduces itself, and the chat's own record names it by the row it writes.
+    let (mut agent, _, _) = component_mount(&cache, "agent:reading", 2);
+    let workspace = agent
+        .bound_resources(None)
+        .unwrap()
+        .iter()
+        .flat_map(|resource| std::iter::once(resource).chain(resource.children.iter()))
+        .find(|resource| resource.kind == "chat.workspace")
+        .map(|resource| resource.id.as_str().to_owned())
+        .expect("the chat's workspace is published");
+    invoke(
+        &mut agent,
+        &workspace,
+        "introduce",
+        serde_json::json!({"name": "Reading agent", "initials": "RA", "color": 3}),
     );
-    // The host names the agent for every member on its next tick.
     agent.wait_until(ui::time::Duration::ZERO, |_| true);
     let messages = |frame: &ui::headless::FrameHarness| {
         let mut ids = frame
@@ -1080,19 +1089,15 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     assert_eq!(work(&records)["state"]["state"], "done");
     assert_eq!(work(&records)["trace"][0]["label"], "Add note");
 
-    let (author, agents) = records
-        .read(&checkout.id, |doc| {
-            let reply = crate::testing::messages_in(&records, "c_chat")
+    let author = records
+        .read(&checkout.id, |_| {
+            crate::testing::messages_in(&records, "c_chat")
                 .pop()
-                .unwrap();
-            (reply.author, crate::projection::read(doc).agent_authors())
+                .unwrap()
+                .author
         })
         .unwrap();
-    assert_eq!(author, "agent-task:reading");
-    assert_eq!(
-        agents.get("agent-task:reading").map(String::as_str),
-        Some("Reading agent")
-    );
+    assert_eq!(author, "agent:reading");
     // Each records only its own work: nobody rewrites the agent's.
     visitor.wait_until(ui::time::Duration::ZERO, |_| true);
     let shown = visitor.bound_resources(Some(&reply)).unwrap();

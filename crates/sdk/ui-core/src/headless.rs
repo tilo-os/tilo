@@ -8168,18 +8168,6 @@ impl FrameHarness {
             .map(|binding| binding.instance_id)
     }
 
-    /// Admit an agent task participant into the hosted component under `label`, its display name, as a
-    /// host does before the task's first invocation (`App::join_participant`).
-    pub fn join_participant(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        self.invalidate_local();
-        crate::collaboration::participants::join_participant(self.root.as_mut(), participant);
-        crate::collaboration::participants::set_participant_label(
-            self.root.as_mut(),
-            participant,
-            label,
-        );
-    }
-
     /// What a whole-window capture draws of the root, as the shell's "full app" capture does: the
     /// size the root shows beyond its window and its scene at that size.
     pub fn complete_content(&mut self) -> Option<(vello::kurbo::Size, Scene)> {

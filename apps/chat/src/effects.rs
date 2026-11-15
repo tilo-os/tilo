@@ -887,7 +887,8 @@ impl ChatApp {
         // leaves that unsaid: "Reading agent", and "Helper for Ada" for one that wrote for a
         // person.
         let author = self.message_author_label(message, crate::identity::RoleWord::InBadge);
-        let agent = self.is_provider_output(message) || crate::views::is_agent(&message.author);
+        let agent = crate::host_model::is_provider_output(message)
+            || crate::views::is_agent(&message.author);
         let mut row = LiveRow::new(
             item_row_id("messages", id),
             "chat.workspace.messages",

@@ -36,7 +36,7 @@ use crate::model::{ChannelKind, Presence};
 
 /// Longest message body, in bytes: a conversation turn, not a document.
 pub const MAX_MESSAGE_TEXT_BYTES: usize = 64 * 1024;
-/// Longest agent display name recorded for an agent task.
+/// Longest agent display name recorded with provider output.
 pub const MAX_AGENT_NAME_BYTES: usize = 80;
 /// Largest attachment a message refers to.
 pub const MAX_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
@@ -140,7 +140,9 @@ pub const VOICE_CHANNEL: &str = "c_voice";
 /// with its fields flat beside its variant's name; they are stored by their
 /// variant now. Up to version 7 a conversation with an agent was a channel
 /// carrying the agent's id (`conversation_with`); it is the participant the
-/// conversation is with now ([`participants_of_old_channels`]).
+/// conversation is with now ([`participants_of_old_channels`]). Version 8 kept
+/// an agent's name under `agent_names`; the workspace's record of its agents
+/// names it, and it stays where it is.
 ///
 /// # Errors
 /// When `from` is not a version this chat was, or a stored value does not
@@ -150,7 +152,7 @@ fn migrate(
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::ROOT;
-    if !(1..=7).contains(&from) {
+    if !(1..=8).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Chat migration from {from}"
         )));
@@ -550,9 +552,6 @@ pub struct Chat {
     pub channels: Collection<Conversation>,
     /// The people and agents in the workspace, by [`MemberId::key`].
     pub people: Keyed<Person>,
-    /// The name every member shows for an agent task, as the person hosting
-    /// it labelled it.
-    pub agent_names: BTreeMap<String, String>,
     /// Each person's read mark per channel: how far into the chain of
     /// message parts they have read it.
     pub read: BTreeMap<String, BTreeMap<String, crate::parts::ReadMark>>,
@@ -829,8 +828,7 @@ pub struct Revision {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Person {
     /// Who they are, by [`MemberId::key`]: what messages, reactions and read
-    /// marks name. A run of a task writes under its own id, which is none of a
-    /// member's.
+    /// marks name.
     #[model(readonly)]
     pub id: Atom,
     /// The name they show.
@@ -854,10 +852,7 @@ impl Person {
     /// Whether this is software acting in the workspace rather than a person.
     #[must_use]
     pub fn is_agent(&self) -> bool {
-        self.id
-            .0
-            .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
-            || self.member().is_some_and(|member| !member.is_person())
+        self.member().is_some_and(|member| !member.is_person())
     }
 }
 
@@ -1444,7 +1439,7 @@ impl Chat {
     read_content = Chat::content,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 8,
+    version = 9,
     migrate = migrate,
 )]
 impl Chat {
@@ -1487,22 +1482,6 @@ impl Chat {
         person.initials = initials;
         person.color = color;
         person.status = Presence::Online;
-        Ok(())
-    }
-
-    /// Name an agent.
-    ///
-    /// The name every member shows for an agent task.
-    #[action(audience = "agents")]
-    pub fn name_agent(&mut self, participant: String, name: NonBlank) -> Result<(), Refusal> {
-        if !participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
-            || name.len() > MAX_AGENT_NAME_BYTES
-        {
-            return Err(Refusal::new(
-                "only an agent task is named, with a short name",
-            ));
-        }
-        self.agent_names.insert(participant, name.into_string());
         Ok(())
     }
 

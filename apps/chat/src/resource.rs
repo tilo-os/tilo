@@ -386,7 +386,7 @@ impl ResourceApp for ChatShell {
     /// the capture's own person: its people and its channels under the
     /// fixed ids the scenarios name, which only the moderators' actions
     /// make, minting their own. `agent-work` adds the agent introducing
-    /// itself and being named, each change written by whoever made it.
+    /// itself, written by the agent.
     /// Their messages are staged in the chat's parts (`part_scenario`).
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
@@ -630,34 +630,22 @@ fn bridged_post() -> (Id, crate::record::Message) {
 
 /// The agent the `agent-work` scenario summons.
 #[cfg(feature = "samples")]
-pub(crate) const DEMO_AGENT: &str = "agent-task:11111111-1111-4111-8111-111111111111";
+pub(crate) const DEMO_AGENT: &str = "agent:tide";
 /// The message summoning it.
 #[cfg(feature = "samples")]
 pub(crate) const DEMO_SUMMONS: &str = "m_agent_request";
 
-/// On the demo workspace: the agent introducing itself and being named,
-/// each by its author.
+/// On the demo workspace: the agent introducing itself.
 #[cfg(feature = "samples")]
 pub(crate) fn agent_work_steps() -> Vec<(&'static str, Invoke<Chat>)> {
-    let me = crate::model::ME;
-    let mut steps = vec![(
+    vec![(
         DEMO_AGENT,
         Chat::INTRODUCE.with(chat::Introduce {
             name: "Tide".into(),
             initials: "TI".into(),
             color: 6,
         }),
-    )];
-    if let Some(name) = ui::tilo_resource::NonBlank::parse("Tide") {
-        steps.push((
-            me,
-            Chat::NAME_AGENT.with(chat::NameAgent {
-                participant: DEMO_AGENT.into(),
-                name,
-            }),
-        ));
-    }
-    steps
+    )]
 }
 
 /// In the demo conversation: the reader summoning the agent, under the id

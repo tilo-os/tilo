@@ -7203,24 +7203,6 @@
         ],
         "description": ""
       },
-      "chat.workspace.name-agent.Arguments": {
-        "type": "object",
-        "properties": {
-          "participant": {
-            "type": "string"
-          },
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "participant",
-          "name"
-        ],
-        "description": ""
-      },
       "chat.workspace.create-category.Arguments": {
         "type": "object",
         "properties": {
@@ -8214,6 +8196,12 @@
                 ]
               },
               "handle": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reference": {
                 "type": [
                   "string",
                   "null"
@@ -26815,12 +26803,6 @@
       "resource": "chat.workspace",
       "action": "introduce",
       "arguments": "#/components/schemas/chat.workspace.introduce.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "name-agent",
-      "arguments": "#/components/schemas/chat.workspace.name-agent.Arguments"
     },
     {
       "app": "so.tilo.chat",

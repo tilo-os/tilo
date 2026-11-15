@@ -394,7 +394,7 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
         "an agent's answer is drawn as an agent, not as a person"
     );
     assert!(
-        !app.is_provider_output(&answer),
+        !crate::host_model::is_provider_output(&answer),
         "an agent's own answer is the agent's, not a model's output"
     );
 

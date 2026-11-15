@@ -66,7 +66,6 @@ impl Widget for ChatWindow {
         dyn ui::widget::Collaborative,
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::collaboration::participants::Participants,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::application_view::ApplicationViewState,
         dyn ui::view::capability::ViewState,
@@ -343,20 +342,6 @@ impl Collaborative for ChatWindow {
 impl ui::presence::capability::PublishesPresence for ChatWindow {
     fn presence_payload(&self) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
         self.chat.borrow().presence_payload()
-    }
-}
-
-impl ui::collaboration::participants::Participants for ChatWindow {
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        self.state().join_participant(participant)
-    }
-
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        self.state().leave_participant(participant);
-    }
-
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        self.state().set_participant_label(participant, label);
     }
 }
 

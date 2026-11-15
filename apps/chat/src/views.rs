@@ -478,7 +478,7 @@ impl Channel {
         let shown = roster
             .map(|person| person.name.trim().to_owned())
             .filter(|name| !name.is_empty())
-            .or_else(|| agent_name(chat, names, author))
+            .or_else(|| agent_name(names, author))
             .or_else(|| (author == me).then(|| names.me.trim().to_owned()))
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| crate::identity::unnamed_label(author));
@@ -587,31 +587,23 @@ fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> boo
         .to_string()
 }
 
-/// Whether `author` is software rather than a person: a member that is an agent or a bot, or a
-/// run of a task (`agent-task:<task>`), which is no member.
+/// Whether `author` is software rather than a person: a member that is an agent or a bot.
 pub(crate) fn is_agent(author: &str) -> bool {
-    author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
-        || MemberId::parse(author).is_some_and(|member| !member.is_person())
+    MemberId::parse(author).is_some_and(|member| !member.is_person())
 }
 
-/// The name an agent author shows, as the record or the workspace names it: the name the
-/// workspace keeps for it (Chat's own `agent_names`, or the workspace's member record the
-/// reading carries), and otherwise what Chat calls an agent it has not been told the name of. An
-/// author that is not an agent has no agent's name.
-fn agent_name(chat: &crate::record::Chat, names: &Names, author: &str) -> Option<String> {
+/// The name an agent author shows, as the workspace's member record names it, and otherwise what
+/// Chat calls an agent it has not been told the name of. An author that is not an agent has no
+/// agent's name.
+fn agent_name(names: &Names, author: &str) -> Option<String> {
     if !is_agent(author) {
         return None;
     }
-    let called = [
-        chat.agent_names.get(author).map(|name| name.trim()),
-        MemberId::parse(author)
-            .filter(|member| !member.is_person())
-            .and_then(|member| names.agents.get(member.id()))
-            .map(|name| name.trim()),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|name| !name.is_empty());
+    let called = MemberId::parse(author)
+        .filter(|member| !member.is_person())
+        .and_then(|member| names.agents.get(member.id()))
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty());
     Some(called.map_or_else(|| crate::i18n::t("chat-agent-kind"), str::to_owned))
 }
 

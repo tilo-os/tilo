@@ -39,7 +39,6 @@ tilo_test_env::scenario! {
             "    categories: Collection<Category>",
             "    channels: Collection<Conversation>",
             "    people: Collection<Person>",
-            "    agent_names: Map<Text>",
         ] {
             assert!(workspace.contains(line), "`{line}` in:\n{workspace}");
         }

@@ -229,19 +229,6 @@ impl Chat {
             .collect()
     }
 
-    /// The names hosts gave their agent tasks.
-    #[must_use]
-    pub fn agent_authors(&self) -> HashMap<String, String> {
-        self.agent_names
-            .iter()
-            .filter(|(participant, name)| {
-                participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
-                    && !name.trim().is_empty()
-            })
-            .map(|(participant, name)| (participant.clone(), name.clone()))
-            .collect()
-    }
-
     /// The rows of `channel`, read from the parts' rows already read (`parts`,
     /// oldest first) instead of from the chain: the open channel's messages,
     /// with the feedback filed in it where it was filed and what is being sent

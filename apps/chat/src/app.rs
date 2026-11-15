@@ -397,9 +397,6 @@ pub struct ChatApp {
     pub(crate) motion_reduced: bool,
     pub(crate) input_floating_surface: Option<String>,
 
-    // Agent display names of agent-authored messages (`agent_authors` in the
-    // document): what every member renders as "<name> (agent)".
-    pub(crate) agent_authors: HashMap<Id, String>,
     /// The person each agent here acts for, as presence knows it.
     pub(crate) agent_people: HashMap<Id, String>,
     /// What the workspace's host keeps of the files members post, as it says:
@@ -417,11 +414,6 @@ pub struct ChatApp {
     /// The colours mentions are painted in, and what they were built from.
     pub(crate) mention_paint_cache:
         std::cell::RefCell<Option<(u64, ui::widget::marks::MentionPaint)>>,
-    // Agent task participants this (headless host) worker serves, with the
-    // display name the host labelled each with. A delivered `post` resolved
-    // for one of them is authored by that participant.
-    pub(crate) participant_labels: HashMap<Id, String>,
-
     // Other spellings of this window's person the workspace uses. See
     // `adopt_own_participant`: what was said under one of these is still
     // this person, so their lines go on reading as theirs.
@@ -794,13 +786,11 @@ impl ChatApp {
             recorded_channels: std::collections::HashSet::new(),
             motion_reduced: false,
             input_floating_surface: None,
-            agent_authors: HashMap::new(),
             agent_people: HashMap::new(),
             workspace_files: crate::record::WorkspaceFiles::default(),
             body_views: std::cell::RefCell::new(HashMap::new()),
             body_text_inset: std::cell::Cell::new(0.0),
             mention_paint_cache: std::cell::RefCell::new(None),
-            participant_labels: HashMap::new(),
             former_ids: Vec::new(),
             // Default to the deterministic local bus; the live binary
             // (`ChatApp::new`) upgrades to the real transport. This keeps
@@ -1675,7 +1665,6 @@ impl Widget for ChatApp {
         dyn ui::widget::Collaborative,
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::collaboration::participants::Participants,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::application_view::ApplicationViewState,
         dyn ui::view::capability::ViewState,
@@ -2683,48 +2672,6 @@ impl ui::presence::capability::PublishesPresence for ChatApp {
                 )
             })
         })
-    }
-}
-
-impl ui::collaboration::participants::Participants for ChatApp {
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        if participant.agent_task().is_some() {
-            self.participant_labels
-                .entry(participant.as_str().to_owned())
-                .or_default();
-        }
-        false
-    }
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        self.participant_labels.remove(participant.as_str());
-    }
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        if participant.agent_task().is_some() {
-            let label = label.trim();
-            self.participant_labels
-                .insert(participant.as_str().to_owned(), label.to_owned());
-            // Every member names the agent's messages as the host labelled
-            // the task.
-            if let Some(name) = ui::tilo_resource::NonBlank::parse(label)
-                && self
-                    .agent_authors
-                    .get(participant.as_str())
-                    .map(String::as_str)
-                    != Some(label)
-            {
-                self.submit(crate::resource::Chat::NAME_AGENT.with(
-                    crate::record::chat::NameAgent {
-                        participant: participant.as_str().to_owned(),
-                        name,
-                    },
-                ));
-            }
-            // A host acting as this agent: it is also the local participant.
-            if participant.as_str() == self.me.id && !label.is_empty() {
-                label.clone_into(&mut self.me.name);
-                self.me.initials = crate::identity::initials_for(label);
-            }
-        }
     }
 }
 

@@ -393,14 +393,13 @@ impl ChatApp {
     /// A person's avatar and name, through both, open their card; a bot's
     /// or an agent's message has none.
     fn push_author_hit(
-        &self,
         m: &Message,
         parts: &crate::app::PaintedMessage,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         if m.author.starts_with("bot:")
             || crate::views::is_agent(&m.author)
-            || self.is_provider_output(m)
+            || crate::host_model::is_provider_output(m)
         {
             return;
         }
@@ -449,7 +448,7 @@ impl ChatApp {
                 linked_color: linked.map(|user| self.identity_colour(&user.id)),
                 image: shown,
             }
-        } else if self.is_provider_output(m) {
+        } else if crate::host_model::is_provider_output(m) {
             Author::Agent {
                 name,
                 for_person: Some(initiator),

@@ -274,7 +274,7 @@ mod tests {
     fn provider(agent_caret: &str, agent_selected: bool) -> TwoViews {
         TwoViews {
             views: [(
-                "agent-task:t".to_string(),
+                "window:t".to_string(),
                 (agent_caret.to_string(), agent_selected),
             )]
             .into(),
@@ -312,7 +312,7 @@ mod tests {
         {
             let before = provider("b1", false);
             let after = provider("b7", true);
-            let participant = crate::ParticipantId::new("agent-task:t").unwrap();
+            let participant = crate::ParticipantId::new("window:t").unwrap();
             // The participant's own trees differ (caret-derived ids, selection).
             assert_ne!(
                 door::survey(&before.resources_for(Some(&participant))).len(),
@@ -353,7 +353,7 @@ mod tests {
         phase resolution_is_per_invoker;
         {
             let provider = provider("b7", true);
-            let agent = crate::ParticipantId::new("agent-task:t").unwrap();
+            let agent = crate::ParticipantId::new("window:t").unwrap();
             let address = door::ActionAddress::new("doc", "type-text");
             let agent_tree = provider.resources_for(Some(&agent));
             let own_tree = provider.resources_for(None);
@@ -371,7 +371,7 @@ mod tests {
             assert!(door::resolve(&agent_tree, &bold).is_some());
             assert!(door::resolve(&own_tree, &bold).is_none());
             // An unknown participant gets no tree at all, not the default view.
-            let stranger = crate::ParticipantId::new("agent-task:other").unwrap();
+            let stranger = crate::ParticipantId::new("window:other").unwrap();
             assert!(provider.resources_for(Some(&stranger)).is_empty());
         }
     }

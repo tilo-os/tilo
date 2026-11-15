@@ -1107,9 +1107,9 @@ fn nonempty(value: &str) -> Option<String> {
 /// per-view maps in app workers; they are never free text.
 pub const MAX_PARTICIPANT_ID_BYTES: usize = 128;
 
-/// One participant in a shared record: a person's window or an agent task.
-/// Each participant owns its own view state (caret, selection, Find), and the
-/// app builds that participant's resource tree from it
+/// One participant in a shared record: a person's window or a host-minted
+/// execution. Each participant owns its own view state (caret, selection,
+/// Find), and the app builds that participant's resource tree from it
 /// (the toolkit's `PublishesResources::resources_for`).
 ///
 /// Opaque, non-empty, ASCII-printable and at most
@@ -1138,46 +1138,13 @@ impl ParticipantId {
         &self.0
     }
 
-    /// The participant of one agent task. Only the host derives it, from
-    /// the task it admitted (never from anything the agent sends), so an
-    /// agent can address only the view of the task it runs.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the derived id is not a valid participant
-    /// id (see [`ParticipantId::new`]).
-    pub fn for_agent_task(task_id: &str) -> Result<Self, String> {
-        // A task id the participant cannot spell as it is — a conversation's turn names its
-        // channel and message, and a direct conversation's channel names both its members by
-        // their keys, which together run past the bound — is keyed by its digest instead: still
-        // derived from the task alone, the same for every invoke of it, and distinct per task.
-        Self::new(format!("{AGENT_TASK_PARTICIPANT_PREFIX}{task_id}")).or_else(|_| {
-            let digest = blake3::hash(task_id.as_bytes()).to_hex();
-            Self::new(format!(
-                "{AGENT_TASK_PARTICIPANT_PREFIX}{AGENT_TASK_DIGEST_PREFIX}{digest}"
-            ))
-        })
-    }
-
     /// One host-minted execution's private view. This key is subordinate to the
     /// admitted principal and confers no authority. Hosts derive it from their
     /// execution lease, never a client-supplied run label or context.
     pub fn for_execution(execution: uuid::Uuid) -> Self {
         Self(format!("execution:{execution}"))
     }
-
-    /// The task id of a host-derived agent task participant.
-    pub fn agent_task(&self) -> Option<&str> {
-        self.0.strip_prefix(AGENT_TASK_PARTICIPANT_PREFIX)
-    }
 }
-
-/// Reserved namespace of [`ParticipantId::for_agent_task`].
-pub const AGENT_TASK_PARTICIPANT_PREFIX: &str = "agent-task:";
-
-/// What an agent task participant keyed by its task id's digest says after
-/// [`AGENT_TASK_PARTICIPANT_PREFIX`]: the task id did not fit as it is.
-const AGENT_TASK_DIGEST_PREFIX: &str = "blake3:";
 
 impl TryFrom<String> for ParticipantId {
     type Error = String;
@@ -1616,21 +1583,13 @@ mod tests {
                     .acting_for("person:other")
                     .with_participant(ParticipantId::new("owner-window").unwrap()),
             );
-            let task = ParticipantId::for_agent_task("11111111-1111-4111-8111-111111111111").unwrap();
+            let task = ParticipantId::new("agent-alpha-view").unwrap();
             let rewritten = forged
                 .clone()
                 .with_host_invoker("agent:alpha", Some(task.clone()));
             assert_eq!(
                 rewritten.invoker,
-                Some(ActionInvoker::agent("alpha").with_participant(task.clone()))
-            );
-            assert_eq!(
-                task.agent_task(),
-                Some("11111111-1111-4111-8111-111111111111")
-            );
-            assert_eq!(
-                ParticipantId::new("owner-window").unwrap().agent_task(),
-                None
+                Some(ActionInvoker::agent("alpha").with_participant(task))
             );
             let delegated = forged.with_host_actor(
                 &crate::Acting::agent("alpha").acting_for(crate::Acting::person("person:owner")),
@@ -1647,7 +1606,7 @@ mod tests {
 
         phase delivered_invoker_keeps_the_participant_only_for_the_delivered_actor;
         {
-            let participant = ParticipantId::for_agent_task("t").unwrap();
+            let participant = ParticipantId::new("agent-a-view").unwrap();
             let context =
                 ActionContext::default().with_host_invoker("agent:a", Some(participant.clone()));
             assert_eq!(
@@ -2026,28 +1985,5 @@ mod tests {
                 Some("issue:42")
             );
         }
-    }
-
-    /// A turn of a direct conversation with an agent names its channel by both members' keys and
-    /// its message: past the participant bound. Its participant is still derived, valid, the same
-    /// for every invoke of the task, and another task's is another.
-    #[test]
-    fn a_long_task_id_still_derives_its_participant() {
-        let person = "b6bd224fcba7522731eb807d63a5a8653f8a4c3f5f40a09181ba00197d22feb6";
-        let task = format!(
-            "chat.workspace/channels/direct:agent:assistant|person:{person}/messages/e95e92bf8587b7a3f70b@00000000075ad1e5"
-        );
-        let participant = ParticipantId::for_agent_task(&task).expect("a participant");
-        assert!(participant.as_str().len() <= MAX_PARTICIPANT_ID_BYTES);
-        assert!(participant.agent_task().is_some(), "{participant}");
-        assert_eq!(
-            ParticipantId::for_agent_task(&task).unwrap(),
-            participant,
-            "the same task, the same participant"
-        );
-        assert_ne!(
-            ParticipantId::for_agent_task(&format!("{task}0")).unwrap(),
-            participant
-        );
     }
 }

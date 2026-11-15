@@ -41,9 +41,6 @@ impl ChatApp {
                 crate::identity::shared_name_label(id, &n)
             };
         }
-        if let Some(agent) = self.agent_authors.get(id) {
-            return agent.clone();
-        }
         if let Some(u) = self.users.iter().find(|u| u.id == id)
             && !u.name.trim().is_empty()
         {
@@ -65,15 +62,23 @@ impl ChatApp {
     }
 
     /// What the workspace calls the agent `agent` (its bare id): the name its own record keeps for
-    /// it, else the name its device announced while here. `None` for one the workspace names not.
+    /// it, else the name its device announced while here, else the name it introduced itself by.
+    /// `None` for one the workspace names not.
     pub(crate) fn known_agent_name(&self, agent: &str) -> Option<String> {
+        let id = format!("agent:{agent}");
         self.workspace_agent_names
             .get(agent)
             .cloned()
             .or_else(|| {
-                [format!("agent:{agent}"), agent.to_owned()]
+                [id.clone(), agent.to_owned()]
                     .into_iter()
                     .find_map(|id| self.workspace_names.get(&id).cloned())
+            })
+            .or_else(|| {
+                self.users
+                    .iter()
+                    .find(|user| user.id == id && user.is_agent)
+                    .map(|user| user.name.clone())
             })
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty())
@@ -128,8 +133,7 @@ impl ChatApp {
                 MemberId::parse(id)
                     .filter(|member| !member.is_person())
                     .and_then(|member| self.known_agent_name(member.id()))
-            })
-            .or_else(|| self.agent_authors.get(id).cloned())?;
+            })?;
         let person = acting
             .and_then(ui::tilo_resource::Acting::acted_for_person)
             .or_else(|| self.agent_people.get(id).map(String::as_str));

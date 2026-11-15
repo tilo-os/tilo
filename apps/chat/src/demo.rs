@@ -515,9 +515,6 @@ pub fn write(doc: &mut AutoCommit, chat: &Chat) -> Result<(), ModelError> {
         for (id, report) in chat.feedback.iter() {
             add(&mut held.feedback, id, report.clone())?;
         }
-        if !chat.agent_names.is_empty() {
-            held.agent_names.clone_from(&chat.agent_names);
-        }
         if !chat.read.is_empty() {
             held.read.clone_from(&chat.read);
         }

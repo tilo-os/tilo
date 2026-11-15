@@ -5,7 +5,7 @@ format = 2
 [[resources]]
 kind = "chat.workspace"
 label = "Chat"
-version = 8
+version = 9
 fields = [
   { path = "categories", type = { collection = { named = "Category" } }, readonly = true, stored = "collection" },
   { path = "categories.*.name", type = "text", label = true, readonly = true },
@@ -22,7 +22,6 @@ fields = [
   { path = "people.*.initials", type = "text" },
   { path = "people.*.color", type = "int" },
   { path = "people.*.status", type = { named = "Presence" } },
-  { path = "agent_names", type = { map = "text" } },
   { path = "read", type = { map = { map = { named = "ReadMark" } } } },
   { path = "feedback", type = { collection = { named = "FeedbackReport" } }, stored = "collection" },
   { path = "feedback.*.submission", type = { option = { named = "Submission" } }, readonly = true, stored = "record" },
@@ -105,14 +104,6 @@ params = [
   { name = "name", type = "text", required = true, schema = { type = "string" } },
   { name = "initials", type = "text", required = true, schema = { type = "string" } },
   { name = "color", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
-]
-
-[[resources.verbs]]
-id = "name-agent"
-kind = "undoable"
-params = [
-  { name = "participant", type = "text", required = true, schema = { type = "string" } },
-  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -690,11 +681,13 @@ fields = [
   { path = "messages.*.appearance.persona.account", type = "text" },
   { path = "messages.*.appearance.persona.linked", type = { option = "text" } },
   { path = "messages.*.acting", type = { option = "any" }, readonly = true },
+  { path = "messages.*.author_name", type = { option = "text" }, readonly = true },
   { path = "messages.*.origin", type = { option = { named = "Origin" } }, readonly = true, stored = "record" },
   { path = "messages.*.origin.author", type = "text" },
   { path = "messages.*.origin.handle", type = { option = "text" } },
   { path = "messages.*.origin.source", type = "text" },
   { path = "messages.*.origin.url", type = { option = "text" } },
+  { path = "messages.*.origin.reference", type = { option = "text" } },
   { path = "messages.*.origin.created_ms", type = { option = "int" } },
   { path = "messages.*.origin.updated_ms", type = { option = "int" } },
   { path = "messages.*.share", type = { option = { named = "WindowShare" } }, readonly = true, stored = "record" },
@@ -718,7 +711,7 @@ params = [
   { name = "attachments", type = { list = "any" }, required = false, schema = { type = "array", items = { oneOf = [{ type = "object", additionalProperties = false, properties = { anchor = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { Item = { type = "object", additionalProperties = false, properties = { id = { type = "string" } }, required = ["id"] } }, required = ["Item"] }, { type = "object", additionalProperties = false, properties = { Items = { type = "object", additionalProperties = false, properties = { ids = { type = "array", items = { type = "string" } } }, required = ["ids"] } }, required = ["Items"] }, { type = "object", additionalProperties = false, properties = { Text = { type = "object", additionalProperties = false, properties = { path = { type = "string" }, end = { type = "string" }, start = { type = "string" } }, required = ["path", "start", "end"] } }, required = ["Text"] }] }] }, at = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] }, kind = { type = "string", const = "resource" }, label = { type = "string" } }, required = ["kind", "at", "label"] }, { type = "object", additionalProperties = false, properties = { from = { type = ["object", "null"], properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] }, kind = { type = "string", const = "text" }, text = { type = "string" } }, required = ["kind", "text"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", const = "image" }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob", "w", "h"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", const = "video" }, size = { type = "integer", minimum = 0 }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob", "w", "h", "size"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, kind = { type = "string", const = "file" }, size = { type = "integer", minimum = 0 } }, required = ["kind", "name", "blob", "size"] }] } } },
   { name = "mentions", type = { option = { list = "any" } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
   { name = "written", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
-  { name = "origin", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { author = { type = "string" }, created_ms = { type = ["integer", "null"] }, handle = { type = ["string", "null"] }, source = { type = "string" }, updated_ms = { type = ["integer", "null"] }, url = { type = ["string", "null"] } }, required = ["author", "source"] } },
+  { name = "origin", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { author = { type = "string" }, created_ms = { type = ["integer", "null"] }, handle = { type = ["string", "null"] }, reference = { type = ["string", "null"] }, source = { type = "string" }, updated_ms = { type = ["integer", "null"] }, url = { type = ["string", "null"] } }, required = ["author", "source"] } },
 ]
 
 [[resources.verbs]]
@@ -973,6 +966,7 @@ fields = [
   { name = "work", type = { option = { named = "Work" } } },
   { name = "appearance", type = { option = { named = "ShownAs" } } },
   { name = "acting", type = { option = "any" } },
+  { name = "author_name", type = { option = "text" } },
   { name = "origin", type = { option = { named = "Origin" } } },
   { name = "share", type = { option = { named = "WindowShare" } } },
   { name = "attempts", type = "int" },
@@ -985,6 +979,7 @@ fields = [
   { name = "handle", type = { option = "text" } },
   { name = "source", type = "text" },
   { name = "url", type = { option = "text" } },
+  { name = "reference", type = { option = "text" } },
   { name = "created_ms", type = { option = "int" } },
   { name = "updated_ms", type = { option = "int" } },
 ]

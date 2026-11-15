@@ -338,6 +338,7 @@ class Message(TypedDict):
     work: Work | None
     appearance: ShownAs | None
     acting: Any | None
+    author_name: str | None
     origin: Origin | None
     share: WindowShare | None
     attempts: int
@@ -347,6 +348,7 @@ class Origin(TypedDict):
     handle: str | None
     source: str
     url: str | None
+    reference: str | None
     created_ms: int | None
     updated_ms: int | None
 
@@ -453,7 +455,7 @@ class Spent(TypedDict):
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@940e4716f60772d4"
+    __surface__ = "so.tilo.chat@09cb0c7e81e867c9"
     @property
     def categories(self) -> list[Category]:
         """Read only."""
@@ -463,7 +465,6 @@ class Workspace(Resource):
         """Read only."""
         return self.fields["channels"]
     people: list[Person]
-    agent_names: dict[str, str]
     read: dict[str, dict[str, ReadMark]]
     feedback: list[FeedbackReport]
     moderation: Moderation
@@ -489,14 +490,6 @@ class Workspace(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("introduce", name=name, initials=initials, color=color)
-
-    def name_agent(self,
-        *,
-        participant: str,
-        name: str,
-    ) -> Run | None:
-        """Runs the app's action."""
-        return self.action("name-agent", participant=participant, name=name)
 
     def create_category(self, *, name: str) -> Run | None:
         """Runs the app's action."""
@@ -706,7 +699,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@940e4716f60772d4"
+    __surface__ = "so.tilo.chat@09cb0c7e81e867c9"
     @property
     def messages(self) -> list[Message]:
         """Read only."""
@@ -921,7 +914,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@940e4716f60772d4"
+    __surface__ = "so.tilo.chat@09cb0c7e81e867c9"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> Run | None:
@@ -931,7 +924,7 @@ class Drafts(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@940e4716f60772d4"
+    __surface__ = "so.tilo.chat@09cb0c7e81e867c9"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -953,7 +946,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@940e4716f60772d4"
+    __surface__ = "so.tilo.chat@09cb0c7e81e867c9"
     agents: list[Agent]
 
     def create_agent(self,

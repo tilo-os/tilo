@@ -895,10 +895,6 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
 /// ([`MemberId::key`], what a conversation's fields keep). A message a person posted summons its
 /// conversation's agent, and the run answers for the person it names; software names nobody.
 fn person_of(author: &str) -> Option<String> {
-    if author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX) {
-        // A run of a task writes under its own id, which is no member's.
-        return None;
-    }
     tilo_actions::policy::MemberId::parse(author)
         .and_then(|member| member.person_id().map(str::to_owned))
         .filter(|person| !person.is_empty())
@@ -1203,7 +1199,7 @@ mod tests {
             assert_eq!(entry.author, bare, "the turn acts for that person");
             assert_eq!(entry.request.instruction, "what is on my task list?");
             assert_eq!(
-                person_of("agent-task:22222222-2222-4222-8222-222222222222"),
+                person_of(AGENT_ACTOR),
                 None,
                 "an agent's message is no person's turn"
             );

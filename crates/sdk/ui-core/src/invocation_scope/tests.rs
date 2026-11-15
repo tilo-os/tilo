@@ -468,7 +468,7 @@ tilo_test_env::scenario! {
     phase invoker_scope_nests_and_gates_remote_view_operations;
     {
         use tilo_actions::{ActionContract, ActionInvoker, ParticipantId};
-        let participant = ParticipantId::for_agent_task("t").unwrap();
+        let participant = ParticipantId::new("agent-a-view").unwrap();
         let own_view = ActionContract::view();
         let mut participant_view = ActionContract::view();
         participant_view

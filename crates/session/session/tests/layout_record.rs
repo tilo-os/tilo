@@ -435,7 +435,7 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
 
     session
         .invoke_with_actor(
-            "agent-task:reading",
+            "agent:reading",
             &place_resource(window),
             "move",
             &serde_json::json!({"row": row_resource(second)}),
@@ -449,7 +449,7 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
         "the agent's move is in the record"
     );
     let who = crate::common::last_step(&mut session, "move");
-    assert_eq!(who, "agent-task:reading", "attributed to the agent");
+    assert_eq!(who, "agent:reading", "attributed to the agent");
 
     undone(&mut session, |session| {
         strip_of(session, window).map(|strip| row_of(session, strip)) == Some(from)
@@ -646,7 +646,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
     step(&mut session);
     session
         .invoke_with_actor(
-            "agent-task:reading",
+            "agent:reading",
             &place_resource(window),
             "move",
             &serde_json::json!({"row": row_resource(second)}),
@@ -685,7 +685,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
         "it applies once the person is done"
     );
     let who = crate::common::last_step(&mut session, "move");
-    assert_eq!(who, "agent-task:reading", "still attributed to the agent");
+    assert_eq!(who, "agent:reading", "still attributed to the agent");
 }
 
 // An agent's layout leaves a place the person pinned where it is (shell.md §5's default).
@@ -709,7 +709,7 @@ fn a_pinned_place_stays_where_the_person_put_it() {
 
     // The agent's move is refused, and the place stands.
     let refused = session.invoke_with_actor(
-        "agent-task:reading",
+        "agent:reading",
         &place_resource(window),
         "move",
         &serde_json::json!({"row": row_resource(second)}),

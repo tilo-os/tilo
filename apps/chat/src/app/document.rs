@@ -133,7 +133,6 @@ impl ChatApp {
         self.body_views
             .borrow_mut()
             .retain(|(_, id), _| shown.contains(id.as_str()));
-        self.agent_authors = chat.agent_authors();
         self.workspace_files = chat.files;
         // Who is in a call is projected only from the authenticated local
         // voice service's response.

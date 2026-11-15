@@ -17,7 +17,7 @@ pub trait Participants {
     /// Start a view for `participant`; `true` when it is new.
     fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool;
 
-    /// Drop the participant's view (its task ended). Idempotent.
+    /// Drop the participant's view (its run ended). Idempotent.
     fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId);
 
     /// Name shown beside the participant's caret.

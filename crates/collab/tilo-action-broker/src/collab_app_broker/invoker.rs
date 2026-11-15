@@ -6,8 +6,6 @@ use super::{BrokerActor, ExecutionScope};
 /// from someone else by naming them in the envelope: whatever invoker the
 /// caller put in `context` is discarded, the actor is the admitted `actor`,
 /// and the participant is derived from what the host admitted:
-/// - a legacy agent task run: the participant of the host-built task
-///   context's `task` group (the broker's own pending run record);
 /// - a host-minted execution: its private view, subordinate to its principal;
 /// - anyone else: no participant (the actor's default view).
 ///
@@ -23,21 +21,12 @@ pub(super) fn host_set_invoker(
     caller: Option<&tilo_actions::remote::Caller>,
     execution: Option<&ExecutionScope>,
 ) -> Result<Option<tilo_actions::ActionContext>, String> {
-    let participant = if let Some(execution) = execution {
-        Some(execution.participant(actor)?)
-    } else if actor.is_agent {
-        context
-            .as_ref()
-            .and_then(|context| context.group.as_ref())
-            .filter(|group| group.kind == "task")
-            .map(|group| tilo_actions::ParticipantId::for_agent_task(&group.id))
-            .transpose()?
-    } else {
-        None
-    };
+    let participant = execution
+        .map(|execution| execution.participant(actor))
+        .transpose()?;
     // A Shortcut's step is admitted as its person: the invoker stays them.
     let admitting = caller.filter(|caller| caller.acting().by.key() == actor.id);
-    // Without a caller (an agent's task run), the admitted actor says whom an agent acts for.
+    // Without a caller, the admitted actor says whom an agent acts for.
     let admitted = admitting.map_or_else(|| actor.shown(), |caller| caller.acting().clone());
 
     // A person acting for themselves needs no context to say so; anyone else is named with
@@ -87,11 +76,9 @@ pub(super) fn invoker_participant(
 mod tests {
     use super::*;
 
-    const TASK: &str = "11111111-1111-4111-8111-111111111111";
-
     fn forged() -> tilo_actions::ActionContext {
         tilo_actions::ActionContext::default()
-            .with_group(TASK, TASK, "task")
+            .with_group("issue:42", "Prepare launch", "issue")
             .with_invoker(
                 tilo_actions::ActionInvoker::person("person:owner")
                     .with_participant(tilo_actions::ParticipantId::new("owner-window").unwrap()),
@@ -121,7 +108,7 @@ mod tests {
             assert_eq!(host_set_invoker(None, &actor, None, None).unwrap(), None);
         }
 
-        phase a_legacy_agent_run_routes_to_its_host_task_participant;
+        phase an_agent_gets_no_participant_from_the_envelope;
         {
             let actor = BrokerActor::agent("agent:alpha");
             let context = host_set_invoker(Some(forged()), &actor, None, None)
@@ -129,12 +116,10 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 context.invoker,
-                Some(
-                    tilo_actions::ActionInvoker::agent("alpha")
-                        .with_participant(tilo_actions::ParticipantId::for_agent_task(TASK).unwrap())
-                )
+                Some(tilo_actions::ActionInvoker::agent("alpha"))
             );
-            // A task run's agent acting for its starter names them, with no caller to say so.
+            assert_eq!(invoker_participant(Some(&context)), None);
+            // An agent acting for its starter names them, with no caller to say so.
             let started = BrokerActor::agent("agent:alpha").for_person("owner");
             let context = host_set_invoker(Some(forged()), &started, None, None).unwrap();
             let invoker = context.and_then(|context| context.invoker).unwrap();
@@ -230,7 +215,7 @@ mod tests {
             let said = || {
                 Some(
                     tilo_actions::ActionContext::default()
-                        .with_group(TASK, TASK, "task")
+                        .with_group("issue:42", "Prepare launch", "issue")
                         .with_invoker(
                             tilo_actions::ActionInvoker::agent("task-7")
                                 .from_device(Some(elsewhere.clone())),

@@ -860,7 +860,7 @@ impl ChatApp {
         if let Some(area) = folds {
             Self::push_hit(hits, area, Hit::AgentWork(m.id.clone()));
         }
-        self.push_author_hit(&m, &parts, hits);
+        ChatApp::push_author_hit(&m, &parts, hits);
         if !rm.editing {
             parts.lines = self.body_lines(&m.id);
         }

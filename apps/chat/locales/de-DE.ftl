@@ -182,7 +182,6 @@ chat-person-relative-name = { $name } ({ $tag })
 ## Verlauf: was jede Änderung getan hat, nach Verb und nach Feld
 chat-begin-chat = Hat den Chat begonnen
 chat-introduce = Hat sich als { $name } vorgestellt
-chat-name-agent = Hat einen Agent { $name } genannt
 chat-create-category = Hat die Kategorie { $name } angelegt
 chat-create-channel = Hat den Kanal #{ $name } angelegt
 chat-create-channel-with-id = Hat den Kanal #{ $name } angelegt
@@ -236,7 +235,6 @@ chat-chat-feedback = { $op ->
     [remove] Hat eine Rückmeldung entfernt
    *[other] Hat die Rückmeldungen geändert
 }
-chat-chat-agent-names = Hat die Namen der Agents geändert
 chat-chat-read = Hat die Lesemarken geändert
 chat-chat-drafts-drafts = { $op ->
     [splice] Hat in einen Entwurf getippt
@@ -473,7 +471,6 @@ chat-messages-record-work = Arbeit des Agenten festhalten
 chat-messages-carry-counts = Zählstände der vorigen Teile übernehmen
 chat-messages-stream-output = Antwort beim Eintreffen festhalten
 chat-workspace-introduce = Stell dich vor
-chat-workspace-name-agent = Agenten benennen
 chat-workspace-create-category = Neue Kategorie
 chat-workspace-create-channel = Neuer Kanal
 chat-workspace-create-channel-with-id = Neuer Kanal mit einer ID

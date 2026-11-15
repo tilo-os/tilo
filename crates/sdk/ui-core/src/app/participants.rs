@@ -1,4 +1,4 @@
-//! Remote participants served by one app (agent tasks in a headless host
+//! Remote participants served by one app (an agent's run in a headless host
 //! worker). Each has its own view state inside the root widget tree; the
 //! App only routes lifecycle to it and drops resource caches that a new view
 //! could change.
@@ -19,7 +19,7 @@ impl super::App {
         joined
     }
 
-    /// Drop a participant's view (its task ended). Idempotent.
+    /// Drop a participant's view (its run ended). Idempotent.
     pub fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
         crate::collaboration::participants::leave_participant(
             self.root_widget.as_mut(),
