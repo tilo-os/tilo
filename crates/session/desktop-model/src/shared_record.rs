@@ -452,7 +452,13 @@ pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesk
 /// [`read`].
 #[must_use]
 pub fn read_as_kept(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
-    let mut desktop = if crate::desktop_doc::holds(doc) {
+    // The shape is the one the record had then: a desktop read as the change that made the
+    // record the layout's document found it is still the record written entry by entry.
+    let layout = match heads {
+        Some(heads) => crate::desktop_doc::held_at(doc, heads),
+        None => crate::desktop_doc::holds(doc),
+    };
+    let mut desktop = if layout {
         layout_of(doc, heads)?
     } else {
         Parts::of(held(doc, heads)).assemble()?

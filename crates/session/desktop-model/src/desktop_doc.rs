@@ -912,6 +912,16 @@ pub fn holds(doc: &impl ReadDoc) -> bool {
     )
 }
 
+/// [`holds`] of `doc` as it stood at `heads`: a record written entry by entry that a later
+/// change made the layout's document was not one at the heads before that change.
+#[must_use]
+pub fn held_at(doc: &impl ReadDoc, heads: &[automerge::ChangeHash]) -> bool {
+    matches!(
+        doc.get_at(&ROOT, WORKSPACES_KEY, heads),
+        Ok(Some((Value::Object(ObjType::List), _)))
+    )
+}
+
 /// The record each window shows, by tab, for the windows bound to one, so the same
 /// windows come back on the records they showed and a peer's window opens the record
 /// it shows there. Each entry is its own.

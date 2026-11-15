@@ -447,4 +447,66 @@ mod tests {
         assert_eq!(desktop.authors.get(&tab).map(String::as_str), Some(PERSON));
         assert_eq!(desktop.opened_by.get(&tab), opener().run.as_ref());
     }
+
+    /// The desktop an agent starts in a workspace that had none is a record written entry by
+    /// entry; a page's first write makes it the layout's own document. Someone else's page doing
+    /// that, without moving anything, attributes nothing: the workspace reads the desktop that
+    /// page saw in the shape it had then.
+    #[test]
+    fn another_persons_page_takes_up_the_desktop_an_agent_started() {
+        let form = View {
+            app_id: "so.tilo.pdf-viewer",
+            title: "PDF",
+            record: "uuid:form",
+            beside: None,
+        };
+        let first = place_view(
+            &AutoCommit::new(),
+            (WORKSPACE, Some("Visa")),
+            &opener(),
+            &form,
+        )
+        .expect("a layout is started");
+        let letter = View {
+            app_id: "so.tilo.docs",
+            title: "Docs",
+            record: "uuid:letter",
+            beside: Some(("so.tilo.pdf-viewer", "uuid:form")),
+        };
+        let second = place_view(
+            &merged(std::slice::from_ref(&first)),
+            (WORKSPACE, None),
+            &opener(),
+            &letter,
+        )
+        .expect("the second view opens beside the first");
+        let mut doc = merged(&[first, second]);
+        assert!(!tilo_desktop_model::desktop_doc::holds(&doc));
+        let held = shared_record::read(&doc, None).expect("a desktop");
+        let before = doc.get_heads();
+        doc.set_actor(automerge::ActorId::random());
+        assert!(tilo_desktop_model::desktop_doc::write_shared(
+            &mut doc,
+            &held.tree,
+            &held.records,
+            &held.authors,
+        ));
+        shared_record::commit_change(&mut doc, "rosa", 1, None);
+        assert!(tilo_desktop_model::desktop_doc::holds(&doc));
+        let seen = shared_record::read(&doc, Some(&before)).expect("the desktop rosa saw");
+        assert_eq!(seen.authors, held.authors, "read in the shape it had then");
+        let allows = |_: &tilo_desktop_model::ownership::Touched| false;
+        assert_eq!(
+            shared_record::guard::judge(
+                &doc,
+                &before,
+                &shared_record::guard::Writer {
+                    person: "rosa",
+                    members: None,
+                    allows: &allows,
+                },
+            ),
+            Ok(()),
+        );
+    }
 }
