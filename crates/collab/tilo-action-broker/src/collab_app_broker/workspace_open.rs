@@ -401,16 +401,25 @@ mod tests {
         }
     }
 
-    tilo_test_env::scenario! {
-        #[allow(
-            clippy::significant_drop_tightening,
-            clippy::too_many_lines,
-            reason = "one scenario, end to end, reads as one test; the test keeps its fixture and guards alive through its assertions"
-        )]
-        fn opening_an_app_keeps_custody_and_its_ticket;
+    /// A broker serving the person at this device's own seat, with `launcher` and a durable
+    /// journal: what the session's own control doors and palette invoke through.
+    struct NativeSeat {
+        state: Arc<AppBrokerState>,
+        bridge: std::sync::mpsc::Receiver<super::super::ActionDirectoryBridgeRequest>,
+        caller: Caller,
+        workspace_id: String,
+        certificate: tilo_user_identity::DeviceCert,
+        /// The owner's policy clock the seat decides at, kept while the seat lives.
+        _clock: (
+            crate::policy_clock::OwnerPolicyClock,
+            crate::policy_clock::PolicyOrigin,
+        ),
+        _env: tilo_test_env::ScopedEnv,
+        _scratch: tempfile::TempDir,
+    }
 
-        phase native_launch_and_close_keep_certified_ownership_and_signed_terminals;
-        {
+    impl NativeSeat {
+        fn new(launcher: Arc<dyn crate::services::LauncherServices>) -> Self {
             use tilo_identity_host::provisioning::{self, IdentityStorage};
             let scratch = tempfile::tempdir().unwrap();
             let config = scratch.path().join("config");
@@ -433,11 +442,10 @@ mod tests {
             workspace.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
-            let launcher = Arc::new(Ticketed::default());
             let (state, bridge) = AppBrokerState::test_state(
                 Some(tree.shared().authority()),
                 crate::services::HostServices {
-                    launcher: Some(launcher.clone()),
+                    launcher: Some(launcher),
                     local_person: Some(Arc::new(NativePerson(certificate.clone()))),
                     ..Default::default()
                 },
@@ -457,6 +465,62 @@ mod tests {
                 .unwrap(),
             ));
             let caller = Caller::local_person(person).in_workspace(&workspace_id);
+            Self {
+                state,
+                bridge,
+                caller,
+                workspace_id,
+                certificate,
+                _clock: (clock, origin),
+                _env: env,
+                _scratch: scratch,
+            }
+        }
+    }
+
+    /// A launcher whose launch waits until it is let go: as the session's does, until its loop
+    /// has made the launch.
+    struct Held {
+        entered: tokio::sync::mpsc::UnboundedSender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl crate::services::LauncherServices for Held {
+        fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+            Ticketed::default().applications()
+        }
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
+            _: &LaunchPlace,
+        ) -> Result<(), String> {
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(tilo_test_env::hang_bound())
+                .map_err(|_| "nothing let the launch go".to_owned())
+        }
+        fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::significant_drop_tightening,
+            clippy::too_many_lines,
+            reason = "one scenario, end to end, reads as one test; the test keeps its fixture and guards alive through its assertions"
+        )]
+        fn opening_an_app_keeps_custody_and_its_ticket;
+
+        phase native_launch_and_close_keep_certified_ownership_and_signed_terminals;
+        {
+            let launcher = Arc::new(Ticketed::default());
+            let NativeSeat { state, bridge, caller, workspace_id, certificate, _clock, _env, _scratch } =
+                NativeSeat::new(launcher.clone());
             for step in 0..6 {
                 match step {
                     4 => *launcher.outcome.lock().unwrap() = Some(Ok(Launched::Unconfirmed)),
@@ -481,21 +545,7 @@ mod tests {
                     panic!("native open must enqueue eager admission");
                 };
                 std::thread::scope(|scope| {
-                    scope
-                        .spawn(|| {
-                            super::super::action_host::answer_with(
-                                state.invoke_eager(
-                                    &invoke.caller,
-                                    invoke.own_peer,
-                                    invoke.launch.as_ref(),
-                                    Some(&invoke.origin),
-                                    &invoke.request,
-                                ),
-                                invoke.reply,
-                            );
-                        })
-                        .join()
-                        .unwrap();
+                    scope.spawn(|| state.invoke_bridged(*invoke)).join().unwrap();
                 });
                 pending
                     .wait_timeout(tilo_test_env::hang_bound())
@@ -562,6 +612,43 @@ mod tests {
                     super::super::invocation_journal::evidence_facts(&key, &record.intent).unwrap();
                 evidence.validate(&facts).unwrap();
             }
+        }
+
+        phase the_broker_serves_its_apps_while_an_open_waits_for_the_launch;
+        {
+            // The person opens an app at their seat. While the launcher makes the launch, the
+            // broker's loop goes on: here, a task of it is what lets the launch go.
+            let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            let held = Arc::new(Held { entered, release: Mutex::new(release_rx) });
+            let NativeSeat { state, bridge, caller, workspace_id, _clock, _env, _scratch, .. } =
+                NativeSeat::new(held);
+            let directories =
+                std::rc::Rc::new(super::super::LocalActionDirectoryRegistry::new(bridge));
+            let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+            let request = request(&workspace_id);
+            let job = tokio::task::LocalSet::new().block_on(&runtime, async {
+                let pending = state.action_invoke_local_person(&caller, &request);
+                state.take_turn(&directories);
+                tokio::task::spawn_local(async move {
+                    entered_rx.recv().await.unwrap();
+                    release.send(()).unwrap();
+                })
+                .await
+                .unwrap();
+                tokio::task::spawn_blocking(move || {
+                    pending.wait_timeout(tilo_test_env::hang_bound())
+                })
+                .await
+                .unwrap()
+                .ok()
+                .flatten()
+                .expect("the open answers")
+                .unwrap();
+                state.remote_job(&caller, &request.invocation).unwrap()
+            });
+            let update = state.invocation_status(job);
+            assert!(matches!(update, Some(InvocationUpdate::Succeeded { .. })), "{update:?}");
         }
 
         phase launch_preserves_the_requested_uuid_through_the_terminal_journal_record;

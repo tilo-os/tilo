@@ -3708,18 +3708,7 @@ impl AppBrokerState {
                 let ActionDirectoryBridgeRequest::InvokeEager(invoke) = request else {
                     panic!("the transport-free fixture only services eager invocations");
                 };
-                if !invoke.reply.is_abandoned() {
-                    action_host::answer_with(
-                        state.invoke_eager(
-                            &invoke.caller,
-                            invoke.own_peer,
-                            invoke.launch.as_ref(),
-                            Some(&invoke.origin),
-                            &invoke.request,
-                        ),
-                        invoke.reply,
-                    );
-                }
+                state.invoke_bridged(*invoke);
             }
         };
         (broker, turn)
@@ -4000,6 +3989,28 @@ impl AppBrokerState {
             .roots
     }
 
+    /// `invoke`, handed over from a thread that must not wait for its admission: entered
+    /// directly, never through the routing method that would hand it over again. Dispatch
+    /// checks the original custody. It blocks on the admission's journal write and on what
+    /// the action does, so it runs on a thread that may block, never the broker's loop.
+    fn invoke_bridged(self: &Arc<Self>, invoke: EagerActionInvokeRequest) {
+        let EagerActionInvokeRequest {
+            caller,
+            own_peer,
+            launch,
+            origin,
+            request,
+            reply,
+        } = invoke;
+        if reply.is_abandoned() {
+            return;
+        }
+        action_host::answer_with(
+            self.invoke_eager(&caller, own_peer, launch.as_ref(), Some(&origin), &request),
+            reply,
+        );
+    }
+
     /// Take the broker's turn once: run what other threads handed over, then
     /// drain a bounded batch on the broker `LocalSet`. The loop takes the turn
     /// each time it wakes, and a test that drives the broker takes it here.
@@ -4027,30 +4038,11 @@ impl AppBrokerState {
             let directories = Rc::clone(directories);
             tokio::task::spawn_local(async move {
                 match request {
+                    // Admission waits for its journal write, and an app's open for the
+                    // launcher: both block, so they run beside this loop, which goes on
+                    // serving every app meanwhile.
                     ActionDirectoryBridgeRequest::InvokeEager(invoke) => {
-                        let EagerActionInvokeRequest {
-                            caller,
-                            own_peer,
-                            launch,
-                            origin,
-                            request,
-                            reply,
-                        } = *invoke;
-                        if reply.is_abandoned() {
-                            return;
-                        }
-                        // Enter admission directly, never the routing method that
-                        // would enqueue again. Dispatch checks the original custody.
-                        action_host::answer_with(
-                            state.invoke_eager(
-                                &caller,
-                                own_peer,
-                                launch.as_ref(),
-                                Some(&origin),
-                                &request,
-                            ),
-                            reply,
-                        );
+                        tokio::task::spawn_blocking(move || state.invoke_bridged(*invoke));
                     }
                     ActionDirectoryBridgeRequest::Query {
                         actor,
