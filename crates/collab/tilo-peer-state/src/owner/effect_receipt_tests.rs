@@ -112,46 +112,110 @@ fn the_owner_that_committed_a_receipt_publishes_it_without_reopening() {
     );
 }
 
-/// A device's record holds the receipt of an effect it served whose public
-/// half the view it restores does not carry yet: the workspace opens, and the
-/// receipt stays what answers that invocation. A receipt that contradicts the
-/// public half the view does carry still refuses the whole record.
-#[test]
-fn a_receipt_whose_public_half_is_not_admitted_keeps_its_workspace() {
-    let mut fixture = fixture();
-    let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("member.json");
-    let member = enroll_remote_history_member(&mut fixture, &path);
-    let owner = crate::owner::open_file(&path).unwrap();
-    let operation = request(&member, EffectReceiptStatus::Succeeded);
-    owner
-        .commit_effect_receipt(&operation, fixture.now)
-        .unwrap();
-    drop(owner);
-    // The view a device restores is the workspace as its host admits it, which
-    // holds an effect's public half only once the change that carries it is
-    // merged. A receipt served before that names an invocation the view has
-    // never seen.
-    let pending = uuid::Uuid::from_bytes([9; 16]);
-    rewrite_stored_receipt(&path, |_id, receipt| (pending.to_string(), receipt.clone()));
-    let restored = crate::owner::open_file(&path).unwrap();
-    assert_eq!(
-        restored.workspaces(),
-        vec![workspace],
-        "the workspace whose receipt the view cannot check yet is kept"
-    );
-    // A receipt the view can check, and that differs from it, is a record
-    // that was changed behind the workspace's back: that still refuses.
-    let served = decode(&operation).unwrap().invocation.0.to_string();
-    rewrite_stored_receipt(&path, |_id, stored| {
-        stored["receipt"]["generation"] = serde_json::json!(0);
-        (served.clone(), stored.clone())
-    });
-    assert!(
-        crate::owner::open_file(&path).is_err(),
-        "a receipt that contradicts its admitted half refuses the record"
-    );
+tilo_test_env::scenario! {
+    fn an_effect_receipt_is_recorded_published_and_admitted_as_its_devices;
+
+    phase a_receipt_whose_public_half_is_not_admitted_keeps_its_workspace;
+    // A device's record holds the receipt of an effect it served whose public
+    // half the view it restores does not carry yet: the workspace opens, and the
+    // receipt stays what answers that invocation. A receipt that contradicts the
+    // public half the view does carry still refuses the whole record.
+    {
+        let mut fixture = fixture();
+        let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("member.json");
+        let member = enroll_remote_history_member(&mut fixture, &path);
+        let owner = crate::owner::open_file(&path).unwrap();
+        let operation = request(&member, EffectReceiptStatus::Succeeded);
+        owner
+            .commit_effect_receipt(&operation, fixture.now)
+            .unwrap();
+        drop(owner);
+        // The view a device restores is the workspace as its host admits it, which
+        // holds an effect's public half only once the change that carries it is
+        // merged. A receipt served before that names an invocation the view has
+        // never seen.
+        let pending = uuid::Uuid::from_bytes([9; 16]);
+        rewrite_stored_receipt(&path, |_id, receipt| (pending.to_string(), receipt.clone()));
+        let restored = crate::owner::open_file(&path).unwrap();
+        assert_eq!(
+            restored.workspaces(),
+            vec![workspace],
+            "the workspace whose receipt the view cannot check yet is kept"
+        );
+        // A receipt the view can check, and that differs from it, is a record
+        // that was changed behind the workspace's back: that still refuses.
+        let served = decode(&operation).unwrap().invocation.0.to_string();
+        rewrite_stored_receipt(&path, |_id, stored| {
+            stored["receipt"]["generation"] = serde_json::json!(0);
+            (served.clone(), stored.clone())
+        });
+        assert!(
+            crate::owner::open_file(&path).is_err(),
+            "a receipt that contradicts its admitted half refuses the record"
+        );
+    }
+
+    phase effect_terminal_is_durable_exact_retry_and_signed_workspace_publication;
+    {
+        let mut fixture = fixture();
+        let failed = request(
+            &fixture.certificate,
+            EffectReceiptStatus::Failed {
+                code: "refused".into(),
+            },
+        );
+        let succeeded = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
+        for operation in [failed, succeeded] {
+            let receipt = commit(&fixture, &operation).unwrap();
+            receipt.validate_for(&operation).unwrap();
+            let path = fixture.directory.path().join("owner.json");
+            let bytes = record_on_disk(&path);
+            let reopened = crate::owner::open_file(&path).unwrap();
+            let retry = reopened
+                .commit_effect_receipt(&operation, fixture.now)
+                .unwrap();
+            assert_eq!(retry.binding, receipt.binding);
+            assert_eq!(retry.generation, receipt.generation);
+            assert_eq!(retry.aggregate_hash, receipt.aggregate_hash);
+            assert_eq!(record_on_disk(&path), bytes);
+            let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
+            let frames = reopened
+                .with_outgoing(workspace, fixture.now, |_, outgoing| {
+                    Ok(outgoing
+                        .entries()
+                        .map(|entry| entry.bytes().to_vec())
+                        .collect::<Vec<_>>())
+                })
+                .unwrap();
+            assert!(!frames.is_empty());
+            for frame in frames {
+                fixture
+                    .governor
+                    .receive(
+                        crate::TransportOrigin::RetainedRelayDelta(
+                            fixture.certificate.device_public_key,
+                        ),
+                        postcard::from_bytes(&frame).unwrap(),
+                    )
+                    .unwrap();
+            }
+            let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
+                fixture.governor.peer().admitted_workspace().unwrap(),
+            );
+            let effect = decode(&operation).unwrap();
+            assert!(effects.contains(&effect));
+            let mut conflict = effect;
+            conflict.actor = "another-person".into();
+            let mut changed = operation;
+            if let CommitOperation::EffectReceipt { redacted, .. } = &mut changed.operation {
+                *redacted = serde_json::to_vec(&conflict).unwrap();
+            }
+            assert!(commit(&fixture, &changed).is_err());
+            assert_eq!(record_on_disk(&path), bytes);
+        }
+    }
 }
 
 /// Change the one effect receipt `path`'s record holds to what `rewrite`
@@ -430,137 +494,82 @@ fn commit(fixture: &Fixture, request: &OwnerCommitRequest) -> Result<OwnerCommit
     fixture.owner.commit_effect_receipt(request, fixture.now)
 }
 
-#[test]
-fn effect_terminal_is_durable_exact_retry_and_signed_workspace_publication() {
-    let mut fixture = fixture();
-    let failed = request(
-        &fixture.certificate,
-        EffectReceiptStatus::Failed {
-            code: "refused".into(),
-        },
-    );
-    let succeeded = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
-    for operation in [failed, succeeded] {
-        let receipt = commit(&fixture, &operation).unwrap();
-        receipt.validate_for(&operation).unwrap();
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn an_effect_that_cannot_be_published_whole_changes_nothing;
+
+    phase effect_failed_publish_never_acks_or_mutates;
+    {
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+        let fixture = fixture();
         let path = fixture.directory.path().join("owner.json");
         let bytes = record_on_disk(&path);
-        let reopened = crate::owner::open_file(&path).unwrap();
-        let retry = reopened
-            .commit_effect_receipt(&operation, fixture.now)
-            .unwrap();
-        assert_eq!(retry.binding, receipt.binding);
-        assert_eq!(retry.generation, receipt.generation);
-        assert_eq!(retry.aggregate_hash, receipt.aggregate_hash);
+        let operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
+        assert!(with_failure(Checkpoint::BeforePublish, || commit(&fixture, &operation)).is_err());
         assert_eq!(record_on_disk(&path), bytes);
-        let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
-        let frames = reopened
-            .with_outgoing(workspace, fixture.now, |_, outgoing| {
-                Ok(outgoing
-                    .entries()
-                    .map(|entry| entry.bytes().to_vec())
-                    .collect::<Vec<_>>())
-            })
+        fixture
+            .owner
+            .with_current(
+                WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap(),
+                |view| {
+                    assert!(view.record.effect_receipts.is_empty());
+                    assert_eq!(view.generation(), 1);
+                    Ok(())
+                },
+            )
             .unwrap();
-        assert!(!frames.is_empty());
-        for frame in frames {
-            fixture
-                .governor
-                .receive(
-                    crate::TransportOrigin::RetainedRelayDelta(
-                        fixture.certificate.device_public_key,
-                    ),
-                    postcard::from_bytes(&frame).unwrap(),
-                )
-                .unwrap();
-        }
-        let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
-            fixture.governor.peer().admitted_workspace().unwrap(),
-        );
-        let effect = decode(&operation).unwrap();
-        assert!(effects.contains(&effect));
-        let mut conflict = effect;
-        conflict.actor = "another-person".into();
-        let mut changed = operation;
-        if let CommitOperation::EffectReceipt { redacted, .. } = &mut changed.operation {
-            *redacted = serde_json::to_vec(&conflict).unwrap();
-        }
-        assert!(commit(&fixture, &changed).is_err());
-        assert_eq!(record_on_disk(&path), bytes);
     }
-}
 
-#[test]
-fn effect_failed_publish_never_acks_or_mutates() {
-    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
-    let fixture = fixture();
-    let path = fixture.directory.path().join("owner.json");
-    let bytes = record_on_disk(&path);
-    let operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
-    assert!(with_failure(Checkpoint::BeforePublish, || commit(&fixture, &operation)).is_err());
-    assert_eq!(record_on_disk(&path), bytes);
-    fixture
-        .owner
-        .with_current(
-            WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap(),
-            |view| {
-                assert!(view.record.effect_receipts.is_empty());
-                assert_eq!(view.generation(), 1);
-                Ok(())
-            },
-        )
-        .unwrap();
-}
-
-#[test]
-fn effect_oversized_and_unbound_encoding_refuse_before_mutation() {
-    let fixture = fixture();
-    let path = fixture.directory.path().join("owner.json");
-    let bytes = record_on_disk(&path);
-    let mut operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
-    if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
-        redacted.resize(16 * 1024 + 1, 0);
-    }
-    assert!(commit(&fixture, &operation).is_err());
-    let mut operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
-    if let CommitOperation::EffectReceipt { invocation, .. } = &mut operation.operation {
-        *invocation = uuid::Uuid::new_v4();
-    }
-    assert!(commit(&fixture, &operation).is_err());
-    assert_eq!(record_on_disk(&path), bytes);
-}
-
-#[test]
-fn effect_private_facets_and_unbounded_context_refuse_without_publication() {
-    let fixture = fixture();
-    let path = fixture.directory.path().join("owner.json");
-    let bytes = record_on_disk(&path);
-    for variant in 0..4 {
+    phase effect_oversized_and_unbound_encoding_refuse_before_mutation;
+    {
+        let fixture = fixture();
+        let path = fixture.directory.path().join("owner.json");
+        let bytes = record_on_disk(&path);
         let mut operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
-        let mut effect = decode(&operation).unwrap();
-        match variant {
-            0 => effect
-                .context
-                .facets
-                .push(ActionFacet::new("private.argument", "not-public")),
-            1 => effect.context.purpose = Some("x".repeat(513)),
-            2 => {
-                effect.status = EffectReceiptStatus::Failed {
-                    code: "private error text".into(),
-                }
-            }
-            _ => {
-                effect.context.item = Some(tilo_actions::ActionItem {
-                    id: "item".into(),
-                    label: "control\nlabel".into(),
-                });
-            }
-        }
         if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
-            *redacted = serde_json::to_vec(&effect).unwrap();
+            redacted.resize(16 * 1024 + 1, 0);
+        }
+        assert!(commit(&fixture, &operation).is_err());
+        let mut operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
+        if let CommitOperation::EffectReceipt { invocation, .. } = &mut operation.operation {
+            *invocation = uuid::Uuid::new_v4();
         }
         assert!(commit(&fixture, &operation).is_err());
         assert_eq!(record_on_disk(&path), bytes);
+    }
+
+    phase effect_private_facets_and_unbounded_context_refuse_without_publication;
+    {
+        let fixture = fixture();
+        let path = fixture.directory.path().join("owner.json");
+        let bytes = record_on_disk(&path);
+        for variant in 0..4 {
+            let mut operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
+            let mut effect = decode(&operation).unwrap();
+            match variant {
+                0 => effect
+                    .context
+                    .facets
+                    .push(ActionFacet::new("private.argument", "not-public")),
+                1 => effect.context.purpose = Some("x".repeat(513)),
+                2 => {
+                    effect.status = EffectReceiptStatus::Failed {
+                        code: "private error text".into(),
+                    }
+                }
+                _ => {
+                    effect.context.item = Some(tilo_actions::ActionItem {
+                        id: "item".into(),
+                        label: "control\nlabel".into(),
+                    });
+                }
+            }
+            if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
+                *redacted = serde_json::to_vec(&effect).unwrap();
+            }
+            assert!(commit(&fixture, &operation).is_err());
+            assert_eq!(record_on_disk(&path), bytes);
+        }
     }
 }
 

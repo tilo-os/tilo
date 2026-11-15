@@ -330,60 +330,64 @@ mod tests {
     use super::*;
     use tilo_action_policy::Role;
 
-    /// An operation's bytes are what every device stores and what its id names:
-    /// they are stored format, and its id is what other operations name as a
-    /// parent.
-    #[test]
-    fn an_operation_keeps_its_bytes_and_its_id() {
-        let (_, op) = an_op();
-        let bytes = op.to_bytes().unwrap();
-        assert_eq!(
-            hex::encode(blake3::hash(&bytes).as_bytes()),
-            op.id().unwrap().to_string(),
-            "the id is the hash of the stored bytes"
-        );
-        assert_eq!(SignedMembershipOp::verified(&bytes).unwrap(), op);
-        // The stored bytes are the operation itself: its author's person key
-        // starts them, so a store reads who wrote it without decoding the
-        // command.
-        assert_eq!(&bytes[..32], &op.author.user_public_key);
-    }
+    tilo_test_env::scenario! {
+        fn a_membership_operation_is_its_stored_bytes_and_its_authors;
 
-    #[test]
-    fn an_operation_that_is_not_its_authors_is_refused() {
-        let (_, mut op) = an_op();
-        assert!(op.verify().is_ok());
-        let (other, other_cert) = device(11);
-        // Signed by another device, but naming its original author.
-        op.sig = ed25519_dalek::Signer::sign(&other, &op.signing_bytes().unwrap()).to_bytes();
-        assert!(op.verify().is_err(), "another device signed it");
-        // Signed by the device it names: the author was rewritten, and so was
-        // the signature.
-        op.author = other_cert;
-        op.sig = ed25519_dalek::Signer::sign(&other, &op.signing_bytes().unwrap()).to_bytes();
-        op.verify().expect("signed by the device it names");
-        let (_, mut tampered) = an_op();
-        if let MembershipOpCommand::Project { changes } = &mut tampered.command {
-            changes.push(Change::SetRole {
-                person: "member".to_owned(),
-                role: Role::Owner,
-            });
+        phase an_operation_keeps_its_bytes_and_its_id;
+        // An operation's bytes are what every device stores and what its id names:
+        // they are stored format, and its id is what other operations name as a
+        // parent.
+        {
+            let (_, op) = an_op();
+            let bytes = op.to_bytes().unwrap();
+            assert_eq!(
+                hex::encode(blake3::hash(&bytes).as_bytes()),
+                op.id().unwrap().to_string(),
+                "the id is the hash of the stored bytes"
+            );
+            assert_eq!(SignedMembershipOp::verified(&bytes).unwrap(), op);
+            // The stored bytes are the operation itself: its author's person key
+            // starts them, so a store reads who wrote it without decoding the
+            // command.
+            assert_eq!(&bytes[..32], &op.author.user_public_key);
         }
-        assert!(tampered.verify().is_err(), "the command was changed");
-        let (_, mut forged) = an_op();
-        forged.author.device_label = "someone else's".into();
-        assert!(
-            forged.verify().is_err(),
-            "the certificate chain no longer verifies"
-        );
-    }
 
-    #[test]
-    fn the_key_is_the_id_in_hex() {
-        let (_, op) = an_op();
-        let key = op.id().unwrap().to_key();
-        assert_eq!(key.len(), 64);
-        assert_eq!(hex::decode(&key).unwrap(), op.id().unwrap().0.to_vec());
+        phase an_operation_that_is_not_its_authors_is_refused;
+        {
+            let (_, mut op) = an_op();
+            assert!(op.verify().is_ok());
+            let (other, other_cert) = device(11);
+            // Signed by another device, but naming its original author.
+            op.sig = ed25519_dalek::Signer::sign(&other, &op.signing_bytes().unwrap()).to_bytes();
+            assert!(op.verify().is_err(), "another device signed it");
+            // Signed by the device it names: the author was rewritten, and so was
+            // the signature.
+            op.author = other_cert;
+            op.sig = ed25519_dalek::Signer::sign(&other, &op.signing_bytes().unwrap()).to_bytes();
+            op.verify().expect("signed by the device it names");
+            let (_, mut tampered) = an_op();
+            if let MembershipOpCommand::Project { changes } = &mut tampered.command {
+                changes.push(Change::SetRole {
+                    person: "member".to_owned(),
+                    role: Role::Owner,
+                });
+            }
+            assert!(tampered.verify().is_err(), "the command was changed");
+            let (_, mut forged) = an_op();
+            forged.author.device_label = "someone else's".into();
+            assert!(
+                forged.verify().is_err(),
+                "the certificate chain no longer verifies"
+            );
+        }
+
+        phase the_key_is_the_id_in_hex;
+        {
+            let (_, op) = an_op();
+            let key = op.id().unwrap().to_key();
+            assert_eq!(key.len(), 64);
+            assert_eq!(hex::decode(&key).unwrap(), op.id().unwrap().0.to_vec());
+        }
     }
 }
 

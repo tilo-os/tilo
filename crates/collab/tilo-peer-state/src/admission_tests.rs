@@ -55,55 +55,60 @@ fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
         "unchanged policy data is decoded at most once"
     );
 }
-#[test]
-fn admitted_immutable_certificate_does_not_repeat_signature_checks_per_permission_query() {
-    let (peer, _, _, cert, now) = seeded();
-    crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(0));
-    let expected = peer.permissions(cert.device_public_key, now).unwrap();
-    for _ in 0..100 {
-        let actual = peer
-            .clone()
-            .permissions(cert.device_public_key, now)
-            .unwrap();
+tilo_test_env::scenario! {
+    fn permission_queries_reuse_what_admission_already_verified;
+
+    phase admitted_immutable_certificate_does_not_repeat_signature_checks_per_permission_query;
+    {
+        let (peer, _, _, cert, now) = seeded();
+        crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(0));
+        let expected = peer.permissions(cert.device_public_key, now).unwrap();
+        for _ in 0..100 {
+            let actual = peer
+                .clone()
+                .permissions(cert.device_public_key, now)
+                .unwrap();
+            assert_eq!(
+                serde_json::to_vec(&actual.policy).unwrap(),
+                serde_json::to_vec(&expected.policy).unwrap()
+            );
+            assert_eq!(actual.person_id(), expected.person_id());
+        }
         assert_eq!(
-            serde_json::to_vec(&actual.policy).unwrap(),
-            serde_json::to_vec(&expected.policy).unwrap()
+            crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
+            0,
+            "immutable signatures were already verified when the certificate entered the roster"
         );
-        assert_eq!(actual.person_id(), expected.person_id());
     }
-    assert_eq!(
-        crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
-        0,
-        "immutable signatures were already verified when the certificate entered the roster"
-    );
-}
-#[test]
-fn exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via_presence() {
-    let (mut peer, _, _, cert, now) = seeded();
-    let old = peer.clone();
-    let mut exported = peer
-        .certificates()
-        .into_iter()
-        .find(|c| c.device_public_key == cert.device_public_key)
-        .unwrap();
-    exported.signature[0] ^= 1;
-    assert!(peer.permissions(cert.device_public_key, now).is_ok());
-    assert!(old.permissions(cert.device_public_key, now).is_ok());
-    let before = peer.durable().unwrap();
-    assert!(
-        peer.receive_from(
-            TransportOrigin::UntrustedPresence(cert.device_public_key),
-            NeighbourMsg::IdentityHello {
-                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(exported),
-                revocations: vec![],
-            },
-            now
-        )
-        .is_err()
-    );
-    assert_eq!(peer.durable().unwrap(), before);
-    assert!(peer.certificates().contains(&cert));
+
+    phase exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via_presence;
+    {
+        let (mut peer, _, _, cert, now) = seeded();
+        let old = peer.clone();
+        let mut exported = peer
+            .certificates()
+            .into_iter()
+            .find(|c| c.device_public_key == cert.device_public_key)
+            .unwrap();
+        exported.signature[0] ^= 1;
+        assert!(peer.permissions(cert.device_public_key, now).is_ok());
+        assert!(old.permissions(cert.device_public_key, now).is_ok());
+        let before = peer.durable().unwrap();
+        assert!(
+            peer.receive_from(
+                TransportOrigin::UntrustedPresence(cert.device_public_key),
+                NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                    cert: Box::new(exported),
+                    revocations: vec![],
+                },
+                now
+            )
+            .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+        assert!(peer.certificates().contains(&cert));
+    }
 }
 #[test]
 #[allow(
@@ -1211,209 +1216,388 @@ fn concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first(
     }
 }
 
-#[test]
-fn retained_relay_replay_accepts_certified_document_after_live_freshness_window() {
-    let (mut governor, authority, _, browser_cert, authored_at) = seeded();
-    let replayed_at = authored_at + Duration::from_secs(301);
-    let mut browser = StatePeer::new(
-        governor.workspace_id(),
-        governor.owner_certificates()[0].clone(),
-        vec![browser_cert],
-        RevocationList::new(),
-        replayed_at,
-    )
-    .unwrap();
-    let origin = TransportOrigin::RetainedRelayDelta(authority.verifying_key().to_bytes());
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_checkpoint_installs_only_with_its_governed_coverage;
 
-    for message in governor
-        .publication_mut()
-        .bootstrap_messages(&authority, authored_at)
-        .unwrap()
+    phase retained_relay_replay_accepts_certified_document_after_live_freshness_window;
     {
-        browser.receive_from(origin, message, replayed_at).unwrap();
+        let (mut governor, authority, _, browser_cert, authored_at) = seeded();
+        let replayed_at = authored_at + Duration::from_secs(301);
+        let mut browser = StatePeer::new(
+            governor.workspace_id(),
+            governor.owner_certificates()[0].clone(),
+            vec![browser_cert],
+            RevocationList::new(),
+            replayed_at,
+        )
+        .unwrap();
+        let origin = TransportOrigin::RetainedRelayDelta(authority.verifying_key().to_bytes());
+
+        for message in governor
+            .publication_mut()
+            .bootstrap_messages(&authority, authored_at)
+            .unwrap()
+        {
+            browser.receive_from(origin, message, replayed_at).unwrap();
+        }
+
+        assert_eq!(browser.rows(), governor.rows());
+        assert_eq!(
+            browser.document_heads("test.app", "tab:1"),
+            governor.document_heads("test.app", "tab:1")
+        );
     }
 
-    assert_eq!(browser.rows(), governor.rows());
-    assert_eq!(
-        browser.document_heads("test.app", "tab:1"),
-        governor.document_heads("test.app", "tab:1")
-    );
-}
-#[test]
-fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_sequence() {
-    let (mut native, a, b, bc, now) = seeded();
-    let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
-    let before = doc.get_heads();
-    doc.put(ROOT, "other", "B").unwrap();
-    doc.commit_edit("fixture", "other");
-    let old = native
-        .publication_mut()
-        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
+    phase fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_sequence;
+    {
+        let (mut native, a, b, bc, now) = seeded();
+        let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
+        let before = doc.get_heads();
+        doc.put(ROOT, "other", "B").unwrap();
+        doc.commit_edit("fixture", "other");
+        let old = native
+            .publication_mut()
+            .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
+            .unwrap();
+        let bootstrap = native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap();
+        let mut fresh = StatePeer::new(
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc.clone()],
+            RevocationList::new(),
+            now,
+        )
         .unwrap();
-    let bootstrap = native
-        .publication_mut()
-        .bootstrap_messages(&a, now)
+        // Retained per-channel replay can arrive in either order.
+        assert!(
+            fresh
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    bootstrap[1].clone(),
+                    now
+                )
+                .unwrap()
+                .deferred
+        );
+        fresh
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                bootstrap[0].clone(),
+                now,
+            )
+            .unwrap();
+        assert_eq!(fresh.rows(), native.rows());
+        assert!(
+            fresh
+                .receive_from(
+                    TransportOrigin::RelayDelta(bc.device_public_key),
+                    old.clone(),
+                    now
+                )
+                .unwrap()
+                .duplicate
+        );
+        let checkpoint = fresh.durable().unwrap();
+        let mut reload = StatePeer::restore(
+            &checkpoint,
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc],
+            RevocationList::new(),
+            now,
+        )
         .unwrap();
-    let mut fresh = StatePeer::new(
-        native.workspace_id(),
-        native.owner_certificates()[0].clone(),
-        vec![bc.clone()],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    // Retained per-channel replay can arrive in either order.
-    assert!(
+        assert!(
+            reload
+                .receive_from(
+                    TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+                    old,
+                    now
+                )
+                .unwrap()
+                .duplicate
+        );
+        let mut doc = AutoCommit::load(&reload.document("test.app", "tab:1").unwrap()).unwrap();
+        let before = doc.get_heads();
+        doc.put(ROOT, "new", "B2").unwrap();
+        doc.commit_edit("fixture", "new");
+        let next = reload
+            .publication_mut()
+            .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
+            .unwrap();
+        assert!(matches!(next,NeighbourMsg::AppDocument{envelope,..} if envelope.seq==2));
+    }
+
+    phase state_on_presence_cannot_install_governance_or_advance_watermarks;
+    {
+        let (mut native, a, _, bc, now) = seeded();
+        let bootstrap = native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap();
+        let mut fresh = StatePeer::new(
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        for message in &bootstrap {
+            assert!(
+                fresh
+                    .receive_from(
+                        TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
+                        message.clone(),
+                        now
+                    )
+                    .is_err()
+            );
+        }
+        assert!(!fresh.has_governance());
+        assert!(fresh.rows().is_empty());
+        for message in bootstrap {
+            fresh
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        assert_eq!(fresh.rows(), native.rows());
+    }
+
+    phase forged_or_mismatched_coverage_cannot_install_snapshot;
+    {
+        let (mut native, a, _, bc, now) = seeded();
+        let bootstrap = native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap();
+        let mut fresh = StatePeer::new(
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        fresh
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                bootstrap[0].clone(),
+                now,
+            )
+            .unwrap();
+        let mut mismatch = bootstrap[1].clone();
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut mismatch {
+            let mut replacement = AutoCommit::new();
+            replacement.put(ROOT, "attack", true).unwrap();
+            replacement.commit_edit("fixture", "attack");
+            envelope.payload = collab_types::DocumentMutation::Snapshot(replacement.save())
+                .encode()
+                .unwrap();
+            collab_types::sign_op(envelope, &a).unwrap();
+        }
+        assert!(
+            fresh
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    mismatch,
+                    now
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("coverage")
+        );
+        assert!(fresh.rows().is_empty());
         fresh
             .receive_from(
                 TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
                 bootstrap[1].clone(),
-                now
-            )
-            .unwrap()
-            .deferred
-    );
-    fresh
-        .receive_from(
-            TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-            bootstrap[0].clone(),
-            now,
-        )
-        .unwrap();
-    assert_eq!(fresh.rows(), native.rows());
-    assert!(
-        fresh
-            .receive_from(
-                TransportOrigin::RelayDelta(bc.device_public_key),
-                old.clone(),
-                now
-            )
-            .unwrap()
-            .duplicate
-    );
-    let checkpoint = fresh.durable().unwrap();
-    let mut reload = StatePeer::restore(
-        &checkpoint,
-        native.workspace_id(),
-        native.owner_certificates()[0].clone(),
-        vec![bc],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert!(
-        reload
-            .receive_from(
-                TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
-                old,
-                now
-            )
-            .unwrap()
-            .duplicate
-    );
-    let mut doc = AutoCommit::load(&reload.document("test.app", "tab:1").unwrap()).unwrap();
-    let before = doc.get_heads();
-    doc.put(ROOT, "new", "B2").unwrap();
-    doc.commit_edit("fixture", "new");
-    let next = reload
-        .publication_mut()
-        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
-        .unwrap();
-    assert!(matches!(next,NeighbourMsg::AppDocument{envelope,..} if envelope.seq==2));
-}
-#[test]
-fn state_on_presence_cannot_install_governance_or_advance_watermarks() {
-    let (mut native, a, _, bc, now) = seeded();
-    let bootstrap = native
-        .publication_mut()
-        .bootstrap_messages(&a, now)
-        .unwrap();
-    let mut fresh = StatePeer::new(
-        native.workspace_id(),
-        native.owner_certificates()[0].clone(),
-        vec![bc],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    for message in &bootstrap {
-        assert!(
-            fresh
-                .receive_from(
-                    TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
-                    message.clone(),
-                    now
-                )
-                .is_err()
-        );
-    }
-    assert!(!fresh.has_governance());
-    assert!(fresh.rows().is_empty());
-    for message in bootstrap {
-        fresh
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                message,
                 now,
             )
             .unwrap();
+        assert_eq!(fresh.rows(), native.rows());
     }
-    assert_eq!(fresh.rows(), native.rows());
-}
-#[test]
-fn forged_or_mismatched_coverage_cannot_install_snapshot() {
-    let (mut native, a, _, bc, now) = seeded();
-    let bootstrap = native
-        .publication_mut()
-        .bootstrap_messages(&a, now)
-        .unwrap();
-    let mut fresh = StatePeer::new(
-        native.workspace_id(),
-        native.owner_certificates()[0].clone(),
-        vec![bc],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    fresh
-        .receive_from(
-            TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-            bootstrap[0].clone(),
+
+    phase fresh_same_head_checkpoint_is_still_a_durable_watermark_mutation;
+    {
+        let (mut native, a, _, bc, now) = seeded();
+        let mut receiver = StatePeer::new(
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc],
+            RevocationList::new(),
             now,
         )
         .unwrap();
-    let mut mismatch = bootstrap[1].clone();
-    if let NeighbourMsg::AppDocument { envelope, .. } = &mut mismatch {
-        let mut replacement = AutoCommit::new();
-        replacement.put(ROOT, "attack", true).unwrap();
-        replacement.commit_edit("fixture", "attack");
-        envelope.payload = collab_types::DocumentMutation::Snapshot(replacement.save())
-            .encode()
+        for message in native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap()
+        {
+            receiver
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        let heads = receiver.rows();
+        let fresh = native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
             .unwrap();
-        collab_types::sign_op(envelope, &a).unwrap();
-    }
-    assert!(
-        fresh
+        receiver
             .receive_from(
                 TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                mismatch,
-                now
+                fresh[0].clone(),
+                now,
             )
-            .unwrap_err()
-            .to_string()
-            .contains("coverage")
-    );
-    assert!(fresh.rows().is_empty());
-    fresh
-        .receive_from(
-            TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-            bootstrap[1].clone(),
+            .unwrap();
+        let outcome = receiver
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                fresh[1].clone(),
+                now,
+            )
+            .unwrap();
+        assert!(!outcome.changed);
+        assert!(outcome.metadata_changed);
+        assert_eq!(heads, receiver.rows());
+    }
+
+    phase reordered_incrementals_are_pending_durable_and_drain_after_predecessor;
+    {
+        let (receiver, _, author_key, author_cert, now) = seeded();
+        let mut author = receiver.clone();
+        let app = "test.app";
+        let record = "tab:1";
+        let mut document = AutoCommit::load(&author.document(app, record).unwrap()).unwrap();
+        document.set_actor(automerge::ActorId::from(
+            author_key.verifying_key().to_bytes().to_vec(),
+        ));
+
+        let before = document.get_heads();
+        document.put(ROOT, "first", "A").unwrap();
+        document.commit_edit("fixture", "first");
+        let first = author
+            .publication_mut()
+            .publish_incremental(app, record, document.save_after(&before), &author_key, now)
+            .unwrap();
+        let before = document.get_heads();
+        document.put(ROOT, "second", "B").unwrap();
+        document.commit_edit("fixture", "second");
+        let second = author
+            .publication_mut()
+            .publish_incremental(app, record, document.save_after(&before), &author_key, now)
+            .unwrap();
+
+        let origin = TransportOrigin::RelayDelta(author_key.verifying_key().to_bytes());
+        let mut receiver = receiver;
+        let outcome = receiver.receive_from(origin, second.clone(), now).unwrap();
+        assert!(outcome.deferred);
+        assert_eq!(receiver.pending_count(), 1);
+        assert!(!receiver.covers(&second));
+
+        let mut receiver = StatePeer::restore(
+            &receiver.durable().unwrap(),
+            receiver.workspace_id(),
+            receiver.owner_certificates()[0].clone(),
+            vec![author_cert],
+            RevocationList::new(),
             now,
         )
         .unwrap();
-    assert_eq!(fresh.rows(), native.rows());
-}
+        assert_eq!(receiver.pending_count(), 1);
+        receiver.receive_from(origin, first, now).unwrap();
+        assert_eq!(receiver.pending_count(), 0);
+        assert_eq!(
+            receiver.document_heads(app, record),
+            Some(document.base_heads())
+        );
+    }
 
+    phase a_record_covered_as_empty_is_held_from_its_coverage;
+    // A record the workspace covers as empty is held by the replica the
+    // governance reaches, though no one can send it: an empty record carries no
+    // change to replay. The coverage row names exactly that empty checkpoint, so
+    // the replica holds the record and a member's write builds on it.
+    {
+        let (mut native, a_key, b_key, b_cert, now) = seeded();
+        let empty = AutoCommit::new().save();
+        // The governor checkpoints an empty record: the coverage row it writes
+        // names the route with no heads and the hash of that empty snapshot.
+        native
+            .publication_mut()
+            .publish_document("test.app", "tab:2", empty.clone(), &a_key, now)
+            .unwrap();
+        let messages = native
+            .publication_mut()
+            .bootstrap_messages(&a_key, now)
+            .unwrap();
+        let NeighbourMsg::SyncResp { changes, workspace } = messages[0].clone() else {
+            panic!("unexpected fixture shape")
+        };
+        let mut joiner = StatePeer::new(
+            &workspace,
+            native.owner_certificates()[0].clone(),
+            vec![b_cert],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        // Only the governance arrives.
+        joiner
+            .receive_from(
+                TransportOrigin::RelayDelta(a_key.verifying_key().to_bytes()),
+                NeighbourMsg::SyncResp { changes, workspace },
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            joiner.document("test.app", "tab:2").as_deref(),
+            Some(empty.as_slice()),
+            "the replica holds the empty record the governance covers"
+        );
+        assert!(
+            joiner
+                .document_heads("test.app", "tab:2")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!joiner.checkpoint_pending("test.app", "tab:2"));
+        assert_eq!(
+            joiner.document("test.app", "tab:1"),
+            None,
+            "a covered record with changes is not made up"
+        );
+        // Held, not carved in stone: the member's write builds on it.
+        let mut doc = AutoCommit::load(&joiner.document("test.app", "tab:2").unwrap()).unwrap();
+        doc.set_actor(automerge::ActorId::from(
+            b_key.verifying_key().to_bytes().to_vec(),
+        ));
+        let heads = doc.get_heads();
+        doc.put(ROOT, "note", "mine").unwrap();
+        doc.commit_edit("fixture", "note");
+        joiner
+            .publication_mut()
+            .publish_incremental("test.app", "tab:2", doc.save_after(&heads), &b_key, now)
+            .unwrap();
+        assert_eq!(
+            joiner.document_heads("test.app", "tab:2").unwrap().len(),
+            1,
+            "the member's write lands on the record"
+        );
+    }
+}
 #[test]
 fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
     let (mut native, a, _, bc, now) = seeded();
@@ -1475,145 +1659,336 @@ fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
         .is_err()
     );
 }
-#[test]
-fn fresh_same_head_checkpoint_is_still_a_durable_watermark_mutation() {
-    let (mut native, a, _, bc, now) = seeded();
-    let mut receiver = StatePeer::new(
-        native.workspace_id(),
-        native.owner_certificates()[0].clone(),
-        vec![bc],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    for message in native
-        .publication_mut()
-        .bootstrap_messages(&a, now)
-        .unwrap()
+tilo_test_env::scenario! {
+    fn durable_state_keeps_its_obligations_and_refuses_what_it_cannot_read;
+
+    phase authenticated_missing_mls_is_durable_and_later_plaintext_cannot_downgrade;
     {
-        receiver
+        let (mut native, a, _, bc, now) = seeded();
+        let mut receiver = StatePeer::new(
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc.clone()],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        for message in native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap()
+        {
+            receiver
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        let messages = native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap();
+        let mut encrypted = messages[1].clone();
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut encrypted {
+            envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(1));
+            envelope.payload = vec![1, 2, 3];
+            collab_types::sign_op(envelope, &a).unwrap();
+        }
+        let outcome = receiver
             .receive_from(
                 TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                message,
+                encrypted,
                 now,
             )
-            .unwrap();
+            .expect("authenticated unsupported encryption must persist its no-downgrade obligation");
+        assert!(outcome.metadata_changed);
+        let mut restored = StatePeer::restore(
+            &receiver.durable().unwrap(),
+            native.workspace_id(),
+            native.owner_certificates()[0].clone(),
+            vec![bc],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert!(
+            restored
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    messages[1].clone(),
+                    now
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("downgrade")
+        );
     }
-    let heads = receiver.rows();
-    let fresh = native
-        .publication_mut()
-        .bootstrap_messages(&a, now)
-        .unwrap();
-    receiver
-        .receive_from(
-            TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-            fresh[0].clone(),
-            now,
-        )
-        .unwrap();
-    let outcome = receiver
-        .receive_from(
-            TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-            fresh[1].clone(),
-            now,
-        )
-        .unwrap();
-    assert!(!outcome.changed);
-    assert!(outcome.metadata_changed);
-    assert_eq!(heads, receiver.rows());
-}
-#[test]
-fn authenticated_missing_mls_is_durable_and_later_plaintext_cannot_downgrade() {
-    let (mut native, a, _, bc, now) = seeded();
-    let mut receiver = StatePeer::new(
-        native.workspace_id(),
-        native.owner_certificates()[0].clone(),
-        vec![bc.clone()],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    for message in native
-        .publication_mut()
-        .bootstrap_messages(&a, now)
-        .unwrap()
+
+    phase unsupported_durable_version_is_rejected_without_mutating_the_bytes;
     {
-        receiver
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                message,
-                now,
-            )
-            .unwrap();
-    }
-    let messages = native
-        .publication_mut()
-        .bootstrap_messages(&a, now)
-        .unwrap();
-    let mut encrypted = messages[1].clone();
-    if let NeighbourMsg::AppDocument { envelope, .. } = &mut encrypted {
-        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(1));
-        envelope.payload = vec![1, 2, 3];
-        collab_types::sign_op(envelope, &a).unwrap();
-    }
-    let outcome = receiver
-        .receive_from(
-            TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-            encrypted,
+        let (peer, _, _, bc, now) = seeded();
+        let mut bytes = peer.durable().unwrap();
+        bytes[0] = 3;
+        let unchanged = bytes.clone();
+        let error = StatePeer::restore(
+            &bytes,
+            peer.workspace_id(),
+            peer.owner_certificates()[0].clone(),
+            vec![bc],
+            RevocationList::new(),
             now,
         )
-        .expect("authenticated unsupported encryption must persist its no-downgrade obligation");
-    assert!(outcome.metadata_changed);
-    let mut restored = StatePeer::restore(
-        &receiver.durable().unwrap(),
-        native.workspace_id(),
-        native.owner_certificates()[0].clone(),
-        vec![bc],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert!(
-        restored
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                messages[1].clone(),
-                now
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("downgrade")
-    );
+        .err()
+        .unwrap();
+        assert!(error.contains("unsupported durable version"));
+        assert_eq!(bytes, unchanged);
+    }
 }
-#[test]
-fn self_issued_identity_presence_cannot_expand_the_admitted_roster() {
-    let (mut receiver, _, _, _, now) = seeded();
-    let rogue_root = SigningKey::from_bytes(&[99; 32]);
-    let rogue = SigningKey::from_bytes(&[98; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: rogue_root.verifying_key().to_bytes(),
-        device_public_key: rogue.verifying_key().to_bytes(),
-        device_label: "self issued".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &rogue_root).unwrap();
-    assert!(
-        receiver
-            .receive_from(
-                TransportOrigin::UntrustedPresence(cert.device_public_key),
-                NeighbourMsg::IdentityHello {
-                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                    cert: Box::new(cert),
-                    revocations: vec![],
-                },
-                now
-            )
-            .is_err()
-    );
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn the_roster_admits_only_identities_the_governance_names;
+
+    phase self_issued_identity_presence_cannot_expand_the_admitted_roster;
+    {
+        let (mut receiver, _, _, _, now) = seeded();
+        let rogue_root = SigningKey::from_bytes(&[99; 32]);
+        let rogue = SigningKey::from_bytes(&[98; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: rogue_root.verifying_key().to_bytes(),
+            device_public_key: rogue.verifying_key().to_bytes(),
+            device_label: "self issued".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &rogue_root).unwrap();
+        assert!(
+            receiver
+                .receive_from(
+                    TransportOrigin::UntrustedPresence(cert.device_public_key),
+                    NeighbourMsg::IdentityHello {
+                        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                        cert: Box::new(cert),
+                        revocations: vec![],
+                    },
+                    now
+                )
+                .is_err()
+        );
+    }
+
+    phase expired_known_identity_does_not_block_governed_join;
+    {
+        let (mut governor, a, _, _, now) = seeded();
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let mut cert = governor.owner_certificates()[0].clone();
+        cert.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+        cert.expires_at_ns = Some(
+            (now + Duration::from_secs(1))
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                .try_into()
+                .unwrap(),
+        );
+        sign_device_cert(&mut cert, &root).unwrap();
+        governor.admit_certificate(cert.clone(), &a, now).unwrap();
+        let mut existing = governor.clone();
+        assert!(existing.permissions(cert.device_public_key, now).is_ok());
+        let later = now + Duration::from_secs(2);
+        assert!(
+            matches!(
+                existing.permissions(cert.device_public_key, later),
+                Err(MembershipError::Certificate(
+                    tilo_user_identity::DeviceCertError::Expired
+                ))
+            ),
+            "a warm policy cache must not cache certificate validity"
+        );
+        let mut next = governor
+            .owner_certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == a.verifying_key().to_bytes())
+            .unwrap();
+        next.device_public_key = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
+        sign_device_cert(&mut next, &root).unwrap();
+        assert!(governor.admit_certificate(next.clone(), &a, later).unwrap());
+        assert!(
+            existing
+                .receive(
+                    a.verifying_key().to_bytes(),
+                    governor.workspace_message(),
+                    later
+                )
+                .unwrap()
+                .metadata_changed
+        );
+        assert!(matches!(
+            existing.permissions(cert.device_public_key, later),
+            Err(MembershipError::Certificate(
+                tilo_user_identity::DeviceCertError::Expired
+            ))
+        ));
+        assert!(existing.permissions(next.device_public_key, later).is_ok());
+        let restored = StatePeer::restore(
+            &existing.durable().unwrap(),
+            existing.workspace_id(),
+            existing.owner_certificates()[0].clone(),
+            vec![],
+            RevocationList::new(),
+            later,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                restored.permissions(cert.device_public_key, later),
+                Err(MembershipError::Certificate(
+                    tilo_user_identity::DeviceCertError::Expired
+                ))
+            ),
+            "expired historical certificates restore but never regain current access"
+        );
+        let mut empty = StatePeer::new(
+            governor.workspace_id(),
+            next.clone(),
+            vec![],
+            RevocationList::new(),
+            later,
+        )
+        .unwrap();
+        assert!(
+            empty
+                .receive(
+                    a.verifying_key().to_bytes(),
+                    governor.workspace_message(),
+                    later
+                )
+                .is_err(),
+            "previously unknown expired certificate cannot be imported"
+        );
+    }
+
+    phase restore_validates_fresh_roster_not_before_and_interval_while_retaining_history;
+    {
+        let (peer, _, _, _, now) = seeded();
+        let now_ns: u64 = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .try_into()
+            .unwrap();
+        let root = SigningKey::from_bytes(&[94; 32]);
+        let make = |device_seed: u8, issued_at_ns: u64, expires_at_ns: Option<u64>| {
+            let device = SigningKey::from_bytes(&[device_seed; 32]);
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: format!("fresh-{device_seed}"),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns,
+                expires_at_ns,
+                signature: [0; 64],
+                issuer: None,
+            };
+            if expires_at_ns.is_some_and(|expiry| expiry <= issued_at_ns) {
+                let digest = tilo_user_identity::device_cert_signing_digest(&cert).unwrap();
+                cert.signature = root.sign(&digest).to_bytes();
+            } else {
+                sign_device_cert(&mut cert, &root).unwrap();
+            }
+            cert
+        };
+        let future = make(95, now_ns + 1_000_000_000, None);
+        let error = StatePeer::restore(
+            &peer.durable().unwrap(),
+            peer.workspace_id(),
+            peer.owner_certificates()[0].clone(),
+            vec![future],
+            RevocationList::new(),
+            now,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("not yet valid"), "{error}");
+
+        let backwards = make(96, now_ns, Some(now_ns));
+        let error = StatePeer::restore(
+            &peer.durable().unwrap(),
+            peer.workspace_id(),
+            peer.owner_certificates()[0].clone(),
+            vec![backwards],
+            RevocationList::new(),
+            now,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("invalid validity"), "{error}");
+    }
+
+    phase expired_pinned_authority_restores_as_history_but_cannot_authorize;
+    {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(4_000);
+        let later = now + Duration::from_secs(2);
+        let root = SigningKey::from_bytes(&[104; 32]);
+        let authority_key = SigningKey::from_bytes(&[105; 32]);
+        let mut authority = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: authority_key.verifying_key().to_bytes(),
+            device_label: "historical authority".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: Some(
+                (now + Duration::from_secs(1))
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+                    .try_into()
+                    .unwrap(),
+            ),
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut authority, &root).unwrap();
+        let workspace = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        let mut peer = StatePeer::new(
+            workspace,
+            authority.clone(),
+            vec![authority.clone()],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        peer.install_seed(
+            SeedState {
+                workspace_changes: seed_workspace(workspace, &authority, &[authority.clone()]).unwrap(),
+                documents: vec![],
+            },
+            &authority_key,
+            now,
+        )
+        .unwrap();
+
+        let restored = StatePeer::restore(
+            &peer.durable().unwrap(),
+            workspace,
+            authority.clone(),
+            vec![],
+            RevocationList::new(),
+            later,
+        )
+        .unwrap();
+        assert!(restored.certificates().contains(&authority));
+        assert!(matches!(
+            restored.permissions(authority.device_public_key, later),
+            Err(MembershipError::Certificate(
+                tilo_user_identity::DeviceCertError::Expired
+            ))
+        ));
+    }
 }
 
 #[test]
@@ -1906,77 +2281,6 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
 }
 
 #[test]
-fn unsupported_durable_version_is_rejected_without_mutating_the_bytes() {
-    let (peer, _, _, bc, now) = seeded();
-    let mut bytes = peer.durable().unwrap();
-    bytes[0] = 3;
-    let unchanged = bytes.clone();
-    let error = StatePeer::restore(
-        &bytes,
-        peer.workspace_id(),
-        peer.owner_certificates()[0].clone(),
-        vec![bc],
-        RevocationList::new(),
-        now,
-    )
-    .err()
-    .unwrap();
-    assert!(error.contains("unsupported durable version"));
-    assert_eq!(bytes, unchanged);
-}
-
-#[test]
-fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
-    let (receiver, _, author_key, author_cert, now) = seeded();
-    let mut author = receiver.clone();
-    let app = "test.app";
-    let record = "tab:1";
-    let mut document = AutoCommit::load(&author.document(app, record).unwrap()).unwrap();
-    document.set_actor(automerge::ActorId::from(
-        author_key.verifying_key().to_bytes().to_vec(),
-    ));
-
-    let before = document.get_heads();
-    document.put(ROOT, "first", "A").unwrap();
-    document.commit_edit("fixture", "first");
-    let first = author
-        .publication_mut()
-        .publish_incremental(app, record, document.save_after(&before), &author_key, now)
-        .unwrap();
-    let before = document.get_heads();
-    document.put(ROOT, "second", "B").unwrap();
-    document.commit_edit("fixture", "second");
-    let second = author
-        .publication_mut()
-        .publish_incremental(app, record, document.save_after(&before), &author_key, now)
-        .unwrap();
-
-    let origin = TransportOrigin::RelayDelta(author_key.verifying_key().to_bytes());
-    let mut receiver = receiver;
-    let outcome = receiver.receive_from(origin, second.clone(), now).unwrap();
-    assert!(outcome.deferred);
-    assert_eq!(receiver.pending_count(), 1);
-    assert!(!receiver.covers(&second));
-
-    let mut receiver = StatePeer::restore(
-        &receiver.durable().unwrap(),
-        receiver.workspace_id(),
-        receiver.owner_certificates()[0].clone(),
-        vec![author_cert],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert_eq!(receiver.pending_count(), 1);
-    receiver.receive_from(origin, first, now).unwrap();
-    assert_eq!(receiver.pending_count(), 0);
-    assert_eq!(
-        receiver.document_heads(app, record),
-        Some(document.base_heads())
-    );
-}
-
-#[test]
 fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
     let (mut governor, a, _, _, now) = seeded();
     let root = SigningKey::from_bytes(&[1; 32]);
@@ -2050,215 +2354,6 @@ fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
     cert.user_public_key = other_root.verifying_key().to_bytes();
     sign_device_cert(&mut cert, &other_root).unwrap();
     assert!(governor.admit_certificate(cert, &a, now).is_err());
-}
-
-#[test]
-fn expired_known_identity_does_not_block_governed_join() {
-    let (mut governor, a, _, _, now) = seeded();
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let mut cert = governor.owner_certificates()[0].clone();
-    cert.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
-    cert.expires_at_ns = Some(
-        (now + Duration::from_secs(1))
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .try_into()
-            .unwrap(),
-    );
-    sign_device_cert(&mut cert, &root).unwrap();
-    governor.admit_certificate(cert.clone(), &a, now).unwrap();
-    let mut existing = governor.clone();
-    assert!(existing.permissions(cert.device_public_key, now).is_ok());
-    let later = now + Duration::from_secs(2);
-    assert!(
-        matches!(
-            existing.permissions(cert.device_public_key, later),
-            Err(MembershipError::Certificate(
-                tilo_user_identity::DeviceCertError::Expired
-            ))
-        ),
-        "a warm policy cache must not cache certificate validity"
-    );
-    let mut next = governor
-        .owner_certificates()
-        .into_iter()
-        .find(|cert| cert.device_public_key == a.verifying_key().to_bytes())
-        .unwrap();
-    next.device_public_key = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
-    sign_device_cert(&mut next, &root).unwrap();
-    assert!(governor.admit_certificate(next.clone(), &a, later).unwrap());
-    assert!(
-        existing
-            .receive(
-                a.verifying_key().to_bytes(),
-                governor.workspace_message(),
-                later
-            )
-            .unwrap()
-            .metadata_changed
-    );
-    assert!(matches!(
-        existing.permissions(cert.device_public_key, later),
-        Err(MembershipError::Certificate(
-            tilo_user_identity::DeviceCertError::Expired
-        ))
-    ));
-    assert!(existing.permissions(next.device_public_key, later).is_ok());
-    let restored = StatePeer::restore(
-        &existing.durable().unwrap(),
-        existing.workspace_id(),
-        existing.owner_certificates()[0].clone(),
-        vec![],
-        RevocationList::new(),
-        later,
-    )
-    .unwrap();
-    assert!(
-        matches!(
-            restored.permissions(cert.device_public_key, later),
-            Err(MembershipError::Certificate(
-                tilo_user_identity::DeviceCertError::Expired
-            ))
-        ),
-        "expired historical certificates restore but never regain current access"
-    );
-    let mut empty = StatePeer::new(
-        governor.workspace_id(),
-        next.clone(),
-        vec![],
-        RevocationList::new(),
-        later,
-    )
-    .unwrap();
-    assert!(
-        empty
-            .receive(
-                a.verifying_key().to_bytes(),
-                governor.workspace_message(),
-                later
-            )
-            .is_err(),
-        "previously unknown expired certificate cannot be imported"
-    );
-}
-
-#[test]
-fn restore_validates_fresh_roster_not_before_and_interval_while_retaining_history() {
-    let (peer, _, _, _, now) = seeded();
-    let now_ns: u64 = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap();
-    let root = SigningKey::from_bytes(&[94; 32]);
-    let make = |device_seed: u8, issued_at_ns: u64, expires_at_ns: Option<u64>| {
-        let device = SigningKey::from_bytes(&[device_seed; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: format!("fresh-{device_seed}"),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns,
-            expires_at_ns,
-            signature: [0; 64],
-            issuer: None,
-        };
-        if expires_at_ns.is_some_and(|expiry| expiry <= issued_at_ns) {
-            let digest = tilo_user_identity::device_cert_signing_digest(&cert).unwrap();
-            cert.signature = root.sign(&digest).to_bytes();
-        } else {
-            sign_device_cert(&mut cert, &root).unwrap();
-        }
-        cert
-    };
-    let future = make(95, now_ns + 1_000_000_000, None);
-    let error = StatePeer::restore(
-        &peer.durable().unwrap(),
-        peer.workspace_id(),
-        peer.owner_certificates()[0].clone(),
-        vec![future],
-        RevocationList::new(),
-        now,
-    )
-    .err()
-    .unwrap();
-    assert!(error.contains("not yet valid"), "{error}");
-
-    let backwards = make(96, now_ns, Some(now_ns));
-    let error = StatePeer::restore(
-        &peer.durable().unwrap(),
-        peer.workspace_id(),
-        peer.owner_certificates()[0].clone(),
-        vec![backwards],
-        RevocationList::new(),
-        now,
-    )
-    .err()
-    .unwrap();
-    assert!(error.contains("invalid validity"), "{error}");
-}
-
-#[test]
-fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
-    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(4_000);
-    let later = now + Duration::from_secs(2);
-    let root = SigningKey::from_bytes(&[104; 32]);
-    let authority_key = SigningKey::from_bytes(&[105; 32]);
-    let mut authority = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: authority_key.verifying_key().to_bytes(),
-        device_label: "historical authority".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: Some(
-            (now + Duration::from_secs(1))
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-                .try_into()
-                .unwrap(),
-        ),
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut authority, &root).unwrap();
-    let workspace = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-    let mut peer = StatePeer::new(
-        workspace,
-        authority.clone(),
-        vec![authority.clone()],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    peer.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(workspace, &authority, &[authority.clone()]).unwrap(),
-            documents: vec![],
-        },
-        &authority_key,
-        now,
-    )
-    .unwrap();
-
-    let restored = StatePeer::restore(
-        &peer.durable().unwrap(),
-        workspace,
-        authority.clone(),
-        vec![],
-        RevocationList::new(),
-        later,
-    )
-    .unwrap();
-    assert!(restored.certificates().contains(&authority));
-    assert!(matches!(
-        restored.permissions(authority.device_public_key, later),
-        Err(MembershipError::Certificate(
-            tilo_user_identity::DeviceCertError::Expired
-        ))
-    ));
 }
 #[test]
 fn governed_import_is_atomic_even_for_direct_admission() {
@@ -2645,79 +2740,6 @@ fn admission_records_when_a_member_joined_and_a_role_change_keeps_it() {
             .unwrap()
     );
     assert_eq!(joined(&peer), None);
-}
-
-/// A record the workspace covers as empty is held by the replica the
-/// governance reaches, though no one can send it: an empty record carries no
-/// change to replay. The coverage row names exactly that empty checkpoint, so
-/// the replica holds the record and a member's write builds on it.
-#[test]
-fn a_record_covered_as_empty_is_held_from_its_coverage() {
-    let (mut native, a_key, b_key, b_cert, now) = seeded();
-    let empty = AutoCommit::new().save();
-    // The governor checkpoints an empty record: the coverage row it writes
-    // names the route with no heads and the hash of that empty snapshot.
-    native
-        .publication_mut()
-        .publish_document("test.app", "tab:2", empty.clone(), &a_key, now)
-        .unwrap();
-    let messages = native
-        .publication_mut()
-        .bootstrap_messages(&a_key, now)
-        .unwrap();
-    let NeighbourMsg::SyncResp { changes, workspace } = messages[0].clone() else {
-        panic!("unexpected fixture shape")
-    };
-    let mut joiner = StatePeer::new(
-        &workspace,
-        native.owner_certificates()[0].clone(),
-        vec![b_cert],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    // Only the governance arrives.
-    joiner
-        .receive_from(
-            TransportOrigin::RelayDelta(a_key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp { changes, workspace },
-            now,
-        )
-        .unwrap();
-    assert_eq!(
-        joiner.document("test.app", "tab:2").as_deref(),
-        Some(empty.as_slice()),
-        "the replica holds the empty record the governance covers"
-    );
-    assert!(
-        joiner
-            .document_heads("test.app", "tab:2")
-            .unwrap()
-            .is_empty()
-    );
-    assert!(!joiner.checkpoint_pending("test.app", "tab:2"));
-    assert_eq!(
-        joiner.document("test.app", "tab:1"),
-        None,
-        "a covered record with changes is not made up"
-    );
-    // Held, not carved in stone: the member's write builds on it.
-    let mut doc = AutoCommit::load(&joiner.document("test.app", "tab:2").unwrap()).unwrap();
-    doc.set_actor(automerge::ActorId::from(
-        b_key.verifying_key().to_bytes().to_vec(),
-    ));
-    let heads = doc.get_heads();
-    doc.put(ROOT, "note", "mine").unwrap();
-    doc.commit_edit("fixture", "note");
-    joiner
-        .publication_mut()
-        .publish_incremental("test.app", "tab:2", doc.save_after(&heads), &b_key, now)
-        .unwrap();
-    assert_eq!(
-        joiner.document_heads("test.app", "tab:2").unwrap().len(),
-        1,
-        "the member's write lands on the record"
-    );
 }
 
 /// A frame `author` signs as `key`: one change to its record, as a device

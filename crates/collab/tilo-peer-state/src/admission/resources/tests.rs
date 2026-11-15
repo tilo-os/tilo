@@ -36,36 +36,40 @@ fn exact_resource_decode_preserves_actual_signed_admissions() {
     assert_eq!(decoded.iter().count(), admissions.len());
 }
 
-#[test]
-fn exact_resource_rejects_duplicate_unsorted_trailing_and_announced_count_forms() {
-    let (index, admissions) = actual_index();
-    let first = postcard::to_allocvec(&(&admissions[0].key, admissions[0].operation_id)).unwrap();
-    let second = postcard::to_allocvec(&(&admissions[1].key, admissions[1].operation_id)).unwrap();
-    let mut duplicate = vec![2];
-    duplicate.extend(&first);
-    duplicate.extend(&first);
-    let mut reversed = vec![2];
-    reversed.extend(&second);
-    reversed.extend(&first);
-    let mut trailing = index.encode().unwrap();
-    trailing.push(0);
-    for bytes in [
-        duplicate,
-        reversed,
-        trailing,
-        vec![0x81, 0x80, 0x04],
-        vec![1, 0xff, 0xff, 0xff, 0xff, 0x7f],
-    ] {
-        assert!(ExactAdmissions::decode(&bytes).is_err());
-    }
-}
+tilo_test_env::scenario! {
+    fn an_exact_resource_reads_only_its_canonical_encoding;
 
-#[test]
-fn exact_resource_canonical_entry_size_matches_the_encoded_entry() {
-    let (_, admissions) = actual_index();
-    let index = ExactAdmissions::default();
-    let expected = postcard::to_allocvec(&(&admissions[0].key, admissions[0].operation_id))
-        .unwrap()
-        .len();
-    assert_eq!(index.check(&admissions[0]).unwrap(), expected);
+    phase exact_resource_rejects_duplicate_unsorted_trailing_and_announced_count_forms;
+    {
+        let (index, admissions) = actual_index();
+        let first = postcard::to_allocvec(&(&admissions[0].key, admissions[0].operation_id)).unwrap();
+        let second = postcard::to_allocvec(&(&admissions[1].key, admissions[1].operation_id)).unwrap();
+        let mut duplicate = vec![2];
+        duplicate.extend(&first);
+        duplicate.extend(&first);
+        let mut reversed = vec![2];
+        reversed.extend(&second);
+        reversed.extend(&first);
+        let mut trailing = index.encode().unwrap();
+        trailing.push(0);
+        for bytes in [
+            duplicate,
+            reversed,
+            trailing,
+            vec![0x81, 0x80, 0x04],
+            vec![1, 0xff, 0xff, 0xff, 0xff, 0x7f],
+        ] {
+            assert!(ExactAdmissions::decode(&bytes).is_err());
+        }
+    }
+
+    phase exact_resource_canonical_entry_size_matches_the_encoded_entry;
+    {
+        let (_, admissions) = actual_index();
+        let index = ExactAdmissions::default();
+        let expected = postcard::to_allocvec(&(&admissions[0].key, admissions[0].operation_id))
+            .unwrap()
+            .len();
+        assert_eq!(index.check(&admissions[0]).unwrap(), expected);
+    }
 }

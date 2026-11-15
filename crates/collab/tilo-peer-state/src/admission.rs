@@ -733,95 +733,100 @@ mod tests {
         );
     }
 
-    #[test]
-    fn delivery_admission_index_bounds_and_duplicate_decode_are_fail_closed() {
-        let fact = DocumentAdmission {
-            key: AdmissionKey {
-                workspace: String::new(),
-                app: String::new(),
-                record: "x".repeat(MAX_EXACT_ADMISSION_BYTES - 100),
-                author: [0; 32],
-                sequence: 0,
-            },
-            operation_id: [1; 32],
-        };
-        let mut index = ExactAdmissions::default();
-        index.insert(&fact).unwrap();
-        let before = index.encode().unwrap();
-        let mut second = fact.clone();
-        second.key.record = "different".into();
-        assert_eq!(index.insert(&second), Err(AdmissionError::ResourceLimit));
-        assert_eq!(index.encode().unwrap(), before);
-        assert!(
-            ExactAdmissions::decode(&[0x81, 0x80, 0x04]).is_err(),
-            "65537 entries refused before reading any key"
-        );
-        assert!(
-            ExactAdmissions::decode(&[0, 0, 1]).is_err(),
-            "trailing data refused"
-        );
-        let mut duplicate = vec![2];
-        let row = postcard::to_allocvec(&(&second.key, second.operation_id)).unwrap();
-        duplicate.extend(&row);
-        duplicate.extend(&row);
-        duplicate.push(0);
-        assert!(ExactAdmissions::decode(&duplicate).is_err());
-        assert!(ExactAdmissions::decode(&vec![0; MAX_EXACT_ADMISSION_BYTES + 1]).is_err());
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn the_admission_index_keeps_one_exact_ordered_encoding;
 
-    /// A compaction's cover turns a writer's folded entries into one mark:
-    /// below it every write is decided, above it evidence stays exact, and
-    /// the encoded index refuses an entry its mark covers.
-    #[test]
-    fn a_cover_folds_entries_into_a_mark_that_only_rises() {
-        let admission = |author: u8, sequence: u64, id: u8| DocumentAdmission {
-            key: AdmissionKey {
-                workspace: "workspace".into(),
-                app: "app".into(),
-                record: "record".into(),
-                author: [author; 32],
-                sequence,
-            },
-            operation_id: [id; 32],
-        };
-        let mut index = ExactAdmissions::default();
-        for sequence in 1..=600 {
-            index.insert(&admission(1, sequence, 1)).unwrap();
-            index.insert(&admission(2, sequence, 1)).unwrap();
+        phase delivery_admission_index_bounds_and_duplicate_decode_are_fail_closed;
+        {
+            let fact = DocumentAdmission {
+                key: AdmissionKey {
+                    workspace: String::new(),
+                    app: String::new(),
+                    record: "x".repeat(MAX_EXACT_ADMISSION_BYTES - 100),
+                    author: [0; 32],
+                    sequence: 0,
+                },
+                operation_id: [1; 32],
+            };
+            let mut index = ExactAdmissions::default();
+            index.insert(&fact).unwrap();
+            let before = index.encode().unwrap();
+            let mut second = fact.clone();
+            second.key.record = "different".into();
+            assert_eq!(index.insert(&second), Err(AdmissionError::ResourceLimit));
+            assert_eq!(index.encode().unwrap(), before);
+            assert!(
+                ExactAdmissions::decode(&[0x81, 0x80, 0x04]).is_err(),
+                "65537 entries refused before reading any key"
+            );
+            assert!(
+                ExactAdmissions::decode(&[0, 0, 1]).is_err(),
+                "trailing data refused"
+            );
+            let mut duplicate = vec![2];
+            let row = postcard::to_allocvec(&(&second.key, second.operation_id)).unwrap();
+            duplicate.extend(&row);
+            duplicate.extend(&row);
+            duplicate.push(0);
+            assert!(ExactAdmissions::decode(&duplicate).is_err());
+            assert!(ExactAdmissions::decode(&vec![0; MAX_EXACT_ADMISSION_BYTES + 1]).is_err());
         }
-        let full = index.encode().unwrap().len();
-        index
-            .cover(("workspace", "app", "record"), [([1; 32], 500)])
-            .unwrap();
-        assert_eq!(index.len(), 700);
-        assert!(index.encode().unwrap().len() < full);
-        assert!(index.covers(&admission(1, 500, 9).key));
-        assert!(!index.covers(&admission(1, 501, 1).key));
-        assert!(!index.covers(&admission(2, 1, 1).key));
-        // Folded: any bytes at a covered sequence are already decided.
-        assert_eq!(index.check(&admission(1, 7, 9)), Ok(0));
-        // Above the mark: a different write at a held sequence conflicts.
-        assert_eq!(
-            index.check(&admission(1, 501, 9)),
-            Err(AdmissionError::ConflictingSequence)
-        );
-        let before = index.encode().unwrap();
-        index
-            .cover(("workspace", "app", "record"), [([1; 32], 10)])
-            .unwrap();
-        assert_eq!(index.encode().unwrap(), before);
-        let decoded = ExactAdmissions::decode(&before).unwrap();
-        assert_eq!(decoded.encode().unwrap(), before);
-        assert_eq!(decoded.marks().count(), 1);
 
-        // An index holding an entry its own mark covers is not canonical.
-        let mut entries: BTreeMap<_, _> = index.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        entries.insert(admission(1, 3, 1).key, [1; 32]);
-        let marks: BTreeMap<_, _> = index.marks().map(|(k, v)| (k.clone(), v)).collect();
-        let forged =
-            postcard::to_allocvec(&(entries, BTreeMap::<AdmissionKey, [u8; 32]>::new(), marks))
+        phase a_cover_folds_entries_into_a_mark_that_only_rises;
+        // A compaction's cover turns a writer's folded entries into one mark:
+        // below it every write is decided, above it evidence stays exact, and
+        // the encoded index refuses an entry its mark covers.
+        {
+            let admission = |author: u8, sequence: u64, id: u8| DocumentAdmission {
+                key: AdmissionKey {
+                    workspace: "workspace".into(),
+                    app: "app".into(),
+                    record: "record".into(),
+                    author: [author; 32],
+                    sequence,
+                },
+                operation_id: [id; 32],
+            };
+            let mut index = ExactAdmissions::default();
+            for sequence in 1..=600 {
+                index.insert(&admission(1, sequence, 1)).unwrap();
+                index.insert(&admission(2, sequence, 1)).unwrap();
+            }
+            let full = index.encode().unwrap().len();
+            index
+                .cover(("workspace", "app", "record"), [([1; 32], 500)])
                 .unwrap();
-        assert!(ExactAdmissions::decode(&forged).is_err());
+            assert_eq!(index.len(), 700);
+            assert!(index.encode().unwrap().len() < full);
+            assert!(index.covers(&admission(1, 500, 9).key));
+            assert!(!index.covers(&admission(1, 501, 1).key));
+            assert!(!index.covers(&admission(2, 1, 1).key));
+            // Folded: any bytes at a covered sequence are already decided.
+            assert_eq!(index.check(&admission(1, 7, 9)), Ok(0));
+            // Above the mark: a different write at a held sequence conflicts.
+            assert_eq!(
+                index.check(&admission(1, 501, 9)),
+                Err(AdmissionError::ConflictingSequence)
+            );
+            let before = index.encode().unwrap();
+            index
+                .cover(("workspace", "app", "record"), [([1; 32], 10)])
+                .unwrap();
+            assert_eq!(index.encode().unwrap(), before);
+            let decoded = ExactAdmissions::decode(&before).unwrap();
+            assert_eq!(decoded.encode().unwrap(), before);
+            assert_eq!(decoded.marks().count(), 1);
+
+            // An index holding an entry its own mark covers is not canonical.
+            let mut entries: BTreeMap<_, _> = index.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            entries.insert(admission(1, 3, 1).key, [1; 32]);
+            let marks: BTreeMap<_, _> = index.marks().map(|(k, v)| (k.clone(), v)).collect();
+            let forged =
+                postcard::to_allocvec(&(entries, BTreeMap::<AdmissionKey, [u8; 32]>::new(), marks))
+                    .unwrap();
+            assert!(ExactAdmissions::decode(&forged).is_err());
+        }
     }
 
     /// Copies share the settled entries; the index still reads as one map

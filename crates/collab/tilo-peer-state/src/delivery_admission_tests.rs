@@ -31,38 +31,152 @@ fn restore(peer: &StatePeer, now: SystemTime) -> StatePeer {
     .unwrap()
 }
 
-#[test]
-fn delivery_admission_selection_is_explicit_and_exact_retry_survives_restore() {
-    let (mut receiver, _, key, _, now) = seeded();
-    let mut author = receiver.clone();
-    let message = incremental(&mut author, &key, now, "A");
-    let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    let before = receiver.durable().unwrap();
-    assert!(matches!(
-        receiver.receive_from_report(origin, message.clone(), now),
-        Err(AdmissionError::WriterSelectionRequired)
-    ));
-    assert_eq!(receiver.durable().unwrap(), before);
-    receiver.select_exact_admissions().unwrap();
-    let report = receiver
-        .receive_from_report(origin, message.clone(), now)
-        .unwrap();
-    let InputDisposition::Accepted(first) = report.primary() else {
-        panic!("not accepted: {:?}", report.primary())
-    };
-    let first = first.clone();
-    assert_eq!(report.settled(), std::slice::from_ref(&first));
-    let rows = receiver.rows();
-    let later = now + Duration::from_secs(301);
-    let mut receiver = restore(&receiver, later);
-    assert!(receiver.exact_admissions_selected());
-    assert_eq!(receiver.rows(), rows);
-    let duplicate = receiver
-        .receive_from_report(origin, message, later)
-        .unwrap();
-    assert_eq!(duplicate.primary(), &InputDisposition::Duplicate(first));
-    assert!(duplicate.settled().is_empty());
-    assert_eq!(receiver.rows(), rows);
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn delivery_admission_admits_a_write_once_and_its_exact_retry;
+
+    phase delivery_admission_selection_is_explicit_and_exact_retry_survives_restore;
+    {
+        let (mut receiver, _, key, _, now) = seeded();
+        let mut author = receiver.clone();
+        let message = incremental(&mut author, &key, now, "A");
+        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let before = receiver.durable().unwrap();
+        assert!(matches!(
+            receiver.receive_from_report(origin, message.clone(), now),
+            Err(AdmissionError::WriterSelectionRequired)
+        ));
+        assert_eq!(receiver.durable().unwrap(), before);
+        receiver.select_exact_admissions().unwrap();
+        let report = receiver
+            .receive_from_report(origin, message.clone(), now)
+            .unwrap();
+        let InputDisposition::Accepted(first) = report.primary() else {
+            panic!("not accepted: {:?}", report.primary())
+        };
+        let first = first.clone();
+        assert_eq!(report.settled(), std::slice::from_ref(&first));
+        let rows = receiver.rows();
+        let later = now + Duration::from_secs(301);
+        let mut receiver = restore(&receiver, later);
+        assert!(receiver.exact_admissions_selected());
+        assert_eq!(receiver.rows(), rows);
+        let duplicate = receiver
+            .receive_from_report(origin, message, later)
+            .unwrap();
+        assert_eq!(duplicate.primary(), &InputDisposition::Duplicate(first));
+        assert!(duplicate.settled().is_empty());
+        assert_eq!(receiver.rows(), rows);
+    }
+
+    phase delivery_admission_metadata_and_unsupported_families_have_no_operation_receipt;
+    {
+        let (mut receiver, key, _, _, now) = seeded();
+        receiver.select_exact_admissions().unwrap();
+        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let message = receiver.workspace_message();
+        let report = receiver.receive_from_report(origin, message, now).unwrap();
+        assert_eq!(report.primary(), &InputDisposition::MetadataOnly);
+        let request = NeighbourMsg::SyncReq {
+            since: vec![],
+            workspace: receiver.workspace_id().into(),
+            invite_id: None,
+            nonce: 0,
+        };
+        let before = receiver.durable().unwrap();
+        assert_eq!(
+            receiver
+                .receive_from_report(origin, request, now)
+                .unwrap()
+                .primary(),
+            &InputDisposition::UnsupportedFamily
+        );
+        assert_eq!(receiver.durable().unwrap(), before);
+    }
+
+    phase delivery_admission_exact_retry_rechecks_signature_route_and_current_revocation;
+    {
+        let (mut receiver, governor, key, _, now) = seeded();
+        let mut author = receiver.clone();
+        let message = incremental(&mut author, &key, now, "A");
+        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        receiver.select_exact_admissions().unwrap();
+        receiver
+            .receive_from_report(origin, message.clone(), now)
+            .unwrap();
+        let mut forged = message.clone();
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut forged {
+            envelope.signature = collab_types::Signature::from_bytes([0; 64]);
+        }
+        assert!(
+            receiver
+                .lookup_exact_document(origin, &forged, now)
+                .is_err()
+        );
+        let mut wrong_route = message.clone();
+        if let NeighbourMsg::AppDocument { record_id, .. } = &mut wrong_route {
+            *record_id = "tab:2".into();
+        }
+        assert!(
+            receiver
+                .lookup_exact_document(origin, &wrong_route, now)
+                .is_err()
+        );
+        assert!(
+            receiver
+                .lookup_exact_document(
+                    TransportOrigin::UntrustedPresence(key.verifying_key().to_bytes()),
+                    &message,
+                    now
+                )
+                .is_err()
+        );
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let mut revocation = tilo_user_identity::RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: key.verifying_key().to_bytes(),
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
+        receiver
+            .governance_mut()
+            .publish_governed_revocations(&[revocation], &governor, now)
+            .unwrap();
+        let later = now + Duration::from_secs(301);
+        assert!(
+            receiver
+                .receive_from_report(origin, message, later)
+                .is_err()
+        );
+    }
+
+    phase delivery_admission_operation_id_names_the_literal_signed_bytes;
+    {
+        let (mut receiver, _, key, _, now) = seeded();
+        let mut author = receiver.clone();
+        let message = incremental(&mut author, &key, now, "literal-A");
+        let bytes = collab_types::canonical_bytes(&message).unwrap();
+        let decoded: NeighbourMsg = collab_types::canonical::from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(collab_types::canonical_bytes(&decoded).unwrap(), bytes);
+        let NeighbourMsg::AppDocument { envelope, .. } = &decoded else {
+            panic!("unexpected message shape")
+        };
+        let op = collab_types::canonical_bytes(envelope.as_ref()).unwrap();
+        collab_types::verify_op(envelope.as_ref()).unwrap();
+        receiver.select_exact_admissions().unwrap();
+        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let report = receiver.receive_from_report(origin, decoded, now).unwrap();
+        let InputDisposition::Accepted(admitted) = report.primary() else {
+            panic!("message rejected: {:?}", report.primary())
+        };
+        assert_eq!(
+            hex::encode(admitted.operation_id()),
+            blake3::hash(&op).to_hex().as_str(),
+            "the operation id names no literal canonical SignedOp bytes"
+        );
+    }
 }
 
 #[test]
@@ -152,141 +266,150 @@ fn delivery_admission_new_same_heads_envelope_is_accepted() {
     assert!(second.summary().metadata_changed);
 }
 
-#[test]
-fn delivery_admission_primary_is_separate_from_pending_drain() {
-    let (mut receiver, _, key, _, now) = seeded();
-    let mut author = receiver.clone();
-    let first = incremental(&mut author, &key, now, "A");
-    let second = incremental(&mut author, &key, now, "B");
-    let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    receiver.select_exact_admissions().unwrap();
-    let deferred = receiver
-        .receive_from_report(origin, second.clone(), now)
-        .unwrap();
-    assert_eq!(
-        deferred.primary(),
-        &InputDisposition::RetryLater(MissingPrerequisite::CausalDependencies)
-    );
-    assert!(deferred.settled().is_empty());
-    receiver = restore(&receiver, now);
-    let absent_key = SigningKey::from_bytes(&[9; 32]);
-    let mut unrelated = second.clone();
-    if let NeighbourMsg::AppDocument { peer, envelope, .. } = &mut unrelated {
-        *peer = peer_handle(&absent_key.verifying_key().to_bytes());
-        envelope.author =
-            collab_types::Ed25519PublicKey::from_bytes(absent_key.verifying_key().to_bytes());
-        collab_types::sign_op(envelope, &absent_key).unwrap();
-    }
-    let waiting = receiver
-        .receive_from_report(
-            TransportOrigin::RelayDelta(absent_key.verifying_key().to_bytes()),
-            unrelated,
-            now,
-        )
-        .unwrap();
-    assert_eq!(
-        waiting.primary(),
-        &InputDisposition::RetryLater(MissingPrerequisite::Certificate)
-    );
-    let admitted = receiver.receive_from_report(origin, first, now).unwrap();
-    assert!(matches!(admitted.primary(), InputDisposition::Accepted(_)));
-    assert_eq!(admitted.settled().len(), 2);
-    assert!(
-        admitted.summary().deferred,
-        "unrelated pending item remains separate from accepted primary"
-    );
-    assert_eq!(receiver.pending_count(), 1);
-    assert!(matches!(
-        receiver
-            .receive_from_report(origin, second, now)
-            .unwrap()
-            .primary(),
-        InputDisposition::Duplicate(_)
-    ));
-}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn delivery_admission_keeps_pending_retained_and_sealed_history_in_their_place;
 
-#[test]
-fn delivery_admission_metadata_and_unsupported_families_have_no_operation_receipt() {
-    let (mut receiver, key, _, _, now) = seeded();
-    receiver.select_exact_admissions().unwrap();
-    let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    let message = receiver.workspace_message();
-    let report = receiver.receive_from_report(origin, message, now).unwrap();
-    assert_eq!(report.primary(), &InputDisposition::MetadataOnly);
-    let request = NeighbourMsg::SyncReq {
-        since: vec![],
-        workspace: receiver.workspace_id().into(),
-        invite_id: None,
-        nonce: 0,
-    };
-    let before = receiver.durable().unwrap();
-    assert_eq!(
-        receiver
-            .receive_from_report(origin, request, now)
-            .unwrap()
-            .primary(),
-        &InputDisposition::UnsupportedFamily
-    );
-    assert_eq!(receiver.durable().unwrap(), before);
-}
-#[test]
-fn delivery_admission_exact_retry_rechecks_signature_route_and_current_revocation() {
-    let (mut receiver, governor, key, _, now) = seeded();
-    let mut author = receiver.clone();
-    let message = incremental(&mut author, &key, now, "A");
-    let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    receiver.select_exact_admissions().unwrap();
-    receiver
-        .receive_from_report(origin, message.clone(), now)
-        .unwrap();
-    let mut forged = message.clone();
-    if let NeighbourMsg::AppDocument { envelope, .. } = &mut forged {
-        envelope.signature = collab_types::Signature::from_bytes([0; 64]);
-    }
-    assert!(
-        receiver
-            .lookup_exact_document(origin, &forged, now)
-            .is_err()
-    );
-    let mut wrong_route = message.clone();
-    if let NeighbourMsg::AppDocument { record_id, .. } = &mut wrong_route {
-        *record_id = "tab:2".into();
-    }
-    assert!(
-        receiver
-            .lookup_exact_document(origin, &wrong_route, now)
-            .is_err()
-    );
-    assert!(
-        receiver
-            .lookup_exact_document(
-                TransportOrigin::UntrustedPresence(key.verifying_key().to_bytes()),
-                &message,
-                now
+    phase delivery_admission_primary_is_separate_from_pending_drain;
+    {
+        let (mut receiver, _, key, _, now) = seeded();
+        let mut author = receiver.clone();
+        let first = incremental(&mut author, &key, now, "A");
+        let second = incremental(&mut author, &key, now, "B");
+        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        receiver.select_exact_admissions().unwrap();
+        let deferred = receiver
+            .receive_from_report(origin, second.clone(), now)
+            .unwrap();
+        assert_eq!(
+            deferred.primary(),
+            &InputDisposition::RetryLater(MissingPrerequisite::CausalDependencies)
+        );
+        assert!(deferred.settled().is_empty());
+        receiver = restore(&receiver, now);
+        let absent_key = SigningKey::from_bytes(&[9; 32]);
+        let mut unrelated = second.clone();
+        if let NeighbourMsg::AppDocument { peer, envelope, .. } = &mut unrelated {
+            *peer = peer_handle(&absent_key.verifying_key().to_bytes());
+            envelope.author =
+                collab_types::Ed25519PublicKey::from_bytes(absent_key.verifying_key().to_bytes());
+            collab_types::sign_op(envelope, &absent_key).unwrap();
+        }
+        let waiting = receiver
+            .receive_from_report(
+                TransportOrigin::RelayDelta(absent_key.verifying_key().to_bytes()),
+                unrelated,
+                now,
             )
-            .is_err()
-    );
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let mut revocation = tilo_user_identity::RevocationEntry {
-        user_public_key: root.verifying_key().to_bytes(),
-        revoked_device_public_key: key.verifying_key().to_bytes(),
-        revoked_at_ns: 1,
-        reason: tilo_user_identity::RevocationReason::Lost,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
-    receiver
-        .governance_mut()
-        .publish_governed_revocations(&[revocation], &governor, now)
-        .unwrap();
-    let later = now + Duration::from_secs(301);
-    assert!(
-        receiver
-            .receive_from_report(origin, message, later)
-            .is_err()
-    );
-}
+            .unwrap();
+        assert_eq!(
+            waiting.primary(),
+            &InputDisposition::RetryLater(MissingPrerequisite::Certificate)
+        );
+        let admitted = receiver.receive_from_report(origin, first, now).unwrap();
+        assert!(matches!(admitted.primary(), InputDisposition::Accepted(_)));
+        assert_eq!(admitted.settled().len(), 2);
+        assert!(
+            admitted.summary().deferred,
+            "unrelated pending item remains separate from accepted primary"
+        );
+        assert_eq!(receiver.pending_count(), 1);
+        assert!(matches!(
+            receiver
+                .receive_from_report(origin, second, now)
+                .unwrap()
+                .primary(),
+            InputDisposition::Duplicate(_)
+        ));
+    }
 
+    phase delivery_admission_review_unindexed_retained_input_is_history_live_input_must_be_fresh;
+    {
+        let (receiver, _, key, _, now) = seeded();
+        let mut author = receiver.clone();
+        let message = incremental(&mut author, &key, now, "old-unindexed");
+        let source = key.verifying_key().to_bytes();
+        let later = now + Duration::from_secs(301);
+        let retained = TransportOrigin::RetainedRelayDelta(source);
+        // A retained frame is its author's history: admitted as of its own
+        // timestamp, through either entry point.
+        let mut legacy = receiver.clone();
+        assert!(
+            legacy
+                .receive_from(retained, message.clone(), later)
+                .unwrap()
+                .changed
+        );
+        let mut strict = receiver.clone();
+        strict.select_exact_admissions().unwrap();
+        let rows = strict.rows();
+        let report = strict
+            .receive_from_report(retained, message.clone(), later)
+            .unwrap();
+        assert!(matches!(report.primary(), InputDisposition::Accepted(_)));
+        assert_ne!(strict.rows(), rows);
+        assert!(
+            strict
+                .lookup_exact_document(retained, &message, later)
+                .unwrap()
+                .is_some()
+        );
+        // The same frame arriving live is too old to be a live write.
+        let mut live = receiver;
+        live.select_exact_admissions().unwrap();
+        let rows = live.rows();
+        assert!(
+            live.receive_from_report(TransportOrigin::RelayDelta(source), message, later)
+                .is_err(),
+            "a live frame beyond the clock skew was admitted"
+        );
+        assert_eq!(live.rows(), rows);
+    }
+
+    phase a_sealed_record_takes_its_cleartext_base_and_no_cleartext_after_the_seal;
+    {
+        let (receiver, _, key, _, now) = seeded();
+        let mut author = receiver.clone();
+        let source = key.verifying_key().to_bytes();
+        let mut here = receiver;
+        here.select_exact_admissions().unwrap();
+        // The record's cleartext writes before it sealed are its base, however
+        // they arrive: replayed from what the host kept, or relayed as written.
+        for (name, origin) in [
+            ("kept", TransportOrigin::RetainedRelayDelta(source)),
+            ("relayed", TransportOrigin::RelayDelta(source)),
+        ] {
+            let base = incremental(&mut author, &key, now, name);
+            here.receive_from_report(origin, base, now).unwrap();
+        }
+        assert!(
+            here.seal_record("test.app", "tab:1"),
+            "the record is held here and sealed"
+        );
+        // After the seal a cleartext write is a downgrade, whether the host
+        // relays it as written or sends it as what its store kept.
+        for (name, origin) in [
+            ("relayed-after", TransportOrigin::RelayDelta(source)),
+            ("kept-after", TransportOrigin::RetainedRelayDelta(source)),
+        ] {
+            let after = incremental(&mut author, &key, now, name);
+            assert!(
+                here.receive_from_report(origin, after, now).is_err(),
+                "a cleartext write after the seal is refused: {name}"
+            );
+        }
+        let doc = AutoCommit::load(&here.document("test.app", "tab:1").unwrap()).unwrap();
+        for name in ["kept", "relayed"] {
+            assert!(
+                doc.get(ROOT, name).unwrap().is_some(),
+                "the base holds {name}"
+            );
+        }
+        for name in ["relayed-after", "kept-after"] {
+            assert!(doc.get(ROOT, name).unwrap().is_none(), "{name} was applied");
+        }
+    }
+}
 #[test]
 fn delivery_admission_local_candidate_delta_includes_all_routes_and_refuses_evidence_loss() {
     let (mut base, key, _, _, now) = seeded();
@@ -313,75 +436,6 @@ fn delivery_admission_local_candidate_delta_includes_all_routes_and_refuses_evid
     assert!(base.admissions_since(&candidate).is_err());
     let restored = restore(&candidate, now);
     assert_eq!(restored.admissions_since(&base).unwrap(), delta);
-}
-
-#[test]
-fn delivery_admission_operation_id_names_the_literal_signed_bytes() {
-    let (mut receiver, _, key, _, now) = seeded();
-    let mut author = receiver.clone();
-    let message = incremental(&mut author, &key, now, "literal-A");
-    let bytes = collab_types::canonical_bytes(&message).unwrap();
-    let decoded: NeighbourMsg = collab_types::canonical::from_canonical_bytes(&bytes).unwrap();
-    assert_eq!(collab_types::canonical_bytes(&decoded).unwrap(), bytes);
-    let NeighbourMsg::AppDocument { envelope, .. } = &decoded else {
-        panic!("unexpected message shape")
-    };
-    let op = collab_types::canonical_bytes(envelope.as_ref()).unwrap();
-    collab_types::verify_op(envelope.as_ref()).unwrap();
-    receiver.select_exact_admissions().unwrap();
-    let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    let report = receiver.receive_from_report(origin, decoded, now).unwrap();
-    let InputDisposition::Accepted(admitted) = report.primary() else {
-        panic!("message rejected: {:?}", report.primary())
-    };
-    assert_eq!(
-        hex::encode(admitted.operation_id()),
-        blake3::hash(&op).to_hex().as_str(),
-        "the operation id names no literal canonical SignedOp bytes"
-    );
-}
-
-#[test]
-fn delivery_admission_review_unindexed_retained_input_is_history_live_input_must_be_fresh() {
-    let (receiver, _, key, _, now) = seeded();
-    let mut author = receiver.clone();
-    let message = incremental(&mut author, &key, now, "old-unindexed");
-    let source = key.verifying_key().to_bytes();
-    let later = now + Duration::from_secs(301);
-    let retained = TransportOrigin::RetainedRelayDelta(source);
-    // A retained frame is its author's history: admitted as of its own
-    // timestamp, through either entry point.
-    let mut legacy = receiver.clone();
-    assert!(
-        legacy
-            .receive_from(retained, message.clone(), later)
-            .unwrap()
-            .changed
-    );
-    let mut strict = receiver.clone();
-    strict.select_exact_admissions().unwrap();
-    let rows = strict.rows();
-    let report = strict
-        .receive_from_report(retained, message.clone(), later)
-        .unwrap();
-    assert!(matches!(report.primary(), InputDisposition::Accepted(_)));
-    assert_ne!(strict.rows(), rows);
-    assert!(
-        strict
-            .lookup_exact_document(retained, &message, later)
-            .unwrap()
-            .is_some()
-    );
-    // The same frame arriving live is too old to be a live write.
-    let mut live = receiver;
-    live.select_exact_admissions().unwrap();
-    let rows = live.rows();
-    assert!(
-        live.receive_from_report(TransportOrigin::RelayDelta(source), message, later)
-            .is_err(),
-        "a live frame beyond the clock skew was admitted"
-    );
-    assert_eq!(live.rows(), rows);
 }
 
 #[test]
@@ -426,48 +480,4 @@ fn delivery_admission_review_strict_drain_keeps_retained_pending_history_held() 
             .unwrap()
             .is_none()
     );
-}
-
-#[test]
-fn a_sealed_record_takes_its_cleartext_base_and_no_cleartext_after_the_seal() {
-    let (receiver, _, key, _, now) = seeded();
-    let mut author = receiver.clone();
-    let source = key.verifying_key().to_bytes();
-    let mut here = receiver;
-    here.select_exact_admissions().unwrap();
-    // The record's cleartext writes before it sealed are its base, however
-    // they arrive: replayed from what the host kept, or relayed as written.
-    for (name, origin) in [
-        ("kept", TransportOrigin::RetainedRelayDelta(source)),
-        ("relayed", TransportOrigin::RelayDelta(source)),
-    ] {
-        let base = incremental(&mut author, &key, now, name);
-        here.receive_from_report(origin, base, now).unwrap();
-    }
-    assert!(
-        here.seal_record("test.app", "tab:1"),
-        "the record is held here and sealed"
-    );
-    // After the seal a cleartext write is a downgrade, whether the host
-    // relays it as written or sends it as what its store kept.
-    for (name, origin) in [
-        ("relayed-after", TransportOrigin::RelayDelta(source)),
-        ("kept-after", TransportOrigin::RetainedRelayDelta(source)),
-    ] {
-        let after = incremental(&mut author, &key, now, name);
-        assert!(
-            here.receive_from_report(origin, after, now).is_err(),
-            "a cleartext write after the seal is refused: {name}"
-        );
-    }
-    let doc = AutoCommit::load(&here.document("test.app", "tab:1").unwrap()).unwrap();
-    for name in ["kept", "relayed"] {
-        assert!(
-            doc.get(ROOT, name).unwrap().is_some(),
-            "the base holds {name}"
-        );
-    }
-    for name in ["relayed-after", "kept-after"] {
-        assert!(doc.get(ROOT, name).unwrap().is_none(), "{name} was applied");
-    }
 }

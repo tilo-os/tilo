@@ -369,92 +369,97 @@ mod tests {
         (apply(&old.concat(), &ops, usize::MAX).unwrap(), literal)
     }
 
-    #[test]
-    fn a_delta_carries_only_what_changed() {
-        let old = parts(&[b"head", &[7; 4096], b"middle-part", &[9; 4096], b"tail"]);
-        let mut new = old.clone();
-        new[0] = Arc::from(&b"head2"[..]);
-        new[2] = Arc::from(&b"middle-part grew"[..]);
-        new.push(Arc::from(&b"appended"[..]));
-        let (bytes, literal) = rebuilt(&old, &new);
-        assert_eq!(bytes, new.concat());
-        assert!(literal <= 1 + 5 + 8, "{literal} literal bytes");
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_journal_delta_carries_what_changed_and_ends_at_a_torn_entry;
 
-    #[test]
-    fn a_part_added_before_others_leaves_their_changes_small() {
-        let old = parts(&[b"head", &[7; 4096], &[1; 300], b"tail"]);
-        let mut grown = vec![2; 300];
-        grown.push(3);
-        let new = parts(&[b"head", &[7; 4096], b"added", &grown, b"tail"]);
-        let (bytes, literal) = rebuilt(&old, &new);
-        assert_eq!(bytes, new.concat());
-        assert!(literal <= 5 + 1 + 300, "{literal} literal bytes");
-        // The part after the added one is a fresh allocation that grew by one byte.
-        let new = parts(&[b"head", &[7; 4096], b"added", &[1; 301], b"tail"]);
-        let (bytes, literal) = rebuilt(&old, &new);
-        assert_eq!(bytes, new.concat());
-        assert!(literal <= 5 + 1 + 4, "{literal} literal bytes");
-    }
+        phase a_delta_carries_only_what_changed;
+        {
+            let old = parts(&[b"head", &[7; 4096], b"middle-part", &[9; 4096], b"tail"]);
+            let mut new = old.clone();
+            new[0] = Arc::from(&b"head2"[..]);
+            new[2] = Arc::from(&b"middle-part grew"[..]);
+            new.push(Arc::from(&b"appended"[..]));
+            let (bytes, literal) = rebuilt(&old, &new);
+            assert_eq!(bytes, new.concat());
+            assert!(literal <= 1 + 5 + 8, "{literal} literal bytes");
+        }
 
-    #[test]
-    fn parts_joined_into_one_are_copied_from_where_they_were() {
-        let old = parts(&[b"head", &[7; 4096], &[8; 2048], b"meta"]);
-        let mut joined = [[7; 4096].as_slice(), &[8; 2048]].concat();
-        joined.extend_from_slice(b"new");
-        let new = parts(&[b"head", &joined, b"meta2"]);
-        let (bytes, literal) = rebuilt(&old, &new);
-        assert_eq!(bytes, new.concat());
-        assert!(literal <= 3 + 1, "{literal} literal bytes");
-    }
+        phase a_part_added_before_others_leaves_their_changes_small;
+        {
+            let old = parts(&[b"head", &[7; 4096], &[1; 300], b"tail"]);
+            let mut grown = vec![2; 300];
+            grown.push(3);
+            let new = parts(&[b"head", &[7; 4096], b"added", &grown, b"tail"]);
+            let (bytes, literal) = rebuilt(&old, &new);
+            assert_eq!(bytes, new.concat());
+            assert!(literal <= 5 + 1 + 300, "{literal} literal bytes");
+            // The part after the added one is a fresh allocation that grew by one byte.
+            let new = parts(&[b"head", &[7; 4096], b"added", &[1; 301], b"tail"]);
+            let (bytes, literal) = rebuilt(&old, &new);
+            assert_eq!(bytes, new.concat());
+            assert!(literal <= 5 + 1 + 4, "{literal} literal bytes");
+        }
 
-    #[test]
-    fn a_list_that_grew_carries_its_count_and_its_new_entries() {
-        let entries = |count: u8| {
-            let mut bytes = vec![count];
-            for entry in 0..count {
-                bytes.extend_from_slice(&[entry; 100]);
-            }
-            bytes.extend_from_slice(&[count; 8]);
-            bytes
-        };
-        let old = vec![Arc::from(entries(20))];
-        let new = vec![Arc::from(entries(21))];
-        let (bytes, literal) = rebuilt(&old, &new);
-        assert_eq!(bytes, new.concat());
-        assert!(literal <= 1 + 100 + 8, "{literal} literal bytes");
-    }
+        phase parts_joined_into_one_are_copied_from_where_they_were;
+        {
+            let old = parts(&[b"head", &[7; 4096], &[8; 2048], b"meta"]);
+            let mut joined = [[7; 4096].as_slice(), &[8; 2048]].concat();
+            joined.extend_from_slice(b"new");
+            let new = parts(&[b"head", &joined, b"meta2"]);
+            let (bytes, literal) = rebuilt(&old, &new);
+            assert_eq!(bytes, new.concat());
+            assert!(literal <= 3 + 1, "{literal} literal bytes");
+        }
 
-    #[test]
-    fn a_delta_of_unrelated_parts_still_rebuilds_them() {
-        let old = parts(&[b"abc", b"defgh"]);
-        let new = parts(&[b"xbz", b"", b"defgh", b"q"]);
-        assert_eq!(rebuilt(&old, &new).0, new.concat());
-        assert_eq!(rebuilt(&[], &new).0, new.concat());
-        assert_eq!(rebuilt(&new, &[]).0, Vec::<u8>::new());
-    }
+        phase a_list_that_grew_carries_its_count_and_its_new_entries;
+        {
+            let entries = |count: u8| {
+                let mut bytes = vec![count];
+                for entry in 0..count {
+                    bytes.extend_from_slice(&[entry; 100]);
+                }
+                bytes.extend_from_slice(&[count; 8]);
+                bytes
+            };
+            let old = vec![Arc::from(entries(20))];
+            let new = vec![Arc::from(entries(21))];
+            let (bytes, literal) = rebuilt(&old, &new);
+            assert_eq!(bytes, new.concat());
+            assert!(literal <= 1 + 100 + 8, "{literal} literal bytes");
+        }
 
-    #[test]
-    fn a_torn_entry_ends_the_journal() {
-        let entry = |revision| {
-            frame(&Entry {
-                revision,
-                fields: Vec::new(),
-                peer: vec![Op::Bytes(revision.to_le_bytes().to_vec())],
-            })
-            .unwrap()
-        };
-        let mut log = [entry(1), entry(2)].concat();
-        let whole = log.len();
-        log.extend_from_slice(&entry(3)[..10]);
-        let mut rest = &log[..];
-        let revisions: Vec<u64> = std::iter::from_fn(|| take(&mut rest))
-            .map(|entry| entry.revision)
-            .collect();
-        assert_eq!(revisions, [1, 2]);
-        assert_eq!(rest.len(), log.len() - whole);
-        let mut corrupt = entry(4);
-        *corrupt.last_mut().unwrap() ^= 1;
-        assert!(take(&mut &corrupt[..]).is_none());
+        phase a_delta_of_unrelated_parts_still_rebuilds_them;
+        {
+            let old = parts(&[b"abc", b"defgh"]);
+            let new = parts(&[b"xbz", b"", b"defgh", b"q"]);
+            assert_eq!(rebuilt(&old, &new).0, new.concat());
+            assert_eq!(rebuilt(&[], &new).0, new.concat());
+            assert_eq!(rebuilt(&new, &[]).0, Vec::<u8>::new());
+        }
+
+        phase a_torn_entry_ends_the_journal;
+        {
+            let entry = |revision| {
+                frame(&Entry {
+                    revision,
+                    fields: Vec::new(),
+                    peer: vec![Op::Bytes(revision.to_le_bytes().to_vec())],
+                })
+                .unwrap()
+            };
+            let mut log = [entry(1), entry(2)].concat();
+            let whole = log.len();
+            log.extend_from_slice(&entry(3)[..10]);
+            let mut rest = &log[..];
+            let revisions: Vec<u64> = std::iter::from_fn(|| take(&mut rest))
+                .map(|entry| entry.revision)
+                .collect();
+            assert_eq!(revisions, [1, 2]);
+            assert_eq!(rest.len(), log.len() - whole);
+            let mut corrupt = entry(4);
+            *corrupt.last_mut().unwrap() ^= 1;
+            assert!(take(&mut &corrupt[..]).is_none());
+        }
     }
 }

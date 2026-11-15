@@ -24,38 +24,43 @@ fn founders() -> WorkspaceId {
     WorkspaceId::parse(FOUNDERS).unwrap()
 }
 
-#[test]
-fn the_format_declares_the_layout_this_build_writes() {
-    assert!(FORMAT.is_whole());
-    assert_eq!(FORMAT.version, WORKSPACE_VERSION);
-}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn the_record_format_reads_only_the_layout_this_build_writes;
 
-/// This build's layout: a field added, removed, renamed or reordered breaks
-/// it, which is when the entry needs a new version.
-#[test]
-fn this_builds_entry_reads_and_writes_as_it_is() {
-    let golden = bytes(CURRENT);
-    assert_eq!(stored_version(&golden).unwrap(), WORKSPACE_VERSION);
-    let read = || serde_json::from_slice::<StoredWorkspace>(&golden).unwrap();
-    assert_golden_bytes(
-        "owner workspace record",
-        &golden,
-        |_| {
-            let stored = read();
-            assert_eq!(stored.workspace, founders());
-            assert!(stored.hosted_here());
-        },
-        || crate::owner::file_store::part_bytes(&read()).unwrap(),
-    );
-}
+    phase the_format_declares_the_layout_this_build_writes;
+    {
+        assert!(FORMAT.is_whole());
+        assert_eq!(FORMAT.version, WORKSPACE_VERSION);
+    }
 
-/// An entry a newer build wrote is refused, and one from before this layout
-/// does not read as this one.
-#[test]
-fn a_newer_entry_is_refused() {
-    assert!(
-        FORMAT
-            .migrate(bytes(CURRENT), WORKSPACE_VERSION + 1)
-            .is_err()
-    );
+    phase this_builds_entry_reads_and_writes_as_it_is;
+    // This build's layout: a field added, removed, renamed or reordered breaks
+    // it, which is when the entry needs a new version.
+    {
+        let golden = bytes(CURRENT);
+        assert_eq!(stored_version(&golden).unwrap(), WORKSPACE_VERSION);
+        let read = || serde_json::from_slice::<StoredWorkspace>(&golden).unwrap();
+        assert_golden_bytes(
+            "owner workspace record",
+            &golden,
+            |_| {
+                let stored = read();
+                assert_eq!(stored.workspace, founders());
+                assert!(stored.hosted_here());
+            },
+            || crate::owner::file_store::part_bytes(&read()).unwrap(),
+        );
+    }
+
+    phase a_newer_entry_is_refused;
+    // An entry a newer build wrote is refused, and one from before this layout
+    // does not read as this one.
+    {
+        assert!(
+            FORMAT
+                .migrate(bytes(CURRENT), WORKSPACE_VERSION + 1)
+                .is_err()
+        );
+    }
 }

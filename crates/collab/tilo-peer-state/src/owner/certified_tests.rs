@@ -150,24 +150,57 @@ fn actual_redemption_at(
     )
 }
 
-#[test]
-fn native_enrollment_retains_actual_verified_redemption_and_governance() {
-    let (join, complete, bootstrap, device, hint, now) = actual_redemption();
-    let intent = VerifiedNativeEnrollmentIntent::from_proof(
-        join.clone(),
-        complete,
-        device.clone(),
-        hint.clone(),
-        now,
-    )
-    .unwrap();
-    let (_directory, owner) = pending_owner();
-    let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-    let enrolled = crate::owner::testing::finalize(intent, id, bootstrap.clone()).unwrap();
-    assert_eq!(enrolled.verified_join(), &join);
-    assert_eq!(enrolled.bootstrap(), &bootstrap);
-    assert_eq!(enrolled.local_device(), &device);
-    assert_eq!(enrolled.transport_hint(), &hint);
+tilo_test_env::scenario! {
+    fn native_enrollment_retains_exactly_what_it_verified;
+
+    phase native_enrollment_retains_actual_verified_redemption_and_governance;
+    {
+        let (join, complete, bootstrap, device, hint, now) = actual_redemption();
+        let intent = VerifiedNativeEnrollmentIntent::from_proof(
+            join.clone(),
+            complete,
+            device.clone(),
+            hint.clone(),
+            now,
+        )
+        .unwrap();
+        let (_directory, owner) = pending_owner();
+        let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+        let enrolled = crate::owner::testing::finalize(intent, id, bootstrap.clone()).unwrap();
+        assert_eq!(enrolled.verified_join(), &join);
+        assert_eq!(enrolled.bootstrap(), &bootstrap);
+        assert_eq!(enrolled.local_device(), &device);
+        assert_eq!(enrolled.transport_hint(), &hint);
+    }
+
+    phase native_enrollment_retains_exact_complete_bytes_and_rejects_tampering;
+    {
+        let (join, complete, _, device, hint, now) = actual_redemption();
+        let exact = postcard::to_stdvec(&JoinTransportRequest::Complete(complete.clone())).unwrap();
+        let intent =
+            VerifiedNativeEnrollmentIntent::from_proof(join, complete, device, hint, now).unwrap();
+        let saved = intent.durable_bytes().unwrap();
+        let restored = VerifiedNativeEnrollmentIntent::restore(&saved).unwrap();
+        assert_eq!(restored.complete_bytes(), exact);
+        assert_eq!(restored.proof_digest(), intent.proof_digest());
+        let (_directory, owner) = pending_owner();
+        let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+        let stored = owner
+            .pending_enrollment(intent.workspace())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.id(), &id);
+        assert_eq!(stored.intent_bytes(), saved);
+        let mut record: IntentRecord = postcard::from_bytes(&saved).unwrap();
+        let mut request: JoinTransportRequest = postcard::from_bytes(&record.complete).unwrap();
+        if let JoinTransportRequest::Complete(value) = &mut request {
+            value.proof.signature[0] ^= 1;
+        }
+        record.complete = postcard::to_stdvec(&request).unwrap();
+        assert!(
+            VerifiedNativeEnrollmentIntent::restore(&postcard::to_stdvec(&record).unwrap()).is_err()
+        );
+    }
 }
 
 #[test]
@@ -194,35 +227,6 @@ fn pending_owner() -> (tempfile::TempDir, crate::owner::NativeWorkspaceOwner) {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let owner = crate::owner::open_file(&directory.path().join("joined-workspaces.json")).unwrap();
     (directory, owner)
-}
-
-#[test]
-fn native_enrollment_retains_exact_complete_bytes_and_rejects_tampering() {
-    let (join, complete, _, device, hint, now) = actual_redemption();
-    let exact = postcard::to_stdvec(&JoinTransportRequest::Complete(complete.clone())).unwrap();
-    let intent =
-        VerifiedNativeEnrollmentIntent::from_proof(join, complete, device, hint, now).unwrap();
-    let saved = intent.durable_bytes().unwrap();
-    let restored = VerifiedNativeEnrollmentIntent::restore(&saved).unwrap();
-    assert_eq!(restored.complete_bytes(), exact);
-    assert_eq!(restored.proof_digest(), intent.proof_digest());
-    let (_directory, owner) = pending_owner();
-    let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-    let stored = owner
-        .pending_enrollment(intent.workspace())
-        .unwrap()
-        .unwrap();
-    assert_eq!(stored.id(), &id);
-    assert_eq!(stored.intent_bytes(), saved);
-    let mut record: IntentRecord = postcard::from_bytes(&saved).unwrap();
-    let mut request: JoinTransportRequest = postcard::from_bytes(&record.complete).unwrap();
-    if let JoinTransportRequest::Complete(value) = &mut request {
-        value.proof.signature[0] ^= 1;
-    }
-    record.complete = postcard::to_stdvec(&request).unwrap();
-    assert!(
-        VerifiedNativeEnrollmentIntent::restore(&postcard::to_stdvec(&record).unwrap()).is_err()
-    );
 }
 
 #[test]

@@ -263,26 +263,30 @@ mod tests {
         assert_eq!(entries(&doc).len(), 1);
     }
 
-    #[test]
-    fn import_proposals_are_governance() {
-        let before = AutoCommit::new();
-        let mut after = before.clone();
-        put_entry(&mut after, &entry(4, 100)).unwrap();
-        // So only an operation that names it may write one
-        // (`workspace::admit_workspace_changes`).
-        assert!(!crate::workspace::governance_unchanged(
-            Some(&before),
-            &after
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn import_proposals_are_governed_and_kept_by_id;
 
-    #[test]
-    fn a_propose_argument_carries_only_the_named_document() {
-        let proposal = entry(3, 100).proposal;
-        assert_eq!(
-            ProposeArgument::new(proposal.clone(), b"doc").document(),
-            Ok(b"doc".to_vec())
-        );
-        assert!(ProposeArgument::new(proposal, b"dog").document().is_err());
+        phase import_proposals_are_governance;
+        {
+            let before = AutoCommit::new();
+            let mut after = before.clone();
+            put_entry(&mut after, &entry(4, 100)).unwrap();
+            // So only an operation that names it may write one
+            // (`workspace::admit_workspace_changes`).
+            assert!(!crate::workspace::governance_unchanged(
+                Some(&before),
+                &after
+            ));
+        }
+
+        phase a_propose_argument_carries_only_the_named_document;
+        {
+            let proposal = entry(3, 100).proposal;
+            assert_eq!(
+                ProposeArgument::new(proposal.clone(), b"doc").document(),
+                Ok(b"doc".to_vec())
+            );
+            assert!(ProposeArgument::new(proposal, b"dog").document().is_err());
+        }
     }
 }

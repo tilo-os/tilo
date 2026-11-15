@@ -595,108 +595,112 @@ mod empty_interactive_tests {
     use ed25519_dalek::SigningKey;
     use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 
-    #[test]
-    fn checkpoint_refresh_follows_admitted_native_receipts() {
-        let mut governor = TestGovernor::new();
-        let key = governor.governor_key().clone();
-        let publisher = governor.workspace_host().device_public_key;
-        let messages = governor
-            .peer()
-            .clone()
-            .publication_mut()
-            .durable_bootstrap_messages(&key, tilo_clock::wall(), 20)
-            .unwrap();
-        for message in messages {
-            governor
-                .receive(
-                    crate::TransportOrigin::RetainedNativePublication { publisher },
-                    message,
-                )
+    tilo_test_env::scenario! {
+        fn the_test_governor_follows_native_custody_without_seeding_apps;
+
+        phase checkpoint_refresh_follows_admitted_native_receipts;
+        {
+            let mut governor = TestGovernor::new();
+            let key = governor.governor_key().clone();
+            let publisher = governor.workspace_host().device_public_key;
+            let messages = governor
+                .peer()
+                .clone()
+                .publication_mut()
+                .durable_bootstrap_messages(&key, tilo_clock::wall(), 20)
                 .unwrap();
+            for message in messages {
+                governor
+                    .receive(
+                        crate::TransportOrigin::RetainedNativePublication { publisher },
+                        message,
+                    )
+                    .unwrap();
+            }
+            governor.refresh_checkpoint().unwrap();
+            let receipts =
+                crate::durability::entries(governor.peer().admitted_workspace().unwrap()).unwrap();
+            assert!(
+                !receipts.is_empty(),
+                "the signed cut must carry actual document receipts"
+            );
+            assert!(receipts.values().all(|receipt| receipt.generation > 20));
         }
-        governor.refresh_checkpoint().unwrap();
-        let receipts =
-            crate::durability::entries(governor.peer().admitted_workspace().unwrap()).unwrap();
-        assert!(
-            !receipts.is_empty(),
-            "the signed cut must carry actual document receipts"
-        );
-        assert!(receipts.values().all(|receipt| receipt.generation > 20));
-    }
 
-    #[test]
-    fn empty_interactive_preserves_certified_custody_without_seeding_apps_or_host_bits() {
-        let signing_identity = SigningKey::from_bytes(&[91; 32]);
-        let key = SigningKey::from_bytes(&[92; 32]);
-        let cert = certificate(&signing_identity, &key, "Fixture session");
-        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string();
-        let governor = TestGovernor::empty_interactive(cert.clone(), key, &workspace).unwrap();
-        assert_eq!(governor.workspace_host(), &cert);
-        assert!(governor.peer().rows().is_empty());
-        let endpoint = iroh_base::EndpointAddr::new(
-            iroh_base::EndpointId::from_bytes(
-                &SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
-            )
-            .unwrap(),
-        );
-        let hint = governor.hint(endpoint);
-        let (payload, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).unwrap();
-        assert!(payload.holds_keys);
-        assert_eq!(payload.device_certificate, cert);
-        assert!(
-            TestGovernor::empty_interactive(cert, SigningKey::from_bytes(&[94; 32]), &workspace)
-                .is_err()
-        );
-    }
+        phase empty_interactive_preserves_certified_custody_without_seeding_apps_or_host_bits;
+        {
+            let signing_identity = SigningKey::from_bytes(&[91; 32]);
+            let key = SigningKey::from_bytes(&[92; 32]);
+            let cert = certificate(&signing_identity, &key, "Fixture session");
+            let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string();
+            let governor = TestGovernor::empty_interactive(cert.clone(), key, &workspace).unwrap();
+            assert_eq!(governor.workspace_host(), &cert);
+            assert!(governor.peer().rows().is_empty());
+            let endpoint = iroh_base::EndpointAddr::new(
+                iroh_base::EndpointId::from_bytes(
+                    &SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
+                )
+                .unwrap(),
+            );
+            let hint = governor.hint(endpoint);
+            let (payload, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).unwrap();
+            assert!(payload.holds_keys);
+            assert_eq!(payload.device_certificate, cert);
+            assert!(
+                TestGovernor::empty_interactive(cert, SigningKey::from_bytes(&[94; 32]), &workspace)
+                    .is_err()
+            );
+        }
 
-    #[test]
-    fn empty_interactive_governor_redeems_its_actual_session_custody_without_app_seed() {
-        use crate::join::{
-            self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
-            JoinTransportResponse, Role,
-        };
-        let key = SigningKey::from_bytes(&[92; 32]);
-        let cert = certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Fixture session");
-        let mut governor =
-            TestGovernor::empty_interactive(cert.clone(), key.clone(), super::super::WORKSPACE)
+        phase empty_interactive_governor_redeems_its_actual_session_custody_without_app_seed;
+        {
+            use crate::join::{
+                self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
+                JoinTransportResponse, Role,
+            };
+            let key = SigningKey::from_bytes(&[92; 32]);
+            let cert = certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Fixture session");
+            let mut governor =
+                TestGovernor::empty_interactive(cert.clone(), key.clone(), super::super::WORKSPACE)
+                    .unwrap();
+            let endpoint = iroh_base::EndpointAddr::new(
+                iroh_base::EndpointId::from_bytes(
+                    &SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
+                )
+                .unwrap(),
+            );
+            let expiry = super::ns(tilo_clock::wall())
+                .checked_add(60_000_000_000)
                 .unwrap();
-        let endpoint = iroh_base::EndpointAddr::new(
-            iroh_base::EndpointId::from_bytes(
-                &SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
-            )
-            .unwrap(),
-        );
-        let expiry = super::ns(tilo_clock::wall())
-            .checked_add(60_000_000_000)
-            .unwrap();
-        let invitation = governor.issue(
-            vec![governor.hint(endpoint)],
-            Role::Editor,
-            Some(cert.user_public_key),
-            Some("Fixture session".into()),
-            expiry,
-        );
-        let response = governor.handle(
-            cert.device_public_key,
-            JoinTransportRequest::Challenge(JoinChallengeRequest {
-                signed_invitation: invitation,
-                device_cert: cert.clone(),
-                request_id: [95; 32],
-            }),
-        );
-        let JoinTransportResponse::Challenge(response) = response else {
-            panic!("actual session challenge refused: {response:?}");
-        };
-        let proof = join::sign_join_proof(response.challenge, &key).unwrap();
-        let response = governor.handle(
-            cert.device_public_key,
-            JoinTransportRequest::Complete(JoinCompleteRequest { proof }),
-        );
-        let JoinTransportResponse::Complete(bootstrap) = response else {
-            panic!("actual session completion refused: {response:?}");
-        };
-        assert_eq!(bootstrap.host, cert);
-        assert_eq!(bootstrap.device_cert, cert);
-        assert!(bootstrap.records.is_empty());
+            let invitation = governor.issue(
+                vec![governor.hint(endpoint)],
+                Role::Editor,
+                Some(cert.user_public_key),
+                Some("Fixture session".into()),
+                expiry,
+            );
+            let response = governor.handle(
+                cert.device_public_key,
+                JoinTransportRequest::Challenge(JoinChallengeRequest {
+                    signed_invitation: invitation,
+                    device_cert: cert.clone(),
+                    request_id: [95; 32],
+                }),
+            );
+            let JoinTransportResponse::Challenge(response) = response else {
+                panic!("actual session challenge refused: {response:?}");
+            };
+            let proof = join::sign_join_proof(response.challenge, &key).unwrap();
+            let response = governor.handle(
+                cert.device_public_key,
+                JoinTransportRequest::Complete(JoinCompleteRequest { proof }),
+            );
+            let JoinTransportResponse::Complete(bootstrap) = response else {
+                panic!("actual session completion refused: {response:?}");
+            };
+            assert_eq!(bootstrap.host, cert);
+            assert_eq!(bootstrap.device_cert, cert);
+            assert!(bootstrap.records.is_empty());
+        }
     }
 }

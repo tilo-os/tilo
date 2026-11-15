@@ -533,173 +533,181 @@ mod tests {
     use super::*;
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     use tilo_automerge::ApplyIncoming;
-    #[test]
-    fn policy_is_shared_until_mutation_and_does_not_commit_pending_changes() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "owner", "first").unwrap();
-        let identities = doc
-            .put_object(ROOT, "peer_identities_v1", automerge::ObjType::Map)
-            .unwrap();
-        doc.put(
-            &identities,
-            "device",
-            automerge::ScalarValue::Bytes(vec![1]),
-        )
-        .unwrap();
-        doc.commit();
-        let mut cached = CachedDocument::from(doc);
-        let old = cached.clone();
-        assert!(std::ptr::eq(cached.policy(), old.policy()));
-        assert_eq!(cached.policy().owner.as_deref(), Some("first"));
-        cached.put(ROOT, "owner", "second").unwrap();
-        cached
-            .put(
+    tilo_test_env::scenario! {
+        fn a_cached_document_shares_its_work_until_it_changes;
+
+        phase policy_is_shared_until_mutation_and_does_not_commit_pending_changes;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "owner", "first").unwrap();
+            let identities = doc
+                .put_object(ROOT, "peer_identities_v1", automerge::ObjType::Map)
+                .unwrap();
+            doc.put(
                 &identities,
                 "device",
-                automerge::ScalarValue::Bytes(vec![2]),
+                automerge::ScalarValue::Bytes(vec![1]),
             )
             .unwrap();
-        let pending = cached.pending_ops();
-        assert!(pending > 0);
-        assert_eq!(cached.policy().owner.as_deref(), Some("second"));
-        assert_eq!(cached.policy().identities.get("device"), Some(&vec![2]));
-        assert_eq!(old.policy().owner.as_deref(), Some("first"));
-        assert_eq!(old.policy().identities.get("device"), Some(&vec![1]));
-        assert_eq!(cached.pending_ops(), pending);
-        cached.delete(ROOT, "owner").unwrap();
-        assert_eq!(cached.policy().owner, None);
-    }
-    #[test]
-    fn a_stored_document_reopens_on_the_base_it_was_stored_on() {
-        let mut doc = AutoCommit::new();
-        for n in 0..2_000 {
-            doc.put(ROOT, format!("row-{n}"), n.to_string()).unwrap();
+            doc.commit();
+            let mut cached = CachedDocument::from(doc);
+            let old = cached.clone();
+            assert!(std::ptr::eq(cached.policy(), old.policy()));
+            assert_eq!(cached.policy().owner.as_deref(), Some("first"));
+            cached.put(ROOT, "owner", "second").unwrap();
+            cached
+                .put(
+                    &identities,
+                    "device",
+                    automerge::ScalarValue::Bytes(vec![2]),
+                )
+                .unwrap();
+            let pending = cached.pending_ops();
+            assert!(pending > 0);
+            assert_eq!(cached.policy().owner.as_deref(), Some("second"));
+            assert_eq!(cached.policy().identities.get("device"), Some(&vec![2]));
+            assert_eq!(old.policy().owner.as_deref(), Some("first"));
+            assert_eq!(old.policy().identities.get("device"), Some(&vec![1]));
+            assert_eq!(cached.pending_ops(), pending);
+            cached.delete(ROOT, "owner").unwrap();
+            assert_eq!(cached.policy().owner, None);
         }
-        let mut cached = CachedDocument::from(doc);
-        cached.commit();
-        let _ = cached.stored();
-        // A long change, then a short one: the runs stay apart.
-        for value in ["a change since the base ".repeat(4), "short".to_owned()] {
-            cached.put(ROOT, value.clone(), value).unwrap();
+
+        phase a_stored_document_reopens_on_the_base_it_was_stored_on;
+        {
+            let mut doc = AutoCommit::new();
+            for n in 0..2_000 {
+                doc.put(ROOT, format!("row-{n}"), n.to_string()).unwrap();
+            }
+            let mut cached = CachedDocument::from(doc);
             cached.commit();
             let _ = cached.stored();
+            // A long change, then a short one: the runs stay apart.
+            for value in ["a change since the base ".repeat(4), "short".to_owned()] {
+                cached.put(ROOT, value.clone(), value).unwrap();
+                cached.commit();
+                let _ = cached.stored();
+            }
+            let (base, since, digest) = cached.stored();
+            assert!(
+                since.len() > 1,
+                "the changes since the base are stored beside it, run by run"
+            );
+            let bytes = [&*base, &since.concat()].concat();
+            let reopened = CachedDocument::from(AutoCommit::load(&bytes).unwrap())
+                .stored_as(&bytes)
+                .unwrap();
+            let (reopened_base, reopened_since, reopened_digest) = reopened.stored();
+            assert_eq!(
+                [&*reopened_base, &reopened_since.concat()].concat(),
+                bytes,
+                "the state reopened as the bytes that were stored"
+            );
+            assert_eq!(
+                (reopened_since.concat(), reopened_digest),
+                (since.concat(), digest),
+                "the reopened state keeps the changes beside the base it was stored on"
+            );
         }
-        let (base, since, digest) = cached.stored();
-        assert!(
-            since.len() > 1,
-            "the changes since the base are stored beside it, run by run"
-        );
-        let bytes = [&*base, &since.concat()].concat();
-        let reopened = CachedDocument::from(AutoCommit::load(&bytes).unwrap())
-            .stored_as(&bytes)
-            .unwrap();
-        let (reopened_base, reopened_since, reopened_digest) = reopened.stored();
-        assert_eq!(
-            [&*reopened_base, &reopened_since.concat()].concat(),
-            bytes,
-            "the state reopened as the bytes that were stored"
-        );
-        assert_eq!(
-            (reopened_since.concat(), reopened_digest),
-            (since.concat(), digest),
-            "the reopened state keeps the changes beside the base it was stored on"
-        );
-    }
-    #[test]
-    fn unchanged_clones_share_serialization_and_mutations_keep_old_snapshots() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "value", 1).unwrap();
-        doc.commit();
-        let mut cached = CachedDocument::from(doc);
-        SERIALIZATIONS.with(|count| count.set(0));
-        let initial = cached.saved();
-        for _ in 0..100 {
-            assert_eq!(cached.clone().saved(), initial);
+
+        phase unchanged_clones_share_serialization_and_mutations_keep_old_snapshots;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "value", 1).unwrap();
+            doc.commit();
+            let mut cached = CachedDocument::from(doc);
+            SERIALIZATIONS.with(|count| count.set(0));
+            let initial = cached.saved();
+            for _ in 0..100 {
+                assert_eq!(cached.clone().saved(), initial);
+            }
+            assert_eq!(SERIALIZATIONS.with(std::cell::Cell::get), 1);
+            let old = cached.clone();
+            cached.put(ROOT, "value", 2).unwrap();
+            let pending = cached.pending_ops();
+            assert!(pending > 0);
+            let changed = cached.saved();
+            assert_ne!(changed, initial);
+            assert_eq!(
+                cached.pending_ops(),
+                pending,
+                "saving must not commit the owner"
+            );
+            assert_eq!(old.saved(), initial);
+            assert_eq!(cached.saved(), changed);
+            assert_eq!(SERIALIZATIONS.with(std::cell::Cell::get), 2);
+            assert_eq!(
+                AutoCommit::load(&changed)
+                    .unwrap()
+                    .get(ROOT, "value")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_i64(),
+                Some(2)
+            );
         }
-        assert_eq!(SERIALIZATIONS.with(std::cell::Cell::get), 1);
-        let old = cached.clone();
-        cached.put(ROOT, "value", 2).unwrap();
-        let pending = cached.pending_ops();
-        assert!(pending > 0);
-        let changed = cached.saved();
-        assert_ne!(changed, initial);
-        assert_eq!(
-            cached.pending_ops(),
-            pending,
-            "saving must not commit the owner"
-        );
-        assert_eq!(old.saved(), initial);
-        assert_eq!(cached.saved(), changed);
-        assert_eq!(SERIALIZATIONS.with(std::cell::Cell::get), 2);
-        assert_eq!(
-            AutoCommit::load(&changed)
-                .unwrap()
-                .get(ROOT, "value")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_i64(),
-            Some(2)
-        );
-    }
-    #[test]
-    fn clones_share_the_document_until_one_of_them_mutates() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "value", 1).unwrap();
-        doc.commit();
-        let mut cached = CachedDocument::from(doc);
-        take_copies_and_saves();
-        cached.put(ROOT, "value", 2).unwrap();
-        assert_eq!(
-            take_copies_and_saves(),
-            (0, 0),
-            "an unshared document is never copied"
-        );
-        let old = cached.clone();
-        let readers: Vec<_> = (0..10).map(|_| cached.clone()).collect();
-        assert!(
-            readers
-                .iter()
-                .all(|reader| Arc::ptr_eq(&reader.doc, &cached.doc))
-        );
-        cached.put(ROOT, "value", 3).unwrap();
-        cached.put(ROOT, "value", 4).unwrap();
-        assert_eq!(
-            take_copies_and_saves(),
-            (1, 0),
-            "only the first shared write copies"
-        );
-        let value = |doc: &CachedDocument| doc.get(ROOT, "value").unwrap().unwrap().0.as_i64();
-        assert_eq!(value(&old), Some(2));
-        assert_eq!(value(&readers[0]), Some(2));
-        assert_eq!(value(&cached), Some(4));
-    }
-    #[test]
-    fn unresolved_incrementals_invalidate_even_when_heads_do_not_change() {
-        let mut seed = AutoCommit::new();
-        seed.put(ROOT, "value", 1).unwrap();
-        seed.commit();
-        let mut remote = seed.fork();
-        remote.put(ROOT, "value", 2).unwrap();
-        remote.commit();
-        let dependency = remote.get_heads();
-        remote.put(ROOT, "value", 3).unwrap();
-        remote.commit();
-        let orphan = remote.save_after(&dependency);
-        let mut cached = CachedDocument::from(seed);
-        let before = cached.saved();
-        let heads = cached.base_heads();
-        cached.load_incoming(&orphan).unwrap();
-        assert_eq!(cached.base_heads(), heads);
-        assert!(!cached.get_missing_deps(&[]).is_empty());
-        let after = cached.saved();
-        assert_ne!(
-            after, before,
-            "queued changes must survive the durable snapshot"
-        );
-        assert_eq!(after, (*cached.doc).clone().save());
-        let mut restored = AutoCommit::load(&after).unwrap();
-        restored.load_incoming(&remote.save_after(&heads)).unwrap();
-        assert_eq!(restored.get_heads(), remote.get_heads());
+
+        phase clones_share_the_document_until_one_of_them_mutates;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "value", 1).unwrap();
+            doc.commit();
+            let mut cached = CachedDocument::from(doc);
+            take_copies_and_saves();
+            cached.put(ROOT, "value", 2).unwrap();
+            assert_eq!(
+                take_copies_and_saves(),
+                (0, 0),
+                "an unshared document is never copied"
+            );
+            let old = cached.clone();
+            let readers: Vec<_> = (0..10).map(|_| cached.clone()).collect();
+            assert!(
+                readers
+                    .iter()
+                    .all(|reader| Arc::ptr_eq(&reader.doc, &cached.doc))
+            );
+            cached.put(ROOT, "value", 3).unwrap();
+            cached.put(ROOT, "value", 4).unwrap();
+            assert_eq!(
+                take_copies_and_saves(),
+                (1, 0),
+                "only the first shared write copies"
+            );
+            let value = |doc: &CachedDocument| doc.get(ROOT, "value").unwrap().unwrap().0.as_i64();
+            assert_eq!(value(&old), Some(2));
+            assert_eq!(value(&readers[0]), Some(2));
+            assert_eq!(value(&cached), Some(4));
+        }
+
+        phase unresolved_incrementals_invalidate_even_when_heads_do_not_change;
+        {
+            let mut seed = AutoCommit::new();
+            seed.put(ROOT, "value", 1).unwrap();
+            seed.commit();
+            let mut remote = seed.fork();
+            remote.put(ROOT, "value", 2).unwrap();
+            remote.commit();
+            let dependency = remote.get_heads();
+            remote.put(ROOT, "value", 3).unwrap();
+            remote.commit();
+            let orphan = remote.save_after(&dependency);
+            let mut cached = CachedDocument::from(seed);
+            let before = cached.saved();
+            let heads = cached.base_heads();
+            cached.load_incoming(&orphan).unwrap();
+            assert_eq!(cached.base_heads(), heads);
+            assert!(!cached.get_missing_deps(&[]).is_empty());
+            let after = cached.saved();
+            assert_ne!(
+                after, before,
+                "queued changes must survive the durable snapshot"
+            );
+            assert_eq!(after, (*cached.doc).clone().save());
+            let mut restored = AutoCommit::load(&after).unwrap();
+            restored.load_incoming(&remote.save_after(&heads)).unwrap();
+            assert_eq!(restored.get_heads(), remote.get_heads());
+        }
     }
 }

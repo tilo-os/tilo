@@ -179,124 +179,128 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     );
 }
 
-#[test]
-fn selective_publication_compares_restored_checkpoints_by_exact_bytes() {
-    let (mut governor, a, _, _, now) = seeded();
-    governor
-        .publication_mut()
-        .durable_bootstrap_messages(&a, now, 1)
-        .unwrap();
-    let restored = StatePeer::restore(
-        &governor.durable().unwrap(),
-        governor.workspace_id(),
-        governor.owner_certificates()[0].clone(),
-        governor.certificates(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
+tilo_test_env::scenario! {
+    fn selective_publication_publishes_only_what_its_basis_allows;
 
-    assert!(
-        governor
-            .durable_coverage("test.app", "tab:1")
-            .unwrap()
-            .is_some(),
-        "warm only the candidate checkpoint decode cache"
-    );
-    assert!(
+    phase selective_publication_compares_restored_checkpoints_by_exact_bytes;
+    {
+        let (mut governor, a, _, _, now) = seeded();
         governor
             .publication_mut()
-            .durable_mutation_messages(&restored, &a, now, 2)
-            .unwrap()
-            .is_empty(),
-        "restored identical checkpoint bytes must not create a publication"
-    );
-}
-
-#[test]
-fn selective_workspace_only_publication_refuses_a_revoked_owner_device() {
-    let (mut governor, key, _, _, now) = seeded();
-    governor
-        .publication_mut()
-        .durable_bootstrap_messages(&key, now, 1)
-        .unwrap();
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let mut revoked = tilo_user_identity::RevocationEntry {
-        user_public_key: root.verifying_key().to_bytes(),
-        revoked_device_public_key: key.verifying_key().to_bytes(),
-        revoked_at_ns: 1,
-        reason: tilo_user_identity::RevocationReason::Retired,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
-    let mut revocations = RevocationList::new();
-    revocations.insert(revoked).unwrap();
-    let restored = StatePeer::restore(
-        &governor.durable().unwrap(),
-        governor.workspace_id(),
-        governor.owner_certificates()[0].clone(),
-        governor.certificates(),
-        revocations,
-        now,
-    )
-    .unwrap();
-    let mut candidate = restored.clone();
-    assert!(
-        candidate
-            .publication_mut()
-            .durable_mutation_messages(&restored, &key, now, 2)
-            .is_err(),
-        "a revoked owner device no longer writes the workspace's governance"
-    );
-}
-
-#[test]
-fn selective_publication_cannot_discard_prior_document_basis() {
-    let (mut governor, key, _, _, now) = seeded();
-    governor
-        .publication_mut()
-        .durable_bootstrap_messages(&key, now, 1)
-        .unwrap();
-    let mut candidate = StatePeer::new(
-        governor.workspace_id(),
-        governor.owner_certificates()[0].clone(),
-        governor.certificates(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    candidate
-        .receive(
-            key.verifying_key().to_bytes(),
-            governor.workspace_message(),
+            .durable_bootstrap_messages(&a, now, 1)
+            .unwrap();
+        let restored = StatePeer::restore(
+            &governor.durable().unwrap(),
+            governor.workspace_id(),
+            governor.owner_certificates()[0].clone(),
+            governor.certificates(),
+            RevocationList::new(),
             now,
         )
         .unwrap();
-    assert!(candidate.rows().is_empty());
-    assert!(
-        candidate
-            .publication_mut()
-            .durable_mutation_messages(&governor, &key, now, 2)
-            .is_err(),
-        "publication must preserve the prior record basis"
-    );
-}
 
-/// A replica publishes records under application ids only: a string that is
-/// not one names no app, and no member would read it as that app's record.
-#[test]
-fn a_record_publishes_only_under_an_application_id() {
-    let (mut governor, a, _b, _bc, now) = seeded();
-    let bytes = AutoCommit::new().save();
-    assert!(
+        assert!(
+            governor
+                .durable_coverage("test.app", "tab:1")
+                .unwrap()
+                .is_some(),
+            "warm only the candidate checkpoint decode cache"
+        );
+        assert!(
+            governor
+                .publication_mut()
+                .durable_mutation_messages(&restored, &a, now, 2)
+                .unwrap()
+                .is_empty(),
+            "restored identical checkpoint bytes must not create a publication"
+        );
+    }
+
+    phase selective_workspace_only_publication_refuses_a_revoked_owner_device;
+    {
+        let (mut governor, key, _, _, now) = seeded();
         governor
             .publication_mut()
-            .publish_document("so.tilo.notes\n", "", bytes.clone(), &a, now)
-            .is_err(),
-        "a malformed application id is no app's record"
-    );
-    governor
-        .publication_mut()
-        .publish_document("so.tilo.notes", "", bytes, &a, now)
-        .expect("an application id publishes");
+            .durable_bootstrap_messages(&key, now, 1)
+            .unwrap();
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let mut revoked = tilo_user_identity::RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: key.verifying_key().to_bytes(),
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
+        let mut revocations = RevocationList::new();
+        revocations.insert(revoked).unwrap();
+        let restored = StatePeer::restore(
+            &governor.durable().unwrap(),
+            governor.workspace_id(),
+            governor.owner_certificates()[0].clone(),
+            governor.certificates(),
+            revocations,
+            now,
+        )
+        .unwrap();
+        let mut candidate = restored.clone();
+        assert!(
+            candidate
+                .publication_mut()
+                .durable_mutation_messages(&restored, &key, now, 2)
+                .is_err(),
+            "a revoked owner device no longer writes the workspace's governance"
+        );
+    }
+
+    phase selective_publication_cannot_discard_prior_document_basis;
+    {
+        let (mut governor, key, _, _, now) = seeded();
+        governor
+            .publication_mut()
+            .durable_bootstrap_messages(&key, now, 1)
+            .unwrap();
+        let mut candidate = StatePeer::new(
+            governor.workspace_id(),
+            governor.owner_certificates()[0].clone(),
+            governor.certificates(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        candidate
+            .receive(
+                key.verifying_key().to_bytes(),
+                governor.workspace_message(),
+                now,
+            )
+            .unwrap();
+        assert!(candidate.rows().is_empty());
+        assert!(
+            candidate
+                .publication_mut()
+                .durable_mutation_messages(&governor, &key, now, 2)
+                .is_err(),
+            "publication must preserve the prior record basis"
+        );
+    }
+
+    phase a_record_publishes_only_under_an_application_id;
+    // A replica publishes records under application ids only: a string that is
+    // not one names no app, and no member would read it as that app's record.
+    {
+        let (mut governor, a, _b, _bc, now) = seeded();
+        let bytes = AutoCommit::new().save();
+        assert!(
+            governor
+                .publication_mut()
+                .publish_document("so.tilo.notes\n", "", bytes.clone(), &a, now)
+                .is_err(),
+            "a malformed application id is no app's record"
+        );
+        governor
+            .publication_mut()
+            .publish_document("so.tilo.notes", "", bytes, &a, now)
+            .expect("an application id publishes");
+    }
 }

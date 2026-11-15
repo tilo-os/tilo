@@ -230,49 +230,151 @@ mod tests {
         )
         .unwrap()
     }
-    #[test]
-    fn malformed_cross_route_and_regressing_receipts_are_rejected() {
-        let mut before = AutoCommit::new();
-        put(
-            &mut before,
-            BTreeMap::from([(route_key("app", "record"), receipt(7))]),
-        )
-        .unwrap();
-        let mut after = before.clone();
-        put(
-            &mut after,
-            BTreeMap::from([(route_key("app", "record"), receipt(6))]),
-        )
-        .unwrap();
-        assert!(monotonic(Some(&before), &after).is_err());
-        put(
-            &mut after,
-            BTreeMap::from([(route_key("other", "record"), receipt(8))]),
-        )
-        .unwrap();
-        assert!(entries(&after).is_err());
-        let mut bad = receipt(8);
-        bad.coverage.payload_hash = [4; 32];
-        put(
-            &mut after,
-            BTreeMap::from([(route_key("app", "record"), bad)]),
-        )
-        .unwrap();
-        assert!(entries(&after).is_err());
-    }
-    #[test]
-    fn receipt_metadata_is_pinned_governance() {
-        let before = AutoCommit::new();
-        let mut after = before.clone();
-        put(
-            &mut after,
-            BTreeMap::from([(route_key("app", "record"), receipt(1))]),
-        )
-        .unwrap();
-        assert!(!crate::workspace::governance_unchanged(
-            Some(&before),
-            &after
-        ));
+    tilo_test_env::scenario! {
+        fn durability_receipts_are_pinned_exact_and_refused_when_malformed;
+
+        phase malformed_cross_route_and_regressing_receipts_are_rejected;
+        {
+            let mut before = AutoCommit::new();
+            put(
+                &mut before,
+                BTreeMap::from([(route_key("app", "record"), receipt(7))]),
+            )
+            .unwrap();
+            let mut after = before.clone();
+            put(
+                &mut after,
+                BTreeMap::from([(route_key("app", "record"), receipt(6))]),
+            )
+            .unwrap();
+            assert!(monotonic(Some(&before), &after).is_err());
+            put(
+                &mut after,
+                BTreeMap::from([(route_key("other", "record"), receipt(8))]),
+            )
+            .unwrap();
+            assert!(entries(&after).is_err());
+            let mut bad = receipt(8);
+            bad.coverage.payload_hash = [4; 32];
+            put(
+                &mut after,
+                BTreeMap::from([(route_key("app", "record"), bad)]),
+            )
+            .unwrap();
+            assert!(entries(&after).is_err());
+        }
+
+        phase receipt_metadata_is_pinned_governance;
+        {
+            let before = AutoCommit::new();
+            let mut after = before.clone();
+            put(
+                &mut after,
+                BTreeMap::from([(route_key("app", "record"), receipt(1))]),
+            )
+            .unwrap();
+            assert!(!crate::workspace::governance_unchanged(
+                Some(&before),
+                &after
+            ));
+        }
+
+        phase v2_routes_store_compact_values_and_rebuild_exact_rows;
+        {
+            let mut doc = AutoCommit::new();
+            let coverage = compact_coverage(1);
+            crate::coverage::put_all_with_receipts(&mut doc, vec![coverage.clone()], |rows| {
+                Ok(rows
+                    .iter()
+                    .map(|(key, row)| (key.clone(), DurableReceipt::new(row.clone(), 7).unwrap()))
+                    .collect())
+            })
+            .unwrap();
+            let key = route_key("app", "record");
+            assert_eq!(crate::coverage::entries(&doc).unwrap()[&key], coverage);
+            assert_eq!(
+                entries(&doc).unwrap()[&key],
+                DurableReceipt::new(coverage, 7).unwrap()
+            );
+            // Compact coverage and a generation-only receipt.
+            assert!(raw(&doc, crate::coverage::LAYOUT).len() < 200);
+            assert!(raw(&doc, LAYOUT).len() < 16);
+            assert!(crate::coverage::canonical(&doc) && canonical(&doc));
+            // A non-hex head cannot be compacted: stored in full, read exactly.
+            let mut odd = compact_coverage(2);
+            odd.heads = vec!["not-a-hash".into()];
+            crate::coverage::put(&mut doc, odd.clone()).unwrap();
+            assert_eq!(crate::coverage::entries(&doc).unwrap()[&key], odd);
+            assert!(crate::coverage::canonical(&doc));
+        }
+
+        phase coverage_change_pins_a_current_receipt_to_its_own_coverage;
+        {
+            let mut doc = AutoCommit::new();
+            let first = compact_coverage(1);
+            crate::coverage::put_all_with_receipts(&mut doc, vec![first.clone()], |rows| {
+                Ok(rows
+                    .iter()
+                    .map(|(key, row)| (key.clone(), DurableReceipt::new(row.clone(), 7).unwrap()))
+                    .collect())
+            })
+            .unwrap();
+            let before = doc.clone();
+            // Coverage advances without a new receipt (a non-durable publish).
+            crate::coverage::put(&mut doc, compact_coverage(2)).unwrap();
+            let key = route_key("app", "record");
+            assert_eq!(
+                entries(&doc).unwrap()[&key],
+                DurableReceipt::new(first, 7).unwrap(),
+                "the receipt still names the coverage it was issued for"
+            );
+            monotonic(Some(&before), &doc).unwrap();
+            crate::coverage::monotonic(Some(&before), &doc).unwrap();
+            assert!(canonical(&doc));
+            assert!(!crate::workspace::governance_unchanged(Some(&before), &doc));
+        }
+
+        phase malformed_route_values_are_refused;
+        {
+            use automerge::{ObjType, ROOT, ScalarValue, transaction::Transactable};
+            let key = route_key("app", "record");
+            let coverage = compact_coverage(1);
+            let receipt = DurableReceipt::new(coverage.clone(), 5).unwrap();
+            let mut doc = AutoCommit::new();
+            crate::coverage::put_all_with_receipts(&mut doc, vec![coverage.clone()], |rows| {
+                Ok(rows
+                    .iter()
+                    .map(|(key, row)| (key.clone(), DurableReceipt::new(row.clone(), 5).unwrap()))
+                    .collect())
+            })
+            .unwrap();
+            assert_eq!(entries(&doc).unwrap()[&key], receipt);
+            // A bare postcard row is not a route value.
+            let mut bare = AutoCommit::new();
+            let map = bare
+                .put_object(ROOT, crate::coverage::FIELD_V2, ObjType::Map)
+                .unwrap();
+            bare.put(
+                &map,
+                key.as_str(),
+                ScalarValue::Bytes(postcard::to_allocvec(&coverage).unwrap()),
+            )
+            .unwrap();
+            bare.commit();
+            assert!(crate::coverage::entries(&bare).is_err());
+            let mut bad = doc.clone();
+            let (_, object) = automerge::ReadDoc::get(&bad, ROOT, FIELD_V2)
+                .unwrap()
+                .unwrap();
+            bad.put(
+                &object,
+                key.as_str(),
+                ScalarValue::Bytes(vec![0xff, 0xff, 0xff]),
+            )
+            .unwrap();
+            bad.commit();
+            assert!(entries(&bad).is_err());
+        }
     }
     fn compact_coverage(sequence: u64) -> Coverage {
         Coverage {
@@ -292,99 +394,5 @@ mod tests {
             .unwrap()
             .remove(&route_key("app", "record"))
             .unwrap()
-    }
-    #[test]
-    fn v2_routes_store_compact_values_and_rebuild_exact_rows() {
-        let mut doc = AutoCommit::new();
-        let coverage = compact_coverage(1);
-        crate::coverage::put_all_with_receipts(&mut doc, vec![coverage.clone()], |rows| {
-            Ok(rows
-                .iter()
-                .map(|(key, row)| (key.clone(), DurableReceipt::new(row.clone(), 7).unwrap()))
-                .collect())
-        })
-        .unwrap();
-        let key = route_key("app", "record");
-        assert_eq!(crate::coverage::entries(&doc).unwrap()[&key], coverage);
-        assert_eq!(
-            entries(&doc).unwrap()[&key],
-            DurableReceipt::new(coverage, 7).unwrap()
-        );
-        // Compact coverage and a generation-only receipt.
-        assert!(raw(&doc, crate::coverage::LAYOUT).len() < 200);
-        assert!(raw(&doc, LAYOUT).len() < 16);
-        assert!(crate::coverage::canonical(&doc) && canonical(&doc));
-        // A non-hex head cannot be compacted: stored in full, read exactly.
-        let mut odd = compact_coverage(2);
-        odd.heads = vec!["not-a-hash".into()];
-        crate::coverage::put(&mut doc, odd.clone()).unwrap();
-        assert_eq!(crate::coverage::entries(&doc).unwrap()[&key], odd);
-        assert!(crate::coverage::canonical(&doc));
-    }
-    #[test]
-    fn coverage_change_pins_a_current_receipt_to_its_own_coverage() {
-        let mut doc = AutoCommit::new();
-        let first = compact_coverage(1);
-        crate::coverage::put_all_with_receipts(&mut doc, vec![first.clone()], |rows| {
-            Ok(rows
-                .iter()
-                .map(|(key, row)| (key.clone(), DurableReceipt::new(row.clone(), 7).unwrap()))
-                .collect())
-        })
-        .unwrap();
-        let before = doc.clone();
-        // Coverage advances without a new receipt (a non-durable publish).
-        crate::coverage::put(&mut doc, compact_coverage(2)).unwrap();
-        let key = route_key("app", "record");
-        assert_eq!(
-            entries(&doc).unwrap()[&key],
-            DurableReceipt::new(first, 7).unwrap(),
-            "the receipt still names the coverage it was issued for"
-        );
-        monotonic(Some(&before), &doc).unwrap();
-        crate::coverage::monotonic(Some(&before), &doc).unwrap();
-        assert!(canonical(&doc));
-        assert!(!crate::workspace::governance_unchanged(Some(&before), &doc));
-    }
-    #[test]
-    fn malformed_route_values_are_refused() {
-        use automerge::{ObjType, ROOT, ScalarValue, transaction::Transactable};
-        let key = route_key("app", "record");
-        let coverage = compact_coverage(1);
-        let receipt = DurableReceipt::new(coverage.clone(), 5).unwrap();
-        let mut doc = AutoCommit::new();
-        crate::coverage::put_all_with_receipts(&mut doc, vec![coverage.clone()], |rows| {
-            Ok(rows
-                .iter()
-                .map(|(key, row)| (key.clone(), DurableReceipt::new(row.clone(), 5).unwrap()))
-                .collect())
-        })
-        .unwrap();
-        assert_eq!(entries(&doc).unwrap()[&key], receipt);
-        // A bare postcard row is not a route value.
-        let mut bare = AutoCommit::new();
-        let map = bare
-            .put_object(ROOT, crate::coverage::FIELD_V2, ObjType::Map)
-            .unwrap();
-        bare.put(
-            &map,
-            key.as_str(),
-            ScalarValue::Bytes(postcard::to_allocvec(&coverage).unwrap()),
-        )
-        .unwrap();
-        bare.commit();
-        assert!(crate::coverage::entries(&bare).is_err());
-        let mut bad = doc.clone();
-        let (_, object) = automerge::ReadDoc::get(&bad, ROOT, FIELD_V2)
-            .unwrap()
-            .unwrap();
-        bad.put(
-            &object,
-            key.as_str(),
-            ScalarValue::Bytes(vec![0xff, 0xff, 0xff]),
-        )
-        .unwrap();
-        bad.commit();
-        assert!(entries(&bad).is_err());
     }
 }

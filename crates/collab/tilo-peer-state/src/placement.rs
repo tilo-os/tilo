@@ -265,173 +265,178 @@ mod tests {
         .worker
     }
 
-    /// A device that says it does not take the work is passed over whatever
-    /// its rank would have been, and the reason it gave is kept.
-    #[test]
-    fn a_device_that_declines_is_never_chosen() {
-        let on_battery = Answer::declining(Decline::OnBattery);
-        let busy = Answer::declining(Decline::LowResources);
-        let desktop = with_rank(|rank| {
-            rank.load_permille = 750;
-            rank.latency_ms = 400;
-        });
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_run_is_placed_on_the_cheapest_device_that_takes_it;
 
-        assert_eq!(
-            chosen(&[(1, on_battery.clone()), (2, busy.clone())]),
-            None,
-            "nobody who was asked takes the work"
-        );
-        assert_eq!(
-            chosen(&[(1, on_battery.clone()), (2, busy.clone()), (3, desktop)]),
-            Some([3; 32])
-        );
+        phase a_device_that_declines_is_never_chosen;
+        // A device that says it does not take the work is passed over whatever
+        // its rank would have been, and the reason it gave is kept.
+        {
+            let on_battery = Answer::declining(Decline::OnBattery);
+            let busy = Answer::declining(Decline::LowResources);
+            let desktop = with_rank(|rank| {
+                rank.load_permille = 750;
+                rank.latency_ms = 400;
+            });
 
-        let asked = pick([([1; 32], on_battery), ([2; 32], busy)], &work());
-        assert_eq!(
-            asked
-                .considered
-                .iter()
-                .map(|candidate| (candidate.device[0], candidate.verdict))
-                .collect::<Vec<_>>(),
-            vec![
-                (1, Err(Decline::OnBattery)),
-                (2, Err(Decline::LowResources)),
-            ]
-        );
-        assert!(asked.is_local());
-        assert_eq!(
-            asked.to_string(),
-            "no device offered to run it; 01010101: on_battery; 02020202: low_resources"
-        );
-    }
+            assert_eq!(
+                chosen(&[(1, on_battery.clone()), (2, busy.clone())]),
+                None,
+                "nobody who was asked takes the work"
+            );
+            assert_eq!(
+                chosen(&[(1, on_battery.clone()), (2, busy.clone()), (3, desktop)]),
+                Some([3; 32])
+            );
 
-    /// The cheapest willing device wins: power, then load, then latency.
-    #[test]
-    fn the_lowest_cost_healthy_device_is_chosen() {
-        let bust = with_rank(|rank| rank.load_permille = 750);
-        let idle_far = with_rank(|rank| rank.latency_ms = 90);
-        let idle_near = answer();
-        let on_battery = with_rank(|rank| {
-            rank.power = Power::Battery;
-            rank.latency_ms = 1;
-        });
-        let choice = pick(
-            [
-                ([1; 32], bust),
-                ([2; 32], idle_far),
-                ([3; 32], idle_near),
-                ([4; 32], on_battery),
-            ],
-            &work(),
-        );
-        assert_eq!(choice.worker, Some([3; 32]));
-        assert_eq!(
-            choice
-                .considered
-                .iter()
-                .map(|candidate| candidate.device[0])
-                .collect::<Vec<_>>(),
-            vec![3, 2, 1, 4],
-            "power, then load, then latency"
-        );
-        assert_eq!(
-            choice.to_string(),
-            "03030303 (power External, load 0‰, latency 20 ms) of 4 that offered among 4 asked, moving 1000 bytes in 21 ms"
-        );
-    }
-
-    /// Equal devices resolve the same way whatever order they answered in.
-    #[test]
-    fn equal_workers_resolve_the_same_way_whatever_their_order() {
-        assert_eq!(chosen(&[(4, answer()), (2, answer())]), Some([2; 32]));
-        assert_eq!(chosen(&[(2, answer()), (4, answer())]), Some([2; 32]));
-    }
-
-    /// An input a device already holds does not move to it, so holding the
-    /// job's inputs makes it cheaper than one that must receive them even
-    /// where rank would have said otherwise.
-    #[test]
-    fn an_input_a_device_already_holds_is_not_weighed_as_moving() {
-        let mut heavy = work();
-        heavy.inputs = vec![([3; 32], 8_000_000)];
-        heavy.input_bytes = 8_000_000;
-        heavy.local_wall_ms = Some(500);
-
-        let mut far = holding(vec![[3; 32]]);
-        if let Ok(rank) = &mut far.verdict {
-            rank.latency_ms = 400;
+            let asked = pick([([1; 32], on_battery), ([2; 32], busy)], &work());
+            assert_eq!(
+                asked
+                    .considered
+                    .iter()
+                    .map(|candidate| (candidate.device[0], candidate.verdict))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (1, Err(Decline::OnBattery)),
+                    (2, Err(Decline::LowResources)),
+                ]
+            );
+            assert!(asked.is_local());
+            assert_eq!(
+                asked.to_string(),
+                "no device offered to run it; 01010101: on_battery; 02020202: low_resources"
+            );
         }
-        let mut near = answer();
-        if let Ok(rank) = &mut near.verdict {
-            rank.latency_ms = 1;
+
+        phase the_lowest_cost_healthy_device_is_chosen;
+        // The cheapest willing device wins: power, then load, then latency.
+        {
+            let bust = with_rank(|rank| rank.load_permille = 750);
+            let idle_far = with_rank(|rank| rank.latency_ms = 90);
+            let idle_near = answer();
+            let on_battery = with_rank(|rank| {
+                rank.power = Power::Battery;
+                rank.latency_ms = 1;
+            });
+            let choice = pick(
+                [
+                    ([1; 32], bust),
+                    ([2; 32], idle_far),
+                    ([3; 32], idle_near),
+                    ([4; 32], on_battery),
+                ],
+                &work(),
+            );
+            assert_eq!(choice.worker, Some([3; 32]));
+            assert_eq!(
+                choice
+                    .considered
+                    .iter()
+                    .map(|candidate| candidate.device[0])
+                    .collect::<Vec<_>>(),
+                vec![3, 2, 1, 4],
+                "power, then load, then latency"
+            );
+            assert_eq!(
+                choice.to_string(),
+                "03030303 (power External, load 0‰, latency 20 ms) of 4 that offered among 4 asked, moving 1000 bytes in 21 ms"
+            );
         }
-        let choice = pick([([1; 32], far), ([2; 32], near)], &heavy);
-        assert_eq!(
-            choice.worker,
-            Some([1; 32]),
-            "the device that already holds the input passes the weighing, and rank no longer decides"
-        );
-        assert_eq!(
-            choice.transfer,
-            Some(Transfer {
-                moving_bytes: 0,
-                moving_ms: 400
-            })
-        );
-        assert!(
-            !choice.considered[1].worthwhile,
-            "the device that would receive all of it cannot beat the run here"
-        );
-    }
 
-    /// A job whose inputs would take longer to move than the run took where
-    /// it was asked stays there, and says so.
-    #[test]
-    fn moving_inputs_slower_than_the_run_leaves_it_where_it_was_asked() {
-        let mut heavy = work();
-        heavy.inputs = vec![([3; 32], 400 * 1024 * 1024)];
-        heavy.input_bytes = 400 * 1024 * 1024;
-        heavy.local_wall_ms = Some(1_000);
-        let choice = pick([([1; 32], answer())], &heavy);
-        assert!(choice.is_local());
-        assert!(
-            !choice.considered[0].worthwhile,
-            "a willing device that would receive more than the run took is not picked"
-        );
-        assert!(
-            choice.to_string().contains("no faster than the run here"),
-            "{}",
-            choice
-        );
+        phase equal_workers_resolve_the_same_way_whatever_their_order;
+        // Equal devices resolve the same way whatever order they answered in.
+        {
+            assert_eq!(chosen(&[(4, answer()), (2, answer())]), Some([2; 32]));
+            assert_eq!(chosen(&[(2, answer()), (4, answer())]), Some([2; 32]));
+        }
 
-        let mut never_run = work();
-        never_run.local_wall_ms = None;
-        assert!(
-            pick([([1; 32], answer())], &never_run).is_local(),
-            "a job never run where it was asked has no run to beat"
-        );
-    }
+        phase an_input_a_device_already_holds_is_not_weighed_as_moving;
+        // An input a device already holds does not move to it, so holding the
+        // job's inputs makes it cheaper than one that must receive them even
+        // where rank would have said otherwise.
+        {
+            let mut heavy = work();
+            heavy.inputs = vec![([3; 32], 8_000_000)];
+            heavy.input_bytes = 8_000_000;
+            heavy.local_wall_ms = Some(500);
 
-    /// Every device that was asked with no answer to give is recorded as
-    /// what a device that is away is taken to have said.
-    #[test]
-    fn a_device_that_did_not_answer_is_offline() {
-        let choice = pick([(REQUESTER, Answer::away())], &work());
-        assert_eq!(
-            choice.considered[0].verdict,
-            Err(Decline::Offline),
-            "a device that never answered is not there"
-        );
-        assert!(choice.is_local());
-    }
+            let mut far = holding(vec![[3; 32]]);
+            if let Ok(rank) = &mut far.verdict {
+                rank.latency_ms = 400;
+            }
+            let mut near = answer();
+            if let Ok(rank) = &mut near.verdict {
+                rank.latency_ms = 1;
+            }
+            let choice = pick([([1; 32], far), ([2; 32], near)], &heavy);
+            assert_eq!(
+                choice.worker,
+                Some([1; 32]),
+                "the device that already holds the input passes the weighing, and rank no longer decides"
+            );
+            assert_eq!(
+                choice.transfer,
+                Some(Transfer {
+                    moving_bytes: 0,
+                    moving_ms: 400
+                })
+            );
+            assert!(
+                !choice.considered[1].worthwhile,
+                "the device that would receive all of it cannot beat the run here"
+            );
+        }
 
-    /// Nothing asked means nothing offers, and the request stays where it
-    /// was asked.
-    #[test]
-    fn nothing_asked_says_so() {
-        let choice = pick([], &work());
-        assert!(choice.is_local());
-        assert!(choice.considered.is_empty());
-        assert_eq!(choice.to_string(), "no device offered to run it");
+        phase moving_inputs_slower_than_the_run_leaves_it_where_it_was_asked;
+        // A job whose inputs would take longer to move than the run took where
+        // it was asked stays there, and says so.
+        {
+            let mut heavy = work();
+            heavy.inputs = vec![([3; 32], 400 * 1024 * 1024)];
+            heavy.input_bytes = 400 * 1024 * 1024;
+            heavy.local_wall_ms = Some(1_000);
+            let choice = pick([([1; 32], answer())], &heavy);
+            assert!(choice.is_local());
+            assert!(
+                !choice.considered[0].worthwhile,
+                "a willing device that would receive more than the run took is not picked"
+            );
+            assert!(
+                choice.to_string().contains("no faster than the run here"),
+                "{}",
+                choice
+            );
+
+            let mut never_run = work();
+            never_run.local_wall_ms = None;
+            assert!(
+                pick([([1; 32], answer())], &never_run).is_local(),
+                "a job never run where it was asked has no run to beat"
+            );
+        }
+
+        phase a_device_that_did_not_answer_is_offline;
+        // Every device that was asked with no answer to give is recorded as
+        // what a device that is away is taken to have said.
+        {
+            let choice = pick([(REQUESTER, Answer::away())], &work());
+            assert_eq!(
+                choice.considered[0].verdict,
+                Err(Decline::Offline),
+                "a device that never answered is not there"
+            );
+            assert!(choice.is_local());
+        }
+
+        phase nothing_asked_says_so;
+        // Nothing asked means nothing offers, and the request stays where it
+        // was asked.
+        {
+            let choice = pick([], &work());
+            assert!(choice.is_local());
+            assert!(choice.considered.is_empty());
+            assert_eq!(choice.to_string(), "no device offered to run it");
+        }
     }
 }

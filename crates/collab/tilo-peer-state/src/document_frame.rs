@@ -315,69 +315,91 @@ mod tests {
     use collab_types::document_attestation_id;
     use tilo_automerge::ApplyIncoming as _;
 
-    #[test]
-    fn a_sealed_compaction_opens_as_its_snapshot() {
-        let dir = tempfile::tempdir().unwrap();
-        let route = DocumentRoute {
-            app_id: "app".into(),
-            cluster_id: "workspace".into(),
-            record: "record".into(),
-        };
-        let creator = key_group::GroupPeer::create_now(
-            Some(std::sync::Arc::new(key_group::Files::new(dir.path()))),
-            collab_types::WorkspaceId::new(),
-            Box::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
-            &key_group::VaultKey::new([8; 32]),
-        )
-        .unwrap();
-        let keys = creator.content_keys().unwrap();
-        let node = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let author = collab_types::Ed25519PublicKey::from_bytes(node.verifying_key().to_bytes());
-        let mut merged = AutoCommit::new();
-        merged.put(automerge::ROOT, "title", "merged").unwrap();
-        let snapshot = DocumentMutation::Snapshot(merged.save());
-        let (metadata, ciphertext) = keys
-            .seal_content(
-                route.artifact(),
-                collab_types::ContentRetention::Checkpoint,
-                &snapshot.encode().unwrap(),
+    tilo_test_env::scenario! {
+        fn a_documents_frames_open_to_the_document_they_carry;
+
+        phase a_sealed_compaction_opens_as_its_snapshot;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let route = DocumentRoute {
+                app_id: "app".into(),
+                cluster_id: "workspace".into(),
+                record: "record".into(),
+            };
+            let creator = key_group::GroupPeer::create_now(
+                Some(std::sync::Arc::new(key_group::Files::new(dir.path()))),
+                collab_types::WorkspaceId::new(),
+                Box::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
+                &key_group::VaultKey::new([8; 32]),
             )
             .unwrap();
-        let superseded = SignedOp::new_unsigned(
-            vec![1],
-            route.artifact(),
-            author,
-            document_attestation_id("app", "workspace", "record"),
-            collab_types::OpKind::Change,
-            std::time::SystemTime::UNIX_EPOCH,
-            1,
-        );
-        let mut op = SignedOp::new_unsigned_with_encryption(
-            collab_types::SealedCompaction::new(&[superseded], ciphertext)
-                .unwrap()
-                .encode()
-                .unwrap(),
-            route.artifact(),
-            author,
-            document_attestation_id("app", "workspace", "record"),
-            collab_types::OpKind::Compaction,
-            std::time::SystemTime::UNIX_EPOCH,
-            2,
-            metadata,
-        );
-        collab_types::sign_op(&mut op, &node).unwrap();
-        let body = postcard::to_stdvec(&NeighbourMsg::AppDocument {
-            peer: neighbour_wire::peer_handle(author.as_bytes()),
-            app_id: route.app_id.clone(),
-            cluster_id: route.cluster_id.clone(),
-            record_id: route.record,
-            envelope: Box::new(op),
-        })
-        .unwrap();
-        let opened = open_frame(&body, *author.as_bytes(), Some(&keys))
-            .unwrap()
+            let keys = creator.content_keys().unwrap();
+            let node = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let author = collab_types::Ed25519PublicKey::from_bytes(node.verifying_key().to_bytes());
+            let mut merged = AutoCommit::new();
+            merged.put(automerge::ROOT, "title", "merged").unwrap();
+            let snapshot = DocumentMutation::Snapshot(merged.save());
+            let (metadata, ciphertext) = keys
+                .seal_content(
+                    route.artifact(),
+                    collab_types::ContentRetention::Checkpoint,
+                    &snapshot.encode().unwrap(),
+                )
+                .unwrap();
+            let superseded = SignedOp::new_unsigned(
+                vec![1],
+                route.artifact(),
+                author,
+                document_attestation_id("app", "workspace", "record"),
+                collab_types::OpKind::Change,
+                std::time::SystemTime::UNIX_EPOCH,
+                1,
+            );
+            let mut op = SignedOp::new_unsigned_with_encryption(
+                collab_types::SealedCompaction::new(&[superseded], ciphertext)
+                    .unwrap()
+                    .encode()
+                    .unwrap(),
+                route.artifact(),
+                author,
+                document_attestation_id("app", "workspace", "record"),
+                collab_types::OpKind::Compaction,
+                std::time::SystemTime::UNIX_EPOCH,
+                2,
+                metadata,
+            );
+            collab_types::sign_op(&mut op, &node).unwrap();
+            let body = postcard::to_stdvec(&NeighbourMsg::AppDocument {
+                peer: neighbour_wire::peer_handle(author.as_bytes()),
+                app_id: route.app_id.clone(),
+                cluster_id: route.cluster_id.clone(),
+                record_id: route.record,
+                envelope: Box::new(op),
+            })
             .unwrap();
-        assert_eq!(opened.mutation(), Some(snapshot));
+            let opened = open_frame(&body, *author.as_bytes(), Some(&keys))
+                .unwrap()
+                .unwrap();
+            assert_eq!(opened.mutation(), Some(snapshot));
+        }
+
+        phase a_writer_reads_its_held_writes_over_what_the_replica_holds;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "kept", "landed").unwrap();
+            let base = doc.save();
+            doc.put(automerge::ROOT, "held", "waiting for keys")
+                .unwrap();
+            let frames = DocumentMutation::Incremental(doc.save_incremental())
+                .encode_frames()
+                .unwrap();
+            let read = with_own_writes(Some(&base), [1; 32], &frames).unwrap();
+            let read_back = AutoCommit::load(&read.bytes).unwrap();
+            assert!(read_back.get(automerge::ROOT, "kept").unwrap().is_some());
+            assert!(read_back.get(automerge::ROOT, "held").unwrap().is_some());
+            let alone = with_own_writes(None, [1; 32], &frames).unwrap();
+            assert_ne!(alone.revision, read.revision);
+        }
     }
 
     fn noise(len: usize) -> Vec<u8> {
@@ -436,103 +458,90 @@ mod tests {
         assert_eq!(batched.text(&text).unwrap(), author.text(&text).unwrap());
     }
 
-    #[test]
-    fn coalesce_keeps_snapshots_apart_and_joins_incremental_runs() {
-        use DocumentMutation::{Incremental, Snapshot};
-        let runs = coalesce(vec![
-            Incremental(vec![1]),
-            Incremental(vec![2, 3]),
-            Snapshot(vec![4]),
-            Snapshot(vec![5]),
-            Incremental(vec![6]),
-        ]);
-        assert_eq!(
-            runs,
-            vec![
-                Incremental(vec![1, 2, 3]),
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn frames_and_segments_reassemble_only_as_they_were_sent;
+
+        phase coalesce_keeps_snapshots_apart_and_joins_incremental_runs;
+        {
+            use DocumentMutation::{Incremental, Snapshot};
+            let runs = coalesce(vec![
+                Incremental(vec![1]),
+                Incremental(vec![2, 3]),
                 Snapshot(vec![4]),
                 Snapshot(vec![5]),
                 Incremental(vec![6]),
-            ]
-        );
-    }
-
-    #[test]
-    fn segmented_snapshots_reassemble_in_any_order() {
-        let mutation = DocumentMutation::Snapshot(noise(5 * 1024 * 1024 / 2));
-        let mut frames = mutation.encode_frames().unwrap();
-        assert_eq!(frames.len(), 3, "a 2.5 MiB snapshot travels as segments");
-        frames.reverse();
-        frames.insert(1, frames[0].clone());
-        let mut transfers = Transfers::default();
-        let completed: Vec<_> = frames
-            .iter()
-            .filter_map(|frame| transfers.take([7; 32], frame).unwrap())
-            .collect();
-        assert_eq!(
-            completed,
-            vec![mutation],
-            "the transfer completes exactly once"
-        );
-        assert!(transfers.is_empty());
-    }
-
-    #[test]
-    fn whole_frames_pass_and_segments_of_other_authors_never_mix() {
-        let mut transfers = Transfers::default();
-        let small = DocumentMutation::Incremental(vec![1, 2, 3]);
-        assert_eq!(
-            transfers.take([1; 32], &small.encode().unwrap()).unwrap(),
-            Some(small)
-        );
-        let frames = DocumentMutation::Incremental(noise(2 * 1024 * 1024 + 1))
-            .encode_frames()
-            .unwrap();
-        let last = frames.len() - 1;
-        for (index, frame) in frames.iter().enumerate() {
-            let author = if index == last { [2; 32] } else { [1; 32] };
-            assert_eq!(transfers.take(author, frame).unwrap(), None);
+            ]);
+            assert_eq!(
+                runs,
+                vec![
+                    Incremental(vec![1, 2, 3]),
+                    Snapshot(vec![4]),
+                    Snapshot(vec![5]),
+                    Incremental(vec![6]),
+                ]
+            );
         }
-        assert!(!transfers.is_empty());
-    }
 
-    #[test]
-    fn a_tampered_segment_fails_the_transfer_digest() {
-        let frames = DocumentMutation::Incremental(noise(2 * 1024 * 1024 + 5))
-            .encode_frames()
-            .unwrap();
-        let mut transfers = Transfers::default();
-        let count = frames.len();
-        let mut outcome = Ok(None);
-        for (index, mut frame) in frames.into_iter().enumerate() {
-            if index == 1 {
-                let at = frame.len() - 3;
-                frame[at] ^= 0xff;
-            }
-            outcome = transfers.take([3; 32], &frame);
-            if index + 1 < count {
-                assert_eq!(outcome, Ok(None));
-            }
+        phase segmented_snapshots_reassemble_in_any_order;
+        {
+            let mutation = DocumentMutation::Snapshot(noise(5 * 1024 * 1024 / 2));
+            let mut frames = mutation.encode_frames().unwrap();
+            assert_eq!(frames.len(), 3, "a 2.5 MiB snapshot travels as segments");
+            frames.reverse();
+            frames.insert(1, frames[0].clone());
+            let mut transfers = Transfers::default();
+            let completed: Vec<_> = frames
+                .iter()
+                .filter_map(|frame| transfers.take([7; 32], frame).unwrap())
+                .collect();
+            assert_eq!(
+                completed,
+                vec![mutation],
+                "the transfer completes exactly once"
+            );
+            assert!(transfers.is_empty());
         }
-        assert!(outcome.is_err());
-        assert!(transfers.is_empty());
-    }
 
-    #[test]
-    fn a_writer_reads_its_held_writes_over_what_the_replica_holds() {
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "kept", "landed").unwrap();
-        let base = doc.save();
-        doc.put(automerge::ROOT, "held", "waiting for keys")
-            .unwrap();
-        let frames = DocumentMutation::Incremental(doc.save_incremental())
-            .encode_frames()
-            .unwrap();
-        let read = with_own_writes(Some(&base), [1; 32], &frames).unwrap();
-        let read_back = AutoCommit::load(&read.bytes).unwrap();
-        assert!(read_back.get(automerge::ROOT, "kept").unwrap().is_some());
-        assert!(read_back.get(automerge::ROOT, "held").unwrap().is_some());
-        let alone = with_own_writes(None, [1; 32], &frames).unwrap();
-        assert_ne!(alone.revision, read.revision);
+        phase whole_frames_pass_and_segments_of_other_authors_never_mix;
+        {
+            let mut transfers = Transfers::default();
+            let small = DocumentMutation::Incremental(vec![1, 2, 3]);
+            assert_eq!(
+                transfers.take([1; 32], &small.encode().unwrap()).unwrap(),
+                Some(small)
+            );
+            let frames = DocumentMutation::Incremental(noise(2 * 1024 * 1024 + 1))
+                .encode_frames()
+                .unwrap();
+            let last = frames.len() - 1;
+            for (index, frame) in frames.iter().enumerate() {
+                let author = if index == last { [2; 32] } else { [1; 32] };
+                assert_eq!(transfers.take(author, frame).unwrap(), None);
+            }
+            assert!(!transfers.is_empty());
+        }
+
+        phase a_tampered_segment_fails_the_transfer_digest;
+        {
+            let frames = DocumentMutation::Incremental(noise(2 * 1024 * 1024 + 5))
+                .encode_frames()
+                .unwrap();
+            let mut transfers = Transfers::default();
+            let count = frames.len();
+            let mut outcome = Ok(None);
+            for (index, mut frame) in frames.into_iter().enumerate() {
+                if index == 1 {
+                    let at = frame.len() - 3;
+                    frame[at] ^= 0xff;
+                }
+                outcome = transfers.take([3; 32], &frame);
+                if index + 1 < count {
+                    assert_eq!(outcome, Ok(None));
+                }
+            }
+            assert!(outcome.is_err());
+            assert!(transfers.is_empty());
+        }
     }
 }

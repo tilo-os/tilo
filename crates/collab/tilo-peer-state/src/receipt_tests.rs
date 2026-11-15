@@ -354,330 +354,482 @@ fn moderation() -> Did {
     Did::Verb(VerbCall::new(ActionKey::new(APP, KIND, "moderate"), []))
 }
 
-/// One record carries a writer's repeated sequence and a change the
-/// workspace refuses. Both are dropped on their own: the writer's other
-/// changes, before and after them, are read. A page
-/// ([`StatePeer::decide_relayed_document`]) and a host
-/// ([`StatePeer::receive_from`]) refuse the same change the same way.
-#[test]
-fn a_refused_change_leaves_the_rest_of_the_record() {
-    let (mut peer, key, guest) = workspace_with(Role::Editor);
-    let first = guest_write_at(&peer, &key, comment_on("c1"), comment(), Some("c1"), 1);
-    receive(&mut peer, &guest, first).expect("an editor may comment");
-    let after_first = recorded_heads(&peer);
-    let kept = guest_write_at(&peer, &key, comment_on("c9"), comment(), Some("c9"), 2);
-    receive(&mut peer, &guest, kept).expect("the second change of the sequence");
-    // A page that continued the writer from the record as it stood before
-    // that change writes the same sequence again.
-    let repeated = guest_write_from(
-        &peer,
-        &key,
-        &after_first,
-        comment_on("c8"),
-        comment(),
-        Some("c8"),
-        3,
-    );
-    let moderation_write = guest_write_at(
-        &peer,
-        &key,
-        |doc| {
-            let moderation = doc.put_object(ROOT, "moderation", ObjType::Map).unwrap();
-            doc.put(&moderation, "category", "rules").unwrap();
-        },
-        moderation(),
-        None,
-        4,
-    );
-    let later = guest_write_at(&peer, &key, comment_on("c2"), comment(), Some("c2"), 5);
-    let page = peer.clone();
-    // A record holds one change under each writer's sequence, so the one the
-    // page wrote under a sequence the record holds is refused.
-    let refused = receive(&mut peer, &guest, repeated).unwrap_err();
-    assert!(refused.contains("duplicate seq"), "{refused}");
-    let refused = page
-        .decide_relayed_document(
+tilo_test_env::scenario! {
+    fn a_change_is_decided_by_the_units_its_author_may_write;
+
+    phase a_refused_change_leaves_the_rest_of_the_record;
+    // One record carries a writer's repeated sequence and a change the
+    // workspace refuses. Both are dropped on their own: the writer's other
+    // changes, before and after them, are read. A page
+    // ([`StatePeer::decide_relayed_document`]) and a host
+    // ([`StatePeer::receive_from`]) refuse the same change the same way.
+    {
+        let (mut peer, key, guest) = workspace_with(Role::Editor);
+        let first = guest_write_at(&peer, &key, comment_on("c1"), comment(), Some("c1"), 1);
+        receive(&mut peer, &guest, first).expect("an editor may comment");
+        let after_first = recorded_heads(&peer);
+        let kept = guest_write_at(&peer, &key, comment_on("c9"), comment(), Some("c9"), 2);
+        receive(&mut peer, &guest, kept).expect("the second change of the sequence");
+        // A page that continued the writer from the record as it stood before
+        // that change writes the same sequence again.
+        let repeated = guest_write_from(
+            &peer,
+            &key,
+            &after_first,
+            comment_on("c8"),
+            comment(),
+            Some("c8"),
+            3,
+        );
+        let moderation_write = guest_write_at(
+            &peer,
+            &key,
+            |doc| {
+                let moderation = doc.put_object(ROOT, "moderation", ObjType::Map).unwrap();
+                doc.put(&moderation, "category", "rules").unwrap();
+            },
+            moderation(),
+            None,
+            4,
+        );
+        let later = guest_write_at(&peer, &key, comment_on("c2"), comment(), Some("c2"), 5);
+        let page = peer.clone();
+        // A record holds one change under each writer's sequence, so the one the
+        // page wrote under a sequence the record holds is refused.
+        let refused = receive(&mut peer, &guest, repeated).unwrap_err();
+        assert!(refused.contains("duplicate seq"), "{refused}");
+        let refused = page
+            .decide_relayed_document(
+                TransportOrigin::RelayDelta(guest.device_public_key),
+                &moderation_write,
+                now(),
+            )
+            .unwrap_err();
+        assert!(refused.contains("not granted"), "{refused}");
+        let refused = receive(&mut peer, &guest, moderation_write).unwrap_err();
+        assert!(refused.contains("not granted"), "{refused}");
+        page.decide_relayed_document(
             TransportOrigin::RelayDelta(guest.device_public_key),
-            &moderation_write,
+            &later,
             now(),
         )
-        .unwrap_err();
-    assert!(refused.contains("not granted"), "{refused}");
-    let refused = receive(&mut peer, &guest, moderation_write).unwrap_err();
-    assert!(refused.contains("not granted"), "{refused}");
-    page.decide_relayed_document(
-        TransportOrigin::RelayDelta(guest.device_public_key),
-        &later,
-        now(),
-    )
-    .expect("a page reads the record on past the refused changes");
-    receive(&mut peer, &guest, later)
-        .expect("the host reads the record on past the refused changes");
+        .expect("a page reads the record on past the refused changes");
+        receive(&mut peer, &guest, later)
+            .expect("the host reads the record on past the refused changes");
 
-    let doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
-    let Some((_, comments)) = doc.get(ROOT, "comments").unwrap() else {
-        panic!("the record keeps its comments");
-    };
-    for id in ["c1", "c9", "c2"] {
-        assert!(doc.get(&comments, id).unwrap().is_some(), "{id} is read");
-    }
-    assert!(
-        doc.get(&comments, "c8").unwrap().is_none(),
-        "the change under a sequence the record holds is refused"
-    );
-    assert!(
-        doc.get(ROOT, "moderation").unwrap().is_none(),
-        "the refused change wrote nothing"
-    );
-}
-
-/// A commenter's comment is granted; their edit of the record is not.
-#[test]
-fn a_change_is_refused_when_its_action_is_not_granted_to_its_author() {
-    let (mut peer, key, guest) = workspace_with(Role::Commenter);
-    let commented = guest_write(&peer, &key, comment_on("c1"), comment(), Some("c1"));
-    receive(&mut peer, &guest, commented).expect("a commenter may comment");
-    let edited = guest_write(
-        &peer,
-        &key,
-        |doc| doc.put(ROOT, "value", "x").unwrap(),
-        edit_value(),
-        None,
-    );
-    let refused = receive(&mut peer, &guest, edited).unwrap_err();
-    assert!(refused.contains("not granted"), "{refused}");
-
-    let (mut peer, key, guest) = workspace_with(Role::Editor);
-    let edited = guest_write(
-        &peer,
-        &key,
-        |doc| doc.put(ROOT, "value", "x").unwrap(),
-        edit_value(),
-        None,
-    );
-    receive(&mut peer, &guest, edited).expect("an editor may edit");
-}
-
-/// A granted action that writes a unit it may not write is refused: a
-/// comment on one item that writes another, whether the claim names the
-/// unit it wrote or hides it.
-#[test]
-fn a_granted_action_writing_another_unit_is_refused() {
-    let (mut peer, key, guest) = workspace_with(Role::Commenter);
-    // The change itself says what it wrote: c2, which commenting on c1 may
-    // not write.
-    let wrote_other = guest_write(&peer, &key, comment_on("c2"), comment(), Some("c1"));
-    let refused = receive(&mut peer.clone(), &guest, wrote_other.clone()).unwrap_err();
-    assert!(refused.contains("may not write"), "{refused}");
-
-    // A cleartext op that brings its own claims (naming c1) is refused: its
-    // changes are the one account of what it did.
-    let NeighbourMsg::AppDocument {
-        peer: handle,
-        app_id,
-        cluster_id,
-        record_id,
-        mut envelope,
-    } = wrote_other
-    else {
-        panic!("a document write")
-    };
-    let changes = collab_types::parse_changes(
-        collab_types::DocumentMutation::decode(&envelope.payload)
-            .unwrap()
-            .data(),
-    )
-    .unwrap();
-    envelope.claims = collab_types::claims_of(&changes, |_| {
-        vec![
-            Vec::new(),
-            vec![
-                PathStep::Field("comments".into()),
-                PathStep::Item("c1".into()),
-            ],
-        ]
-    })
-    .unwrap();
-    // Signed by hand: a debug build will not sign such an op.
-    let signature = ed25519_dalek::Signer::sign(&key, &envelope.signing_bytes().unwrap());
-    envelope.signature = collab_types::Signature::from_bytes(signature.to_bytes());
-    let lying = NeighbourMsg::AppDocument {
-        peer: handle,
-        app_id,
-        cluster_id,
-        record_id,
-        envelope,
-    };
-    let refused = receive(&mut peer, &guest, lying).unwrap_err();
-    assert!(refused.contains("do not name exactly"), "{refused}");
-}
-
-/// A record that had no units until a change gave it its index (its app
-/// gained a unit after it was made) has what the changes after it wrote
-/// read by that index: an edit of the notes that follows writes the notes'
-/// unit, not the whole record its claim could not name.
-#[test]
-fn changes_after_the_first_unit_index_are_read_by_it() {
-    let (mut peer, key, guest) = workspace_keeping(Role::Editor, &[]);
-    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
-    doc.set_actor(automerge::ActorId::from(
-        key.verifying_key().to_bytes().to_vec(),
-    ));
-    let heads = doc.get_heads();
-    let index = doc
-        .put_object(ROOT, collab_types::units::UNIT_INDEX, ObjType::List)
-        .unwrap();
-    doc.insert(&index, 0, "notes").unwrap();
-    doc.put(ROOT, "value", "indexed").unwrap();
-    step(&mut doc, edit_value(), None);
-    let notes = doc.put_object(ROOT, "notes", ObjType::Map).unwrap();
-    doc.put(&notes, "n1", "first").unwrap();
-    step(
-        &mut doc,
-        Did::Edit(FieldEdit {
-            ty: KIND.into(),
-            field: "notes".into(),
-            path: vec![PathStep::Field("notes".into())],
-            op: EditOp::Set,
-            old: None,
-            new: None,
-            args: std::collections::BTreeMap::new(),
-        }),
-        None,
-    );
-    let written = signed_write(&mut doc, &heads, &key);
-    receive(&mut peer, &guest, written).expect("the notes edit wrote the notes alone");
-}
-
-/// An item kept as its order key alone (a list of plain ids, rows of a
-/// grid) is the scalar under its id: writing it writes that item's unit,
-/// exactly as writing an entry map does.
-#[test]
-fn an_item_stored_as_its_order_key_writes_its_own_unit() {
-    let order_key = |id: &'static str| {
-        move |doc: &mut AutoCommit| {
-            let Some((_, comments)) = doc.get(ROOT, "comments").unwrap() else {
-                panic!("the record keeps comments")
-            };
-            doc.put(&comments, id, "a0").unwrap();
+        let doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+        let Some((_, comments)) = doc.get(ROOT, "comments").unwrap() else {
+            panic!("the record keeps its comments");
+        };
+        for id in ["c1", "c9", "c2"] {
+            assert!(doc.get(&comments, id).unwrap().is_some(), "{id} is read");
         }
-    };
-    let (mut peer, key, guest) = workspace_with(Role::Commenter);
-    let own = guest_write(&peer, &key, order_key("c1"), comment(), Some("c1"));
-    receive(&mut peer, &guest, own).expect("commenting on c1 may write c1");
-    let other = guest_write(&peer, &key, order_key("c2"), comment(), Some("c1"));
-    let refused = receive(&mut peer, &guest, other).unwrap_err();
-    assert!(refused.contains("may not write"), "{refused}");
-}
+        assert!(
+            doc.get(&comments, "c8").unwrap().is_none(),
+            "the change under a sequence the record holds is refused"
+        );
+        assert!(
+            doc.get(ROOT, "moderation").unwrap().is_none(),
+            "the refused change wrote nothing"
+        );
+    }
 
-/// Without the app's surface a change is held, never merged on trust, and
-/// decided once the surface is here.
-#[test]
-fn a_change_whose_app_surface_has_not_arrived_is_held_until_it_has() {
-    let (mut peer, key, guest) = workspace_with(Role::Editor);
-    peer.set_surfaces(Surfaces::from_source(Arc::new(Source(false))));
-    let edited = guest_write(
-        &peer,
-        &key,
-        |doc| doc.put(ROOT, "value", "x").unwrap(),
-        edit_value(),
-        None,
-    );
-    let value = |peer: &StatePeer| {
-        AutoCommit::load(&peer.document(APP, RECORD).unwrap())
-            .unwrap()
-            .get(ROOT, "value")
-            .unwrap()
-            .unwrap()
-            .0
-            .to_string()
-    };
-    let held = peer
-        .receive_from(
-            TransportOrigin::RelayDelta(guest.device_public_key),
-            edited.clone(),
-            now(),
-        )
-        .unwrap();
-    assert!(held.deferred, "kept for later");
-    assert_eq!(value(&peer), "\"seed\"", "nothing merged");
-    peer.set_surfaces(Surfaces::from_source(Arc::new(Source(true))));
-    receive(&mut peer, &guest, edited).expect("decided once the surface is here");
-    assert_eq!(value(&peer), "\"x\"");
-}
+    phase a_change_is_refused_when_its_action_is_not_granted_to_its_author;
+    // A commenter's comment is granted; their edit of the record is not.
+    {
+        let (mut peer, key, guest) = workspace_with(Role::Commenter);
+        let commented = guest_write(&peer, &key, comment_on("c1"), comment(), Some("c1"));
+        receive(&mut peer, &guest, commented).expect("a commenter may comment");
+        let edited = guest_write(
+            &peer,
+            &key,
+            |doc| doc.put(ROOT, "value", "x").unwrap(),
+            edit_value(),
+            None,
+        );
+        let refused = receive(&mut peer, &guest, edited).unwrap_err();
+        assert!(refused.contains("not granted"), "{refused}");
 
-/// An op naming another surface than its record's identity is refused, but
-/// the change naming a newer one for the record is decided as an upgrade.
-#[test]
-fn an_op_naming_another_surface_than_its_record_is_refused() {
-    let (mut peer, key, guest) = workspace_with(Role::Editor);
-    let resurfaced = |message: NeighbourMsg| {
+        let (mut peer, key, guest) = workspace_with(Role::Editor);
+        let edited = guest_write(
+            &peer,
+            &key,
+            |doc| doc.put(ROOT, "value", "x").unwrap(),
+            edit_value(),
+            None,
+        );
+        receive(&mut peer, &guest, edited).expect("an editor may edit");
+    }
+
+    phase a_granted_action_writing_another_unit_is_refused;
+    // A granted action that writes a unit it may not write is refused: a
+    // comment on one item that writes another, whether the claim names the
+    // unit it wrote or hides it.
+    {
+        let (mut peer, key, guest) = workspace_with(Role::Commenter);
+        // The change itself says what it wrote: c2, which commenting on c1 may
+        // not write.
+        let wrote_other = guest_write(&peer, &key, comment_on("c2"), comment(), Some("c1"));
+        let refused = receive(&mut peer.clone(), &guest, wrote_other.clone()).unwrap_err();
+        assert!(refused.contains("may not write"), "{refused}");
+
+        // A cleartext op that brings its own claims (naming c1) is refused: its
+        // changes are the one account of what it did.
         let NeighbourMsg::AppDocument {
             peer: handle,
             app_id,
             cluster_id,
             record_id,
             mut envelope,
-        } = message
+        } = wrote_other
         else {
             panic!("a document write")
         };
-        envelope.surface = Some([8; 32]);
-        collab_types::sign_op(&mut envelope, &key).unwrap();
-        NeighbourMsg::AppDocument {
+        let changes = collab_types::parse_changes(
+            collab_types::DocumentMutation::decode(&envelope.payload)
+                .unwrap()
+                .data(),
+        )
+        .unwrap();
+        envelope.claims = collab_types::claims_of(&changes, |_| {
+            vec![
+                Vec::new(),
+                vec![
+                    PathStep::Field("comments".into()),
+                    PathStep::Item("c1".into()),
+                ],
+            ]
+        })
+        .unwrap();
+        // Signed by hand: a debug build will not sign such an op.
+        let signature = ed25519_dalek::Signer::sign(&key, &envelope.signing_bytes().unwrap());
+        envelope.signature = collab_types::Signature::from_bytes(signature.to_bytes());
+        let lying = NeighbourMsg::AppDocument {
             peer: handle,
             app_id,
             cluster_id,
             record_id,
             envelope,
-        }
-    };
-    let edited = guest_write(
-        &peer,
-        &key,
-        |doc| doc.put(ROOT, "value", "x").unwrap(),
-        edit_value(),
-        None,
-    );
-    let refused = receive(&mut peer.clone(), &guest, resurfaced(edited)).unwrap_err();
-    assert!(refused.contains("another app surface"), "{refused}");
+        };
+        let refused = receive(&mut peer, &guest, lying).unwrap_err();
+        assert!(refused.contains("do not name exactly"), "{refused}");
+    }
 
-    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
-    doc.set_actor(automerge::ActorId::from(
-        key.verifying_key().to_bytes().to_vec(),
-    ));
-    let heads = doc.get_heads();
-    let meta = doc.get(ROOT, "tilo:record").unwrap().unwrap().1;
-    doc.put(&meta, "surface", hex::encode([8; 32])).unwrap();
-    doc.commit_with(
-        CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
-    );
-    let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&heads));
-    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
-    let mut envelope = collab_types::SignedOp::new_unsigned(
-        mutation.encode().unwrap(),
-        collab_types::document_artifact_id(APP, WORKSPACE, RECORD),
-        author,
-        collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
-        collab_types::OpKind::Change,
-        now(),
-        2,
-    )
-    .with_surface(Some([8; 32]));
-    collab_types::sign_op(&mut envelope, &key).unwrap();
-    receive(
-        &mut peer,
-        &guest,
-        NeighbourMsg::AppDocument {
-            peer: crate::peer_handle(author.as_bytes()),
-            app_id: APP.into(),
-            cluster_id: WORKSPACE.into(),
-            record_id: RECORD.into(),
-            envelope: Box::new(envelope),
-        },
-    )
-    .expect("an editor names the newer surface");
+    phase changes_after_the_first_unit_index_are_read_by_it;
+    // A record that had no units until a change gave it its index (its app
+    // gained a unit after it was made) has what the changes after it wrote
+    // read by that index: an edit of the notes that follows writes the notes'
+    // unit, not the whole record its claim could not name.
+    {
+        let (mut peer, key, guest) = workspace_keeping(Role::Editor, &[]);
+        let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        let heads = doc.get_heads();
+        let index = doc
+            .put_object(ROOT, collab_types::units::UNIT_INDEX, ObjType::List)
+            .unwrap();
+        doc.insert(&index, 0, "notes").unwrap();
+        doc.put(ROOT, "value", "indexed").unwrap();
+        step(&mut doc, edit_value(), None);
+        let notes = doc.put_object(ROOT, "notes", ObjType::Map).unwrap();
+        doc.put(&notes, "n1", "first").unwrap();
+        step(
+            &mut doc,
+            Did::Edit(FieldEdit {
+                ty: KIND.into(),
+                field: "notes".into(),
+                path: vec![PathStep::Field("notes".into())],
+                op: EditOp::Set,
+                old: None,
+                new: None,
+                args: std::collections::BTreeMap::new(),
+            }),
+            None,
+        );
+        let written = signed_write(&mut doc, &heads, &key);
+        receive(&mut peer, &guest, written).expect("the notes edit wrote the notes alone");
+    }
+
+    phase an_item_stored_as_its_order_key_writes_its_own_unit;
+    // An item kept as its order key alone (a list of plain ids, rows of a
+    // grid) is the scalar under its id: writing it writes that item's unit,
+    // exactly as writing an entry map does.
+    {
+        let order_key = |id: &'static str| {
+            move |doc: &mut AutoCommit| {
+                let Some((_, comments)) = doc.get(ROOT, "comments").unwrap() else {
+                    panic!("the record keeps comments")
+                };
+                doc.put(&comments, id, "a0").unwrap();
+            }
+        };
+        let (mut peer, key, guest) = workspace_with(Role::Commenter);
+        let own = guest_write(&peer, &key, order_key("c1"), comment(), Some("c1"));
+        receive(&mut peer, &guest, own).expect("commenting on c1 may write c1");
+        let other = guest_write(&peer, &key, order_key("c2"), comment(), Some("c1"));
+        let refused = receive(&mut peer, &guest, other).unwrap_err();
+        assert!(refused.contains("may not write"), "{refused}");
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_change_is_held_or_refused_by_its_surface_its_version_and_the_name_it_shows;
+
+    phase a_change_whose_app_surface_has_not_arrived_is_held_until_it_has;
+    // Without the app's surface a change is held, never merged on trust, and
+    // decided once the surface is here.
+    {
+        let (mut peer, key, guest) = workspace_with(Role::Editor);
+        peer.set_surfaces(Surfaces::from_source(Arc::new(Source(false))));
+        let edited = guest_write(
+            &peer,
+            &key,
+            |doc| doc.put(ROOT, "value", "x").unwrap(),
+            edit_value(),
+            None,
+        );
+        let value = |peer: &StatePeer| {
+            AutoCommit::load(&peer.document(APP, RECORD).unwrap())
+                .unwrap()
+                .get(ROOT, "value")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_string()
+        };
+        let held = peer
+            .receive_from(
+                TransportOrigin::RelayDelta(guest.device_public_key),
+                edited.clone(),
+                now(),
+            )
+            .unwrap();
+        assert!(held.deferred, "kept for later");
+        assert_eq!(value(&peer), "\"seed\"", "nothing merged");
+        peer.set_surfaces(Surfaces::from_source(Arc::new(Source(true))));
+        receive(&mut peer, &guest, edited).expect("decided once the surface is here");
+        assert_eq!(value(&peer), "\"x\"");
+    }
+
+    phase an_op_naming_another_surface_than_its_record_is_refused;
+    // An op naming another surface than its record's identity is refused, but
+    // the change naming a newer one for the record is decided as an upgrade.
+    {
+        let (mut peer, key, guest) = workspace_with(Role::Editor);
+        let resurfaced = |message: NeighbourMsg| {
+            let NeighbourMsg::AppDocument {
+                peer: handle,
+                app_id,
+                cluster_id,
+                record_id,
+                mut envelope,
+            } = message
+            else {
+                panic!("a document write")
+            };
+            envelope.surface = Some([8; 32]);
+            collab_types::sign_op(&mut envelope, &key).unwrap();
+            NeighbourMsg::AppDocument {
+                peer: handle,
+                app_id,
+                cluster_id,
+                record_id,
+                envelope,
+            }
+        };
+        let edited = guest_write(
+            &peer,
+            &key,
+            |doc| doc.put(ROOT, "value", "x").unwrap(),
+            edit_value(),
+            None,
+        );
+        let refused = receive(&mut peer.clone(), &guest, resurfaced(edited)).unwrap_err();
+        assert!(refused.contains("another app surface"), "{refused}");
+
+        let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        let heads = doc.get_heads();
+        let meta = doc.get(ROOT, "tilo:record").unwrap().unwrap().1;
+        doc.put(&meta, "surface", hex::encode([8; 32])).unwrap();
+        doc.commit_with(
+            CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
+        );
+        let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&heads));
+        let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+        let mut envelope = collab_types::SignedOp::new_unsigned(
+            mutation.encode().unwrap(),
+            collab_types::document_artifact_id(APP, WORKSPACE, RECORD),
+            author,
+            collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
+            collab_types::OpKind::Change,
+            now(),
+            2,
+        )
+        .with_surface(Some([8; 32]));
+        collab_types::sign_op(&mut envelope, &key).unwrap();
+        receive(
+            &mut peer,
+            &guest,
+            NeighbourMsg::AppDocument {
+                peer: crate::peer_handle(author.as_bytes()),
+                app_id: APP.into(),
+                cluster_id: WORKSPACE.into(),
+                record_id: RECORD.into(),
+                envelope: Box::new(envelope),
+            },
+        )
+        .expect("an editor names the newer surface");
+    }
+
+    phase a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may;
+    // The bot device whose installation allows Personas may show another
+    // name; the same bot installed with its own appearance only may not.
+    {
+        use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
+        let edit = Rule::new(
+            TreePath::root()
+                .any(Level::Workspace)
+                .app(APP)
+                .kind(KIND)
+                .resource(RECORD)
+                .field("value")
+                .action("field-edit"),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+        );
+        let program = crate::state::bot_members_tests::program_invoking(
+            ActionKey::new(APP, KIND, "field-edit"),
+            vec![edit],
+        );
+        for (policy, admitted) in [
+            (crate::AppearancePolicy::Personas, true),
+            (crate::AppearancePolicy::Own, false),
+        ] {
+            let (mut peer, _, _) = workspace_with(Role::Viewer);
+            let owner_key = SigningKey::from_bytes(&[2; 32]);
+            let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
+            let (key, device) = crate::state::bot_members_tests::installed_bot(
+                &mut peer,
+                &owner_key,
+                &owner,
+                &program,
+                policy,
+                now(),
+            );
+            let invoker = |appearance: Option<tilo_actions::Appearance>| {
+                tilo_actions::ActionInvoker::bot(crate::state::bot_members_tests::BOT)
+                    .with_appearance(appearance)
+            };
+            let shown = guest_write_by(
+                &peer,
+                &key,
+                |doc| doc.put(ROOT, "value", "hi").unwrap(),
+                edit_value(),
+                invoker(Some(
+                    tilo_actions::Appearance::new("alice", None, None).unwrap(),
+                )),
+            );
+            assert_eq!(
+                receive(&mut peer.clone(), &device, shown).is_ok(),
+                admitted,
+                "{policy:?}"
+            );
+            let plain = guest_write_by(
+                &peer,
+                &key,
+                |doc| doc.put(ROOT, "value", "own name").unwrap(),
+                edit_value(),
+                invoker(None),
+            );
+            receive(&mut peer, &device, plain).expect("a bot writes under its own name");
+        }
+    }
+
+    phase a_change_made_with_another_version_than_the_workspace_runs_waits_for_its_author_to_update;
+    // The workspace runs one version of an app: a change made with another is held,
+    // not merged, until its author runs the workspace's version and sends the same
+    // changes naming that version's surface, with the record upgraded to it.
+    {
+        use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
+        const NEWER: [u8; 32] = [8; 32];
+        let (mut peer, key, guest) = workspace_with(Role::Editor);
+        let owner_key = SigningKey::from_bytes(&[2; 32]);
+        let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
+        let release = AppRelease {
+            app: APP.into(),
+            version: "2.0.0-dev.1".into(),
+            surface: hex::encode(NEWER),
+            package: hex::encode([9; 32]),
+            publisher: hex::encode([10; 32]),
+            file: None,
+            dev: true,
+        };
+        let install = WorkspaceMembershipCommand::InstallApp(release.clone());
+        let refused = peer
+            .clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(&guest, &install, &owner_key, now())
+            .unwrap_err();
+        assert!(
+            refused.contains("Not allowed"),
+            "an editor installs no app: {refused}"
+        );
+        assert!(
+            peer.workspace_mut()
+                .apply_workspace_membership_command(&owner, &install, &owner_key, now())
+                .unwrap()
+        );
+        let installed = peer
+            .governance()
+            .app_version(APP)
+            .expect("the workspace runs v2");
+        assert_eq!(installed.release, release);
+        assert_eq!(installed.installed_by, hex::encode(owner.user_public_key));
+
+        // The guest still runs v1: its edit names v1's surface.
+        let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        let heads = doc.get_heads();
+        doc.put(ROOT, "value", "x").unwrap();
+        step(&mut doc, edit_value(), None);
+        let old = signed_write(&mut doc, &heads, &key);
+        let held = peer
+            .receive_from(
+                TransportOrigin::RelayDelta(guest.device_public_key),
+                old,
+                now(),
+            )
+            .unwrap();
+        assert!(held.deferred, "held, not refused");
+        assert_eq!(value(&peer), "\"seed\"", "nothing merged");
+
+        // Its desktop switches to v2: the record names v2's surface, and the
+        // same edit goes out again under it.
+        let upgraded = upgraded_write(&mut doc, &heads, &key, NEWER);
+        receive(&mut peer, &guest, upgraded).expect("the updated guest's edit is decided against v2");
+        assert_eq!(value(&peer), "\"x\"", "the guest's edit is kept");
+
+        // Taking the choice back lets every version write again.
+        assert!(
+            peer.workspace_mut()
+                .apply_workspace_membership_command(
+                    &owner,
+                    &WorkspaceMembershipCommand::UninstallApp { app: APP.into() },
+                    &owner_key,
+                    now(),
+                )
+                .unwrap()
+        );
+        assert!(peer.governance().app_versions().is_empty());
+    }
 }
 
 /// A person's device that writes a change showing another name, as only a
@@ -705,150 +857,6 @@ fn a_persons_change_showing_another_name_is_refused() {
         tilo_actions::ActionInvoker::person("person:guest"),
     );
     receive(&mut peer, &guest, plain).expect("an editor's own edit is admitted");
-}
-
-/// The bot device whose installation allows Personas may show another
-/// name; the same bot installed with its own appearance only may not.
-#[test]
-fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
-    use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
-    let edit = Rule::new(
-        TreePath::root()
-            .any(Level::Workspace)
-            .app(APP)
-            .kind(KIND)
-            .resource(RECORD)
-            .field("value")
-            .action("field-edit"),
-        KindSet::READ_UNDOABLE,
-        Answer::Allow,
-    );
-    let program = crate::state::bot_members_tests::program_invoking(
-        ActionKey::new(APP, KIND, "field-edit"),
-        vec![edit],
-    );
-    for (policy, admitted) in [
-        (crate::AppearancePolicy::Personas, true),
-        (crate::AppearancePolicy::Own, false),
-    ] {
-        let (mut peer, _, _) = workspace_with(Role::Viewer);
-        let owner_key = SigningKey::from_bytes(&[2; 32]);
-        let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
-        let (key, device) = crate::state::bot_members_tests::installed_bot(
-            &mut peer,
-            &owner_key,
-            &owner,
-            &program,
-            policy,
-            now(),
-        );
-        let invoker = |appearance: Option<tilo_actions::Appearance>| {
-            tilo_actions::ActionInvoker::bot(crate::state::bot_members_tests::BOT)
-                .with_appearance(appearance)
-        };
-        let shown = guest_write_by(
-            &peer,
-            &key,
-            |doc| doc.put(ROOT, "value", "hi").unwrap(),
-            edit_value(),
-            invoker(Some(
-                tilo_actions::Appearance::new("alice", None, None).unwrap(),
-            )),
-        );
-        assert_eq!(
-            receive(&mut peer.clone(), &device, shown).is_ok(),
-            admitted,
-            "{policy:?}"
-        );
-        let plain = guest_write_by(
-            &peer,
-            &key,
-            |doc| doc.put(ROOT, "value", "own name").unwrap(),
-            edit_value(),
-            invoker(None),
-        );
-        receive(&mut peer, &device, plain).expect("a bot writes under its own name");
-    }
-}
-
-/// The workspace runs one version of an app: a change made with another is held,
-/// not merged, until its author runs the workspace's version and sends the same
-/// changes naming that version's surface, with the record upgraded to it.
-#[test]
-fn a_change_made_with_another_version_than_the_workspace_runs_waits_for_its_author_to_update() {
-    use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
-    const NEWER: [u8; 32] = [8; 32];
-    let (mut peer, key, guest) = workspace_with(Role::Editor);
-    let owner_key = SigningKey::from_bytes(&[2; 32]);
-    let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
-    let release = AppRelease {
-        app: APP.into(),
-        version: "2.0.0-dev.1".into(),
-        surface: hex::encode(NEWER),
-        package: hex::encode([9; 32]),
-        publisher: hex::encode([10; 32]),
-        file: None,
-        dev: true,
-    };
-    let install = WorkspaceMembershipCommand::InstallApp(release.clone());
-    let refused = peer
-        .clone()
-        .workspace_mut()
-        .apply_workspace_membership_command(&guest, &install, &owner_key, now())
-        .unwrap_err();
-    assert!(
-        refused.contains("Not allowed"),
-        "an editor installs no app: {refused}"
-    );
-    assert!(
-        peer.workspace_mut()
-            .apply_workspace_membership_command(&owner, &install, &owner_key, now())
-            .unwrap()
-    );
-    let installed = peer
-        .governance()
-        .app_version(APP)
-        .expect("the workspace runs v2");
-    assert_eq!(installed.release, release);
-    assert_eq!(installed.installed_by, hex::encode(owner.user_public_key));
-
-    // The guest still runs v1: its edit names v1's surface.
-    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
-    doc.set_actor(automerge::ActorId::from(
-        key.verifying_key().to_bytes().to_vec(),
-    ));
-    let heads = doc.get_heads();
-    doc.put(ROOT, "value", "x").unwrap();
-    step(&mut doc, edit_value(), None);
-    let old = signed_write(&mut doc, &heads, &key);
-    let held = peer
-        .receive_from(
-            TransportOrigin::RelayDelta(guest.device_public_key),
-            old,
-            now(),
-        )
-        .unwrap();
-    assert!(held.deferred, "held, not refused");
-    assert_eq!(value(&peer), "\"seed\"", "nothing merged");
-
-    // Its desktop switches to v2: the record names v2's surface, and the
-    // same edit goes out again under it.
-    let upgraded = upgraded_write(&mut doc, &heads, &key, NEWER);
-    receive(&mut peer, &guest, upgraded).expect("the updated guest's edit is decided against v2");
-    assert_eq!(value(&peer), "\"x\"", "the guest's edit is kept");
-
-    // Taking the choice back lets every version write again.
-    assert!(
-        peer.workspace_mut()
-            .apply_workspace_membership_command(
-                &owner,
-                &WorkspaceMembershipCommand::UninstallApp { app: APP.into() },
-                &owner_key,
-                now(),
-            )
-            .unwrap()
-    );
-    assert!(peer.governance().app_versions().is_empty());
 }
 
 /// The record's `value` as the peer holds it.

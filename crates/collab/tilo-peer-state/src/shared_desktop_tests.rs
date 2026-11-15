@@ -207,27 +207,130 @@ fn write_of(
     }
 }
 
-/// A person's view of the workspace's layout is theirs to write: another member reads it and may
-/// not write it, whatever the workspace lets them do to the layout itself.
-#[test]
-fn a_view_of_the_layout_is_its_persons_to_write() {
-    use tilo_desktop_model::person_view::{PersonView, record_of};
+tilo_test_env::scenario! {
+    fn the_shared_desktop_is_written_by_whom_the_workspace_lets;
 
-    let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
-    let view = PersonView {
-        front_strip: Some(StripId(10)),
-        ..PersonView::default()
-    };
-    let theirs = record_of(&owner);
-    let intrudes = write_of(&peer, &key, 1, &theirs, |doc| {
-        view.write(doc).unwrap();
-    });
-    let refused = receive(&mut peer, &guest, intrudes).unwrap_err();
-    assert!(refused.contains("may not write"), "{refused}");
-    assert!(
-        peer.document(DESKTOP_APP, &theirs).is_none(),
-        "nothing of the refused write is taken in"
-    );
+    phase a_view_of_the_layout_is_its_persons_to_write;
+    // A person's view of the workspace's layout is theirs to write: another member reads it and may
+    // not write it, whatever the workspace lets them do to the layout itself.
+    {
+        use tilo_desktop_model::person_view::{PersonView, record_of};
+
+        let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
+        let view = PersonView {
+            front_strip: Some(StripId(10)),
+            ..PersonView::default()
+        };
+        let theirs = record_of(&owner);
+        let intrudes = write_of(&peer, &key, 1, &theirs, |doc| {
+            view.write(doc).unwrap();
+        });
+        let refused = receive(&mut peer, &guest, intrudes).unwrap_err();
+        assert!(refused.contains("may not write"), "{refused}");
+        assert!(
+            peer.document(DESKTOP_APP, &theirs).is_none(),
+            "nothing of the refused write is taken in"
+        );
+    }
+
+    phase an_editor_closes_their_own_window_but_not_someone_elses;
+    // An editor opens and closes their own window, and may not close the
+    // owner's.
+    {
+        let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
+        let person = hex::encode(guest.user_public_key);
+        let opened = write(&peer, &key, 1, &desktop(&[(1, &owner), (2, &person)]));
+        receive(&mut peer, &guest, opened).expect("an editor opens a window");
+        assert_eq!(windows(&peer), [1, 2]);
+
+        let closes_owners = write(&peer, &key, 2, &desktop(&[(2, &person)]));
+        let refused = receive(&mut peer, &guest, closes_owners).unwrap_err();
+        assert!(refused.contains("may not close 1"), "{refused}");
+        assert_eq!(windows(&peer), [1, 2], "refused, the desktop is as it was");
+
+        let closes_own = write(&peer, &key, 3, &desktop(&[(1, &owner)]));
+        receive(&mut peer, &guest, closes_own).expect("an editor closes their own window");
+        assert_eq!(windows(&peer), [1]);
+    }
+
+    phase a_moderator_closes_someone_elses_window;
+    // A moderator closes anyone's window.
+    {
+        let (mut peer, _, key, guest) = workspace_with(Role::Moderator);
+        let closes_owners = write(&peer, &key, 1, &desktop(&[]));
+        receive(&mut peer, &guest, closes_owners).expect("a moderator closes any window");
+        assert!(windows(&peer).is_empty());
+    }
+
+    phase another_devices_page_reaches_the_shell_and_its_rename_follows;
+    // A second device of the workspace draws the page the first one opened: the
+    // workspace's desktop record the first device publishes reaches it through the
+    // replication, and its shell shows that window. When the first device renames
+    // the page, the window on the shell carries the new name.
+    //
+    // The shell is the one that stands for the whole time, as a session's does: it
+    // is the arriving desktop that gives it the page, and the next arrival that
+    // changes it.
+    {
+        let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
+        let person = hex::encode(guest.user_public_key);
+        let (_surface, shell) = DesktopSurface::new(Layout::default(), 7, Box::new(Notices));
+
+        let opened = write(
+            &peer,
+            &key,
+            1,
+            &desktop_with_page(&owner, &person, "Draft", "draft"),
+        );
+        receive(&mut peer, &guest, opened).expect("an editor opens a page");
+        assert_eq!(
+            drawn(&shell, &peer),
+            [
+                Drawn {
+                    strip: 10,
+                    tab: 1,
+                    title: "tab 1".into(),
+                    app: "so.tilo.notes".into(),
+                    record: None,
+                },
+                Drawn {
+                    strip: 10,
+                    tab: 2,
+                    title: "Draft".into(),
+                    app: "so.tilo.notes".into(),
+                    record: Some("draft".into()),
+                },
+            ]
+        );
+
+        let renamed = write(
+            &peer,
+            &key,
+            2,
+            &desktop_with_page(&owner, &person, "Draft, for review", "draft"),
+        );
+        receive(&mut peer, &guest, renamed).expect("an editor renames their own page");
+        assert_eq!(
+            drawn(&shell, &peer),
+            [
+                Drawn {
+                    strip: 10,
+                    tab: 1,
+                    title: "tab 1".into(),
+                    app: "so.tilo.notes".into(),
+                    record: None,
+                },
+                Drawn {
+                    strip: 10,
+                    tab: 2,
+                    title: "Draft, for review".into(),
+                    app: "so.tilo.notes".into(),
+                    record: Some("draft".into()),
+                },
+            ],
+            "the shell shows the page under its new name, on the record it was opened on"
+        );
+    }
 }
 
 fn windows(peer: &StatePeer) -> Vec<u64> {
@@ -242,35 +345,6 @@ fn windows(peer: &StatePeer) -> Vec<u64> {
         .flat_map(|group| &group.tabs)
         .map(|tab| tab.id)
         .collect()
-}
-
-/// An editor opens and closes their own window, and may not close the
-/// owner's.
-#[test]
-fn an_editor_closes_their_own_window_but_not_someone_elses() {
-    let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
-    let person = hex::encode(guest.user_public_key);
-    let opened = write(&peer, &key, 1, &desktop(&[(1, &owner), (2, &person)]));
-    receive(&mut peer, &guest, opened).expect("an editor opens a window");
-    assert_eq!(windows(&peer), [1, 2]);
-
-    let closes_owners = write(&peer, &key, 2, &desktop(&[(2, &person)]));
-    let refused = receive(&mut peer, &guest, closes_owners).unwrap_err();
-    assert!(refused.contains("may not close 1"), "{refused}");
-    assert_eq!(windows(&peer), [1, 2], "refused, the desktop is as it was");
-
-    let closes_own = write(&peer, &key, 3, &desktop(&[(1, &owner)]));
-    receive(&mut peer, &guest, closes_own).expect("an editor closes their own window");
-    assert_eq!(windows(&peer), [1]);
-}
-
-/// A moderator closes anyone's window.
-#[test]
-fn a_moderator_closes_someone_elses_window() {
-    let (mut peer, _, key, guest) = workspace_with(Role::Moderator);
-    let closes_owners = write(&peer, &key, 1, &desktop(&[]));
-    receive(&mut peer, &guest, closes_owners).expect("a moderator closes any window");
-    assert!(windows(&peer).is_empty());
 }
 
 /// A desktop holding the owner's window 1, and one window that is `person`'s
@@ -340,74 +414,4 @@ fn drawn(shell: &DesktopHandle, peer: &StatePeer) -> Vec<Drawn> {
             })
             .collect()
     })
-}
-
-/// A second device of the workspace draws the page the first one opened: the
-/// workspace's desktop record the first device publishes reaches it through the
-/// replication, and its shell shows that window. When the first device renames
-/// the page, the window on the shell carries the new name.
-///
-/// The shell is the one that stands for the whole time, as a session's does: it
-/// is the arriving desktop that gives it the page, and the next arrival that
-/// changes it.
-#[test]
-fn another_devices_page_reaches_the_shell_and_its_rename_follows() {
-    let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
-    let person = hex::encode(guest.user_public_key);
-    let (_surface, shell) = DesktopSurface::new(Layout::default(), 7, Box::new(Notices));
-
-    let opened = write(
-        &peer,
-        &key,
-        1,
-        &desktop_with_page(&owner, &person, "Draft", "draft"),
-    );
-    receive(&mut peer, &guest, opened).expect("an editor opens a page");
-    assert_eq!(
-        drawn(&shell, &peer),
-        [
-            Drawn {
-                strip: 10,
-                tab: 1,
-                title: "tab 1".into(),
-                app: "so.tilo.notes".into(),
-                record: None,
-            },
-            Drawn {
-                strip: 10,
-                tab: 2,
-                title: "Draft".into(),
-                app: "so.tilo.notes".into(),
-                record: Some("draft".into()),
-            },
-        ]
-    );
-
-    let renamed = write(
-        &peer,
-        &key,
-        2,
-        &desktop_with_page(&owner, &person, "Draft, for review", "draft"),
-    );
-    receive(&mut peer, &guest, renamed).expect("an editor renames their own page");
-    assert_eq!(
-        drawn(&shell, &peer),
-        [
-            Drawn {
-                strip: 10,
-                tab: 1,
-                title: "tab 1".into(),
-                app: "so.tilo.notes".into(),
-                record: None,
-            },
-            Drawn {
-                strip: 10,
-                tab: 2,
-                title: "Draft, for review".into(),
-                app: "so.tilo.notes".into(),
-                record: Some("draft".into()),
-            },
-        ],
-        "the shell shows the page under its new name, on the record it was opened on"
-    );
 }

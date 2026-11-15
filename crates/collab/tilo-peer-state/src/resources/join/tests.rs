@@ -137,96 +137,101 @@ fn limits() -> OuterLimits {
     }
 }
 
-#[test]
-fn bounded_join_response_all_seven_real_variants_preserve_exact_original_bytes() {
-    for response in responses() {
-        let bytes = postcard::to_allocvec(&response).unwrap();
-        let held = BoundedJoinResponse::decode(&bytes, limits()).unwrap();
-        assert_eq!(held.response(), &response);
-        assert_eq!(postcard::to_allocvec(held.response()).unwrap(), bytes);
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn join_responses_cross_the_wire_bounded_and_byte_exact;
+
+    phase bounded_join_response_all_seven_real_variants_preserve_exact_original_bytes;
+    {
+        for response in responses() {
+            let bytes = postcard::to_allocvec(&response).unwrap();
+            let held = BoundedJoinResponse::decode(&bytes, limits()).unwrap();
+            assert_eq!(held.response(), &response);
+            assert_eq!(postcard::to_allocvec(held.response()).unwrap(), bytes);
+        }
     }
-}
 
-#[test]
-fn bounded_join_response_nested_buffers_past_the_limit_are_refused() {
-    let mut response = responses().remove(2);
-    let JoinTransportResponse::Complete(bootstrap) = &mut response else {
-        panic!()
-    };
-    bootstrap.governance_messages = vec![vec![42; 4096]; 8];
-    let bytes = postcard::to_allocvec(&response).unwrap();
-    let small = OuterLimits {
-        allocation_bytes: 16 * 1024,
-        collection_entries: 16384,
-    };
-    assert!(matches!(
-        BoundedJoinResponse::decode(&bytes, small),
-        Err(PeerResourceError::Capacity)
-    ));
-    // Each message is a byte sequence, so every byte is a collection entry.
-    let limits = OuterLimits {
-        allocation_bytes: 256 * 1024,
-        collection_entries: 65536,
-    };
-    assert!(BoundedJoinResponse::decode(&bytes, limits).is_ok());
-}
-
-#[test]
-fn bounded_join_response_malformed_nested_signature_is_refused() {
-    let response = responses().remove(0);
-    let JoinTransportResponse::Inspection(inspection) = &response else {
-        panic!()
-    };
-    let signatures = [
-        inspection.grant.issuer.signature,
-        inspection.grant.transport[0].host_signature,
-    ];
-    for signature in signatures {
-        let mut bytes = postcard::to_allocvec(&response).unwrap();
-        let mut needle = vec![64];
-        needle.extend_from_slice(&signature);
-        let position = bytes
-            .windows(needle.len())
-            .position(|value| value == needle)
-            .unwrap();
-        bytes.splice(position..position + needle.len(), [0]);
+    phase bounded_join_response_nested_buffers_past_the_limit_are_refused;
+    {
+        let mut response = responses().remove(2);
+        let JoinTransportResponse::Complete(bootstrap) = &mut response else {
+            panic!()
+        };
+        bootstrap.governance_messages = vec![vec![42; 4096]; 8];
+        let bytes = postcard::to_allocvec(&response).unwrap();
+        let small = OuterLimits {
+            allocation_bytes: 16 * 1024,
+            collection_entries: 16384,
+        };
         assert!(matches!(
-            BoundedJoinResponse::decode(&bytes, limits()),
-            Err(PeerResourceError::Malformed)
+            BoundedJoinResponse::decode(&bytes, small),
+            Err(PeerResourceError::Capacity)
+        ));
+        // Each message is a byte sequence, so every byte is a collection entry.
+        let limits = OuterLimits {
+            allocation_bytes: 256 * 1024,
+            collection_entries: 65536,
+        };
+        assert!(BoundedJoinResponse::decode(&bytes, limits).is_ok());
+    }
+
+    phase bounded_join_response_malformed_nested_signature_is_refused;
+    {
+        let response = responses().remove(0);
+        let JoinTransportResponse::Inspection(inspection) = &response else {
+            panic!()
+        };
+        let signatures = [
+            inspection.grant.issuer.signature,
+            inspection.grant.transport[0].host_signature,
+        ];
+        for signature in signatures {
+            let mut bytes = postcard::to_allocvec(&response).unwrap();
+            let mut needle = vec![64];
+            needle.extend_from_slice(&signature);
+            let position = bytes
+                .windows(needle.len())
+                .position(|value| value == needle)
+                .unwrap();
+            bytes.splice(position..position + needle.len(), [0]);
+            assert!(matches!(
+                BoundedJoinResponse::decode(&bytes, limits()),
+                Err(PeerResourceError::Malformed)
+            ));
+        }
+    }
+
+    phase bounded_join_response_announced_nested_length_and_trailing_bytes_are_refused;
+    {
+        let response = responses().remove(2);
+        let JoinTransportResponse::Complete(bootstrap) = &response else {
+            panic!()
+        };
+        let original = postcard::to_allocvec(&response).unwrap();
+        let nested = postcard::to_allocvec(&bootstrap.governance_messages).unwrap();
+        let position = original
+            .windows(nested.len())
+            .position(|window| window == nested)
+            .unwrap();
+        let mut huge = original[..position].to_vec();
+        huge.extend(postcard::to_allocvec(&u64::MAX).unwrap());
+        huge.extend(&original[position + nested.len()..]);
+        let mut trailing = original.clone();
+        trailing.push(0);
+        for bytes in [huge, trailing] {
+            assert!(BoundedJoinResponse::decode(&bytes, limits()).is_err());
+        }
+        assert!(matches!(
+            BoundedJoinResponse::decode(
+                &original,
+                OuterLimits {
+                    allocation_bytes: 1,
+                    collection_entries: 16384
+                },
+            ),
+            Err(PeerResourceError::Capacity)
         ));
     }
-}
-
-#[test]
-fn bounded_join_response_announced_nested_length_and_trailing_bytes_are_refused() {
-    let response = responses().remove(2);
-    let JoinTransportResponse::Complete(bootstrap) = &response else {
-        panic!()
-    };
-    let original = postcard::to_allocvec(&response).unwrap();
-    let nested = postcard::to_allocvec(&bootstrap.governance_messages).unwrap();
-    let position = original
-        .windows(nested.len())
-        .position(|window| window == nested)
-        .unwrap();
-    let mut huge = original[..position].to_vec();
-    huge.extend(postcard::to_allocvec(&u64::MAX).unwrap());
-    huge.extend(&original[position + nested.len()..]);
-    let mut trailing = original.clone();
-    trailing.push(0);
-    for bytes in [huge, trailing] {
-        assert!(BoundedJoinResponse::decode(&bytes, limits()).is_err());
-    }
-    assert!(matches!(
-        BoundedJoinResponse::decode(
-            &original,
-            OuterLimits {
-                allocation_bytes: 1,
-                collection_entries: 16384
-            },
-        ),
-        Err(PeerResourceError::Capacity)
-    ));
 }
 
 #[test]

@@ -175,150 +175,226 @@ fn edit_from_view(
     })
 }
 
-#[test]
-fn a_joined_workspace_is_kept_in_its_own_private_file_and_reopens() {
-    let joined = enrolled();
-    let policy_calls = |owner: &NativeWorkspaceOwner| {
-        owner
-            .with_current(joined.workspace, |view| {
-                Ok(view
-                    .peer()
-                    .validated_media_policy()?
-                    .ok_or("missing admitted policy")?
-                    .calls
-                    .len())
-            })
-            .unwrap()
-    };
-    assert_eq!(policy_calls(&joined.owner), 1);
-    drop(joined.owner);
-    let reopened = open_file(&joined.path).unwrap();
-    assert_eq!(policy_calls(&reopened), 1);
-    assert_eq!(reopened.workspaces(), vec![joined.workspace]);
-    #[cfg(unix)]
+tilo_test_env::scenario! {
+    fn an_owners_files_are_private_named_and_compact;
+
+    phase a_joined_workspace_is_kept_in_its_own_private_file_and_reopens;
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        let parts = crate::owner::file_store::parts_of(&joined.path);
-        let mode = std::fs::metadata(&parts).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "the record's directory is owner-only");
-        for (file, _) in record_on_disk(&joined.path) {
-            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
-            assert_eq!(mode & 0o077, 0, "{} is owner-only", file.display());
+        let joined = enrolled();
+        let policy_calls = |owner: &NativeWorkspaceOwner| {
+            owner
+                .with_current(joined.workspace, |view| {
+                    Ok(view
+                        .peer()
+                        .validated_media_policy()?
+                        .ok_or("missing admitted policy")?
+                        .calls
+                        .len())
+                })
+                .unwrap()
+        };
+        assert_eq!(policy_calls(&joined.owner), 1);
+        drop(joined.owner);
+        let reopened = open_file(&joined.path).unwrap();
+        assert_eq!(policy_calls(&reopened), 1);
+        assert_eq!(reopened.workspaces(), vec![joined.workspace]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let parts = crate::owner::file_store::parts_of(&joined.path);
+            let mode = std::fs::metadata(&parts).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "the record's directory is owner-only");
+            for (file, _) in record_on_disk(&joined.path) {
+                let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+                assert_eq!(mode & 0o077, 0, "{} is owner-only", file.display());
+            }
         }
+    }
+
+    phase a_workspace_file_names_its_host_under_the_stored_key;
+    {
+        let joined = enrolled();
+        let host = joined
+            .owner
+            .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
+            .unwrap();
+        drop(joined.owner);
+        let value = workspace_json(&joined.path, joined.workspace);
+        let stored = value.as_object().expect("a stored workspace");
+        assert!(
+            stored.contains_key("workspace_host"),
+            "the stored key names the workspace's host: {}",
+            serde_json::to_string_pretty(&value).unwrap()
+        );
+        let reopened = open_file(&joined.path).expect("the file this build wrote reads");
+        assert_eq!(
+            reopened
+                .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
+                .unwrap(),
+            host,
+            "the stored key names the workspace's host"
+        );
     }
 }
 
-#[test]
-fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
-    let joined = enrolled();
-    assert_eq!(joined.owner.unadmitted_writes(joined.workspace).unwrap(), 0);
-    let request = edit(&joined.owner, joined.workspace, joined.now);
-    let receipt = joined
-        .owner
-        .commit_document(request.clone(), joined.now)
-        .unwrap();
-    let committed = record_on_disk(&joined.path);
-    let retry = joined.owner.commit_document(request, joined.now).unwrap();
-    assert_eq!(retry.generation, receipt.generation);
-    assert_eq!(
-        record_on_disk(&joined.path),
-        committed,
-        "an exact retry does not rewrite"
-    );
-    let outgoing = |owner: &NativeWorkspaceOwner| {
-        owner
-            .with_outgoing(joined.workspace, joined.now, |_, outgoing| {
-                Ok(outgoing.entries().count())
-            })
-            .unwrap()
-    };
-    assert_eq!(outgoing(&joined.owner), 1);
-    assert_eq!(
-        joined.owner.unadmitted_writes(joined.workspace).unwrap(),
-        1,
-        "the write waits for the governor's admission"
-    );
-    drop(joined.owner);
-    assert_eq!(outgoing(&open_file(&joined.path).unwrap()), 1);
-}
+tilo_test_env::scenario! {
+    fn a_local_write_is_committed_durably_or_not_at_all;
 
-#[test]
-fn a_write_its_relay_host_refused_leaves_the_replica_and_every_answer_is_counted() {
-    let joined = enrolled();
-    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
-    let topic = |owner: &NativeWorkspaceOwner| {
+    phase a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt;
+    {
+        let joined = enrolled();
+        assert_eq!(joined.owner.unadmitted_writes(joined.workspace).unwrap(), 0);
+        let request = edit(&joined.owner, joined.workspace, joined.now);
+        let receipt = joined
+            .owner
+            .commit_document(request.clone(), joined.now)
+            .unwrap();
+        let committed = record_on_disk(&joined.path);
+        let retry = joined.owner.commit_document(request, joined.now).unwrap();
+        assert_eq!(retry.generation, receipt.generation);
+        assert_eq!(
+            record_on_disk(&joined.path),
+            committed,
+            "an exact retry does not rewrite"
+        );
+        let outgoing = |owner: &NativeWorkspaceOwner| {
+            owner
+                .with_outgoing(joined.workspace, joined.now, |_, outgoing| {
+                    Ok(outgoing.entries().count())
+                })
+                .unwrap()
+        };
+        assert_eq!(outgoing(&joined.owner), 1);
+        assert_eq!(
+            joined.owner.unadmitted_writes(joined.workspace).unwrap(),
+            1,
+            "the write waits for the governor's admission"
+        );
+        drop(joined.owner);
+        assert_eq!(outgoing(&open_file(&joined.path).unwrap()), 1);
+    }
+
+    phase a_write_its_relay_host_refused_leaves_the_replica_and_every_answer_is_counted;
+    {
+        let joined = enrolled();
+        let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+        let topic = |owner: &NativeWorkspaceOwner| {
+            owner
+                .with_current(workspace, |view| {
+                    let chat = AutoCommit::load(&view.peer().document(APP, "").ok_or("no chat")?)
+                        .map_err(|error| error.to_string())?;
+                    Ok(chat
+                        .get(ROOT, "topic")
+                        .ok()
+                        .flatten()
+                        .and_then(|(value, _)| value.as_str().map(str::to_owned)))
+                })
+                .unwrap()
+        };
+        let newest = |owner: &NativeWorkspaceOwner| {
+            owner
+                .with_outgoing(workspace, now, |_, outgoing| Ok(outgoing.queued().last()))
+                .unwrap()
+                .unwrap()
+        };
         owner
-            .with_current(workspace, |view| {
-                let chat = AutoCommit::load(&view.peer().document(APP, "").ok_or("no chat")?)
-                    .map_err(|error| error.to_string())?;
-                Ok(chat
-                    .get(ROOT, "topic")
-                    .ok()
-                    .flatten()
-                    .and_then(|(value, _)| value.as_str().map(str::to_owned)))
+            .commit_document(edit_with(owner, workspace, now, "kept"), now)
+            .unwrap();
+        owner
+            .retire_answered(
+                workspace,
+                &BTreeMap::from([(newest(owner), HostAnswer::Durable(7))]),
+            )
+            .unwrap();
+        let refused = edit_with(owner, workspace, now, "refused");
+        let crate::owner_commit::CommitOperation::Document { envelope, .. } = refused.operation.clone()
+        else {
+            panic!("a document write");
+        };
+        owner.commit_document(refused, now).unwrap();
+        assert_eq!(topic(owner).as_deref(), Some("refused"));
+        owner
+            .retire_answered(
+                workspace,
+                &BTreeMap::from([(newest(owner), HostAnswer::Refused)]),
+            )
+            .unwrap();
+        let answered = RecordWrites {
+            pending: 0,
+            durable: 1,
+            refused: 1,
+            last_order: Some(7),
+        };
+        assert_eq!(topic(owner).as_deref(), Some("kept"));
+        assert!(
+            owner
+                .with_current(workspace, |view| {
+                    view.peer()
+                        .lookup_exact_local_document(APP, "", &envelope, now)
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap()
+                .is_none(),
+            "no evidence of the refused write stays to wait for"
+        );
+        assert_eq!(
+            owner
+                .record_writes(workspace)
+                .get(&(APP.to_owned(), String::new())),
+            Some(&answered)
+        );
+        let reopened = open_file(&joined.path).unwrap();
+        assert_eq!(topic(&reopened).as_deref(), Some("kept"));
+        assert_eq!(
+            reopened
+                .record_writes(workspace)
+                .get(&(APP.to_owned(), String::new())),
+            Some(&answered)
+        );
+    }
+
+    phase retained_replay_reuses_exact_committed_publication;
+    {
+        let joined = enrolled();
+        let governor = joined
+            .owner
+            .with_current(joined.workspace, |view| {
+                Ok(view.workspace_host().device_public_key)
             })
-            .unwrap()
-    };
-    let newest = |owner: &NativeWorkspaceOwner| {
-        owner
-            .with_outgoing(workspace, now, |_, outgoing| Ok(outgoing.queued().last()))
-            .unwrap()
-            .unwrap()
-    };
-    owner
-        .commit_document(edit_with(owner, workspace, now, "kept"), now)
-        .unwrap();
-    owner
-        .retire_answered(
-            workspace,
-            &BTreeMap::from([(newest(owner), HostAnswer::Durable(7))]),
-        )
-        .unwrap();
-    let refused = edit_with(owner, workspace, now, "refused");
-    let crate::owner_commit::CommitOperation::Document { envelope, .. } = refused.operation.clone()
-    else {
-        panic!("a document write");
-    };
-    owner.commit_document(refused, now).unwrap();
-    assert_eq!(topic(owner).as_deref(), Some("refused"));
-    owner
-        .retire_answered(
-            workspace,
-            &BTreeMap::from([(newest(owner), HostAnswer::Refused)]),
-        )
-        .unwrap();
-    let answered = RecordWrites {
-        pending: 0,
-        durable: 1,
-        refused: 1,
-        last_order: Some(7),
-    };
-    assert_eq!(topic(owner).as_deref(), Some("kept"));
-    assert!(
-        owner
-            .with_current(workspace, |view| {
-                view.peer()
-                    .lookup_exact_local_document(APP, "", &envelope, now)
-                    .map_err(|error| error.to_string())
-            })
-            .unwrap()
-            .is_none(),
-        "no evidence of the refused write stays to wait for"
-    );
-    assert_eq!(
-        owner
-            .record_writes(workspace)
-            .get(&(APP.to_owned(), String::new())),
-        Some(&answered)
-    );
-    let reopened = open_file(&joined.path).unwrap();
-    assert_eq!(topic(&reopened).as_deref(), Some("kept"));
-    assert_eq!(
-        reopened
-            .record_writes(workspace)
-            .get(&(APP.to_owned(), String::new())),
-        Some(&answered)
-    );
+            .unwrap();
+        let message = joined.replay.clone();
+        let before = record_on_disk(&joined.path);
+        let generation = joined
+            .owner
+            .with_current(joined.workspace, |view| Ok(view.generation()))
+            .unwrap();
+        let report = joined
+            .owner
+            .receive(
+                joined.workspace,
+                TransportOrigin::RetainedRelayDelta(governor),
+                message,
+                joined.now,
+            )
+            .unwrap();
+        assert!(matches!(
+            report.primary(),
+            crate::InputDisposition::Duplicate(_)
+        ));
+        assert_eq!(
+            joined
+                .owner
+                .with_current(joined.workspace, |view| Ok(view.generation()))
+                .unwrap(),
+            generation,
+            "an unchanged authenticated replay must reuse the actual committed generation"
+        );
+        assert_eq!(
+            record_on_disk(&joined.path),
+            before,
+            "an unchanged authenticated replay must not rewrite durable owner state"
+        );
+    }
 }
 
 #[tokio::test]
@@ -530,46 +606,103 @@ fn an_uncertain_write_fences_every_workspace_until_reopened() {
     open_file(&joined.path).unwrap().health().unwrap();
 }
 
-#[test]
-fn a_pending_enrollment_without_a_slot_survives_restart_and_cancels() {
-    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let path = directory.path().join("joined-workspaces.json");
-    let (intent, _, _, _, now) = raw_fixture();
-    let id = open_file(&path)
-        .unwrap()
-        .prepare_enrollment_into(&intent, None, now)
-        .unwrap();
-    let owner = open_file(&path).unwrap();
-    assert!(owner.contains_workspace(id.workspace()));
-    let invitation =
-        crate::join::encode_invitation_text(intent.verified_join().signed_invitation());
-    assert_eq!(
-        owner
-            .pending_enrollment_for_invitation(&invitation)
+tilo_test_env::scenario! {
+    fn a_pending_enrollment_stays_until_it_is_installed_or_cancelled;
+
+    phase a_pending_enrollment_without_a_slot_survives_restart_and_cancels;
+    {
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let path = directory.path().join("joined-workspaces.json");
+        let (intent, _, _, _, now) = raw_fixture();
+        let id = open_file(&path)
             .unwrap()
-            .map(|pending| pending.id().clone()),
-        Some(id.clone()),
-        "a host without slots finds its retained proof by the invitation it redeems"
-    );
-    assert!(
-        owner
-            .pending_enrollment_for_invitation("another invitation")
+            .prepare_enrollment_into(&intent, None, now)
+            .unwrap();
+        let owner = open_file(&path).unwrap();
+        assert!(owner.contains_workspace(id.workspace()));
+        let invitation =
+            crate::join::encode_invitation_text(intent.verified_join().signed_invitation());
+        assert_eq!(
+            owner
+                .pending_enrollment_for_invitation(&invitation)
+                .unwrap()
+                .map(|pending| pending.id().clone()),
+            Some(id.clone()),
+            "a host without slots finds its retained proof by the invitation it redeems"
+        );
+        assert!(
+            owner
+                .pending_enrollment_for_invitation("another invitation")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            owner.prepare_enrollment_into(&intent, None, now).unwrap(),
+            id,
+            "a retry reuses the exact persisted proof"
+        );
+        assert!(owner.cancel_enrollment(id.workspace(), &id).unwrap());
+        assert!(
+            open_file(&path)
+                .unwrap()
+                .pending_enrollment(id.workspace())
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    phase a_pending_enrollment_handle_names_its_workspace;
+    {
+        let id = PendingEnrollmentId::new(WorkspaceId::parse(WORKSPACE).unwrap(), 7, [3; 32]);
+        let value = serde_json::to_value(&id).unwrap();
+        let object = value.as_object().expect("a handle object");
+        assert!(object.contains_key("workspace"));
+        assert_eq!(
+            serde_json::from_value::<PendingEnrollmentId>(value).unwrap(),
+            id
+        );
+    }
+
+    phase a_worker_crash_while_installing_leaves_the_join_pending;
+    // A worker that crashed while installing the host's governance says nothing
+    // about the enrollment: nothing is installed, and the join stays where it is
+    // for the next attempt.
+    {
+        let (intent, mut bootstrap, _, _, now) = raw_fixture();
+        bootstrap.governance_messages = vec![
+            postcard::to_stdvec(&NeighbourMsg::SyncResp {
+                changes: vec![hex::decode(CRASHING_CHANGE).unwrap()],
+                workspace: WORKSPACE.into(),
+            })
+            .unwrap(),
+        ];
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let path = directory.path().join("joined-workspaces.json");
+        let owner = open_file(&path).unwrap();
+        let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
+        let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+        let enrollment = crate::owner::testing::finalize(intent, pending, bootstrap).unwrap();
+        let error = owner
+            .install(&enrollment, now)
+            .expect_err("the crashed worker fails this install");
+        assert!(
+            error.is_device_failure(),
+            "the crash is this device failing, not a refusal: {error:?}"
+        );
+        assert!(
+            owner.with_current(workspace, |_| Ok(())).is_err(),
+            "nothing was installed"
+        );
+        let held = owner
+            .pending_enrollment(workspace)
             .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        owner.prepare_enrollment_into(&intent, None, now).unwrap(),
-        id,
-        "a retry reuses the exact persisted proof"
-    );
-    assert!(owner.cancel_enrollment(id.workspace(), &id).unwrap());
-    assert!(
-        open_file(&path)
-            .unwrap()
-            .pending_enrollment(id.workspace())
-            .unwrap()
-            .is_some()
-    );
+            .expect("the join stays pending");
+        assert_eq!(
+            held.status(),
+            crate::owner::PendingEnrollmentStatus::Active,
+            "the next attempt finds the same join"
+        );
+    }
 }
 
 #[test]
@@ -602,105 +735,110 @@ fn a_member_reads_the_admitted_document_and_a_stranger_does_not() {
     assert!(read(member, "uuid:absent", None, usize::MAX).is_err());
 }
 
-/// A governor checkpoint reaches this owner as several signed frames. A read
-/// between them hands out nothing and says the checkpoint is pending, so the
-/// reader asks again; a refusal would end an app's collaboration for good.
-/// It still refuses a device that may not read the record.
-#[test]
-fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
-    let joined = enrolled();
-    let member = member().verifying_key().to_bytes();
-    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
-    let governor_key = SigningKey::from_bytes(&[61; 32]);
-    let covered = edit_with(&joined.owner, joined.workspace, joined.now, "covered next");
-    joined.owner.commit_document(covered, joined.now).unwrap();
-    let mut remote = joined
-        .owner
-        .with_current(joined.workspace, |view| Ok(view.peer().clone()))
-        .unwrap();
-    let frames = remote
-        .publication_mut()
-        .durable_bootstrap_messages(&governor_key, joined.now, 600)
-        .unwrap();
-    let read = |reader| {
-        joined.owner.with_current(joined.workspace, |view| {
-            view.read_document(reader, APP, "", None, usize::MAX, joined.now)
-        })
-    };
-    let mut pending = 0;
-    for frame in frames {
-        joined
-            .owner
-            .receive(
-                joined.workspace,
-                TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
-                frame,
-                joined.now,
-            )
-            .unwrap();
-        match read(member) {
-            Ok(DocumentRead::Captured(_)) => {}
-            Ok(DocumentRead::CheckpointPending) => {
-                pending += 1;
-                assert!(
-                    read(stranger).is_err(),
-                    "a pending checkpoint is reported only to a reader of the record"
-                );
-            }
-            Ok(DocumentRead::Unchanged(_) | DocumentRead::Changes(_)) => {
-                panic!("no revision was offered")
-            }
-            Err(error) => panic!("a read between checkpoint frames was refused: {error}"),
-        }
-    }
-    assert!(
-        pending > 0,
-        "the checkpoint's frames leave the workspace between cuts"
-    );
-    let Ok(DocumentRead::Captured(document)) = read(member) else {
-        panic!("the completed checkpoint is read again");
-    };
-    let doc = AutoCommit::load(&document.bytes).unwrap();
-    assert_eq!(
-        doc.get(ROOT, "topic")
-            .unwrap()
-            .map(|(value, _)| value.to_string()),
-        Some("\"covered next\"".into())
-    );
-}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+    fn a_committed_document_is_read_by_members_at_the_revision_they_hold;
 
-#[test]
-fn an_unchanged_committed_read_does_not_capture_the_document() {
-    let joined = enrolled();
-    let member = member().verifying_key().to_bytes();
-    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
-    let read = |reader, known| {
-        joined.owner.with_current(joined.workspace, |view| {
-            view.read_document(reader, APP, "", known, usize::MAX, joined.now)
-        })
-    };
-    crate::owner::document_read::reset_captures();
-    let Ok(DocumentRead::Captured(document)) = read(member, None) else {
-        panic!("the first read admits the document");
-    };
-    assert!(
-        crate::owner::document_read::captures() > 0,
-        "a first read captures the document so the counter can see a later skip"
-    );
-    let captures = crate::owner::document_read::captures();
-    assert!(matches!(
-        read(member, Some(document.revision)),
-        Ok(DocumentRead::Unchanged(revision)) if revision == document.revision
-    ));
-    assert_eq!(
-        crate::owner::document_read::captures(),
-        captures,
-        "an idle reread of the same revision must not capture the document"
-    );
-    assert!(
-        read(stranger, Some(document.revision)).is_err(),
-        "a device outside the workspace cannot reuse a revision it was never given"
-    );
+    phase a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused;
+    // A governor checkpoint reaches this owner as several signed frames. A read
+    // between them hands out nothing and says the checkpoint is pending, so the
+    // reader asks again; a refusal would end an app's collaboration for good.
+    // It still refuses a device that may not read the record.
+    {
+        let joined = enrolled();
+        let member = member().verifying_key().to_bytes();
+        let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+        let governor_key = SigningKey::from_bytes(&[61; 32]);
+        let covered = edit_with(&joined.owner, joined.workspace, joined.now, "covered next");
+        joined.owner.commit_document(covered, joined.now).unwrap();
+        let mut remote = joined
+            .owner
+            .with_current(joined.workspace, |view| Ok(view.peer().clone()))
+            .unwrap();
+        let frames = remote
+            .publication_mut()
+            .durable_bootstrap_messages(&governor_key, joined.now, 600)
+            .unwrap();
+        let read = |reader| {
+            joined.owner.with_current(joined.workspace, |view| {
+                view.read_document(reader, APP, "", None, usize::MAX, joined.now)
+            })
+        };
+        let mut pending = 0;
+        for frame in frames {
+            joined
+                .owner
+                .receive(
+                    joined.workspace,
+                    TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                    frame,
+                    joined.now,
+                )
+                .unwrap();
+            match read(member) {
+                Ok(DocumentRead::Captured(_)) => {}
+                Ok(DocumentRead::CheckpointPending) => {
+                    pending += 1;
+                    assert!(
+                        read(stranger).is_err(),
+                        "a pending checkpoint is reported only to a reader of the record"
+                    );
+                }
+                Ok(DocumentRead::Unchanged(_) | DocumentRead::Changes(_)) => {
+                    panic!("no revision was offered")
+                }
+                Err(error) => panic!("a read between checkpoint frames was refused: {error}"),
+            }
+        }
+        assert!(
+            pending > 0,
+            "the checkpoint's frames leave the workspace between cuts"
+        );
+        let Ok(DocumentRead::Captured(document)) = read(member) else {
+            panic!("the completed checkpoint is read again");
+        };
+        let doc = AutoCommit::load(&document.bytes).unwrap();
+        assert_eq!(
+            doc.get(ROOT, "topic")
+                .unwrap()
+                .map(|(value, _)| value.to_string()),
+            Some("\"covered next\"".into())
+        );
+    }
+
+    phase an_unchanged_committed_read_does_not_capture_the_document;
+    {
+        let joined = enrolled();
+        let member = member().verifying_key().to_bytes();
+        let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+        let read = |reader, known| {
+            joined.owner.with_current(joined.workspace, |view| {
+                view.read_document(reader, APP, "", known, usize::MAX, joined.now)
+            })
+        };
+        crate::owner::document_read::reset_captures();
+        let Ok(DocumentRead::Captured(document)) = read(member, None) else {
+            panic!("the first read admits the document");
+        };
+        assert!(
+            crate::owner::document_read::captures() > 0,
+            "a first read captures the document so the counter can see a later skip"
+        );
+        let captures = crate::owner::document_read::captures();
+        assert!(matches!(
+            read(member, Some(document.revision)),
+            Ok(DocumentRead::Unchanged(revision)) if revision == document.revision
+        ));
+        assert_eq!(
+            crate::owner::document_read::captures(),
+            captures,
+            "an idle reread of the same revision must not capture the document"
+        );
+        assert!(
+            read(stranger, Some(document.revision)).is_err(),
+            "a device outside the workspace cannot reuse a revision it was never given"
+        );
+    }
 }
 
 #[test]
@@ -1099,43 +1237,6 @@ async fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
 }
 
 #[test]
-fn a_workspace_file_names_its_host_under_the_stored_key() {
-    let joined = enrolled();
-    let host = joined
-        .owner
-        .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
-        .unwrap();
-    drop(joined.owner);
-    let value = workspace_json(&joined.path, joined.workspace);
-    let stored = value.as_object().expect("a stored workspace");
-    assert!(
-        stored.contains_key("workspace_host"),
-        "the stored key names the workspace's host: {}",
-        serde_json::to_string_pretty(&value).unwrap()
-    );
-    let reopened = open_file(&joined.path).expect("the file this build wrote reads");
-    assert_eq!(
-        reopened
-            .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
-            .unwrap(),
-        host,
-        "the stored key names the workspace's host"
-    );
-}
-
-#[test]
-fn a_pending_enrollment_handle_names_its_workspace() {
-    let id = PendingEnrollmentId::new(WorkspaceId::parse(WORKSPACE).unwrap(), 7, [3; 32]);
-    let value = serde_json::to_value(&id).unwrap();
-    let object = value.as_object().expect("a handle object");
-    assert!(object.contains_key("workspace"));
-    assert_eq!(
-        serde_json::from_value::<PendingEnrollmentId>(value).unwrap(),
-        id
-    );
-}
-
-#[test]
 fn owner_files_hold_byte_fields_as_compact_base64() {
     let joined = enrolled();
     // The journals beside the files are binary.
@@ -1155,49 +1256,6 @@ fn owner_files_hold_byte_fields_as_compact_base64() {
     for field in ["peer", "invitation", "enrollment_intent"] {
         assert!(value[field].is_string(), "{field} is base64 text");
     }
-}
-
-#[test]
-fn retained_replay_reuses_exact_committed_publication() {
-    let joined = enrolled();
-    let governor = joined
-        .owner
-        .with_current(joined.workspace, |view| {
-            Ok(view.workspace_host().device_public_key)
-        })
-        .unwrap();
-    let message = joined.replay.clone();
-    let before = record_on_disk(&joined.path);
-    let generation = joined
-        .owner
-        .with_current(joined.workspace, |view| Ok(view.generation()))
-        .unwrap();
-    let report = joined
-        .owner
-        .receive(
-            joined.workspace,
-            TransportOrigin::RetainedRelayDelta(governor),
-            message,
-            joined.now,
-        )
-        .unwrap();
-    assert!(matches!(
-        report.primary(),
-        crate::InputDisposition::Duplicate(_)
-    ));
-    assert_eq!(
-        joined
-            .owner
-            .with_current(joined.workspace, |view| Ok(view.generation()))
-            .unwrap(),
-        generation,
-        "an unchanged authenticated replay must reuse the actual committed generation"
-    );
-    assert_eq!(
-        record_on_disk(&joined.path),
-        before,
-        "an unchanged authenticated replay must not rewrite durable owner state"
-    );
 }
 
 /// A reader that keeps a sealed record opened opens each write once: a read again opens nothing,
@@ -1344,44 +1402,3 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
 
 /// A change chunk that makes Automerge's decoder panic in the isolated worker.
 const CRASHING_CHANGE: &str = "856f4a83a9cba9c000ba020210a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a110b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2014707c716356b85249314a37e0cdff282bd05e090ed2b18595c18a1969a410cbf0701050305130623024006430456020e0106020a110613081527210e230f3403420d560f571080010d81010583010502007e010002017e7f027f0802027f010401800002017f02020002010407000607007f01000603017f0403067f0b000b02000001000a7d00070000017f0561667465720201637d056974656d73016d0374626c0301787f03726f7700037f046465657002007f0105007f0102007d010001720d76077c7b037e07007c02047d040a030102017c0502000605017f0002017d850118140300031402167d001602000000000000f83f05040102037270717e000104007f0203007f0103007c010001007c0a7f000103";
-
-/// A worker that crashed while installing the host's governance says nothing
-/// about the enrollment: nothing is installed, and the join stays where it is
-/// for the next attempt.
-#[test]
-fn a_worker_crash_while_installing_leaves_the_join_pending() {
-    let (intent, mut bootstrap, _, _, now) = raw_fixture();
-    bootstrap.governance_messages = vec![
-        postcard::to_stdvec(&NeighbourMsg::SyncResp {
-            changes: vec![hex::decode(CRASHING_CHANGE).unwrap()],
-            workspace: WORKSPACE.into(),
-        })
-        .unwrap(),
-    ];
-    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let path = directory.path().join("joined-workspaces.json");
-    let owner = open_file(&path).unwrap();
-    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
-    let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-    let enrollment = crate::owner::testing::finalize(intent, pending, bootstrap).unwrap();
-    let error = owner
-        .install(&enrollment, now)
-        .expect_err("the crashed worker fails this install");
-    assert!(
-        error.is_device_failure(),
-        "the crash is this device failing, not a refusal: {error:?}"
-    );
-    assert!(
-        owner.with_current(workspace, |_| Ok(())).is_err(),
-        "nothing was installed"
-    );
-    let held = owner
-        .pending_enrollment(workspace)
-        .unwrap()
-        .expect("the join stays pending");
-    assert_eq!(
-        held.status(),
-        crate::owner::PendingEnrollmentStatus::Active,
-        "the next attempt finds the same join"
-    );
-}

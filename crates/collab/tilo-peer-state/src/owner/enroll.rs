@@ -436,49 +436,53 @@ fn refused(message: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_a_host_that_holds_neither_challenge_nor_completion_ends_a_retained_proof() {
-        assert!(lapsed(join::JOIN_PROOF_LAPSED, "anything"));
-        assert!(
-            lapsed(403, "join challenge was not issued by this host"),
-            "a host from before the code says the same in words"
-        );
-        assert!(!lapsed(403, "invitation was cancelled"));
-        assert!(!lapsed(
-            403,
-            "join proof does not match authenticated transport endpoint"
-        ));
-        assert!(!lapsed(503, "join challenge was not issued by this host"));
-    }
+    tilo_test_env::scenario! {
+        fn a_retained_proof_follows_what_its_host_answers;
 
-    /// A device that the host admitted, but whose answer never reached it
-    /// (the laptop restarted mid-join), takes the workspace through the
-    /// membership exchange once the workspace moved on, rather than resending
-    /// its proof forever (the Lounge, 2026-10-20).
-    #[test]
-    fn a_host_that_admitted_the_proof_before_sends_the_device_to_its_membership() {
-        assert!(completed(join::JOIN_COMPLETED_REFRESH, "anything"));
-        assert!(
-            completed(
+        phase only_a_host_that_holds_neither_challenge_nor_completion_ends_a_retained_proof;
+        {
+            assert!(lapsed(join::JOIN_PROOF_LAPSED, "anything"));
+            assert!(
+                lapsed(403, "join challenge was not issued by this host"),
+                "a host from before the code says the same in words"
+            );
+            assert!(!lapsed(403, "invitation was cancelled"));
+            assert!(!lapsed(
                 403,
-                "join request ID already completed; refresh membership for the current workspace"
-            ),
-            "a host from before the code says the same in words"
-        );
-        assert!(!completed(403, "invitation was cancelled"));
-        assert!(!lapsed(join::JOIN_COMPLETED_REFRESH, "anything"));
-    }
+                "join proof does not match authenticated transport endpoint"
+            ));
+            assert!(!lapsed(503, "join challenge was not issued by this host"));
+        }
 
-    /// A host from before it answered a lapsed certificate with
-    /// [`join::JOIN_COMPLETED_REFRESH`] refuses it in words; the retained
-    /// proof then goes through the membership exchange with the renewal
-    /// instead of being resent every retry (the Lounge, 2026-10-23).
-    #[test]
-    fn a_host_that_refuses_the_proofs_expired_certificate_is_told_apart() {
-        assert!(expired(403, "device cert has expired"));
-        assert!(!expired(503, "device cert has expired"));
-        assert!(!expired(403, "device cert is not yet valid"));
-        assert!(!lapsed(403, "device cert has expired"));
-        assert!(!completed(403, "device cert has expired"));
+        phase a_host_that_admitted_the_proof_before_sends_the_device_to_its_membership;
+        // A device that the host admitted, but whose answer never reached it
+        // (the laptop restarted mid-join), takes the workspace through the
+        // membership exchange once the workspace moved on, rather than resending
+        // its proof forever (the Lounge, 2026-10-20).
+        {
+            assert!(completed(join::JOIN_COMPLETED_REFRESH, "anything"));
+            assert!(
+                completed(
+                    403,
+                    "join request ID already completed; refresh membership for the current workspace"
+                ),
+                "a host from before the code says the same in words"
+            );
+            assert!(!completed(403, "invitation was cancelled"));
+            assert!(!lapsed(join::JOIN_COMPLETED_REFRESH, "anything"));
+        }
+
+        phase a_host_that_refuses_the_proofs_expired_certificate_is_told_apart;
+        // A host from before it answered a lapsed certificate with
+        // [`join::JOIN_COMPLETED_REFRESH`] refuses it in words; the retained
+        // proof then goes through the membership exchange with the renewal
+        // instead of being resent every retry (the Lounge, 2026-10-23).
+        {
+            assert!(expired(403, "device cert has expired"));
+            assert!(!expired(503, "device cert has expired"));
+            assert!(!expired(403, "device cert is not yet valid"));
+            assert!(!lapsed(403, "device cert has expired"));
+            assert!(!completed(403, "device cert has expired"));
+        }
     }
 }

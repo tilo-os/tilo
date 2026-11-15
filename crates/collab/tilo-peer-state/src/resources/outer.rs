@@ -29,70 +29,75 @@ mod tests {
         }
     }
 
-    #[test]
-    fn outer_resources_refuse_announced_collection_before_element_decode() {
-        // Actual SyncResp discriminant followed by an oversized changes count,
-        // with no element bytes. Capacity must win over malformed element EOF.
-        let mut bytes = postcard::to_allocvec(&NeighbourMsg::SyncResp {
-            changes: vec![],
-            workspace: String::new(),
-        })
-        .unwrap();
-        bytes.truncate(1);
-        bytes.extend(postcard::to_allocvec(&4096usize).unwrap());
-        assert_eq!(
-            decode::<NeighbourMsg>(&bytes, limits(1024 * 1024, 16)),
-            Err(PeerResourceError::Capacity)
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn outer_resources_are_bounded_before_they_are_decoded;
 
-    #[test]
-    fn outer_resources_bound_owned_buffers_across_all_chunks() {
-        let message = NeighbourMsg::SyncResp {
-            changes: vec![vec![1; 2048], vec![2; 2048]],
-            workspace: "workspace".into(),
-        };
-        let bytes = postcard::to_allocvec(&message).unwrap();
-        let original = bytes.clone();
-        let one_chunk = NeighbourMsg::SyncResp {
-            changes: vec![vec![1; 2048]],
-            workspace: "workspace".into(),
-        };
-        assert_eq!(
-            decode::<NeighbourMsg>(
-                &postcard::to_allocvec(&one_chunk).unwrap(),
-                limits(14 * 1024, 4096)
-            )
-            .unwrap(),
-            one_chunk
-        );
-        assert_eq!(
-            decode::<NeighbourMsg>(&bytes, limits(14 * 1024, 4096)),
-            Err(PeerResourceError::Capacity)
-        );
-        assert_eq!(bytes, original);
-        assert_eq!(
-            decode::<NeighbourMsg>(&bytes, limits(1024 * 1024, 4096)).unwrap(),
-            message
-        );
-    }
+        phase outer_resources_refuse_announced_collection_before_element_decode;
+        {
+            // Actual SyncResp discriminant followed by an oversized changes count,
+            // with no element bytes. Capacity must win over malformed element EOF.
+            let mut bytes = postcard::to_allocvec(&NeighbourMsg::SyncResp {
+                changes: vec![],
+                workspace: String::new(),
+            })
+            .unwrap();
+            bytes.truncate(1);
+            bytes.extend(postcard::to_allocvec(&4096usize).unwrap());
+            assert_eq!(
+                decode::<NeighbourMsg>(&bytes, limits(1024 * 1024, 16)),
+                Err(PeerResourceError::Capacity)
+            );
+        }
 
-    #[test]
-    fn outer_resources_refuse_string_copy_and_preserve_valid_wire() {
-        let message = NeighbourMsg::SyncReq {
-            since: vec![],
-            workspace: "r".repeat(4096),
-            invite_id: None,
-            nonce: 0,
-        };
-        let bytes = postcard::to_allocvec(&message).unwrap();
-        assert_eq!(
-            decode::<NeighbourMsg>(&bytes, limits(1024, 4096)),
-            Err(PeerResourceError::Capacity)
-        );
-        assert_eq!(
-            decode::<NeighbourMsg>(&bytes, limits(1024 * 1024, 4096)).unwrap(),
-            message
-        );
+        phase outer_resources_bound_owned_buffers_across_all_chunks;
+        {
+            let message = NeighbourMsg::SyncResp {
+                changes: vec![vec![1; 2048], vec![2; 2048]],
+                workspace: "workspace".into(),
+            };
+            let bytes = postcard::to_allocvec(&message).unwrap();
+            let original = bytes.clone();
+            let one_chunk = NeighbourMsg::SyncResp {
+                changes: vec![vec![1; 2048]],
+                workspace: "workspace".into(),
+            };
+            assert_eq!(
+                decode::<NeighbourMsg>(
+                    &postcard::to_allocvec(&one_chunk).unwrap(),
+                    limits(14 * 1024, 4096)
+                )
+                .unwrap(),
+                one_chunk
+            );
+            assert_eq!(
+                decode::<NeighbourMsg>(&bytes, limits(14 * 1024, 4096)),
+                Err(PeerResourceError::Capacity)
+            );
+            assert_eq!(bytes, original);
+            assert_eq!(
+                decode::<NeighbourMsg>(&bytes, limits(1024 * 1024, 4096)).unwrap(),
+                message
+            );
+        }
+
+        phase outer_resources_refuse_string_copy_and_preserve_valid_wire;
+        {
+            let message = NeighbourMsg::SyncReq {
+                since: vec![],
+                workspace: "r".repeat(4096),
+                invite_id: None,
+                nonce: 0,
+            };
+            let bytes = postcard::to_allocvec(&message).unwrap();
+            assert_eq!(
+                decode::<NeighbourMsg>(&bytes, limits(1024, 4096)),
+                Err(PeerResourceError::Capacity)
+            );
+            assert_eq!(
+                decode::<NeighbourMsg>(&bytes, limits(1024 * 1024, 4096)).unwrap(),
+                message
+            );
+        }
     }
 }

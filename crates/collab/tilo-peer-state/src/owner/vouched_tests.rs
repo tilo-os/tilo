@@ -52,114 +52,118 @@ fn vouched() -> Vouched {
     }
 }
 
-#[test]
-fn a_workspace_its_host_vouches_for_admits_its_replay_and_reopens() {
-    let held = vouched();
-    let calls = |owner: &NativeWorkspaceOwner| {
-        owner
-            .with_current(held.workspace, |view| {
-                Ok(view
-                    .peer()
-                    .validated_media_policy()?
-                    .ok_or("missing admitted policy")?
-                    .calls
-                    .len())
-            })
-            .unwrap()
-    };
-    assert_eq!(calls(&held.owner), 1);
-    assert!(
-        held.owner
-            .with_current(held.workspace, |view| view
-                .enrollment_invitation()
-                .map(drop))
-            .is_err(),
-        "a vouched workspace has no enrollment of its own"
-    );
-    drop(held.owner);
-    let reopened = open_file(&held.path).unwrap();
-    assert_eq!(reopened.workspaces(), vec![held.workspace]);
-    assert_eq!(calls(&reopened), 1);
-}
+tilo_test_env::scenario! {
+    fn a_host_vouched_workspace_admits_only_its_own_members_answers;
 
-#[test]
-fn a_membership_answer_for_another_device_or_workspace_is_refused() {
-    let (_, bootstrap, _, _, now) = raw_fixture();
-    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let owner = open_file(&directory.path().join("joined-workspaces.json")).unwrap();
-    let workspace = bootstrap.workspace_id;
-    let stranger = crate::owner::testing::certificate(
-        &SigningKey::from_bytes(&[71; 32]),
-        &SigningKey::from_bytes(&[72; 32]),
-        "Stranger",
-    );
-    let answer = postcard::to_stdvec(&JoinTransportResponse::MembershipComplete(
-        bootstrap.clone(),
-    ))
-    .unwrap();
-    assert!(
-        owner
-            .install_vouched(workspace, &answer, &stranger, now)
-            .is_err()
-    );
-    assert!(
-        owner
-            .install_vouched(
-                WorkspaceId::from_u128(41),
-                &answer,
-                &bootstrap.device_cert,
-                now
-            )
-            .is_err()
-    );
-    let error = JoinTransportResponse::Error {
-        code: 403,
-        message: "no".into(),
-    };
-    assert!(
-        owner
-            .install_vouched(
-                workspace,
-                &postcard::to_stdvec(&error).unwrap(),
-                &bootstrap.device_cert,
-                now
-            )
-            .is_err()
-    );
-    assert!(owner.workspaces().is_empty());
-}
+    phase a_workspace_its_host_vouches_for_admits_its_replay_and_reopens;
+    {
+        let held = vouched();
+        let calls = |owner: &NativeWorkspaceOwner| {
+            owner
+                .with_current(held.workspace, |view| {
+                    Ok(view
+                        .peer()
+                        .validated_media_policy()?
+                        .ok_or("missing admitted policy")?
+                        .calls
+                        .len())
+                })
+                .unwrap()
+        };
+        assert_eq!(calls(&held.owner), 1);
+        assert!(
+            held.owner
+                .with_current(held.workspace, |view| view
+                    .enrollment_invitation()
+                    .map(drop))
+                .is_err(),
+            "a vouched workspace has no enrollment of its own"
+        );
+        drop(held.owner);
+        let reopened = open_file(&held.path).unwrap();
+        assert_eq!(reopened.workspaces(), vec![held.workspace]);
+        assert_eq!(calls(&reopened), 1);
+    }
 
-#[test]
-fn a_member_introduces_itself_and_an_unlisted_device_does_not() {
-    let held = vouched();
-    let hello = |cert: &tilo_user_identity::DeviceCert| NeighbourMsg::IdentityHello {
-        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-        cert: Box::new(cert.clone()),
-        revocations: Vec::new(),
-    };
-    let receive = |cert: &tilo_user_identity::DeviceCert| {
-        held.owner.receive(
-            held.workspace,
-            TransportOrigin::RelayDelta(cert.device_public_key),
-            hello(cert),
-            held.now,
-        )
-    };
-    let member = crate::owner::testing::certificate(
-        &SigningKey::from_bytes(&[64; 32]),
-        &crate::owner::testing::member_key(),
-        "Member",
-    );
-    receive(&member).unwrap();
-    let unlisted = crate::owner::testing::certificate(
-        &SigningKey::from_bytes(&[64; 32]),
-        &SigningKey::from_bytes(&[70; 32]),
-        "Second",
-    );
-    assert!(
-        receive(&unlisted).is_err(),
-        "the workspace's roster lists who it admits"
-    );
+    phase a_membership_answer_for_another_device_or_workspace_is_refused;
+    {
+        let (_, bootstrap, _, _, now) = raw_fixture();
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let owner = open_file(&directory.path().join("joined-workspaces.json")).unwrap();
+        let workspace = bootstrap.workspace_id;
+        let stranger = crate::owner::testing::certificate(
+            &SigningKey::from_bytes(&[71; 32]),
+            &SigningKey::from_bytes(&[72; 32]),
+            "Stranger",
+        );
+        let answer = postcard::to_stdvec(&JoinTransportResponse::MembershipComplete(
+            bootstrap.clone(),
+        ))
+        .unwrap();
+        assert!(
+            owner
+                .install_vouched(workspace, &answer, &stranger, now)
+                .is_err()
+        );
+        assert!(
+            owner
+                .install_vouched(
+                    WorkspaceId::from_u128(41),
+                    &answer,
+                    &bootstrap.device_cert,
+                    now
+                )
+                .is_err()
+        );
+        let error = JoinTransportResponse::Error {
+            code: 403,
+            message: "no".into(),
+        };
+        assert!(
+            owner
+                .install_vouched(
+                    workspace,
+                    &postcard::to_stdvec(&error).unwrap(),
+                    &bootstrap.device_cert,
+                    now
+                )
+                .is_err()
+        );
+        assert!(owner.workspaces().is_empty());
+    }
+
+    phase a_member_introduces_itself_and_an_unlisted_device_does_not;
+    {
+        let held = vouched();
+        let hello = |cert: &tilo_user_identity::DeviceCert| NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+            cert: Box::new(cert.clone()),
+            revocations: Vec::new(),
+        };
+        let receive = |cert: &tilo_user_identity::DeviceCert| {
+            held.owner.receive(
+                held.workspace,
+                TransportOrigin::RelayDelta(cert.device_public_key),
+                hello(cert),
+                held.now,
+            )
+        };
+        let member = crate::owner::testing::certificate(
+            &SigningKey::from_bytes(&[64; 32]),
+            &crate::owner::testing::member_key(),
+            "Member",
+        );
+        receive(&member).unwrap();
+        let unlisted = crate::owner::testing::certificate(
+            &SigningKey::from_bytes(&[64; 32]),
+            &SigningKey::from_bytes(&[70; 32]),
+            "Second",
+        );
+        assert!(
+            receive(&unlisted).is_err(),
+            "the workspace's roster lists who it admits"
+        );
+    }
 }
 
 /// A durable receipt is the workspace host's assertion: its generation counts the

@@ -192,29 +192,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_installation_id_is_a_lowercase_hyphenated_uuid() {
-        assert!(InstallationId::parse("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6").is_ok());
-        assert!(InstallationId::parse("6F1C2A8E-3B4D-4C5E-9F60-718293A4B5C6").is_err());
-        assert!(InstallationId::parse("6f1c2a8e3b4d4c5e9f60718293a4b5c6").is_err());
-        assert!(serde_json::from_str::<InstallationId>("\"bridge\"").is_err());
-    }
+    tilo_test_env::scenario! {
+        fn an_installation_is_a_validated_record_under_a_uuid;
 
-    #[test]
-    fn an_installation_round_trips_and_validates() {
-        let row = sample();
-        let back: Installation =
-            serde_json::from_slice(&serde_json::to_vec(&row).unwrap()).unwrap();
-        assert_eq!(back, row);
-        row.validate().unwrap();
-        let mut bad = sample();
-        bad.program = "not a hash".into();
-        assert!(bad.validate().is_err());
-        let mut nameless = sample();
-        nameless.name.clear();
-        assert!(nameless.validate().is_err());
-        let mut installer = sample();
-        installer.installed_by = "ada".into();
-        assert!(installer.validate().is_err());
+        phase an_installation_id_is_a_lowercase_hyphenated_uuid;
+        {
+            assert!(InstallationId::parse("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6").is_ok());
+            assert!(InstallationId::parse("6F1C2A8E-3B4D-4C5E-9F60-718293A4B5C6").is_err());
+            assert!(InstallationId::parse("6f1c2a8e3b4d4c5e9f60718293a4b5c6").is_err());
+            assert!(serde_json::from_str::<InstallationId>("\"bridge\"").is_err());
+        }
+
+        phase an_installation_round_trips_and_validates;
+        {
+            let row = sample();
+            let back: Installation =
+                serde_json::from_slice(&serde_json::to_vec(&row).unwrap()).unwrap();
+            assert_eq!(back, row);
+            row.validate().unwrap();
+            let mut bad = sample();
+            bad.program = "not a hash".into();
+            assert!(bad.validate().is_err());
+            let mut nameless = sample();
+            nameless.name.clear();
+            assert!(nameless.validate().is_err());
+            let mut installer = sample();
+            installer.installed_by = "ada".into();
+            assert!(installer.validate().is_err());
+        }
     }
 }

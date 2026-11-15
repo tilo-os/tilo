@@ -307,142 +307,146 @@ mod display_name_tests {
         }
     }
 
-    #[test]
-    fn bearer_redeemer_is_shown_by_the_name_they_chose() {
-        let guest = cert("  Gina Guest ");
-        assert_eq!(
-            member_display_name(&grant(None, Some("Guest Tester")), &guest),
-            "Gina Guest"
-        );
-        assert_eq!(
-            member_display_name(&grant(None, None), &guest),
-            "Gina Guest"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_person_is_shown_by_a_bounded_name_from_their_invitation;
 
-    #[test]
-    fn recipient_bound_invitation_keeps_the_issuers_name() {
-        assert_eq!(
-            member_display_name(&grant(Some([1; 32]), Some("Ada")), &cert("MacBook")),
-            "Ada"
-        );
-        assert_eq!(
-            member_display_name(&grant(Some([1; 32]), None), &cert("Ada's laptop")),
-            "Ada's laptop"
-        );
-    }
-
-    #[test]
-    fn unbounded_or_control_text_falls_back_and_never_widens_the_bound() {
-        let issued = grant(None, Some("Guest Tester"));
-        for label in [
-            String::new(),
-            "   ".to_owned(),
-            "x".repeat(129),
-            "界".repeat(43),
-            "Gina\nGuest".to_owned(),
-            "Gina\u{7}Guest".to_owned(),
-        ] {
-            let redeemer = cert(&label);
+        phase bearer_redeemer_is_shown_by_the_name_they_chose;
+        {
+            let guest = cert("  Gina Guest ");
             assert_eq!(
-                member_display_name(&issued, &redeemer),
-                "Guest Tester",
-                "{label:?}"
+                member_display_name(&grant(None, Some("Guest Tester")), &guest),
+                "Gina Guest"
+            );
+            assert_eq!(
+                member_display_name(&grant(None, None), &guest),
+                "Gina Guest"
             );
         }
-        let longest = cert(&"x".repeat(128));
-        assert_eq!(member_display_name(&issued, &longest), "x".repeat(128));
-        // 100 bytes of UTF-8 is a name, whatever it is written in.
-        for name in ["😀".repeat(25), "界".repeat(33), "x".repeat(100)] {
-            assert_eq!(member_display_name(&issued, &cert(&name)), name);
+
+        phase recipient_bound_invitation_keeps_the_issuers_name;
+        {
             assert_eq!(
-                member_display_name(&grant(Some([1; 32]), Some(&name)), &cert("MacBook")),
-                name
+                member_display_name(&grant(Some([1; 32]), Some("Ada")), &cert("MacBook")),
+                "Ada"
+            );
+            assert_eq!(
+                member_display_name(&grant(Some([1; 32]), None), &cert("Ada's laptop")),
+                "Ada's laptop"
             );
         }
-        let unnamed = cert("");
-        assert_eq!(
-            member_display_name(&grant(None, Some(&"y".repeat(200))), &unnamed),
-            "Guest"
-        );
-    }
 
-    #[test]
-    fn admitted_bearer_guest_is_listed_under_the_chosen_name() {
-        let (mut peer, authority_key, _, _, now) = crate::admission_tests::seeded();
-        let now_ns: u64 = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .try_into()
-            .unwrap();
-        let guest_root = SigningKey::from_bytes(&[51; 32]);
-        let guest_key = SigningKey::from_bytes(&[52; 32]);
-        let mut guest_cert = DeviceCert {
-            user_public_key: guest_root.verifying_key().to_bytes(),
-            device_public_key: guest_key.verifying_key().to_bytes(),
-            device_label: "Gina Guest".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut guest_cert, &guest_root).unwrap();
-        let signed = issue_invitation(
-            InviteGrant {
-                workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-                issuer: peer.owner_certificates()[0].clone(),
-                role: Role::Editor,
-                nonce: [53; 16],
-                recipient_user_public_key: None,
-                invitee_name: Some("Guest Tester".into()),
-                expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
-                transport: vec![],
-            },
-            &authority_key,
-        )
-        .unwrap();
-        let join = crate::join::decode_and_verify_invitation(
-            &signed,
-            None,
-            &RevocationList::new(),
-            now_ns,
-        )
-        .unwrap();
-        let challenge = JoinChallenge::new(
-            &join,
-            &guest_cert,
-            [54; 32],
-            [55; 32],
-            now_ns.checked_add(1_000_000_000).unwrap(),
-            now_ns,
-        )
-        .unwrap();
-        let proof = sign_join_proof(challenge.clone(), &guest_key).unwrap();
-        let redemption = verify_join_proof(
-            &proof,
-            &challenge,
-            &guest_cert,
-            &RevocationList::new(),
-            now_ns,
-        )
-        .unwrap();
-        assert!(
-            peer.governance_mut()
-                .admit_invited_member(&redemption, &authority_key, now)
+        phase unbounded_or_control_text_falls_back_and_never_widens_the_bound;
+        {
+            let issued = grant(None, Some("Guest Tester"));
+            for label in [
+                String::new(),
+                "   ".to_owned(),
+                "x".repeat(129),
+                "界".repeat(43),
+                "Gina\nGuest".to_owned(),
+                "Gina\u{7}Guest".to_owned(),
+            ] {
+                let redeemer = cert(&label);
+                assert_eq!(
+                    member_display_name(&issued, &redeemer),
+                    "Guest Tester",
+                    "{label:?}"
+                );
+            }
+            let longest = cert(&"x".repeat(128));
+            assert_eq!(member_display_name(&issued, &longest), "x".repeat(128));
+            // 100 bytes of UTF-8 is a name, whatever it is written in.
+            for name in ["😀".repeat(25), "界".repeat(33), "x".repeat(100)] {
+                assert_eq!(member_display_name(&issued, &cert(&name)), name);
+                assert_eq!(
+                    member_display_name(&grant(Some([1; 32]), Some(&name)), &cert("MacBook")),
+                    name
+                );
+            }
+            let unnamed = cert("");
+            assert_eq!(
+                member_display_name(&grant(None, Some(&"y".repeat(200))), &unnamed),
+                "Guest"
+            );
+        }
+
+        phase admitted_bearer_guest_is_listed_under_the_chosen_name;
+        {
+            let (mut peer, authority_key, _, _, now) = crate::admission_tests::seeded();
+            let now_ns: u64 = now
+                .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
-        );
-        let member = peer
-            .governance()
-            .governed_members(now)
-            .unwrap()
-            .members
-            .into_iter()
-            .find(|member| member.root() == Some(guest_cert.user_public_key))
-            .expect("admitted guest is a governed member");
-        assert_eq!(member.name, "Gina Guest");
-        assert_eq!(member.role, Some(Role::Editor));
+                .as_nanos()
+                .try_into()
+                .unwrap();
+            let guest_root = SigningKey::from_bytes(&[51; 32]);
+            let guest_key = SigningKey::from_bytes(&[52; 32]);
+            let mut guest_cert = DeviceCert {
+                user_public_key: guest_root.verifying_key().to_bytes(),
+                device_public_key: guest_key.verifying_key().to_bytes(),
+                device_label: "Gina Guest".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            sign_device_cert(&mut guest_cert, &guest_root).unwrap();
+            let signed = issue_invitation(
+                InviteGrant {
+                    workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
+                    issuer: peer.owner_certificates()[0].clone(),
+                    role: Role::Editor,
+                    nonce: [53; 16],
+                    recipient_user_public_key: None,
+                    invitee_name: Some("Guest Tester".into()),
+                    expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
+                    transport: vec![],
+                },
+                &authority_key,
+            )
+            .unwrap();
+            let join = crate::join::decode_and_verify_invitation(
+                &signed,
+                None,
+                &RevocationList::new(),
+                now_ns,
+            )
+            .unwrap();
+            let challenge = JoinChallenge::new(
+                &join,
+                &guest_cert,
+                [54; 32],
+                [55; 32],
+                now_ns.checked_add(1_000_000_000).unwrap(),
+                now_ns,
+            )
+            .unwrap();
+            let proof = sign_join_proof(challenge.clone(), &guest_key).unwrap();
+            let redemption = verify_join_proof(
+                &proof,
+                &challenge,
+                &guest_cert,
+                &RevocationList::new(),
+                now_ns,
+            )
+            .unwrap();
+            assert!(
+                peer.governance_mut()
+                    .admit_invited_member(&redemption, &authority_key, now)
+                    .unwrap()
+            );
+            let member = peer
+                .governance()
+                .governed_members(now)
+                .unwrap()
+                .members
+                .into_iter()
+                .find(|member| member.root() == Some(guest_cert.user_public_key))
+                .expect("admitted guest is a governed member");
+            assert_eq!(member.name, "Gina Guest");
+            assert_eq!(member.role, Some(Role::Editor));
+        }
     }
 }
 
@@ -525,138 +529,143 @@ mod retention_tests {
         crate::workspace::governance_of(Some(&crate::workspace::candidate(None, &changes).unwrap()))
     }
 
-    /// A device the workspace removed the person of is told apart from one it
-    /// never named: its host's links end at the removal and refuse it after.
-    #[test]
-    fn a_removed_members_device_is_told_apart() {
-        let (mut peer, authority, _, _, now) = crate::admission_tests::seeded();
-        let now_ns: u64 = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .try_into()
-            .unwrap();
-        let guest = device(&SigningKey::from_bytes(&[71; 32]), 72);
-        let stranger = device(&SigningKey::from_bytes(&[73; 32]), 74);
-        let owner = peer.owner_certificates()[0].device_public_key;
-        let admitted = redemption(&peer, &authority, 75, &guest, now_ns);
-        assert!(
-            peer.governance_mut()
-                .admit_invited_member(&admitted, &authority, now)
-                .unwrap()
-        );
-        let device = guest.1.device_public_key;
-        assert!(
-            !peer.governance().removed_device(device),
-            "a member's device"
-        );
-        assert!(
-            peer.governance_mut()
-                .remove_member(guest.1.user_public_key, &authority, now)
-                .unwrap()
-        );
-        assert!(
-            peer.governance().removed_device(device),
-            "a removed member's device"
-        );
-        assert!(
-            !peer.governance().removed_device(owner),
-            "the owner's device"
-        );
-        assert!(
-            !peer
-                .governance()
-                .removed_device(stranger.1.device_public_key),
-            "a device the workspace never named"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn removed_and_pruned_identities_stay_told_apart;
 
-    #[test]
-    fn identity_admissions_are_bounded_and_a_pruned_admission_cannot_readmit() {
-        let (mut peer, authority, _, _, now) = crate::admission_tests::seeded();
-        let now_ns: u64 = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .try_into()
-            .unwrap();
-        let root = SigningKey::from_bytes(&[61; 32]);
-        let guest = device(&root, 62);
-        let total = MAX_RETAINED_IDENTITY_ADMISSIONS + 3;
-        let redemptions: Vec<_> = (0..total)
-            .map(|n| {
-                let nonce = 100 + u8::try_from(n).unwrap();
-                redemption(&peer, &authority, nonce, &guest, now_ns)
-            })
-            .collect();
-        for redemption in &redemptions {
+        phase a_removed_members_device_is_told_apart;
+        // A device the workspace removed the person of is told apart from one it
+        // never named: its host's links end at the removal and refuse it after.
+        {
+            let (mut peer, authority, _, _, now) = crate::admission_tests::seeded();
+            let now_ns: u64 = now
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                .try_into()
+                .unwrap();
+            let guest = device(&SigningKey::from_bytes(&[71; 32]), 72);
+            let stranger = device(&SigningKey::from_bytes(&[73; 32]), 74);
+            let owner = peer.owner_certificates()[0].device_public_key;
+            let admitted = redemption(&peer, &authority, 75, &guest, now_ns);
             assert!(
                 peer.governance_mut()
-                    .admit_invited_member(redemption, &authority, now)
+                    .admit_invited_member(&admitted, &authority, now)
                     .unwrap()
             );
-        }
-        let invite = |r: &VerifiedRedemption| r.join().invite_id();
-        let governed = governance(&peer);
-        let row =
-            GovernedIdentity::decode(&governed.identities[&hex::encode(guest.1.device_public_key)])
-                .unwrap();
-        assert_eq!(
-            row.admission.as_ref().map(|r| r.invite_id),
-            Some(invite(&redemptions[0])),
-            "the first admission is kept as membership evidence"
-        );
-        assert_eq!(
-            row.admissions
-                .iter()
-                .map(|r| r.invite_id)
-                .collect::<Vec<_>>(),
-            redemptions[total - MAX_RETAINED_IDENTITY_ADMISSIONS..]
-                .iter()
-                .map(invite)
-                .collect::<Vec<_>>(),
-            "only the latest later receipts stay on the identity row, in order"
-        );
-        for redemption in &redemptions {
+            let device = guest.1.device_public_key;
             assert!(
-                governed
-                    .invitation_receipts
-                    .contains_key(&hex::encode(invite(redemption))),
-                "every receipt, pruned or not, stays in the per-invite ledger"
+                !peer.governance().removed_device(device),
+                "a member's device"
+            );
+            assert!(
+                peer.governance_mut()
+                    .remove_member(guest.1.user_public_key, &authority, now)
+                    .unwrap()
+            );
+            assert!(
+                peer.governance().removed_device(device),
+                "a removed member's device"
+            );
+            assert!(
+                !peer.governance().removed_device(owner),
+                "the owner's device"
+            );
+            assert!(
+                !peer
+                    .governance()
+                    .removed_device(stranger.1.device_public_key),
+                "a device the workspace never named"
             );
         }
 
-        let pruned = &redemptions[1];
-        assert!(
-            !row.admissions.iter().any(|r| r.invite_id == invite(pruned)),
-            "fixture: this receipt was pruned from the identity row"
-        );
-        assert!(
-            peer.governance_mut()
-                .remove_member(guest.1.user_public_key, &authority, now)
+        phase identity_admissions_are_bounded_and_a_pruned_admission_cannot_readmit;
+        {
+            let (mut peer, authority, _, _, now) = crate::admission_tests::seeded();
+            let now_ns: u64 = now
+                .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
-        );
-        assert!(peer.permissions(guest.1.device_public_key, now).is_err());
-        assert!(
-            !peer
-                .governance_mut()
-                .admit_invited_member(pruned, &authority, now)
-                .unwrap(),
-            "replaying a pruned redemption is already applied, not a new admission"
-        );
-        assert!(
-            peer.permissions(guest.1.device_public_key, now).is_err(),
-            "the removed member stays removed"
-        );
-        let other = device(&root, 63);
-        let replay = redemption(&peer, &authority, 101, &other, now_ns);
-        assert_eq!(replay.join().invite_id(), invite(pruned));
-        assert!(
-            peer.governance_mut()
-                .admit_invited_member(&replay, &authority, now)
-                .unwrap_err()
-                .contains("already redeemed"),
-            "a pruned invitation stays spent for every other device"
-        );
+                .as_nanos()
+                .try_into()
+                .unwrap();
+            let root = SigningKey::from_bytes(&[61; 32]);
+            let guest = device(&root, 62);
+            let total = MAX_RETAINED_IDENTITY_ADMISSIONS + 3;
+            let redemptions: Vec<_> = (0..total)
+                .map(|n| {
+                    let nonce = 100 + u8::try_from(n).unwrap();
+                    redemption(&peer, &authority, nonce, &guest, now_ns)
+                })
+                .collect();
+            for redemption in &redemptions {
+                assert!(
+                    peer.governance_mut()
+                        .admit_invited_member(redemption, &authority, now)
+                        .unwrap()
+                );
+            }
+            let invite = |r: &VerifiedRedemption| r.join().invite_id();
+            let governed = governance(&peer);
+            let row =
+                GovernedIdentity::decode(&governed.identities[&hex::encode(guest.1.device_public_key)])
+                    .unwrap();
+            assert_eq!(
+                row.admission.as_ref().map(|r| r.invite_id),
+                Some(invite(&redemptions[0])),
+                "the first admission is kept as membership evidence"
+            );
+            assert_eq!(
+                row.admissions
+                    .iter()
+                    .map(|r| r.invite_id)
+                    .collect::<Vec<_>>(),
+                redemptions[total - MAX_RETAINED_IDENTITY_ADMISSIONS..]
+                    .iter()
+                    .map(invite)
+                    .collect::<Vec<_>>(),
+                "only the latest later receipts stay on the identity row, in order"
+            );
+            for redemption in &redemptions {
+                assert!(
+                    governed
+                        .invitation_receipts
+                        .contains_key(&hex::encode(invite(redemption))),
+                    "every receipt, pruned or not, stays in the per-invite ledger"
+                );
+            }
+
+            let pruned = &redemptions[1];
+            assert!(
+                !row.admissions.iter().any(|r| r.invite_id == invite(pruned)),
+                "fixture: this receipt was pruned from the identity row"
+            );
+            assert!(
+                peer.governance_mut()
+                    .remove_member(guest.1.user_public_key, &authority, now)
+                    .unwrap()
+            );
+            assert!(peer.permissions(guest.1.device_public_key, now).is_err());
+            assert!(
+                !peer
+                    .governance_mut()
+                    .admit_invited_member(pruned, &authority, now)
+                    .unwrap(),
+                "replaying a pruned redemption is already applied, not a new admission"
+            );
+            assert!(
+                peer.permissions(guest.1.device_public_key, now).is_err(),
+                "the removed member stays removed"
+            );
+            let other = device(&root, 63);
+            let replay = redemption(&peer, &authority, 101, &other, now_ns);
+            assert_eq!(replay.join().invite_id(), invite(pruned));
+            assert!(
+                peer.governance_mut()
+                    .admit_invited_member(&replay, &authority, now)
+                    .unwrap_err()
+                    .contains("already redeemed"),
+                "a pruned invitation stays spent for every other device"
+            );
+        }
     }
 }
