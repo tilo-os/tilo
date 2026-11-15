@@ -49,6 +49,29 @@ class Workspaces:
             self.client._create_workspace(name, labels or {}, idempotency_key)
         )
 
+    def branch(
+        self,
+        source: Any,
+        name: str,
+        *,
+        labels: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+    ) -> Any:
+        """Branch `source`, a workspace of the person's own, into a new one
+        named `name`.
+
+        The branch starts with everything `source` holds, its records with
+        their history and its files, and goes on apart from it: nothing
+        merges back. Its chat, its members and each person's own places stay
+        behind; the person is the branch's only member. `source` is an id, a
+        name, a `Workspace` or what `create` answered. `labels` and
+        `idempotency_key` are as `create` takes them; the source's labels do
+        not come along.
+        """
+        return self.client.handoff(
+            self.client._branch_workspace(source, name, labels or {}, idempotency_key)
+        )
+
     def find(self, labels: Mapping[str, str]) -> Any:
         """The one workspace labelled with every one of `labels`, or `None`;
         `Refused("conflict")` when more than one is."""
@@ -308,6 +331,32 @@ class AsyncTilo:
         headers = {} if idempotency_key is None else {"idempotency-key": idempotency_key}
         answer = await endpoint.json(
             "POST", endpoint.path("workspaces"), json=body, headers=headers
+        )
+        self.catalog = None
+        return WorkspaceInfo.of(answer)
+
+    async def _branch_workspace(
+        self,
+        source: Any,
+        name: str,
+        labels: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+    ) -> WorkspaceInfo:
+        source_id = (
+            source.id
+            if isinstance(source, WorkspaceInfo)
+            else await self._workspace_id(source)
+        )
+        endpoint = self._endpoint()
+        body: dict[str, Any] = {"name": name}
+        if labels:
+            body["labels"] = dict(labels)
+        headers = {} if idempotency_key is None else {"idempotency-key": idempotency_key}
+        answer = await endpoint.json(
+            "POST",
+            endpoint.path("workspaces", source_id, "branches"),
+            json=body,
+            headers=headers,
         )
         self.catalog = None
         return WorkspaceInfo.of(answer)

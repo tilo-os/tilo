@@ -93,6 +93,19 @@ def test_a_sync_key_is_minted_and_listed(api):
         assert key.grant == "g-root"
 
 
+def test_a_sync_branch_answers_the_new_workspace(api):
+    with Tilo(key=api.key, url=URL, http=api.client(URL)) as tilo:
+        created = tilo.workspaces.create("Template")
+        branch = tilo.workspaces.branch(created, "Acme")
+        again = tilo.workspace("jane-doe").branch("jane-doe, second try")
+
+        assert branch.name == "Acme"
+        assert again.name == "jane-doe, second try"
+        assert api.asked("POST", "/branches")[0]["path"] == (
+            f"/v1/workspaces/{created.id}/branches"
+        )
+
+
 def test_a_sync_ask_waits_where_the_sync_client_runs(api):
     with Tilo(key=api.key, url=URL, http=api.client(URL)) as tilo:
         with pytest.raises(AskPending) as raised:

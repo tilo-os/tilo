@@ -327,6 +327,23 @@ class Workspace:
         endpoint = await self._endpoint()
         return WorkspaceExport.of(await endpoint.json("GET", endpoint.path("export")))
 
+    def branch(
+        self,
+        name: str,
+        *,
+        labels: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+    ) -> Any:
+        """Branch this workspace, one of your own, into a new one named
+        `name`: a `WorkspaceInfo`, as `tilo.workspaces.branch` answers it.
+
+        The branch starts with everything this one holds and goes on apart
+        from it; you are its only member.
+        """
+        return self.client.handoff(
+            self.client._branch_workspace(self, name, labels or {}, idempotency_key)
+        )
+
     def run(self, title: str) -> RunOpening:
         """Group the calls inside into one run: one undo step per app."""
         return RunOpening(self, title)

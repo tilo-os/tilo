@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from tilo import AskPending, AsyncTilo, Key, MintedKey, Refused, SignIn
+from tilo import AskPending, AsyncTilo, Key, MintedKey, Refused, SignIn, WorkspaceInfo
 
-from fake_api import INVITED_ID, WORKSPACE_ID, FakeApi
+from fake_api import INVITED_ID, OTHER_ID, WORKSPACE_ID, FakeApi
 
 URL = "https://api.test"
 
@@ -70,6 +70,57 @@ async def test_a_workspace_is_deleted_and_gone_from_the_listing(tilo, api):
 async def test_a_workspace_invited_into_is_not_deleted(tilo):
     with pytest.raises(Refused) as raised:
         await tilo.workspaces.delete(INVITED_ID)
+
+    assert raised.value.code == "not_found"
+
+
+async def test_a_workspace_is_branched_into_a_new_one_of_the_persons_own(tilo, api):
+    branch = await tilo.workspaces.branch(
+        "jane-doe",
+        "jane-doe, second try",
+        labels={"customer_id": "cus_8121"},
+        idempotency_key="cus_8121-retry",
+    )
+
+    assert isinstance(branch, WorkspaceInfo)
+    assert branch.name == "jane-doe, second try"
+    assert branch.role == "owner"
+    assert branch.labels == {"customer_id": "cus_8121"}
+    call = api.asked("POST", "/branches")[-1]
+    assert call["path"] == f"/v1/workspaces/{WORKSPACE_ID}/branches"
+    assert call["body"] == (
+        b'{"name": "jane-doe, second try", "labels": {"customer_id": "cus_8121"}}'
+    )
+    assert call["headers"]["idempotency-key"] == "cus_8121-retry"
+    listed = await tilo.workspaces.list()
+    assert branch.id in [workspace.id for workspace in listed]
+
+
+async def test_a_branch_asked_again_with_its_idempotency_key_is_the_same_branch(tilo, api):
+    created = await tilo.workspaces.create("Template")
+    first = await tilo.workspaces.branch(created, "Acme", idempotency_key="cus_acme")
+    again = await tilo.workspaces.branch(created, "Acme", idempotency_key="cus_acme")
+
+    assert again.id == first.id
+    assert api.ran["workspaces#branch"] == 1
+    assert api.asked("POST", "/branches")[-1]["path"] == (
+        f"/v1/workspaces/{created.id}/branches"
+    )
+
+
+async def test_a_workspace_branches_itself(tilo, api):
+    branch = await tilo.workspace("john-doe").branch("john-doe, audit")
+
+    assert branch.name == "john-doe, audit"
+    call = api.asked("POST", "/branches")[-1]
+    assert call["path"] == f"/v1/workspaces/{OTHER_ID}/branches"
+    assert call["body"] == b'{"name": "john-doe, audit"}'
+    assert call["headers"]["idempotency-key"]
+
+
+async def test_a_workspace_invited_into_is_not_branched(tilo):
+    with pytest.raises(Refused) as raised:
+        await tilo.workspaces.branch(INVITED_ID, "mine now")
 
     assert raised.value.code == "not_found"
 
@@ -179,5 +230,8 @@ async def test_a_key_for_one_workspace_lists_that_workspace_alone(api):
         with pytest.raises(Refused) as minting:
             await client.keys.mint(WORKSPACE_ID)
         assert minting.value.code == "beyond_scope"
+        with pytest.raises(Refused) as branching:
+            await client.workspaces.branch(WORKSPACE_ID, "Mallory")
+        assert branching.value.code == "not_permitted"
     finally:
         await client.aclose()

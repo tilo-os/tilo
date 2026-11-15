@@ -156,6 +156,8 @@ class FakeApi:
         self.polls_of_key = 0
         # How many times an action actually ran, by path.
         self.ran: dict[str, int] = {}
+        # The branches made, by the idempotency key each was asked with.
+        self.branches: dict[str, dict[str, Any]] = {}
 
     # -- what a test drives ----------------------------------------------
 
@@ -261,6 +263,8 @@ class FakeApi:
         workspace = unquote(workspace)
         if not after:
             return self.delete_workspace(workspace)
+        if after == "branches":
+            return self.branch_workspace(call, workspace)
         if workspace != WORKSPACE_ID and self.scope == "workspace":
             return self.refuse(403, "beyond_scope", "this key does not reach that workspace")
         if workspace not in [row["id"] for row in self.workspaces]:
@@ -335,6 +339,37 @@ class FakeApi:
         }
         self.workspaces.append(made)
         self.ran["workspaces#create"] = self.ran.get("workspaces#create", 0) + 1
+        return self.answer(201, made)
+
+    def branch_workspace(self, call: dict[str, Any], source: str) -> httpx.Response:
+        """A branch of `source`, one of the person's own; the same branch
+        again for an idempotency key already answered."""
+        asked = json.loads(call["body"] or b"{}")
+        if self.scope == "workspace":
+            return self.refuse(
+                403,
+                "not_permitted",
+                "this key reaches one workspace and no account",
+                ["account paths need a key reaching all your workspaces"],
+            )
+        if not any(row["id"] == source and row["role"] == "owner" for row in self.workspaces):
+            return self.refuse(
+                404, "not_found", "no such workspace of yours", ["GET /v1/workspaces names them"]
+            )
+        retried = self.branches.get(call["headers"].get("idempotency-key", ""))
+        if retried is not None:
+            return self.answer(201, retried)
+        made: dict[str, Any] = {
+            "id": f"bbbbbbbb-0000-0000-0000-{len(self.branches) + 1:012d}",
+            "name": asked.get("name", ""),
+            "host": "eu1",
+            "role": "owner",
+        }
+        if asked.get("labels"):
+            made["labels"] = asked["labels"]
+        self.workspaces.append(made)
+        self.branches[call["headers"].get("idempotency-key", "")] = made
+        self.ran["workspaces#branch"] = self.ran.get("workspaces#branch", 0) + 1
         return self.answer(201, made)
 
     def delete_workspace(self, workspace: str) -> httpx.Response:
