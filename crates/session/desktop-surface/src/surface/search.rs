@@ -1566,41 +1566,45 @@ mod tests {
         Modifiers::from(state)
     }
 
-    #[test]
-    fn the_chord_shown_is_the_one_that_opens_search() {
-        let linux = ui::platform::PlatformConventions::new(ui::platform::Platform::Linux);
-        let mac = ui::platform::PlatformConventions::new(ui::platform::Platform::MacOs);
-        let k = press(Key::Character("k".into()));
-        assert_eq!(search_chord_keys(mac), ["⌘", "K"]);
-        assert!(is_search_chord(&k, mods(ModifiersState::SUPER), mac));
-        let shown = search_chord_keys(linux);
-        assert_eq!(shown.len(), 2);
-        assert_eq!(shown[1], "K");
-        assert_eq!(shown[0], ui::keycaps::active().chord_keys(["Ctrl"], "k")[0]);
-        assert!(is_search_chord(&k, mods(ModifiersState::CONTROL), linux));
-    }
+    tilo_test_env::scenario! {
+        fn the_search_chord_is_the_native_shells_and_is_shown_as_pressed;
 
-    #[test]
-    fn search_chords_match_the_native_shell() {
-        let linux = ui::platform::PlatformConventions::new(ui::platform::Platform::Linux);
-        let mac = ui::platform::PlatformConventions::new(ui::platform::Platform::MacOs);
-        let k = press(Key::Character("k".into()));
-        let space = press(Key::Named(NamedKey::Space));
-        assert!(is_search_chord(&k, mods(ModifiersState::SUPER), linux));
-        assert!(is_search_chord(&k, mods(ModifiersState::SUPER), mac));
-        assert!(is_search_chord(&k, mods(ModifiersState::CONTROL), linux));
-        assert!(!is_search_chord(&k, mods(ModifiersState::CONTROL), mac));
-        assert!(is_search_chord(&space, mods(ModifiersState::SUPER), linux));
-        assert!(!is_search_chord(
-            &space,
-            mods(ModifiersState::CONTROL),
-            linux
-        ));
-        assert!(!is_search_chord(
-            &k,
-            mods(ModifiersState::SUPER | ModifiersState::SHIFT),
-            linux
-        ));
-        assert!(!is_search_chord(&k, mods(ModifiersState::empty()), linux));
+        phase the_chord_shown_is_the_one_that_opens_search;
+        {
+            let linux = ui::platform::PlatformConventions::new(ui::platform::Platform::Linux);
+            let mac = ui::platform::PlatformConventions::new(ui::platform::Platform::MacOs);
+            let k = press(Key::Character("k".into()));
+            assert_eq!(search_chord_keys(mac), ["⌘", "K"]);
+            assert!(is_search_chord(&k, mods(ModifiersState::SUPER), mac));
+            let shown = search_chord_keys(linux);
+            assert_eq!(shown.len(), 2);
+            assert_eq!(shown[1], "K");
+            assert_eq!(shown[0], ui::keycaps::active().chord_keys(["Ctrl"], "k")[0]);
+            assert!(is_search_chord(&k, mods(ModifiersState::CONTROL), linux));
+        }
+
+        phase search_chords_match_the_native_shell;
+        {
+            let linux = ui::platform::PlatformConventions::new(ui::platform::Platform::Linux);
+            let mac = ui::platform::PlatformConventions::new(ui::platform::Platform::MacOs);
+            let k = press(Key::Character("k".into()));
+            let space = press(Key::Named(NamedKey::Space));
+            assert!(is_search_chord(&k, mods(ModifiersState::SUPER), linux));
+            assert!(is_search_chord(&k, mods(ModifiersState::SUPER), mac));
+            assert!(is_search_chord(&k, mods(ModifiersState::CONTROL), linux));
+            assert!(!is_search_chord(&k, mods(ModifiersState::CONTROL), mac));
+            assert!(is_search_chord(&space, mods(ModifiersState::SUPER), linux));
+            assert!(!is_search_chord(
+                &space,
+                mods(ModifiersState::CONTROL),
+                linux
+            ));
+            assert!(!is_search_chord(
+                &k,
+                mods(ModifiersState::SUPER | ModifiersState::SHIFT),
+                linux
+            ));
+            assert!(!is_search_chord(&k, mods(ModifiersState::empty()), linux));
+        }
     }
 }

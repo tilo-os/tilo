@@ -2585,608 +2585,625 @@ mod tests {
         CenterLayout::new(Rect::new(0.0, 0.0, 360.0, 560.0), (12.0, 14.0))
     }
 
-    #[test]
-    fn keyboard_walks_folds_and_dismisses_rows() {
-        let host = TestHost::default();
-        for n in [
-            from_app("mail", "m1"),
-            from_app("mail", "m2"),
-            Notification::new("sys", ""),
-        ] {
-            host.log.borrow_mut().retain(n);
+    tilo_test_env::scenario! {
+        fn the_centre_is_walked_cleared_and_undone_by_keyboard_and_pointer;
+
+        phase keyboard_walks_folds_and_dismisses_rows;
+        {
+            let host = TestHost::default();
+            for n in [
+                from_app("mail", "m1"),
+                from_app("mail", "m2"),
+                Notification::new("sys", ""),
+            ] {
+                host.log.borrow_mut().retain(n);
+            }
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            let down = Key::Named(NamedKey::ArrowDown);
+            assert_eq!(center.key(&host, &layout, &down), CenterOutcome::Handled);
+            assert_eq!(
+                center.selected,
+                Some(RowIdentity::Item(host.log().history()[2].id))
+            );
+            center.key(&host, &layout, &down);
+            assert!(matches!(center.selected, Some(RowIdentity::Group(_))));
+            // Left folds the expanded group; its members leave the rows.
+            center.key(&host, &layout, &Key::Named(NamedKey::ArrowLeft));
+            assert_eq!(center.rows(&host).len(), 2);
+            center.key(&host, &layout, &Key::Named(NamedKey::Delete));
+            assert_eq!(host.log().history().len(), 1);
+            assert_eq!(host.log().history()[0].title, "sys");
         }
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        let down = Key::Named(NamedKey::ArrowDown);
-        assert_eq!(center.key(&host, &layout, &down), CenterOutcome::Handled);
-        assert_eq!(
-            center.selected,
-            Some(RowIdentity::Item(host.log().history()[2].id))
-        );
-        center.key(&host, &layout, &down);
-        assert!(matches!(center.selected, Some(RowIdentity::Group(_))));
-        // Left folds the expanded group; its members leave the rows.
-        center.key(&host, &layout, &Key::Named(NamedKey::ArrowLeft));
-        assert_eq!(center.rows(&host).len(), 2);
-        center.key(&host, &layout, &Key::Named(NamedKey::Delete));
-        assert_eq!(host.log().history().len(), 1);
-        assert_eq!(host.log().history()[0].title, "sys");
+
+        phase clear_all_is_undoable_from_the_keyboard_and_pointer;
+        {
+            let host = TestHost::default();
+            host.log.borrow_mut().retain(Notification::new("one", ""));
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            let clear = layout.clear().center();
+            assert_eq!(center.click(&host, &layout, clear), CenterOutcome::Handled);
+            assert!(host.log().history().is_empty());
+            assert!(host.log().can_undo_clear());
+            let enter = Key::Named(NamedKey::Enter);
+            assert_eq!(center.key(&host, &layout, &enter), CenterOutcome::Handled);
+            assert_eq!(host.log().history().len(), 1);
+            assert_eq!(
+                center.click(&host, &layout, layout.back().center()),
+                CenterOutcome::Back
+            );
+        }
+
+        phase resize_and_large_text_keep_the_focused_dismiss_action_visible;
+        {
+            let host = TestHost::default();
+            for index in 0..10 {
+                host.log
+                    .borrow_mut()
+                    .retain(Notification::new(format!("notice {index}"), "body"));
+            }
+            let mut center = NotificationCenter::new();
+            assert!(center.focus_accessibility_path(&host, &layout(), &[0, 6, 0]));
+            let selected = center.selected.clone();
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut text = TextRenderer::new();
+            let panel = Rect::new(0.0, 0.0, 560.0, 300.0);
+            let layout = CenterLayout::new(panel, CenterLayout::metrics(&theme, &mut text));
+            center.draw(
+                &host,
+                &layout,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                None,
+            );
+            assert_eq!(center.selected, selected);
+            assert_eq!(center.row_control, Some(RowControl::Dismiss));
+            assert!(center.first_visible_row() > 0);
+            let dialog = center.accessibility(&host, &layout, ui::time::now());
+            let dismiss = &dialog.children[0].children[0].children[0];
+            let bounds = dismiss.bounds.map(ui::a11y::AccessBounds::to_rect).unwrap();
+            assert!(bounds.y0 >= panel.y0 && bounds.y1 <= panel.y1);
+            assert!(bounds.height() >= ButtonFace::height(ControlSize::Regular, &theme));
+            assert_eq!(
+                center.key(&host, &layout, &Key::Named(NamedKey::Delete)),
+                CenterOutcome::Handled
+            );
+            assert_eq!(host.log().history().len(), 9);
+        }
+
+        phase pointer_group_activation_releases_clear_all_focus;
+        {
+            let host = TestHost::default();
+            host.log.borrow_mut().retain(from_app("mail", "one"));
+            host.log.borrow_mut().retain(from_app("mail", "two"));
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            assert!(center.focus_accessibility_path(&host, &layout, &[1]));
+            assert_eq!(center.action_focus, Some(ActionFocus::Clear));
+            // Fold the group with the pointer after focusing Clear all. Enter must not invoke that old
+            // header focus and erase the history.
+            let rows = center.rows(&host);
+            let shapes = NotificationCenter::shapes(&host, &layout, &rows);
+            center.click(&host, &layout, layout.row_in(0, &shapes).center());
+            assert_eq!(center.action_focus, None);
+            assert_eq!(center.rows(&host).len(), 1);
+            assert_eq!(
+                center.key(&host, &layout, &Key::Named(NamedKey::Enter)),
+                CenterOutcome::Handled
+            );
+            assert_eq!(center.rows(&host).len(), 3);
+            assert_eq!(host.log().history().len(), 2);
+        }
+
+        phase escape_leaves_clear_undo_available_and_repeated_clear_restores_history;
+        {
+            let host = TestHost::default();
+            host.log.borrow_mut().retain(Notification::new("one", ""));
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            for _ in 0..2 {
+                center.click(&host, &layout, layout.clear().center());
+                assert!(host.log().history().is_empty());
+                assert_eq!(center.action_focus, Some(ActionFocus::Undo));
+                assert_eq!(
+                    center.key(&host, &layout, &Key::Named(NamedKey::Escape)),
+                    CenterOutcome::Back
+                );
+                assert!(host.log().can_undo_clear());
+                let dialog = center.accessibility(&host, &layout, ui::time::now());
+                assert_eq!(
+                    dialog.children[2]
+                        .bounds
+                        .map(ui::a11y::AccessBounds::to_rect),
+                    Some(layout.undo())
+                );
+                center.click(&host, &layout, layout.undo().center());
+                assert_eq!(host.log().history().len(), 1);
+                assert_eq!(center.action_focus, None);
+                assert_eq!(center.row_control, None);
+            }
+        }
     }
 
-    #[test]
-    fn clear_all_is_undoable_from_the_keyboard_and_pointer() {
-        let host = TestHost::default();
-        host.log.borrow_mut().retain(Notification::new("one", ""));
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        let clear = layout.clear().center();
-        assert_eq!(center.click(&host, &layout, clear), CenterOutcome::Handled);
-        assert!(host.log().history().is_empty());
-        assert!(host.log().can_undo_clear());
-        let enter = Key::Named(NamedKey::Enter);
-        assert_eq!(center.key(&host, &layout, &enter), CenterOutcome::Handled);
-        assert_eq!(host.log().history().len(), 1);
-        assert_eq!(
-            center.click(&host, &layout, layout.back().center()),
-            CenterOutcome::Back
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_centre_row_opens_scrolls_and_offers_its_own_actions;
 
-    #[test]
-    fn resize_and_large_text_keep_the_focused_dismiss_action_visible() {
-        let host = TestHost::default();
-        for index in 0..10 {
+        phase opening_a_retained_notification_without_a_sender_opens_its_app;
+        {
+            let host = TestHost::default();
+            host.log.borrow_mut().retain(from_app("mail", "m1"));
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            let outcome = center.click(&host, &layout, layout.row(0).center());
+            assert_eq!(
+                outcome,
+                CenterOutcome::OpenApp {
+                    app_id: "mail".into(),
+                    label: "MAIL".into()
+                }
+            );
+            assert!(host.log().history().is_empty());
+        }
+
+        phase accessibility_rows_match_the_painted_rows_and_focus_by_path;
+        {
+            let host = TestHost::default();
             host.log
                 .borrow_mut()
-                .retain(Notification::new(format!("notice {index}"), "body"));
+                .retain(Notification::new("one", "body"));
+            host.log.borrow_mut().retain(Notification::new("two", ""));
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            let dialog = center.accessibility(&host, &layout, ui::time::now());
+            assert_eq!(dialog.role, Role::Dialog);
+            let list = &dialog.children[0];
+            assert_eq!(list.children.len(), 2);
+            assert_eq!(list.children[0].name.as_deref(), Some("two"));
+            assert_eq!(
+                center.accessibility_rect_for_path(&host, &layout, &[0, 1]),
+                Some(layout.row_in(1, &[RowShape::new(0)]))
+            );
+            assert!(center.focus_accessibility_path(&host, &layout, &[0, 1, 0]));
+            assert_eq!(center.row_control, Some(RowControl::Dismiss));
+            assert!(center.focus_accessibility_path(&host, &layout, &[1]));
+            assert_eq!(center.action_focus, Some(ActionFocus::Clear));
         }
-        let mut center = NotificationCenter::new();
-        assert!(center.focus_accessibility_path(&host, &layout(), &[0, 6, 0]));
-        let selected = center.selected.clone();
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut text = TextRenderer::new();
-        let panel = Rect::new(0.0, 0.0, 560.0, 300.0);
-        let layout = CenterLayout::new(panel, CenterLayout::metrics(&theme, &mut text));
-        center.draw(
-            &host,
-            &layout,
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            None,
-        );
-        assert_eq!(center.selected, selected);
-        assert_eq!(center.row_control, Some(RowControl::Dismiss));
-        assert!(center.first_visible_row() > 0);
-        let dialog = center.accessibility(&host, &layout, ui::time::now());
-        let dismiss = &dialog.children[0].children[0].children[0];
-        let bounds = dismiss.bounds.map(ui::a11y::AccessBounds::to_rect).unwrap();
-        assert!(bounds.y0 >= panel.y0 && bounds.y1 <= panel.y1);
-        assert!(bounds.height() >= ButtonFace::height(ControlSize::Regular, &theme));
-        assert_eq!(
-            center.key(&host, &layout, &Key::Named(NamedKey::Delete)),
-            CenterOutcome::Handled
-        );
-        assert_eq!(host.log().history().len(), 9);
+
+        phase a_history_that_overflows_scrolls_by_rows;
+        {
+            let host = TestHost::default();
+            for i in 0..20 {
+                host.log
+                    .borrow_mut()
+                    .retain(Notification::new(format!("n{i}"), ""));
+            }
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            let visible = center.visible_rows(&host, &layout);
+            assert!(visible < 20);
+            center.wheel(&host, &layout, MouseScrollDelta::LineDelta(0.0, -2.0), 1.0);
+            assert_eq!(center.start, 2);
+            center.key(&host, &layout, &Key::Named(NamedKey::End));
+            assert_eq!(center.start, 20 - visible);
+        }
+
+        phase a_group_header_and_its_rows_never_repeat_the_source;
+        {
+            let host = TestHost::default();
+            host.log.borrow_mut().retain(from_app("mail", "one"));
+            host.log.borrow_mut().retain(from_app("mail", "two"));
+            host.log
+                .borrow_mut()
+                .retain(Notification::new("Build finished", ""));
+            let layout = layout();
+            let rows = NotificationCenter::new().rows(&host);
+            let shapes = NotificationCenter::shapes(&host, &layout, &rows);
+            let grouped = rows
+                .iter()
+                .zip(&shapes)
+                .filter(|(row, _)| matches!(row, HistoryRow::Item { grouped: true, .. }))
+                .count();
+            assert!(grouped > 0, "the app's members sit under its header");
+            for (row, shape) in rows.iter().zip(&shapes) {
+                // Only a standalone row names its sender above the title: a header names it once, and
+                // its members sit under that name.
+                assert_eq!(
+                    shape.has_source(),
+                    !matches!(
+                        row,
+                        HistoryRow::Group { .. } | HistoryRow::Item { grouped: true, .. }
+                    ),
+                );
+                assert_eq!(
+                    shape.is_grouped(),
+                    matches!(row, HistoryRow::Item { grouped: true, .. })
+                );
+            }
+            let ungrouped = layout.row_extent(&RowShape::default());
+            let member = layout.row_extent(&RowShape::default().grouped());
+            assert_eq!(member, ungrouped - layout.caption_lh, "one line less");
+            let header = layout.row_extent(&RowShape::new(1).without_source());
+            assert_eq!(
+                header,
+                ungrouped - 2.0 * layout.caption_lh,
+                "the header trades its source line for one fold preview line"
+            );
+        }
+
+        phase a_row_opens_where_it_leads_and_only_reads_when_there_is_nowhere;
+        {
+            let host = TestHost::default();
+            host.log.borrow_mut().retain(Notification::new(
+                "Couldn't open Notes",
+                "The app stopped before opening. Try again. Your document is safe.",
+            ));
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            assert!(
+                !center
+                    .semantic_rects(&host, &layout, "")
+                    .iter()
+                    .any(|(name, _)| name.contains("read")),
+                "the row itself is the way in"
+            );
+            assert_eq!(
+                center.click(&host, &layout, layout.row(0).center()),
+                CenterOutcome::Handled
+            );
+            assert!(center.is_reading());
+            assert!(
+                !center.reader.as_ref().unwrap().focus_visible(),
+                "a page the pointer opened draws no focus ring"
+            );
+            assert_eq!(center.selected, None);
+            center.key(&host, &layout, &Key::Named(NamedKey::Tab));
+            assert!(center.reader.as_ref().unwrap().focus_visible());
+        }
+
+        phase a_rows_own_actions_are_shown_reachable_and_invoked_through_the_host;
+        {
+            let host = TestHost::default();
+            host.actions.replace(vec![
+                ("not-now".into(), "Not now".into()),
+                ("keep".into(), "Keep with passkey".into()),
+            ]);
+            let ask = Notification::new("Keep this identity?", "A passkey brings you back.");
+            let id = ask.id;
+            host.log.borrow_mut().retain(ask);
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            let row = layout.row_in(
+                0,
+                &[RowShape::default().with_choices(&[f64::INFINITY, f64::INFINITY])],
+            );
+            assert!(
+                row.height() > layout.row_h(),
+                "the actions get their own band"
+            );
+            let plain = CenterLayout::preferred_height(1, layout.actions.clone());
+            assert!(
+                (center.preferred_height(&host, layout.actions.clone())
+                    - plain
+                    - (row.height() - layout.row_h()))
+                .abs()
+                    < 1e-6
+            );
+            let targets = center.semantic_rects(&host, &layout, "");
+            let keep = targets
+                .iter()
+                .find(|(name, _)| name == "notification_action[0][1]")
+                .expect("the primary action is a target")
+                .1;
+            assert!(row.contains(keep.center()));
+            let dialog = center.accessibility(&host, &layout, ui::time::now());
+            let names: Vec<_> = dialog.children[0].children[0]
+                .children
+                .iter()
+                .filter_map(|node| node.name.clone())
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    t("notification-center-dismiss"),
+                    "Not now".to_string(),
+                    "Keep with passkey".to_string()
+                ]
+            );
+            let tab = Key::Named(NamedKey::Tab);
+            for expected in [
+                None,
+                Some(RowControl::Dismiss),
+                Some(RowControl::Action(0)),
+                Some(RowControl::Action(1)),
+            ] {
+                center.key(&host, &layout, &tab);
+                assert_eq!(center.row_control, expected);
+            }
+            center.key(&host, &layout, &Key::Named(NamedKey::Enter));
+            assert_eq!(*host.invoked.borrow(), [(id, "keep".to_string())]);
+            center.click(&host, &layout, keep.center());
+            assert_eq!(host.invoked.borrow().len(), 2);
+            assert!(
+                !center.is_reading(),
+                "an action is not the row's activation"
+            );
+        }
+
+        phase row_control_tab_order_reverses_and_moves_between_notifications;
+        {
+            let host = TestHost::default();
+            for title in ["first", "second"] {
+                host.log
+                    .borrow_mut()
+                    .retain(Notification::new(title, "body"));
+            }
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            let tab = Key::Named(NamedKey::Tab);
+            center.key_with_shift(&host, &layout, &tab, false);
+            let selected = center.selected.clone();
+            assert_eq!(center.row_control, None);
+            center.key_with_shift(&host, &layout, &tab, false);
+            assert_eq!(center.row_control, Some(RowControl::Dismiss));
+            center.key_with_shift(&host, &layout, &tab, true);
+            assert_eq!(center.row_control, None);
+            assert_eq!(center.selected, selected);
+            center.key_with_shift(&host, &layout, &tab, true);
+            assert_eq!(center.row_control, Some(RowControl::Dismiss));
+            assert_ne!(center.selected, selected);
+            center.key_with_shift(&host, &layout, &tab, false);
+            assert_eq!(center.row_control, None);
+            assert_eq!(center.selected, selected);
+            center.key(&host, &layout, &Key::Named(NamedKey::Enter));
+            assert!(center.is_reading());
+        }
     }
 
-    #[test]
-    fn pointer_group_activation_releases_clear_all_focus() {
-        let host = TestHost::default();
-        host.log.borrow_mut().retain(from_app("mail", "one"));
-        host.log.borrow_mut().retain(from_app("mail", "two"));
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        assert!(center.focus_accessibility_path(&host, &layout, &[1]));
-        assert_eq!(center.action_focus, Some(ActionFocus::Clear));
-        // Fold the group with the pointer after focusing Clear all. Enter must not invoke that old
-        // header focus and erase the history.
-        let rows = center.rows(&host);
-        let shapes = NotificationCenter::shapes(&host, &layout, &rows);
-        center.click(&host, &layout, layout.row_in(0, &shapes).center());
-        assert_eq!(center.action_focus, None);
-        assert_eq!(center.rows(&host).len(), 1);
-        assert_eq!(
-            center.key(&host, &layout, &Key::Named(NamedKey::Enter)),
-            CenterOutcome::Handled
-        );
-        assert_eq!(center.rows(&host).len(), 3);
-        assert_eq!(host.log().history().len(), 2);
-    }
+    tilo_test_env::scenario! {
+        fn reading_a_notification_in_the_centre_changes_nothing;
 
-    #[test]
-    fn escape_leaves_clear_undo_available_and_repeated_clear_restores_history() {
-        let host = TestHost::default();
-        host.log.borrow_mut().retain(Notification::new("one", ""));
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        for _ in 0..2 {
-            center.click(&host, &layout, layout.clear().center());
-            assert!(host.log().history().is_empty());
-            assert_eq!(center.action_focus, Some(ActionFocus::Undo));
+        phase reading_preserves_text_identity_and_never_invokes_or_dismisses;
+        {
+            let host = TestHost::default();
+            let body = "The app stopped before opening. Try again. Your document is safe.";
+            host.log
+                .borrow_mut()
+                .retain(Notification::new("Couldn't open Notes", body));
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            center.key(&host, &layout, &Key::Named(NamedKey::ArrowDown));
+            center.key(&host, &layout, &Key::Named(NamedKey::Enter));
+            assert!(center.is_reading());
+            assert!(center.reader.as_ref().unwrap().focus_visible());
+            let tree = center.accessibility(&host, &layout, ui::time::now());
+            assert_eq!(tree.children[1].description.as_deref(), Some(body));
+            assert!(tree.children[1].state.focused);
+            for key in [NamedKey::Enter, NamedKey::Space, NamedKey::Delete] {
+                assert_eq!(
+                    center.key(&host, &layout, &Key::Named(key)),
+                    CenterOutcome::Handled
+                );
+                assert!(center.is_reading());
+                assert_eq!(host.log().history().len(), 1);
+            }
+            assert_eq!(
+                center.key(&host, &layout, &Key::Named(NamedKey::Escape)),
+                CenterOutcome::Handled
+            );
+            assert!(!center.is_reading());
+            assert!(center.selected.is_some(), "focus returns to the row");
+            assert_eq!(center.row_control, None);
             assert_eq!(
                 center.key(&host, &layout, &Key::Named(NamedKey::Escape)),
                 CenterOutcome::Back
             );
-            assert!(host.log().can_undo_clear());
-            let dialog = center.accessibility(&host, &layout, ui::time::now());
+            center.key(&host, &layout, &Key::Named(NamedKey::Enter));
+            assert!(center.is_reading());
+            assert!(center.focus_accessibility_path(&host, &layout, &[0]));
             assert_eq!(
-                dialog.children[2]
-                    .bounds
-                    .map(ui::a11y::AccessBounds::to_rect),
-                Some(layout.undo())
-            );
-            center.click(&host, &layout, layout.undo().center());
-            assert_eq!(host.log().history().len(), 1);
-            assert_eq!(center.action_focus, None);
-            assert_eq!(center.row_control, None);
-        }
-    }
-
-    #[test]
-    fn opening_a_retained_notification_without_a_sender_opens_its_app() {
-        let host = TestHost::default();
-        host.log.borrow_mut().retain(from_app("mail", "m1"));
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        let outcome = center.click(&host, &layout, layout.row(0).center());
-        assert_eq!(
-            outcome,
-            CenterOutcome::OpenApp {
-                app_id: "mail".into(),
-                label: "MAIL".into()
-            }
-        );
-        assert!(host.log().history().is_empty());
-    }
-
-    #[test]
-    fn accessibility_rows_match_the_painted_rows_and_focus_by_path() {
-        let host = TestHost::default();
-        host.log
-            .borrow_mut()
-            .retain(Notification::new("one", "body"));
-        host.log.borrow_mut().retain(Notification::new("two", ""));
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        let dialog = center.accessibility(&host, &layout, ui::time::now());
-        assert_eq!(dialog.role, Role::Dialog);
-        let list = &dialog.children[0];
-        assert_eq!(list.children.len(), 2);
-        assert_eq!(list.children[0].name.as_deref(), Some("two"));
-        assert_eq!(
-            center.accessibility_rect_for_path(&host, &layout, &[0, 1]),
-            Some(layout.row_in(1, &[RowShape::new(0)]))
-        );
-        assert!(center.focus_accessibility_path(&host, &layout, &[0, 1, 0]));
-        assert_eq!(center.row_control, Some(RowControl::Dismiss));
-        assert!(center.focus_accessibility_path(&host, &layout, &[1]));
-        assert_eq!(center.action_focus, Some(ActionFocus::Clear));
-    }
-
-    #[test]
-    fn a_history_that_overflows_scrolls_by_rows() {
-        let host = TestHost::default();
-        for i in 0..20 {
-            host.log
-                .borrow_mut()
-                .retain(Notification::new(format!("n{i}"), ""));
-        }
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        let visible = center.visible_rows(&host, &layout);
-        assert!(visible < 20);
-        center.wheel(&host, &layout, MouseScrollDelta::LineDelta(0.0, -2.0), 1.0);
-        assert_eq!(center.start, 2);
-        center.key(&host, &layout, &Key::Named(NamedKey::End));
-        assert_eq!(center.start, 20 - visible);
-    }
-
-    #[test]
-    fn a_group_header_and_its_rows_never_repeat_the_source() {
-        let host = TestHost::default();
-        host.log.borrow_mut().retain(from_app("mail", "one"));
-        host.log.borrow_mut().retain(from_app("mail", "two"));
-        host.log
-            .borrow_mut()
-            .retain(Notification::new("Build finished", ""));
-        let layout = layout();
-        let rows = NotificationCenter::new().rows(&host);
-        let shapes = NotificationCenter::shapes(&host, &layout, &rows);
-        let grouped = rows
-            .iter()
-            .zip(&shapes)
-            .filter(|(row, _)| matches!(row, HistoryRow::Item { grouped: true, .. }))
-            .count();
-        assert!(grouped > 0, "the app's members sit under its header");
-        for (row, shape) in rows.iter().zip(&shapes) {
-            // Only a standalone row names its sender above the title: a header names it once, and
-            // its members sit under that name.
-            assert_eq!(
-                shape.has_source(),
-                !matches!(
-                    row,
-                    HistoryRow::Group { .. } | HistoryRow::Item { grouped: true, .. }
-                ),
-            );
-            assert_eq!(
-                shape.is_grouped(),
-                matches!(row, HistoryRow::Item { grouped: true, .. })
-            );
-        }
-        let ungrouped = layout.row_extent(&RowShape::default());
-        let member = layout.row_extent(&RowShape::default().grouped());
-        assert_eq!(member, ungrouped - layout.caption_lh, "one line less");
-        let header = layout.row_extent(&RowShape::new(1).without_source());
-        assert_eq!(
-            header,
-            ungrouped - 2.0 * layout.caption_lh,
-            "the header trades its source line for one fold preview line"
-        );
-    }
-
-    #[test]
-    fn a_row_opens_where_it_leads_and_only_reads_when_there_is_nowhere() {
-        let host = TestHost::default();
-        host.log.borrow_mut().retain(Notification::new(
-            "Couldn't open Notes",
-            "The app stopped before opening. Try again. Your document is safe.",
-        ));
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        assert!(
-            !center
-                .semantic_rects(&host, &layout, "")
-                .iter()
-                .any(|(name, _)| name.contains("read")),
-            "the row itself is the way in"
-        );
-        assert_eq!(
-            center.click(&host, &layout, layout.row(0).center()),
-            CenterOutcome::Handled
-        );
-        assert!(center.is_reading());
-        assert!(
-            !center.reader.as_ref().unwrap().focus_visible(),
-            "a page the pointer opened draws no focus ring"
-        );
-        assert_eq!(center.selected, None);
-        center.key(&host, &layout, &Key::Named(NamedKey::Tab));
-        assert!(center.reader.as_ref().unwrap().focus_visible());
-    }
-
-    #[test]
-    fn a_rows_own_actions_are_shown_reachable_and_invoked_through_the_host() {
-        let host = TestHost::default();
-        host.actions.replace(vec![
-            ("not-now".into(), "Not now".into()),
-            ("keep".into(), "Keep with passkey".into()),
-        ]);
-        let ask = Notification::new("Keep this identity?", "A passkey brings you back.");
-        let id = ask.id;
-        host.log.borrow_mut().retain(ask);
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        let row = layout.row_in(
-            0,
-            &[RowShape::default().with_choices(&[f64::INFINITY, f64::INFINITY])],
-        );
-        assert!(
-            row.height() > layout.row_h(),
-            "the actions get their own band"
-        );
-        let plain = CenterLayout::preferred_height(1, layout.actions.clone());
-        assert!(
-            (center.preferred_height(&host, layout.actions.clone())
-                - plain
-                - (row.height() - layout.row_h()))
-            .abs()
-                < 1e-6
-        );
-        let targets = center.semantic_rects(&host, &layout, "");
-        let keep = targets
-            .iter()
-            .find(|(name, _)| name == "notification_action[0][1]")
-            .expect("the primary action is a target")
-            .1;
-        assert!(row.contains(keep.center()));
-        let dialog = center.accessibility(&host, &layout, ui::time::now());
-        let names: Vec<_> = dialog.children[0].children[0]
-            .children
-            .iter()
-            .filter_map(|node| node.name.clone())
-            .collect();
-        assert_eq!(
-            names,
-            [
-                t("notification-center-dismiss"),
-                "Not now".to_string(),
-                "Keep with passkey".to_string()
-            ]
-        );
-        let tab = Key::Named(NamedKey::Tab);
-        for expected in [
-            None,
-            Some(RowControl::Dismiss),
-            Some(RowControl::Action(0)),
-            Some(RowControl::Action(1)),
-        ] {
-            center.key(&host, &layout, &tab);
-            assert_eq!(center.row_control, expected);
-        }
-        center.key(&host, &layout, &Key::Named(NamedKey::Enter));
-        assert_eq!(*host.invoked.borrow(), [(id, "keep".to_string())]);
-        center.click(&host, &layout, keep.center());
-        assert_eq!(host.invoked.borrow().len(), 2);
-        assert!(
-            !center.is_reading(),
-            "an action is not the row's activation"
-        );
-    }
-
-    #[test]
-    fn reading_preserves_text_identity_and_never_invokes_or_dismisses() {
-        let host = TestHost::default();
-        let body = "The app stopped before opening. Try again. Your document is safe.";
-        host.log
-            .borrow_mut()
-            .retain(Notification::new("Couldn't open Notes", body));
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        center.key(&host, &layout, &Key::Named(NamedKey::ArrowDown));
-        center.key(&host, &layout, &Key::Named(NamedKey::Enter));
-        assert!(center.is_reading());
-        assert!(center.reader.as_ref().unwrap().focus_visible());
-        let tree = center.accessibility(&host, &layout, ui::time::now());
-        assert_eq!(tree.children[1].description.as_deref(), Some(body));
-        assert!(tree.children[1].state.focused);
-        for key in [NamedKey::Enter, NamedKey::Space, NamedKey::Delete] {
-            assert_eq!(
-                center.key(&host, &layout, &Key::Named(key)),
+                center.key(&host, &layout, &Key::Named(NamedKey::Enter)),
                 CenterOutcome::Handled
             );
-            assert!(center.is_reading());
+            assert!(!center.is_reading());
             assert_eq!(host.log().history().len(), 1);
         }
-        assert_eq!(
-            center.key(&host, &layout, &Key::Named(NamedKey::Escape)),
-            CenterOutcome::Handled
-        );
-        assert!(!center.is_reading());
-        assert!(center.selected.is_some(), "focus returns to the row");
-        assert_eq!(center.row_control, None);
-        assert_eq!(
-            center.key(&host, &layout, &Key::Named(NamedKey::Escape)),
-            CenterOutcome::Back
-        );
-        center.key(&host, &layout, &Key::Named(NamedKey::Enter));
-        assert!(center.is_reading());
-        assert!(center.focus_accessibility_path(&host, &layout, &[0]));
-        assert_eq!(
-            center.key(&host, &layout, &Key::Named(NamedKey::Enter)),
-            CenterOutcome::Handled
-        );
-        assert!(!center.is_reading());
-        assert_eq!(host.log().history().len(), 1);
-    }
 
-    #[test]
-    fn reading_pointer_back_removed_notifications_and_hidden_previews_are_safe() {
-        let host = TestHost::default();
-        let mut notification = Notification::new("Private message", "Do not reveal this body");
-        notification.show_preview = false;
-        let id = notification.id;
-        host.log.borrow_mut().retain(notification);
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        let read = layout.row(0);
-        assert_eq!(
-            center.click(&host, &layout, read.center()),
-            CenterOutcome::Handled
-        );
-        assert!(center.is_reading());
-        let tree = center.accessibility(&host, &layout, ui::time::now());
-        assert_ne!(
-            tree.children[1].description.as_deref(),
-            Some("Do not reveal this body")
-        );
-        assert_eq!(
-            center.click(&host, &layout, layout.clear().center()),
-            CenterOutcome::Handled
-        );
-        assert_eq!(host.log().history().len(), 1);
-        assert_eq!(
-            center.click(&host, &layout, layout.reader_back().center()),
-            CenterOutcome::Handled
-        );
-        assert!(!center.is_reading());
-        center.click(&host, &layout, read.center());
-        host.log.borrow_mut().take_history(id);
-        assert_eq!(
-            center.key(&host, &layout, &Key::Named(NamedKey::Enter)),
-            CenterOutcome::Handled
-        );
-        assert!(!center.is_reading());
-        assert!(host.log().history().is_empty());
-        assert!(!center.focus_accessibility_path(&host, &layout, &[0, 0, 1]));
-    }
-    #[test]
-    fn row_control_tab_order_reverses_and_moves_between_notifications() {
-        let host = TestHost::default();
-        for title in ["first", "second"] {
-            host.log
-                .borrow_mut()
-                .retain(Notification::new(title, "body"));
-        }
-        let layout = layout();
-        let mut center = NotificationCenter::new();
-        let tab = Key::Named(NamedKey::Tab);
-        center.key_with_shift(&host, &layout, &tab, false);
-        let selected = center.selected.clone();
-        assert_eq!(center.row_control, None);
-        center.key_with_shift(&host, &layout, &tab, false);
-        assert_eq!(center.row_control, Some(RowControl::Dismiss));
-        center.key_with_shift(&host, &layout, &tab, true);
-        assert_eq!(center.row_control, None);
-        assert_eq!(center.selected, selected);
-        center.key_with_shift(&host, &layout, &tab, true);
-        assert_eq!(center.row_control, Some(RowControl::Dismiss));
-        assert_ne!(center.selected, selected);
-        center.key_with_shift(&host, &layout, &tab, false);
-        assert_eq!(center.row_control, None);
-        assert_eq!(center.selected, selected);
-        center.key(&host, &layout, &Key::Named(NamedKey::Enter));
-        assert!(center.is_reading());
-    }
-
-    /// Every row and group header leads with a mark for whoever sent it: an app's own glyph or
-    /// artwork, and the system's bell for a notification from no app at all. The mark gets its own
-    /// box inside the row and the text starts after it, so no row has an empty gutter.
-    #[test]
-    fn every_row_and_group_header_leads_with_its_senders_mark() {
-        let host = TestHost::default();
-        for n in [
-            from_app("mail", "one"),
-            from_app("mail", "two"),
-            from_app("chat", "hello"),
-            Notification::new("Battery low", "20% left"),
-        ] {
-            host.log.borrow_mut().retain(n);
-        }
-        let layout = layout();
-        let center = NotificationCenter::new();
-        let rows = center.rows(&host);
-        let shapes = NotificationCenter::shapes(&host, &layout, &rows);
-        assert!(
-            rows.iter()
-                .any(|row| matches!(row, HistoryRow::Group { .. })),
-            "the fixture has a group to check its header"
-        );
-        let mut system = None;
-        for (at, (row, shape)) in rows.iter().zip(&shapes).enumerate() {
-            let rect = layout.row_in(at, &shapes);
-            let (mark, grouped) = match row {
-                HistoryRow::Group { .. } => (layout.group_mark(rect, shape), false),
-                HistoryRow::Item { index, grouped } => {
-                    system = system.or_else(|| {
-                        let history = host.log();
-                        let notification = history.history().get(*index)?;
-                        (!grouped && notification.app_id.is_none()).then(|| notification.clone())
-                    });
-                    (layout.row_mark(rect, shape), *grouped)
-                }
-            };
-            assert!(
-                mark.width() >= qs::GLYPH - 1e-6 && mark.height() >= qs::GLYPH - 1e-6,
-                "{row:?} leads with no mark"
-            );
-            assert!(
-                mark.x0 >= rect.x0 + qs::CONTROL_INSET - 1e-6
-                    && mark.x1 <= rect.x1 - qs::CONTROL_INSET + 1e-6
-                    && mark.y0 >= rect.y0
-                    && mark.y1 <= rect.y1,
-                "{row:?}'s mark at {mark:?} leaves its row {rect:?}"
-            );
-            let text_x = mark.x1 + qs::RELATED_GAP;
-            match row {
-                HistoryRow::Group { .. } => {
-                    let disclosure = qs::leading_glyph(rect, qs::CONTROL_INSET, qs::GLYPH);
-                    assert!(
-                        disclosure.x1 + qs::RELATED_GAP <= mark.x0,
-                        "{row:?}'s mark sits on its fold chevron"
-                    );
-                    assert!(text_x < rect.x1 - qs::CONTROL_INSET);
-                }
-                HistoryRow::Item { .. } => assert!(
-                    (text_x + layout.text_width(grouped) - (rect.x1 - qs::CONTROL_INSET)).abs()
-                        < 1e-6,
-                    "{row:?}'s text runs under its mark or controls"
-                ),
-            }
-        }
-        let notification = system.expect("the fixture has a notification from no app");
-        assert_eq!(
-            notification.sender_name(),
-            t("notification-group-system"),
-            "a notification from no app is still attributed"
-        );
-        assert_eq!(
-            notification.mark().icon,
-            Some(ui::icons::Icon::Bell),
-            "a notification from no app leads with the system's bell"
-        );
-        let mark_of = |app: &str| {
-            host.log()
-                .history()
-                .iter()
-                .find(|n| n.app_id.as_deref() == Some(app))
-                .and_then(|n| n.mark().icon)
-        };
-        assert_eq!(mark_of("mail"), Some(ui::icons::Icon::Mail));
-        assert_eq!(mark_of("chat"), Some(ui::icons::Icon::MessageSquare));
-        assert_ne!(
-            mark_of("mail"),
-            mark_of("chat"),
-            "two apps never share one mark"
-        );
-    }
-
-    #[test]
-    fn each_sender_known_only_by_its_executable_gets_its_own_mark() {
-        let posting = |app: &str| {
-            let mut notification = Notification::new("posted", "");
-            notification.app_id = Some("/usr/bin/notify-send".to_string());
-            notification.app_name = Some(app.to_string());
-            notification
-        };
-        let marks: Vec<_> = ["Notes", "Chat", "Terminal"]
-            .into_iter()
-            .map(|app| (app, posting(app).mark().icon))
-            .collect();
-        assert_eq!(
-            marks,
-            vec![
-                ("Notes", Some(ui::icons::Icon::FileText)),
-                ("Chat", Some(ui::icons::Icon::MessageSquare)),
-                ("Terminal", Some(ui::icons::Icon::SquareTerminal)),
-            ],
-            "a tool posting for an app is drawn as that app"
-        );
-        // The launcher-verified app keeps its own glyph whichever name the sender used.
-        let mut chat = from_app("chat", "hello");
-        chat.app_name = Some("Something else".to_string());
-        assert_eq!(chat.mark().icon, Some(ui::icons::Icon::MessageSquare));
-    }
-
-    /// The mark is painted from the notification: two rows that differ only in who sent them draw
-    /// different glyphs.
-    #[test]
-    fn a_rows_mark_is_painted_from_its_sender() {
-        let paint = |notification: Notification| {
+        phase reading_pointer_back_removed_notifications_and_hidden_previews_are_safe;
+        {
             let host = TestHost::default();
+            let mut notification = Notification::new("Private message", "Do not reveal this body");
+            notification.show_preview = false;
+            let id = notification.id;
             host.log.borrow_mut().retain(notification);
             let layout = layout();
             let mut center = NotificationCenter::new();
-            let mut scene = Scene::new();
-            center.draw(
-                &host,
-                &layout,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                None,
+            let read = layout.row(0);
+            assert_eq!(
+                center.click(&host, &layout, read.center()),
+                CenterOutcome::Handled
             );
-            scene.encoding().path_data.clone()
-        };
-        let system = paint(Notification::new("Battery low", "20% left"));
-        let app = paint(from_app("mail", "Battery low"));
-        assert!(!system.is_empty() && !app.is_empty());
-        assert_ne!(
-            system, app,
-            "an app's row and the system's draw their own marks"
-        );
+            assert!(center.is_reading());
+            let tree = center.accessibility(&host, &layout, ui::time::now());
+            assert_ne!(
+                tree.children[1].description.as_deref(),
+                Some("Do not reveal this body")
+            );
+            assert_eq!(
+                center.click(&host, &layout, layout.clear().center()),
+                CenterOutcome::Handled
+            );
+            assert_eq!(host.log().history().len(), 1);
+            assert_eq!(
+                center.click(&host, &layout, layout.reader_back().center()),
+                CenterOutcome::Handled
+            );
+            assert!(!center.is_reading());
+            center.click(&host, &layout, read.center());
+            host.log.borrow_mut().take_history(id);
+            assert_eq!(
+                center.key(&host, &layout, &Key::Named(NamedKey::Enter)),
+                CenterOutcome::Handled
+            );
+            assert!(!center.is_reading());
+            assert!(host.log().history().is_empty());
+            assert!(!center.focus_accessibility_path(&host, &layout, &[0, 0, 1]));
+        }
+    }
+    tilo_test_env::scenario! {
+        fn centre_rows_lead_with_their_senders_mark;
+
+        phase every_row_and_group_header_leads_with_its_senders_mark;
+        // Every row and group header leads with a mark for whoever sent it: an app's own glyph or
+        // artwork, and the system's bell for a notification from no app at all. The mark gets its own
+        // box inside the row and the text starts after it, so no row has an empty gutter.
+        {
+            let host = TestHost::default();
+            for n in [
+                from_app("mail", "one"),
+                from_app("mail", "two"),
+                from_app("chat", "hello"),
+                Notification::new("Battery low", "20% left"),
+            ] {
+                host.log.borrow_mut().retain(n);
+            }
+            let layout = layout();
+            let center = NotificationCenter::new();
+            let rows = center.rows(&host);
+            let shapes = NotificationCenter::shapes(&host, &layout, &rows);
+            assert!(
+                rows.iter()
+                    .any(|row| matches!(row, HistoryRow::Group { .. })),
+                "the fixture has a group to check its header"
+            );
+            let mut system = None;
+            for (at, (row, shape)) in rows.iter().zip(&shapes).enumerate() {
+                let rect = layout.row_in(at, &shapes);
+                let (mark, grouped) = match row {
+                    HistoryRow::Group { .. } => (layout.group_mark(rect, shape), false),
+                    HistoryRow::Item { index, grouped } => {
+                        system = system.or_else(|| {
+                            let history = host.log();
+                            let notification = history.history().get(*index)?;
+                            (!grouped && notification.app_id.is_none()).then(|| notification.clone())
+                        });
+                        (layout.row_mark(rect, shape), *grouped)
+                    }
+                };
+                assert!(
+                    mark.width() >= qs::GLYPH - 1e-6 && mark.height() >= qs::GLYPH - 1e-6,
+                    "{row:?} leads with no mark"
+                );
+                assert!(
+                    mark.x0 >= rect.x0 + qs::CONTROL_INSET - 1e-6
+                        && mark.x1 <= rect.x1 - qs::CONTROL_INSET + 1e-6
+                        && mark.y0 >= rect.y0
+                        && mark.y1 <= rect.y1,
+                    "{row:?}'s mark at {mark:?} leaves its row {rect:?}"
+                );
+                let text_x = mark.x1 + qs::RELATED_GAP;
+                match row {
+                    HistoryRow::Group { .. } => {
+                        let disclosure = qs::leading_glyph(rect, qs::CONTROL_INSET, qs::GLYPH);
+                        assert!(
+                            disclosure.x1 + qs::RELATED_GAP <= mark.x0,
+                            "{row:?}'s mark sits on its fold chevron"
+                        );
+                        assert!(text_x < rect.x1 - qs::CONTROL_INSET);
+                    }
+                    HistoryRow::Item { .. } => assert!(
+                        (text_x + layout.text_width(grouped) - (rect.x1 - qs::CONTROL_INSET)).abs()
+                            < 1e-6,
+                        "{row:?}'s text runs under its mark or controls"
+                    ),
+                }
+            }
+            let notification = system.expect("the fixture has a notification from no app");
+            assert_eq!(
+                notification.sender_name(),
+                t("notification-group-system"),
+                "a notification from no app is still attributed"
+            );
+            assert_eq!(
+                notification.mark().icon,
+                Some(ui::icons::Icon::Bell),
+                "a notification from no app leads with the system's bell"
+            );
+            let mark_of = |app: &str| {
+                host.log()
+                    .history()
+                    .iter()
+                    .find(|n| n.app_id.as_deref() == Some(app))
+                    .and_then(|n| n.mark().icon)
+            };
+            assert_eq!(mark_of("mail"), Some(ui::icons::Icon::Mail));
+            assert_eq!(mark_of("chat"), Some(ui::icons::Icon::MessageSquare));
+            assert_ne!(
+                mark_of("mail"),
+                mark_of("chat"),
+                "two apps never share one mark"
+            );
+        }
+
+        phase each_sender_known_only_by_its_executable_gets_its_own_mark;
+        {
+            let posting = |app: &str| {
+                let mut notification = Notification::new("posted", "");
+                notification.app_id = Some("/usr/bin/notify-send".to_string());
+                notification.app_name = Some(app.to_string());
+                notification
+            };
+            let marks: Vec<_> = ["Notes", "Chat", "Terminal"]
+                .into_iter()
+                .map(|app| (app, posting(app).mark().icon))
+                .collect();
+            assert_eq!(
+                marks,
+                vec![
+                    ("Notes", Some(ui::icons::Icon::FileText)),
+                    ("Chat", Some(ui::icons::Icon::MessageSquare)),
+                    ("Terminal", Some(ui::icons::Icon::SquareTerminal)),
+                ],
+                "a tool posting for an app is drawn as that app"
+            );
+            // The launcher-verified app keeps its own glyph whichever name the sender used.
+            let mut chat = from_app("chat", "hello");
+            chat.app_name = Some("Something else".to_string());
+            assert_eq!(chat.mark().icon, Some(ui::icons::Icon::MessageSquare));
+        }
+
+        phase a_rows_mark_is_painted_from_its_sender;
+        // The mark is painted from the notification: two rows that differ only in who sent them draw
+        // different glyphs.
+        {
+            let paint = |notification: Notification| {
+                let host = TestHost::default();
+                host.log.borrow_mut().retain(notification);
+                let layout = layout();
+                let mut center = NotificationCenter::new();
+                let mut scene = Scene::new();
+                center.draw(
+                    &host,
+                    &layout,
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                    None,
+                );
+                scene.encoding().path_data.clone()
+            };
+            let system = paint(Notification::new("Battery low", "20% left"));
+            let app = paint(from_app("mail", "Battery low"));
+            assert!(!system.is_empty() && !app.is_empty());
+            assert_ne!(
+                system, app,
+                "an app's row and the system's draw their own marks"
+            );
+        }
     }
 }
 

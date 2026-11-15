@@ -186,147 +186,151 @@ mod tests {
         serde_json::json!({ "tree": tree, "records": [] })
     }
 
-    /// Someone else renaming the shared workspace is news, named in words with who did it; the
-    /// first desktop received and a rename of one's own are not.
-    #[test]
-    fn a_rename_by_someone_else_is_noticed_with_their_name() {
-        let mut minter = IdMinter::new(7);
-        let notes = app(&mut minter, "Notes");
-        let mut tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
-        let mut log = AutoCommit::new();
-        assert!(record(&mut log, &stored(&tree), "ada-root", 1_000));
-        let before = stored(&tree);
-        tree.workspaces[0].name = "Plans".into();
-        let mut peer = log.fork();
-        assert!(record(&mut peer, &stored(&tree), "grace-root", 2_000));
-        log.merge_incoming(&mut peer).unwrap();
-        let after = stored(&tree);
+    tilo_test_env::scenario! {
+        fn the_history_log_names_each_change_by_its_author;
 
-        assert_eq!(
-            WorkspaceRename::merged(&log, None, &after),
-            None,
-            "the first desktop renames nothing"
-        );
-        assert_eq!(WorkspaceRename::merged(&log, Some(&after), &after), None);
-        let rename = WorkspaceRename::merged(&log, Some(&before), &after)
-            .expect("the merged change renamed the workspace");
-        assert_eq!(
-            rename,
-            WorkspaceRename {
-                author: "grace-root".into(),
-                name: "Plans".into(),
-            }
-        );
-        let notice = rename
-            .notice_for("ada-root", |user| {
-                assert_eq!(user, "grace-root");
-                "Grace".into()
-            })
-            .expect("Ada hears of it");
-        assert_eq!(notice.title, "Grace renamed the workspace to Plans");
-        assert!(
-            rename
-                .notice_for("grace-root", |_| "Grace".into())
-                .is_none(),
-            "Grace renamed it herself"
-        );
-    }
+        phase a_rename_by_someone_else_is_noticed_with_their_name;
+        // Someone else renaming the shared workspace is news, named in words with who did it; the
+        // first desktop received and a rename of one's own are not.
+        {
+            let mut minter = IdMinter::new(7);
+            let notes = app(&mut minter, "Notes");
+            let mut tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
+            let mut log = AutoCommit::new();
+            assert!(record(&mut log, &stored(&tree), "ada-root", 1_000));
+            let before = stored(&tree);
+            tree.workspaces[0].name = "Plans".into();
+            let mut peer = log.fork();
+            assert!(record(&mut peer, &stored(&tree), "grace-root", 2_000));
+            log.merge_incoming(&mut peer).unwrap();
+            let after = stored(&tree);
 
-    /// A workspace's changes name their author by principal (a key); History shows them as presence
-    /// does, by name and colour, not by the key's first letter in a colour of its own.
-    #[test]
-    fn an_author_presence_knows_reads_by_their_name_and_colour() {
-        let key = "b46342a2fe9dd341355944fb4be947d6";
-        let pink = (0xee, 0x83, 0xaf);
-        let authors = BTreeMap::from([("aa".to_owned(), key.to_owned())]);
-        let mut directory = ui::AuthorDirectory::new();
-        register_authors(&mut directory, &authors, &|principal| {
-            (principal == key).then(|| ("Eager Dolphin".to_owned(), pink))
-        });
-        let author = directory.resolve("aa");
-        assert_eq!(author.name, "Eager Dolphin");
-        assert_eq!(author.rgb(), pink);
-        assert_eq!(ui::widget::avatar::initials_for_name(&author.name), "ED");
-
-        let mut unknown = ui::AuthorDirectory::new();
-        register_authors(&mut unknown, &authors, &|_| None);
-        assert_eq!(unknown.resolve("aa").name, key, "nobody to name them by");
-    }
-
-    /// Two peers each change the shell and merge: each reads the one shell with both changes, and the
-    /// pane lists each change by the person who made it.
-    #[test]
-    fn a_merged_shell_lists_both_peers_changes_by_name() {
-        let mut minter = IdMinter::new(7);
-        let notes = app(&mut minter, "Notes");
-        let tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
-        let mut doc = AutoCommit::new();
-        desktop_doc::seed(&mut doc, &tree);
-        commit(&mut doc, "Ada", 1_000);
-        let mut peer = doc.fork();
-
-        let mut mine = tree.clone();
-        mine.workspaces[0].name = "Studio · mine".into();
-        desktop_doc::seed(&mut doc, &mine);
-        commit(&mut doc, "Ada", 2_000);
-
-        let mut theirs = tree.clone();
-        let sheets = app(&mut minter, "Sheets");
-        theirs.workspaces[0].strips[0]
-            .window_groups
-            .push(tilo_desktop_model::WindowGroup {
-                id: minter.mint(),
-                active_tab: sheets.id,
-                tabs: vec![sheets],
-                width: tilo_desktop_model::WindowWidth::Normal,
-                maximized: false,
-                focus_history: Vec::new(),
-            });
-        desktop_doc::seed(&mut peer, &theirs);
-        commit(&mut peer, "Grace", 3_000);
-
-        doc.merge_incoming(&mut peer).expect("merged");
-        peer.merge_incoming(&mut doc).expect("merged");
-        for shell in [doc, peer] {
-            let mut snapshot = ActivitySnapshot::of_desktop(tree.clone(), shell);
-            let authors = authors_of(&mut snapshot.doc);
-            let mut pane = WorkspaceActivityPane::new();
-            register_authors(pane.authors_mut(), &authors, &|_| None);
-            pane.begin_view(snapshot.active);
-            pane.refresh(&mut snapshot);
-            let listed: Vec<(String, String)> = pane
-                .entries()
-                .iter()
-                .map(|entry| (entry.author.name.clone(), entry.summary.clone()))
-                .collect();
-            assert_eq!(listed.len(), 2, "{listed:?}");
-            assert!(
-                listed
-                    .iter()
-                    .any(|(author, summary)| author == "Grace" && summary.contains("Sheets")),
-                "the window the other peer opened is theirs: {listed:?}"
+            assert_eq!(
+                WorkspaceRename::merged(&log, None, &after),
+                None,
+                "the first desktop renames nothing"
             );
+            assert_eq!(WorkspaceRename::merged(&log, Some(&after), &after), None);
+            let rename = WorkspaceRename::merged(&log, Some(&before), &after)
+                .expect("the merged change renamed the workspace");
+            assert_eq!(
+                rename,
+                WorkspaceRename {
+                    author: "grace-root".into(),
+                    name: "Plans".into(),
+                }
+            );
+            let notice = rename
+                .notice_for("ada-root", |user| {
+                    assert_eq!(user, "grace-root");
+                    "Grace".into()
+                })
+                .expect("Ada hears of it");
+            assert_eq!(notice.title, "Grace renamed the workspace to Plans");
             assert!(
-                listed.iter().any(|entry| entry.0 == "Ada"),
-                "the person's own change is theirs: {listed:?}"
+                rename
+                    .notice_for("grace-root", |_| "Grace".into())
+                    .is_none(),
+                "Grace renamed it herself"
             );
         }
-    }
 
-    #[test]
-    fn switching_tabs_does_not_write_a_desktop_activity_change() {
-        let mut minter = IdMinter::new(7);
-        let first = app(&mut minter, "Notes");
-        let second = app(&mut minter, "Sheets");
-        let second_id = second.id;
-        let mut tree = crate::seed_tree(&mut minter, "Studio", vec![first]);
-        tree.workspaces[0].strips[0].window_groups[0]
-            .tabs
-            .push(second);
-        let mut log = AutoCommit::new();
-        assert!(record(&mut log, &stored(&tree), "Ada", 1_000));
-        tree.workspaces[0].strips[0].window_groups[0].active_tab = second_id;
-        assert!(!record(&mut log, &stored(&tree), "Ada", 2_000));
-        assert_eq!(log.get_changes(&[]).len(), 1);
+        phase an_author_presence_knows_reads_by_their_name_and_colour;
+        // A workspace's changes name their author by principal (a key); History shows them as presence
+        // does, by name and colour, not by the key's first letter in a colour of its own.
+        {
+            let key = "b46342a2fe9dd341355944fb4be947d6";
+            let pink = (0xee, 0x83, 0xaf);
+            let authors = BTreeMap::from([("aa".to_owned(), key.to_owned())]);
+            let mut directory = ui::AuthorDirectory::new();
+            register_authors(&mut directory, &authors, &|principal| {
+                (principal == key).then(|| ("Eager Dolphin".to_owned(), pink))
+            });
+            let author = directory.resolve("aa");
+            assert_eq!(author.name, "Eager Dolphin");
+            assert_eq!(author.rgb(), pink);
+            assert_eq!(ui::widget::avatar::initials_for_name(&author.name), "ED");
+
+            let mut unknown = ui::AuthorDirectory::new();
+            register_authors(&mut unknown, &authors, &|_| None);
+            assert_eq!(unknown.resolve("aa").name, key, "nobody to name them by");
+        }
+
+        phase a_merged_shell_lists_both_peers_changes_by_name;
+        // Two peers each change the shell and merge: each reads the one shell with both changes, and the
+        // pane lists each change by the person who made it.
+        {
+            let mut minter = IdMinter::new(7);
+            let notes = app(&mut minter, "Notes");
+            let tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
+            let mut doc = AutoCommit::new();
+            desktop_doc::seed(&mut doc, &tree);
+            commit(&mut doc, "Ada", 1_000);
+            let mut peer = doc.fork();
+
+            let mut mine = tree.clone();
+            mine.workspaces[0].name = "Studio · mine".into();
+            desktop_doc::seed(&mut doc, &mine);
+            commit(&mut doc, "Ada", 2_000);
+
+            let mut theirs = tree.clone();
+            let sheets = app(&mut minter, "Sheets");
+            theirs.workspaces[0].strips[0]
+                .window_groups
+                .push(tilo_desktop_model::WindowGroup {
+                    id: minter.mint(),
+                    active_tab: sheets.id,
+                    tabs: vec![sheets],
+                    width: tilo_desktop_model::WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                });
+            desktop_doc::seed(&mut peer, &theirs);
+            commit(&mut peer, "Grace", 3_000);
+
+            doc.merge_incoming(&mut peer).expect("merged");
+            peer.merge_incoming(&mut doc).expect("merged");
+            for shell in [doc, peer] {
+                let mut snapshot = ActivitySnapshot::of_desktop(tree.clone(), shell);
+                let authors = authors_of(&mut snapshot.doc);
+                let mut pane = WorkspaceActivityPane::new();
+                register_authors(pane.authors_mut(), &authors, &|_| None);
+                pane.begin_view(snapshot.active);
+                pane.refresh(&mut snapshot);
+                let listed: Vec<(String, String)> = pane
+                    .entries()
+                    .iter()
+                    .map(|entry| (entry.author.name.clone(), entry.summary.clone()))
+                    .collect();
+                assert_eq!(listed.len(), 2, "{listed:?}");
+                assert!(
+                    listed
+                        .iter()
+                        .any(|(author, summary)| author == "Grace" && summary.contains("Sheets")),
+                    "the window the other peer opened is theirs: {listed:?}"
+                );
+                assert!(
+                    listed.iter().any(|entry| entry.0 == "Ada"),
+                    "the person's own change is theirs: {listed:?}"
+                );
+            }
+        }
+
+        phase switching_tabs_does_not_write_a_desktop_activity_change;
+        {
+            let mut minter = IdMinter::new(7);
+            let first = app(&mut minter, "Notes");
+            let second = app(&mut minter, "Sheets");
+            let second_id = second.id;
+            let mut tree = crate::seed_tree(&mut minter, "Studio", vec![first]);
+            tree.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .push(second);
+            let mut log = AutoCommit::new();
+            assert!(record(&mut log, &stored(&tree), "Ada", 1_000));
+            tree.workspaces[0].strips[0].window_groups[0].active_tab = second_id;
+            assert!(!record(&mut log, &stored(&tree), "Ada", 2_000));
+            assert_eq!(log.get_changes(&[]).len(), 1);
+        }
     }
 }

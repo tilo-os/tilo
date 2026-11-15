@@ -317,124 +317,134 @@ mod tests {
         notifications.iter().map(|n| n.title.as_str()).collect()
     }
 
-    #[test]
-    fn the_stack_caps_banners_and_hands_back_the_oldest() {
-        let mut log = NotificationLog::default();
-        let mut evicted = Vec::new();
-        for i in 0..(MAX_NOTIFICATIONS + 3) {
-            evicted.extend(log.show(Notification::new(format!("n{i}"), "")));
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn banners_are_capped_and_age_only_on_screen;
+
+        phase the_stack_caps_banners_and_hands_back_the_oldest;
+        {
+            let mut log = NotificationLog::default();
+            let mut evicted = Vec::new();
+            for i in 0..(MAX_NOTIFICATIONS + 3) {
+                evicted.extend(log.show(Notification::new(format!("n{i}"), "")));
+            }
+            assert_eq!(log.active().len(), MAX_NOTIFICATIONS);
+            assert_eq!(log.active()[0].title, "n3");
+            assert_eq!(titles(&evicted), ["n0", "n1", "n2"]);
         }
-        assert_eq!(log.active().len(), MAX_NOTIFICATIONS);
-        assert_eq!(log.active()[0].title, "n3");
-        assert_eq!(titles(&evicted), ["n0", "n1", "n2"]);
-    }
 
-    #[test]
-    fn expiry_takes_only_elapsed_banners() {
-        let mut log = NotificationLog::default();
-        let now = ui::time::now();
-        let quick = Notification::new("quick", "").with_dismiss_after(Duration::from_millis(50));
-        let slow = Notification::new("slow", "");
-        let shown = [quick.id, slow.id];
-        let _ = log.show(quick);
-        let _ = log.show(slow);
-        log.present(now, &shown, false);
-        let expired = log.take_expired(now + Duration::from_millis(200));
-        assert_eq!(titles(&expired), ["quick"]);
-        assert_eq!(titles(log.active()), ["slow"]);
-    }
-
-    /// A banner ages only on screen and unheld: one that did not fit, or one under the pointer,
-    /// outlives its dismiss window; letting go of it leaves a moment before it leaves.
-    #[test]
-    fn banners_age_only_on_screen_and_unheld() {
-        let mut log = NotificationLog::default();
-        let t0 = ui::time::now();
-        let at = |ms| t0 + Duration::from_millis(ms);
-        let seen = Notification::new("seen", "");
-        let unseen = Notification::new("unseen", "");
-        let seen_id = seen.id;
-        let _ = log.show(unseen);
-        let _ = log.show(seen);
-        log.present(t0, &[seen_id], false);
-        assert!(log.take_expired(at(4_000)).is_empty());
-        log.present(at(4_000), &[seen_id], true);
-        assert!(log.held());
-        assert!(
-            log.take_expired(at(60_000)).is_empty(),
-            "a banner under the pointer never leaves"
-        );
-        log.present(at(60_000), &[seen_id], false);
-        assert!(log.take_expired(at(60_000 + 1_400)).is_empty());
-        assert_eq!(
-            titles(&log.take_expired(at(60_000 + 1_500))),
-            ["seen"],
-            "let go, it leaves after the grace"
-        );
-        assert_eq!(
-            titles(log.active()),
-            ["unseen"],
-            "a banner never on screen never expires"
-        );
-    }
-
-    #[test]
-    fn clear_undo_restores_exact_order_before_new_arrivals() {
-        let mut log = NotificationLog::default();
-        let now = ui::time::now();
-        log.retain(Notification::new("first", "one"));
-        log.retain(Notification::new("second", "two"));
-        assert!(log.clear_history(now));
-        log.retain(Notification::new("new", "three"));
-        assert!(log.undo_clear());
-        assert_eq!(titles(log.history()), ["first", "second", "new"]);
-        assert!(!log.undo_clear());
-    }
-
-    #[test]
-    fn a_clear_stays_reversible_for_eight_seconds() {
-        let mut log = NotificationLog::default();
-        let now = ui::time::now();
-        log.retain(Notification::new("one", "body"));
-        assert!(log.clear_history(now));
-        assert!(!log.expire_clear(now + Duration::from_secs(7)));
-        assert!(log.can_undo_clear());
-        assert!(log.expire_clear(now + Duration::from_secs(8)));
-        assert!(!log.can_undo_clear());
-        assert!(!log.undo_clear());
-    }
-
-    #[test]
-    fn a_second_clear_extends_one_recoverable_snapshot() {
-        let mut log = NotificationLog::default();
-        let now = ui::time::now();
-        log.retain(Notification::new("before", "body"));
-        assert!(log.clear_history(now));
-        log.retain(Notification::new("during", "body"));
-        assert!(log.clear_history(now + Duration::from_secs(4)));
-        assert!(!log.expire_clear(now + Duration::from_secs(8)));
-        assert!(log.undo_clear());
-        assert_eq!(titles(log.history()), ["before", "during"]);
-    }
-
-    #[test]
-    fn history_is_bounded_and_restored_entries_go_first() {
-        let mut log = NotificationLog::default();
-        for i in 0..(MAX_HISTORY + 5) {
-            log.retain(Notification::new(format!("h{i}"), ""));
+        phase expiry_takes_only_elapsed_banners;
+        {
+            let mut log = NotificationLog::default();
+            let now = ui::time::now();
+            let quick = Notification::new("quick", "").with_dismiss_after(Duration::from_millis(50));
+            let slow = Notification::new("slow", "");
+            let shown = [quick.id, slow.id];
+            let _ = log.show(quick);
+            let _ = log.show(slow);
+            log.present(now, &shown, false);
+            let expired = log.take_expired(now + Duration::from_millis(200));
+            assert_eq!(titles(&expired), ["quick"]);
+            assert_eq!(titles(log.active()), ["slow"]);
         }
-        assert_eq!(log.history().len(), MAX_HISTORY);
-        assert_eq!(log.history()[0].title, "h5");
-        assert!(log.take_history_dirty());
-        log.restore_history(vec![Notification::new("old", "")]);
-        assert_eq!(log.history().len(), MAX_HISTORY);
-        assert_eq!(
-            log.history().last().unwrap().title,
-            format!("h{}", MAX_HISTORY + 4)
-        );
-        assert!(
-            log.take_history_dirty(),
-            "session entries must be written back"
-        );
+
+        phase banners_age_only_on_screen_and_unheld;
+        // A banner ages only on screen and unheld: one that did not fit, or one under the pointer,
+        // outlives its dismiss window; letting go of it leaves a moment before it leaves.
+        {
+            let mut log = NotificationLog::default();
+            let t0 = ui::time::now();
+            let at = |ms| t0 + Duration::from_millis(ms);
+            let seen = Notification::new("seen", "");
+            let unseen = Notification::new("unseen", "");
+            let seen_id = seen.id;
+            let _ = log.show(unseen);
+            let _ = log.show(seen);
+            log.present(t0, &[seen_id], false);
+            assert!(log.take_expired(at(4_000)).is_empty());
+            log.present(at(4_000), &[seen_id], true);
+            assert!(log.held());
+            assert!(
+                log.take_expired(at(60_000)).is_empty(),
+                "a banner under the pointer never leaves"
+            );
+            log.present(at(60_000), &[seen_id], false);
+            assert!(log.take_expired(at(60_000 + 1_400)).is_empty());
+            assert_eq!(
+                titles(&log.take_expired(at(60_000 + 1_500))),
+                ["seen"],
+                "let go, it leaves after the grace"
+            );
+            assert_eq!(
+                titles(log.active()),
+                ["unseen"],
+                "a banner never on screen never expires"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_cleared_history_is_restorable_and_bounded;
+
+        phase clear_undo_restores_exact_order_before_new_arrivals;
+        {
+            let mut log = NotificationLog::default();
+            let now = ui::time::now();
+            log.retain(Notification::new("first", "one"));
+            log.retain(Notification::new("second", "two"));
+            assert!(log.clear_history(now));
+            log.retain(Notification::new("new", "three"));
+            assert!(log.undo_clear());
+            assert_eq!(titles(log.history()), ["first", "second", "new"]);
+            assert!(!log.undo_clear());
+        }
+
+        phase a_clear_stays_reversible_for_eight_seconds;
+        {
+            let mut log = NotificationLog::default();
+            let now = ui::time::now();
+            log.retain(Notification::new("one", "body"));
+            assert!(log.clear_history(now));
+            assert!(!log.expire_clear(now + Duration::from_secs(7)));
+            assert!(log.can_undo_clear());
+            assert!(log.expire_clear(now + Duration::from_secs(8)));
+            assert!(!log.can_undo_clear());
+            assert!(!log.undo_clear());
+        }
+
+        phase a_second_clear_extends_one_recoverable_snapshot;
+        {
+            let mut log = NotificationLog::default();
+            let now = ui::time::now();
+            log.retain(Notification::new("before", "body"));
+            assert!(log.clear_history(now));
+            log.retain(Notification::new("during", "body"));
+            assert!(log.clear_history(now + Duration::from_secs(4)));
+            assert!(!log.expire_clear(now + Duration::from_secs(8)));
+            assert!(log.undo_clear());
+            assert_eq!(titles(log.history()), ["before", "during"]);
+        }
+
+        phase history_is_bounded_and_restored_entries_go_first;
+        {
+            let mut log = NotificationLog::default();
+            for i in 0..(MAX_HISTORY + 5) {
+                log.retain(Notification::new(format!("h{i}"), ""));
+            }
+            assert_eq!(log.history().len(), MAX_HISTORY);
+            assert_eq!(log.history()[0].title, "h5");
+            assert!(log.take_history_dirty());
+            log.restore_history(vec![Notification::new("old", "")]);
+            assert_eq!(log.history().len(), MAX_HISTORY);
+            assert_eq!(
+                log.history().last().unwrap().title,
+                format!("h{}", MAX_HISTORY + 4)
+            );
+            assert!(
+                log.take_history_dirty(),
+                "session entries must be written back"
+            );
+        }
     }
 }

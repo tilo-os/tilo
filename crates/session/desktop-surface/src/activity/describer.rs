@@ -524,111 +524,115 @@ mod tests {
         asked
     }
 
-    #[test]
-    fn an_edit_sessions_changes_become_one_titled_group() {
-        let mut doc = typed(20);
-        let mut describer = Describer::new(true);
-        let asked = run(&mut describer, &mut doc);
-        assert!(
-            matches!(asked.last(), Some(Job::Title { .. })),
-            "the run is named: {asked:?}"
-        );
-        assert_eq!(
-            asked
-                .iter()
-                .filter(|job| matches!(job, Job::Title { .. }))
-                .count(),
-            1,
-            "one run of one sitting is one title"
-        );
+    tilo_test_env::scenario! {
+        fn a_work_sessions_title_groups_its_changes_and_keeps_a_persons_rename;
 
-        let named = groups::read_named_ranges(&doc, &ui::AuthorDirectory::new());
-        assert_eq!(named.len(), 1, "one name, over the whole sitting");
-        assert_eq!(named[0].label, "Overhauled Q3 financial report");
-        assert!(
-            named[0].named_by.is_none(),
-            "a generated name is nobody's words"
-        );
+        phase an_edit_sessions_changes_become_one_titled_group;
+        {
+            let mut doc = typed(20);
+            let mut describer = Describer::new(true);
+            let asked = run(&mut describer, &mut doc);
+            assert!(
+                matches!(asked.last(), Some(Job::Title { .. })),
+                "the run is named: {asked:?}"
+            );
+            assert_eq!(
+                asked
+                    .iter()
+                    .filter(|job| matches!(job, Job::Title { .. }))
+                    .count(),
+                1,
+                "one run of one sitting is one title"
+            );
 
-        let entries = ui::HistorySource::new().entries(&mut doc);
-        let groups = group_entries(&entries, &named, &GroupingConfig::default());
-        assert_eq!(groups.len(), 1, "the sitting reads as one band");
-        assert_eq!(
-            groups[0].name.as_deref(),
-            Some("Overhauled Q3 financial report")
-        );
-        assert!(
-            groups[0].len() >= 20,
-            "the band holds the whole sitting: {}",
-            groups[0].len()
-        );
-        assert!(
-            groups[0]
-                .subtitle_facts(&entries)
-                .iter()
-                .all(|fact| !fact.contains("named by")),
-            "nobody is credited with the model's words"
-        );
-        let words = descriptions::read_descriptions(&doc);
-        assert_eq!(words.len(), entries.len(), "every change is described");
-    }
+            let named = groups::read_named_ranges(&doc, &ui::AuthorDirectory::new());
+            assert_eq!(named.len(), 1, "one name, over the whole sitting");
+            assert_eq!(named[0].label, "Overhauled Q3 financial report");
+            assert!(
+                named[0].named_by.is_none(),
+                "a generated name is nobody's words"
+            );
 
-    #[test]
-    fn a_persons_rename_survives_regeneration() {
-        let mut doc = typed(20);
-        let mut describer = Describer::new(true);
-        run(&mut describer, &mut doc);
-        let generated = groups::read_named_ranges(&doc, &ui::AuthorDirectory::new());
-        let range = generated[0].clone();
-        let person = doc.get_actor().to_hex_string();
-
-        // The person says what the run was, in their own words.
-        groups::name_range_by(
-            &mut doc,
-            &range.start,
-            range.end.as_ref(),
-            "Q3 report",
-            &person,
-        );
-        doc.commit();
-        let named = groups::read_named_ranges(&doc, &ui::AuthorDirectory::new());
-        assert_eq!(named[0].label, "Q3 report");
-
-        // A model naming the same range again is refused, by the answer that arrives after the
-        // person's.
-        let mut later = Describer::new(true);
-        let job = Job::Title {
-            start: range.start,
-            end: range.end.unwrap(),
-            facts: Vec::new(),
-        };
-        assert!(
-            !later.apply(&mut doc, &job, &answer(&job)),
-            "a person's name always wins"
-        );
-        doc.commit();
-        assert_eq!(
-            groups::read_named_ranges(&doc, &ui::AuthorDirectory::new())[0].label,
-            "Q3 report"
-        );
-
-        // And a later sitting is named without touching theirs.
-        let Some((_, body)) = doc.get(ROOT, "body").unwrap() else {
-            panic!("the report has a body");
-        };
-        for line in 0..20_i64 {
-            let length = doc.length(&body);
-            doc.splice_text(&body, length, 0, &format!("More line {line}. "))
-                .unwrap();
-            commit_at(&mut doc, at(3_600_i64.saturating_add(line)));
+            let entries = ui::HistorySource::new().entries(&mut doc);
+            let groups = group_entries(&entries, &named, &GroupingConfig::default());
+            assert_eq!(groups.len(), 1, "the sitting reads as one band");
+            assert_eq!(
+                groups[0].name.as_deref(),
+                Some("Overhauled Q3 financial report")
+            );
+            assert!(
+                groups[0].len() >= 20,
+                "the band holds the whole sitting: {}",
+                groups[0].len()
+            );
+            assert!(
+                groups[0]
+                    .subtitle_facts(&entries)
+                    .iter()
+                    .all(|fact| !fact.contains("named by")),
+                "nobody is credited with the model's words"
+            );
+            let words = descriptions::read_descriptions(&doc);
+            assert_eq!(words.len(), entries.len(), "every change is described");
         }
-        let mut after = Describer::new(true);
-        run(&mut after, &mut doc);
-        let after = groups::read_named_ranges(&doc, &ui::AuthorDirectory::new());
-        assert!(
-            after.iter().any(|range| range.label == "Q3 report"),
-            "the person's name is still there: {after:?}"
-        );
+
+        phase a_persons_rename_survives_regeneration;
+        {
+            let mut doc = typed(20);
+            let mut describer = Describer::new(true);
+            run(&mut describer, &mut doc);
+            let generated = groups::read_named_ranges(&doc, &ui::AuthorDirectory::new());
+            let range = generated[0].clone();
+            let person = doc.get_actor().to_hex_string();
+
+            // The person says what the run was, in their own words.
+            groups::name_range_by(
+                &mut doc,
+                &range.start,
+                range.end.as_ref(),
+                "Q3 report",
+                &person,
+            );
+            doc.commit();
+            let named = groups::read_named_ranges(&doc, &ui::AuthorDirectory::new());
+            assert_eq!(named[0].label, "Q3 report");
+
+            // A model naming the same range again is refused, by the answer that arrives after the
+            // person's.
+            let mut later = Describer::new(true);
+            let job = Job::Title {
+                start: range.start,
+                end: range.end.unwrap(),
+                facts: Vec::new(),
+            };
+            assert!(
+                !later.apply(&mut doc, &job, &answer(&job)),
+                "a person's name always wins"
+            );
+            doc.commit();
+            assert_eq!(
+                groups::read_named_ranges(&doc, &ui::AuthorDirectory::new())[0].label,
+                "Q3 report"
+            );
+
+            // And a later sitting is named without touching theirs.
+            let Some((_, body)) = doc.get(ROOT, "body").unwrap() else {
+                panic!("the report has a body");
+            };
+            for line in 0..20_i64 {
+                let length = doc.length(&body);
+                doc.splice_text(&body, length, 0, &format!("More line {line}. "))
+                    .unwrap();
+                commit_at(&mut doc, at(3_600_i64.saturating_add(line)));
+            }
+            let mut after = Describer::new(true);
+            run(&mut after, &mut doc);
+            let after = groups::read_named_ranges(&doc, &ui::AuthorDirectory::new());
+            assert!(
+                after.iter().any(|range| range.label == "Q3 report"),
+                "the person's name is still there: {after:?}"
+            );
+        }
     }
 
     #[test]

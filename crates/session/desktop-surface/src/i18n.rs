@@ -28,94 +28,98 @@ mod tests {
     use super::*;
     use tilo_copy_lint::catalog;
 
-    #[test]
-    fn interpolated_keys_substitute_their_nouns() {
-        assert_eq!(
-            t_args(
-                "topbar-workspace-position",
-                &[("position", 2.into()), ("total", 3.into())]
-            ),
-            "Workspace 2 of 3"
-        );
-        assert_eq!(
-            t_args("topbar-sharing-count", &[("viewers", 2.into())]),
-            "2 watching"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_catalogue_resolves_every_key_in_plain_words;
 
-    /// A workspace holds strips; the desktop names a strip a strip
-    /// everywhere, as the native strip switcher does, never a "desk".
-    #[test]
-    fn a_strip_is_called_a_strip_in_every_locale() {
-        for (locale, source) in CATALOGS {
-            for line in source.lines().filter(|line| !line.starts_with('#')) {
-                let value = line.split_once('=').map_or(line, |(_, value)| value);
-                for word in value.split(|c: char| !c.is_alphanumeric()) {
-                    assert!(
-                        !matches!(
-                            word.to_lowercase().as_str(),
-                            "desk" | "desks" | "schreibtisch" | "schreibtische"
-                        ),
-                        "{locale}: {line}"
-                    );
+        phase interpolated_keys_substitute_their_nouns;
+        {
+            assert_eq!(
+                t_args(
+                    "topbar-workspace-position",
+                    &[("position", 2.into()), ("total", 3.into())]
+                ),
+                "Workspace 2 of 3"
+            );
+            assert_eq!(
+                t_args("topbar-sharing-count", &[("viewers", 2.into())]),
+                "2 watching"
+            );
+        }
+
+        phase a_strip_is_called_a_strip_in_every_locale;
+        // A workspace holds strips; the desktop names a strip a strip
+        // everywhere, as the native strip switcher does, never a "desk".
+        {
+            for (locale, source) in CATALOGS {
+                for line in source.lines().filter(|line| !line.starts_with('#')) {
+                    let value = line.split_once('=').map_or(line, |(_, value)| value);
+                    for word in value.split(|c: char| !c.is_alphanumeric()) {
+                        assert!(
+                            !matches!(
+                                word.to_lowercase().as_str(),
+                                "desk" | "desks" | "schreibtisch" | "schreibtische"
+                            ),
+                            "{locale}: {line}"
+                        );
+                    }
                 }
             }
+            assert_eq!(t("workspace-menu-new-strip"), "New strip");
         }
-        assert_eq!(t("workspace-menu-new-strip"), "New strip");
-    }
 
-    /// A window whose app stopped says so in words, naming the app, and says
-    /// why without blaming the person for it.
-    #[test]
-    fn a_stopped_app_is_named_in_plain_words() {
-        assert_eq!(
-            crate::outcome::Closed::Crashed
-                .outcome("Canvas", t("answer-reopen"))
-                .detail(),
-            "Canvas stopped working. It ended unexpectedly."
-        );
-        assert_eq!(
-            crate::outcome::Closed::Memory
-                .outcome("Canvas", t("answer-reopen"))
-                .detail(),
-            "Canvas was closed to free memory"
-        );
-        assert_eq!(
-            crate::outcome::Closed::Runaway
-                .outcome("Canvas", t("answer-reopen"))
-                .detail(),
-            "Canvas was using too much memory. It was closed so the rest keeps running."
-        );
-        assert_eq!(
-            t_args("answer-app-not-opened", &[("app", "Notes".into())]),
-            "Notes could not open"
-        );
-        assert_eq!(
-            t_args("answer-app-stopped", &[("app", "Notes".into())]),
-            "Notes stopped working"
-        );
-        assert_eq!(
-            t("answer-why-not-opened"),
-            "It was stopped before a window appeared."
-        );
-    }
-
-    #[test]
-    fn every_catalogue_entry_resolves_to_a_real_string() {
-        let keys = catalog::messages(CATALOGS[0].1);
-        assert!(!keys.is_empty());
-        for key in keys.keys() {
-            let value = t(key);
-            assert_ne!(&value, key, "{key} has no entry in the catalogue");
-            assert!(!value.trim().is_empty(), "{key} resolves to nothing");
+        phase a_stopped_app_is_named_in_plain_words;
+        // A window whose app stopped says so in words, naming the app, and says
+        // why without blaming the person for it.
+        {
+            assert_eq!(
+                crate::outcome::Closed::Crashed
+                    .outcome("Canvas", t("answer-reopen"))
+                    .detail(),
+                "Canvas stopped working. It ended unexpectedly."
+            );
+            assert_eq!(
+                crate::outcome::Closed::Memory
+                    .outcome("Canvas", t("answer-reopen"))
+                    .detail(),
+                "Canvas was closed to free memory"
+            );
+            assert_eq!(
+                crate::outcome::Closed::Runaway
+                    .outcome("Canvas", t("answer-reopen"))
+                    .detail(),
+                "Canvas was using too much memory. It was closed so the rest keeps running."
+            );
+            assert_eq!(
+                t_args("answer-app-not-opened", &[("app", "Notes".into())]),
+                "Notes could not open"
+            );
+            assert_eq!(
+                t_args("answer-app-stopped", &[("app", "Notes".into())]),
+                "Notes stopped working"
+            );
+            assert_eq!(
+                t("answer-why-not-opened"),
+                "It was stopped before a window appeared."
+            );
         }
-    }
 
-    /// A key only English defines would show English on a German desktop,
-    /// and a German key English lacks is dead copy.
-    #[test]
-    fn every_desktop_string_is_translated_in_every_locale() {
-        catalog::check_translations(CATALOGS);
+        phase every_catalogue_entry_resolves_to_a_real_string;
+        {
+            let keys = catalog::messages(CATALOGS[0].1);
+            assert!(!keys.is_empty());
+            for key in keys.keys() {
+                let value = t(key);
+                assert_ne!(&value, key, "{key} has no entry in the catalogue");
+                assert!(!value.trim().is_empty(), "{key} resolves to nothing");
+            }
+        }
+
+        phase every_desktop_string_is_translated_in_every_locale;
+        // A key only English defines would show English on a German desktop,
+        // and a German key English lacks is dead copy.
+        {
+            catalog::check_translations(CATALOGS);
+        }
     }
 
     #[test]

@@ -1370,235 +1370,246 @@ mod tests {
         );
     }
 
-    /// The bell counts what arrived since the person last looked: opening the centre reads it all,
-    /// and one taken back is no longer news.
-    #[test]
-    fn notifications_stay_unread_until_the_centre_opens() {
-        let (mut layer, notifications) = layer_with(2);
-        assert_eq!(notifications.unread(), 2);
-        // Each row says whether it is news, by the same set the bell counts: the centre's rows and
-        // its header never disagree.
-        let ids: Vec<u64> = notifications
-            .log()
-            .history()
-            .iter()
-            .chain(notifications.log().active())
-            .map(|notification| notification.id)
-            .collect();
-        assert!(ids.iter().all(|id| notifications.is_unread(*id)));
-        let revision = notifications.revision();
-        layer.set_center_open(true);
-        assert_eq!(notifications.unread(), 0, "opening the centre reads them");
-        assert!(
-            ids.iter().all(|id| !notifications.is_unread(*id)),
-            "every row is read once the centre opened"
-        );
-        assert_ne!(notifications.revision(), revision, "the bell repaints");
-        layer.set_center_open(false);
-        let fresh = notifications.post(Notification::new("Grace renamed it", ""));
-        assert_eq!(notifications.unread(), 1, "a new one is unread");
-        assert!(notifications.withdraw(fresh));
-        assert_eq!(notifications.unread(), 0, "a withdrawn one is not news");
-    }
+    tilo_test_env::scenario! {
+        fn the_layers_centre_holds_what_banners_leave_and_closes_cleanly;
 
-    /// A notification another of the person's devices projected updates the row it already shows,
-    /// and its live and kept copies go together when that device is done with it.
-    #[test]
-    fn another_devices_projection_updates_in_place_and_retires_together() {
-        let notifications = DesktopNotifications::default();
-        let id = ContinuityNotificationId {
-            epoch: [3; 16],
-            token: [4; 16],
-        };
-        let route = RemoteNotificationRoute {
-            source_device: "laptop".into(),
-            source_label: "Laptop".into(),
-            notification_id: id,
-        };
-        let mut first =
-            Notification::new("New mail", "From Ada").with_app_name("Mail · From Laptop");
-        first.remote_route = Some(route.clone());
-        let shown = notifications.post(first);
-        let mut update = Notification::new("Two new mails", "From Ada and Grace")
-            .with_app_name("Mail · From Laptop");
-        update.remote_route = Some(route);
-        assert_eq!(
-            notifications.replace_remote(&update),
-            Some(shown),
-            "the row it already shows takes the update"
-        );
-        assert_eq!(notifications.counts(), (1, 0), "one row, not two");
-        assert_eq!(notifications.log().active()[0].title, "Two new mails");
-
-        notifications.host().dismiss(shown);
-        assert_eq!(notifications.counts(), (0, 1));
-        assert!(notifications.retire_remote("laptop", id));
-        assert_eq!(notifications.counts(), (0, 0), "the kept copy goes too");
-        assert!(!notifications.is_unread(shown));
-        assert!(
-            !notifications.retire_remote("laptop", id),
-            "nothing left to take away"
-        );
-        assert!(
-            !notifications.retire_remote("studio", id),
-            "another device's id is not this one's"
-        );
-    }
-
-    /// Escape closes the centre the way a press outside does, and arrivals read the same state
-    /// either way: the one after it is a banner on the shell again, not another row behind a centre
-    /// that is no longer there.
-    #[test]
-    fn escape_closes_the_centre_for_arrivals_too() {
-        let (mut layer, notifications) = layer_with(2);
-        layer.set_center_open(true);
-        assert!(
-            notifications.centre_open(),
-            "the arrivals join the open centre"
-        );
-        let escape = ui::synthetic_input::named_key(ui::winit::keyboard::NamedKey::Escape);
-        assert!(layer.route(&escape, 1.0), "the centre takes the key");
-        assert!(!layer.center_open(), "the centre is gone");
-        assert!(
-            !notifications.centre_open(),
-            "and the next arrival is a banner again"
-        );
-    }
-
-    /// The shell draws its own centre over the shell: a banner up when it opens goes into it, what
-    /// arrives joins it, and once the shell says it closed, the shell's own panel is not opened in
-    /// its place.
-    #[test]
-    fn the_shells_centre_holds_arrivals_without_opening_the_shells_panel() {
-        let (layer, notifications) = layer_with(1);
-        notifications.set_shell_centre(true);
-        assert!(notifications.centre_open());
-        assert!(
-            notifications.log().active().is_empty(),
-            "the banner up went into it rather than covering it"
-        );
-        notifications.set_shell_centre(false);
-        assert!(!notifications.centre_open());
-        assert!(
-            !layer.center_open(),
-            "the shell's centre never stands the shell's panel up"
-        );
-    }
-
-    #[test]
-    fn banners_retire_into_the_centre_and_it_closes_on_an_outside_press() {
-        let (mut layer, notifications) = layer_with(2);
-        let id = notifications.log().active()[0].id;
-        notifications.host().dismiss(id);
-        assert_eq!(notifications.counts(), (1, 1));
-        layer.set_center_open(true);
-        let panel = layer.layout().unwrap().panel();
-        assert_eq!(
-            (panel.x0, panel.y0, panel.x1),
-            (PLACE.x0, PLACE.y0, PLACE.x1),
-            "the centre stands where the stack placed it"
-        );
-        assert!(
-            panel.y1 <= PLACE.y1,
-            "as tall as its rows, within its place"
-        );
-        let node = layer.accessibility().unwrap();
-        assert_eq!(node.children.len(), 1, "the centre's dialog is exposed");
-        assert!(press(&mut layer, Point::new(10.0, 700.0)));
-        assert!(!layer.center_open());
-        assert!(
-            !notifications.centre_open(),
-            "a centre closed by a press outside no longer holds arrivals: the next one is a banner"
-        );
-        assert!(
-            notifications.take_outcomes().is_empty(),
-            "closing a banner answers nobody"
-        );
-    }
-
-    /// A host showing the banners in a surface of its own feeds it and answers it through the
-    /// notifications; the layer shows only the centre, and the host hears each outcome as it
-    /// happens.
-    #[test]
-    fn banners_shown_elsewhere_leave_the_layer_only_the_centre() {
-        let (layer, notifications) = layer_with(2);
-        notifications.show_banners_elsewhere();
-        let heard = Rc::new(RefCell::new(Vec::new()));
-        let tap = Rc::clone(&heard);
-        notifications.on_outcome(move |outcome| {
-            if let NotificationOutcome::Activated { action, .. } = outcome {
-                tap.borrow_mut().push(action.clone());
-            }
-        });
-        assert!(!layer.visible(), "no banners on the surface");
-        let feed = notifications.feed();
-        assert_eq!(feed.banners.len(), 2, "the host's own surface gets them");
-        let chosen = feed.banners[0].notification.id;
-        notifications.answer(crate::notifications::BannerAsk::Activate(chosen));
-        assert_eq!(*heard.borrow(), [Some("default".to_owned())]);
-        assert_eq!(notifications.take_outcomes().len(), 1, "and still queued");
-        notifications.host().open_center();
-        assert_eq!(
-            notifications.take_centre_ask(),
-            Some(true),
-            "the host asks for the centre, which whoever draws it opens"
-        );
-    }
-
-    /// The person opened the centre to read what it holds: no banner stands over the rows it
-    /// covers, wherever the host draws the banners, what arrives meanwhile goes into the centre,
-    /// and the ones that came before are rows of it too — a banner is gone from the shell once the
-    /// centre took it.
-    #[test]
-    fn a_banner_never_stands_over_the_open_centre() {
-        let (mut layer, notifications) = layer_with(2);
-        notifications.show_banners_elsewhere();
-        layer.feed_stack();
-        assert_eq!(
-            notifications.feed().banners.len(),
-            2,
-            "the host's own surface shows the banners"
-        );
-        layer.set_center_open(true);
-        assert_eq!(
-            notifications.feed().banners.len(),
-            0,
-            "nothing stands over the centre"
-        );
-        assert_eq!(layer.stack.feed().banners.len(), 0);
-        // One arriving now belongs to the rows the person is reading.
-        notifications.post(Notification::new("Kaffee ist fertig", ""));
-        assert_eq!(
-            notifications.feed().banners.len(),
-            0,
-            "it does not become a banner"
-        );
-        assert!(
-            notifications
+        phase notifications_stay_unread_until_the_centre_opens;
+        // The bell counts what arrived since the person last looked: opening the centre reads it all,
+        // and one taken back is no longer news.
+        {
+            let (mut layer, notifications) = layer_with(2);
+            assert_eq!(notifications.unread(), 2);
+            // Each row says whether it is news, by the same set the bell counts: the centre's rows and
+            // its header never disagree.
+            let ids: Vec<u64> = notifications
                 .log()
                 .history()
                 .iter()
-                .any(|notification| notification.title == "Kaffee ist fertig"),
-            "it is a row of the centre"
-        );
-        layer.set_center_open(false);
-        layer.feed_stack();
-        assert_eq!(
-            notifications.feed().banners.len(),
-            0,
-            "the banners the centre took stay rows of the centre"
-        );
-        assert!(
-            notifications.log().history().len() >= 3,
-            "all three are rows the person reads there"
-        );
-        // What arrives once it is closed is a banner again.
-        notifications.post(Notification::new("Das Wasser kocht", ""));
-        assert_eq!(
-            notifications.feed().banners.len(),
-            1,
-            "a shell with no centre over it shows banners again"
-        );
+                .chain(notifications.log().active())
+                .map(|notification| notification.id)
+                .collect();
+            assert!(ids.iter().all(|id| notifications.is_unread(*id)));
+            let revision = notifications.revision();
+            layer.set_center_open(true);
+            assert_eq!(notifications.unread(), 0, "opening the centre reads them");
+            assert!(
+                ids.iter().all(|id| !notifications.is_unread(*id)),
+                "every row is read once the centre opened"
+            );
+            assert_ne!(notifications.revision(), revision, "the bell repaints");
+            layer.set_center_open(false);
+            let fresh = notifications.post(Notification::new("Grace renamed it", ""));
+            assert_eq!(notifications.unread(), 1, "a new one is unread");
+            assert!(notifications.withdraw(fresh));
+            assert_eq!(notifications.unread(), 0, "a withdrawn one is not news");
+        }
+
+        phase another_devices_projection_updates_in_place_and_retires_together;
+        // A notification another of the person's devices projected updates the row it already shows,
+        // and its live and kept copies go together when that device is done with it.
+        {
+            let notifications = DesktopNotifications::default();
+            let id = ContinuityNotificationId {
+                epoch: [3; 16],
+                token: [4; 16],
+            };
+            let route = RemoteNotificationRoute {
+                source_device: "laptop".into(),
+                source_label: "Laptop".into(),
+                notification_id: id,
+            };
+            let mut first =
+                Notification::new("New mail", "From Ada").with_app_name("Mail · From Laptop");
+            first.remote_route = Some(route.clone());
+            let shown = notifications.post(first);
+            let mut update = Notification::new("Two new mails", "From Ada and Grace")
+                .with_app_name("Mail · From Laptop");
+            update.remote_route = Some(route);
+            assert_eq!(
+                notifications.replace_remote(&update),
+                Some(shown),
+                "the row it already shows takes the update"
+            );
+            assert_eq!(notifications.counts(), (1, 0), "one row, not two");
+            assert_eq!(notifications.log().active()[0].title, "Two new mails");
+
+            notifications.host().dismiss(shown);
+            assert_eq!(notifications.counts(), (0, 1));
+            assert!(notifications.retire_remote("laptop", id));
+            assert_eq!(notifications.counts(), (0, 0), "the kept copy goes too");
+            assert!(!notifications.is_unread(shown));
+            assert!(
+                !notifications.retire_remote("laptop", id),
+                "nothing left to take away"
+            );
+            assert!(
+                !notifications.retire_remote("studio", id),
+                "another device's id is not this one's"
+            );
+        }
+
+        phase escape_closes_the_centre_for_arrivals_too;
+        // Escape closes the centre the way a press outside does, and arrivals read the same state
+        // either way: the one after it is a banner on the shell again, not another row behind a centre
+        // that is no longer there.
+        {
+            let (mut layer, notifications) = layer_with(2);
+            layer.set_center_open(true);
+            assert!(
+                notifications.centre_open(),
+                "the arrivals join the open centre"
+            );
+            let escape = ui::synthetic_input::named_key(ui::winit::keyboard::NamedKey::Escape);
+            assert!(layer.route(&escape, 1.0), "the centre takes the key");
+            assert!(!layer.center_open(), "the centre is gone");
+            assert!(
+                !notifications.centre_open(),
+                "and the next arrival is a banner again"
+            );
+        }
+
+        phase the_shells_centre_holds_arrivals_without_opening_the_shells_panel;
+        // The shell draws its own centre over the shell: a banner up when it opens goes into it, what
+        // arrives joins it, and once the shell says it closed, the shell's own panel is not opened in
+        // its place.
+        {
+            let (layer, notifications) = layer_with(1);
+            notifications.set_shell_centre(true);
+            assert!(notifications.centre_open());
+            assert!(
+                notifications.log().active().is_empty(),
+                "the banner up went into it rather than covering it"
+            );
+            notifications.set_shell_centre(false);
+            assert!(!notifications.centre_open());
+            assert!(
+                !layer.center_open(),
+                "the shell's centre never stands the shell's panel up"
+            );
+        }
+
+        phase banners_retire_into_the_centre_and_it_closes_on_an_outside_press;
+        {
+            let (mut layer, notifications) = layer_with(2);
+            let id = notifications.log().active()[0].id;
+            notifications.host().dismiss(id);
+            assert_eq!(notifications.counts(), (1, 1));
+            layer.set_center_open(true);
+            let panel = layer.layout().unwrap().panel();
+            assert_eq!(
+                (panel.x0, panel.y0, panel.x1),
+                (PLACE.x0, PLACE.y0, PLACE.x1),
+                "the centre stands where the stack placed it"
+            );
+            assert!(
+                panel.y1 <= PLACE.y1,
+                "as tall as its rows, within its place"
+            );
+            let node = layer.accessibility().unwrap();
+            assert_eq!(node.children.len(), 1, "the centre's dialog is exposed");
+            assert!(press(&mut layer, Point::new(10.0, 700.0)));
+            assert!(!layer.center_open());
+            assert!(
+                !notifications.centre_open(),
+                "a centre closed by a press outside no longer holds arrivals: the next one is a banner"
+            );
+            assert!(
+                notifications.take_outcomes().is_empty(),
+                "closing a banner answers nobody"
+            );
+        }
+
+        phase banners_shown_elsewhere_leave_the_layer_only_the_centre;
+        // A host showing the banners in a surface of its own feeds it and answers it through the
+        // notifications; the layer shows only the centre, and the host hears each outcome as it
+        // happens.
+        {
+            let (layer, notifications) = layer_with(2);
+            notifications.show_banners_elsewhere();
+            let heard = Rc::new(RefCell::new(Vec::new()));
+            let tap = Rc::clone(&heard);
+            notifications.on_outcome(move |outcome| {
+                if let NotificationOutcome::Activated { action, .. } = outcome {
+                    tap.borrow_mut().push(action.clone());
+                }
+            });
+            assert!(!layer.visible(), "no banners on the surface");
+            let feed = notifications.feed();
+            assert_eq!(feed.banners.len(), 2, "the host's own surface gets them");
+            let chosen = feed.banners[0].notification.id;
+            notifications.answer(crate::notifications::BannerAsk::Activate(chosen));
+            assert_eq!(*heard.borrow(), [Some("default".to_owned())]);
+            assert_eq!(notifications.take_outcomes().len(), 1, "and still queued");
+            notifications.host().open_center();
+            assert_eq!(
+                notifications.take_centre_ask(),
+                Some(true),
+                "the host asks for the centre, which whoever draws it opens"
+            );
+        }
+
+        phase a_banner_never_stands_over_the_open_centre;
+        // The person opened the centre to read what it holds: no banner stands over the rows it
+        // covers, wherever the host draws the banners, what arrives meanwhile goes into the centre,
+        // and the ones that came before are rows of it too — a banner is gone from the shell once the
+        // centre took it.
+        {
+            let (mut layer, notifications) = layer_with(2);
+            notifications.show_banners_elsewhere();
+            layer.feed_stack();
+            assert_eq!(
+                notifications.feed().banners.len(),
+                2,
+                "the host's own surface shows the banners"
+            );
+            layer.set_center_open(true);
+            assert_eq!(
+                notifications.feed().banners.len(),
+                0,
+                "nothing stands over the centre"
+            );
+            assert_eq!(layer.stack.feed().banners.len(), 0);
+            // One arriving now belongs to the rows the person is reading.
+            notifications.post(Notification::new("Kaffee ist fertig", ""));
+            assert_eq!(
+                notifications.feed().banners.len(),
+                0,
+                "it does not become a banner"
+            );
+            assert!(
+                notifications
+                    .log()
+                    .history()
+                    .iter()
+                    .any(|notification| notification.title == "Kaffee ist fertig"),
+                "it is a row of the centre"
+            );
+            layer.set_center_open(false);
+            layer.feed_stack();
+            assert_eq!(
+                notifications.feed().banners.len(),
+                0,
+                "the banners the centre took stay rows of the centre"
+            );
+            assert!(
+                notifications.log().history().len() >= 3,
+                "all three are rows the person reads there"
+            );
+            // What arrives once it is closed is a banner again.
+            notifications.post(Notification::new("Das Wasser kocht", ""));
+            assert_eq!(
+                notifications.feed().banners.len(),
+                1,
+                "a shell with no centre over it shows banners again"
+            );
+        }
+
+        phase nothing_is_exposed_or_consumed_without_notifications;
+        {
+            let (mut layer, _) = layer_with(0);
+            assert!(layer.accessibility().is_none());
+            assert!(!press(&mut layer, Point::new(1200.0, 80.0)));
+        }
     }
 
     /// The centre arrives and leaves on the standard motion: closed, it is still drawn while it
@@ -1631,115 +1642,254 @@ mod tests {
         assert!(layer.center.is_none(), "gone once its leaving is over");
     }
 
-    #[test]
-    fn nothing_is_exposed_or_consumed_without_notifications() {
-        let (mut layer, _) = layer_with(0);
-        assert!(layer.accessibility().is_none());
-        assert!(!press(&mut layer, Point::new(1200.0, 80.0)));
-    }
+    tilo_test_env::scenario! {
+        fn a_notice_reaches_its_sender_its_app_or_its_reader;
 
-    #[test]
-    fn portable_banner_clicks_complete_cancel_and_yield_to_history() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        for interrupted in [false, true] {
-            let (mut layer, notifications) = layer_with(1);
-            let theme = ui::Theme::dark().with_reduce_motion(true);
-            layer.draw_child(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut ui::TextRenderer::new(),
-                &theme,
-                &ui::presence::PresenceCtx::default(),
-            );
-            let point = layer.stack.rect().center();
-            layer.route(&ui::synthetic_input::cursor_moved(point.x, point.y), 1.0);
-            assert!(press(&mut layer, point));
-            assert!(
-                notifications.take_outcomes().is_empty(),
-                "pressing is not choosing"
-            );
-            if interrupted {
-                layer.set_center_open(true);
-            }
-            assert!(layer.route(&ui::synthetic_input::mouse_release(), 1.0));
-            let outcomes = notifications.take_outcomes();
-            if interrupted {
+        phase portable_banner_clicks_complete_cancel_and_yield_to_history;
+        {
+            // Motion reads at its end: this test checks the resting frame.
+            let _settled = ui::motion::testing::settled();
+            for interrupted in [false, true] {
+                let (mut layer, notifications) = layer_with(1);
+                let theme = ui::Theme::dark().with_reduce_motion(true);
+                layer.draw_child(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut ui::TextRenderer::new(),
+                    &theme,
+                    &ui::presence::PresenceCtx::default(),
+                );
+                let point = layer.stack.rect().center();
+                layer.route(&ui::synthetic_input::cursor_moved(point.x, point.y), 1.0);
+                assert!(press(&mut layer, point));
                 assert!(
-                    outcomes.is_empty(),
-                    "a banner the centre retired answers nobody"
+                    notifications.take_outcomes().is_empty(),
+                    "pressing is not choosing"
                 );
-                assert_eq!(
-                    notifications.counts(),
-                    (0, 1),
-                    "a banner up when the centre opens goes into it"
-                );
-                assert!(layer.center_open());
-            } else {
-                assert!(
-                    matches!(&outcomes[..], [NotificationOutcome::Activated { action, .. }]
-                    if action.as_deref() == Some("default"))
-                );
-                assert_eq!(notifications.counts(), (0, 1));
+                if interrupted {
+                    layer.set_center_open(true);
+                }
+                assert!(layer.route(&ui::synthetic_input::mouse_release(), 1.0));
+                let outcomes = notifications.take_outcomes();
+                if interrupted {
+                    assert!(
+                        outcomes.is_empty(),
+                        "a banner the centre retired answers nobody"
+                    );
+                    assert_eq!(
+                        notifications.counts(),
+                        (0, 1),
+                        "a banner up when the centre opens goes into it"
+                    );
+                    assert!(layer.center_open());
+                } else {
+                    assert!(
+                        matches!(&outcomes[..], [NotificationOutcome::Activated { action, .. }]
+                        if action.as_deref() == Some("default"))
+                    );
+                    assert_eq!(notifications.counts(), (0, 1));
+                }
             }
         }
-    }
 
-    #[test]
-    fn choosing_a_banner_hands_its_default_action_to_the_host() {
-        let (_, notifications) = layer_with(1);
-        let id = notifications.log().active()[0].id;
-        notifications.host().activate(id);
-        let outcomes = notifications.take_outcomes();
-        assert!(
-            matches!(&outcomes[..], [NotificationOutcome::Activated { notification, action }]
-                if notification.id == id && action.as_deref() == Some("default")),
-            "{outcomes:?}"
-        );
-        assert_eq!(
-            notifications.counts(),
-            (0, 1),
-            "a chosen banner is retained"
-        );
-    }
+        phase choosing_a_banner_hands_its_default_action_to_the_host;
+        {
+            let (_, notifications) = layer_with(1);
+            let id = notifications.log().active()[0].id;
+            notifications.host().activate(id);
+            let outcomes = notifications.take_outcomes();
+            assert!(
+                matches!(&outcomes[..], [NotificationOutcome::Activated { notification, action }]
+                    if notification.id == id && action.as_deref() == Some("default")),
+                "{outcomes:?}"
+            );
+            assert_eq!(
+                notifications.counts(),
+                (0, 1),
+                "a chosen banner is retained"
+            );
+        }
 
-    #[test]
-    fn a_retained_notification_without_actions_opens_its_app_and_stays_until_dismissed() {
-        let (mut layer, notifications) = layer_with(2);
-        let quiet = notifications.log().active()[1].id;
-        notifications.host().dismiss(quiet);
-        assert!(matches!(
-            notifications.host().activate_history(quiet),
-            HistoryActivation::OpenApp { ref app_id, .. } if app_id == "so.tilo.clocks"
-        ));
-        let banner = notifications.log().active()[0].id;
-        layer.set_center_open(true);
-        // Opening the centre retired the banner still up into it, in the same app's group: one row
-        // for the app, and dismissing it takes both.
-        assert_eq!(
-            notifications.log().history().len(),
-            2,
-            "the retired banner and the kept one"
-        );
-        let layout = layer.layout().unwrap();
-        let dismiss = layout.row_controls(layout.row(0), &RowShape::default());
-        assert!(press(&mut layer, dismiss.center()));
-        assert_eq!(notifications.log().history().len(), 0);
-        // Both rows the app's one row held go: the banner retirement put in the centre, and the one
-        // kept there all along.
-        let gone: Vec<u64> = notifications
-            .take_outcomes()
-            .into_iter()
-            .filter_map(|outcome| match outcome {
-                NotificationOutcome::Dismissed { id } => Some(id),
-                NotificationOutcome::Activated { .. } => None,
-            })
-            .collect();
-        assert_eq!(gone.len(), 2, "one dismissal per row the app's row held");
-        assert!(
-            gone.contains(&banner) && gone.contains(&quiet),
-            "the retired banner and the kept notification are dismissed with their app's row: {gone:?}"
-        );
+        phase a_retained_notification_without_actions_opens_its_app_and_stays_until_dismissed;
+        {
+            let (mut layer, notifications) = layer_with(2);
+            let quiet = notifications.log().active()[1].id;
+            notifications.host().dismiss(quiet);
+            assert!(matches!(
+                notifications.host().activate_history(quiet),
+                HistoryActivation::OpenApp { ref app_id, .. } if app_id == "so.tilo.clocks"
+            ));
+            let banner = notifications.log().active()[0].id;
+            layer.set_center_open(true);
+            // Opening the centre retired the banner still up into it, in the same app's group: one row
+            // for the app, and dismissing it takes both.
+            assert_eq!(
+                notifications.log().history().len(),
+                2,
+                "the retired banner and the kept one"
+            );
+            let layout = layer.layout().unwrap();
+            let dismiss = layout.row_controls(layout.row(0), &RowShape::default());
+            assert!(press(&mut layer, dismiss.center()));
+            assert_eq!(notifications.log().history().len(), 0);
+            // Both rows the app's one row held go: the banner retirement put in the centre, and the one
+            // kept there all along.
+            let gone: Vec<u64> = notifications
+                .take_outcomes()
+                .into_iter()
+                .filter_map(|outcome| match outcome {
+                    NotificationOutcome::Dismissed { id } => Some(id),
+                    NotificationOutcome::Activated { .. } => None,
+                })
+                .collect();
+            assert_eq!(gone.len(), 2, "one dismissal per row the app's row held");
+            assert!(
+                gone.contains(&banner) && gone.contains(&quiet),
+                "the retired banner and the kept notification are dismissed with their app's row: {gone:?}"
+            );
+        }
+
+        phase an_apps_notifications_show_on_the_desktop_attributed_to_its_window;
+        {
+            use ui::notify::Notifier as _;
+            let (notifier, platform, background) = notifier();
+            let mut inbox = notifier.inbox();
+            let notifications = DesktopNotifications::default();
+            {
+                let _running = ui::widget::panic_scope::enter(Some(7));
+                notifier
+                    .show(
+                        &ui::notify::Notification::new("timer", "Tea", "Steeped")
+                            .with_activation("tilo-clocks:timer/1"),
+                    )
+                    .unwrap();
+                notifier
+                    .show(&ui::notify::Notification::new("timer", "Tea", "Ready"))
+                    .unwrap();
+            }
+            assert!(inbox.drain(&notifications, &clocks));
+            let log = notifications.log();
+            assert_eq!(log.active().len(), 1, "the same tag replaces its banner");
+            let shown = &log.active()[0];
+            assert_eq!(shown.body, "Ready");
+            assert_eq!(shown.app_id.as_deref(), Some("so.tilo.clocks"));
+            assert_eq!(shown.app_name.as_deref(), Some("Clocks"));
+            drop(log);
+            assert!(
+                platform.0.lock().unwrap().is_empty(),
+                "a page in view keeps them on its desktop"
+            );
+
+            background.store(true, std::sync::atomic::Ordering::Release);
+            {
+                let _running = ui::widget::panic_scope::enter(Some(7));
+                notifier
+                    .show(
+                        &ui::notify::Notification::new("alarm", "Alarm", "07:00")
+                            .with_activation("tilo-clocks:alarm/1")
+                            .with_action("Stop"),
+                    )
+                    .unwrap();
+            }
+            inbox.drain(&notifications, &clocks);
+            assert_eq!(
+                *platform.0.lock().unwrap(),
+                ["Alarm"],
+                "a hidden page's go to the platform too"
+            );
+            let alarm = notifications.log().active()[1].clone();
+            assert_eq!(alarm.default_action_key().as_deref(), Some("default"));
+            assert_eq!(
+                alarm.actions[0].1, "Stop",
+                "the button says what choosing it does"
+            );
+            assert_eq!(
+                inbox.take_activation(alarm.id).as_deref(),
+                Some("tilo-clocks:alarm/1")
+            );
+            {
+                let _running = ui::widget::panic_scope::enter(Some(7));
+                notifier.withdraw("timer").unwrap();
+            }
+            inbox.drain(&notifications, &clocks);
+            assert_eq!(notifications.counts(), (1, 0));
+        }
+
+        phase another_surfaces_window_is_left_to_it_and_no_surface_means_the_platform;
+        {
+            use ui::notify::Notifier as _;
+            let (notifier, platform, _) = notifier();
+            {
+                let inbox = notifier.inbox();
+                drop(inbox);
+            }
+            notifier
+                .show(&ui::notify::Notification::new("t", "Alone", ""))
+                .unwrap();
+            assert_eq!(*platform.0.lock().unwrap(), ["Alone"]);
+
+            let mut ours = notifier.inbox();
+            let mut theirs = notifier.inbox();
+            let (mine, other) = (
+                DesktopNotifications::default(),
+                DesktopNotifications::default(),
+            );
+            {
+                let _running = ui::widget::panic_scope::enter(Some(7));
+                notifier
+                    .show(&ui::notify::Notification::new("t", "Theirs", ""))
+                    .unwrap();
+            }
+            assert!(!ours.drain(&mine, &|_| None), "not a window of ours");
+            assert!(theirs.drain(&other, &clocks));
+            assert_eq!((mine.counts(), other.counts()), ((0, 0), (1, 0)));
+        }
+
+        phase a_sender_withdraws_live_and_retained_notifications;
+        {
+            let (_, notifications) = layer_with(2);
+            let live = notifications.log().active()[0].id;
+            let retained = notifications.log().active()[1].id;
+            notifications.host().dismiss(retained);
+            assert!(notifications.withdraw(live));
+            assert!(notifications.withdraw(retained));
+            assert!(!notifications.withdraw(retained));
+            assert_eq!(notifications.counts(), (0, 0));
+        }
+
+        phase portable_notification_reader_returns_to_history_before_closing;
+        {
+            use ui::winit::keyboard::NamedKey;
+            let (mut layer, notifications) = layer_with(0);
+            // Nothing to open and no app to go to: the row opens the reader.
+            let id = notifications.post(Notification::new(
+                "Backup couldn't finish",
+                "Reconnect the disk and the next backup picks up where this one stopped.",
+            ));
+            notifications.host().dismiss(id);
+            notifications.take_outcomes();
+            layer.set_center_open(true);
+            assert!(layer.route(&reader_key_event(NamedKey::Tab), 1.0));
+            assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
+            assert!(layer.centre().unwrap().is_reading());
+            assert!(layer.route(&reader_key_event(NamedKey::Delete), 1.0));
+            assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
+            assert_eq!(notifications.log().history().len(), 1);
+            assert!(notifications.take_outcomes().is_empty());
+            assert!(layer.route(&reader_key_event(NamedKey::Escape), 1.0));
+            assert!(layer.center_open());
+            assert!(!layer.centre().unwrap().is_reading());
+            assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
+            assert!(layer.centre().unwrap().is_reading());
+            let back = layer.layout().unwrap().reader_back();
+            assert!(press(&mut layer, back.center()));
+            assert!(layer.center_open());
+            assert!(!layer.centre().unwrap().is_reading());
+            assert!(layer.route(&reader_key_event(NamedKey::Escape), 1.0));
+            assert!(!layer.center_open());
+            assert!(notifications.take_outcomes().is_empty());
+            assert!(notifications.take_open_app().is_none());
+        }
     }
 
     #[derive(Default)]
@@ -1778,114 +1928,6 @@ mod tests {
             )
         })
     }
-
-    #[test]
-    fn an_apps_notifications_show_on_the_desktop_attributed_to_its_window() {
-        use ui::notify::Notifier as _;
-        let (notifier, platform, background) = notifier();
-        let mut inbox = notifier.inbox();
-        let notifications = DesktopNotifications::default();
-        {
-            let _running = ui::widget::panic_scope::enter(Some(7));
-            notifier
-                .show(
-                    &ui::notify::Notification::new("timer", "Tea", "Steeped")
-                        .with_activation("tilo-clocks:timer/1"),
-                )
-                .unwrap();
-            notifier
-                .show(&ui::notify::Notification::new("timer", "Tea", "Ready"))
-                .unwrap();
-        }
-        assert!(inbox.drain(&notifications, &clocks));
-        let log = notifications.log();
-        assert_eq!(log.active().len(), 1, "the same tag replaces its banner");
-        let shown = &log.active()[0];
-        assert_eq!(shown.body, "Ready");
-        assert_eq!(shown.app_id.as_deref(), Some("so.tilo.clocks"));
-        assert_eq!(shown.app_name.as_deref(), Some("Clocks"));
-        drop(log);
-        assert!(
-            platform.0.lock().unwrap().is_empty(),
-            "a page in view keeps them on its desktop"
-        );
-
-        background.store(true, std::sync::atomic::Ordering::Release);
-        {
-            let _running = ui::widget::panic_scope::enter(Some(7));
-            notifier
-                .show(
-                    &ui::notify::Notification::new("alarm", "Alarm", "07:00")
-                        .with_activation("tilo-clocks:alarm/1")
-                        .with_action("Stop"),
-                )
-                .unwrap();
-        }
-        inbox.drain(&notifications, &clocks);
-        assert_eq!(
-            *platform.0.lock().unwrap(),
-            ["Alarm"],
-            "a hidden page's go to the platform too"
-        );
-        let alarm = notifications.log().active()[1].clone();
-        assert_eq!(alarm.default_action_key().as_deref(), Some("default"));
-        assert_eq!(
-            alarm.actions[0].1, "Stop",
-            "the button says what choosing it does"
-        );
-        assert_eq!(
-            inbox.take_activation(alarm.id).as_deref(),
-            Some("tilo-clocks:alarm/1")
-        );
-        {
-            let _running = ui::widget::panic_scope::enter(Some(7));
-            notifier.withdraw("timer").unwrap();
-        }
-        inbox.drain(&notifications, &clocks);
-        assert_eq!(notifications.counts(), (1, 0));
-    }
-
-    #[test]
-    fn another_surfaces_window_is_left_to_it_and_no_surface_means_the_platform() {
-        use ui::notify::Notifier as _;
-        let (notifier, platform, _) = notifier();
-        {
-            let inbox = notifier.inbox();
-            drop(inbox);
-        }
-        notifier
-            .show(&ui::notify::Notification::new("t", "Alone", ""))
-            .unwrap();
-        assert_eq!(*platform.0.lock().unwrap(), ["Alone"]);
-
-        let mut ours = notifier.inbox();
-        let mut theirs = notifier.inbox();
-        let (mine, other) = (
-            DesktopNotifications::default(),
-            DesktopNotifications::default(),
-        );
-        {
-            let _running = ui::widget::panic_scope::enter(Some(7));
-            notifier
-                .show(&ui::notify::Notification::new("t", "Theirs", ""))
-                .unwrap();
-        }
-        assert!(!ours.drain(&mine, &|_| None), "not a window of ours");
-        assert!(theirs.drain(&other, &clocks));
-        assert_eq!((mine.counts(), other.counts()), ((0, 0), (1, 0)));
-    }
-
-    #[test]
-    fn a_sender_withdraws_live_and_retained_notifications() {
-        let (_, notifications) = layer_with(2);
-        let live = notifications.log().active()[0].id;
-        let retained = notifications.log().active()[1].id;
-        notifications.host().dismiss(retained);
-        assert!(notifications.withdraw(live));
-        assert!(notifications.withdraw(retained));
-        assert!(!notifications.withdraw(retained));
-        assert_eq!(notifications.counts(), (0, 0));
-    }
     fn reader_key_event(key: ui::winit::keyboard::NamedKey) -> WindowEvent {
         use ui::winit::event::{KeyEvent, RawKeyEvent};
         use ui::winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
@@ -1906,40 +1948,6 @@ mod tests {
             ),
             is_synthetic: true,
         }
-    }
-
-    #[test]
-    fn portable_notification_reader_returns_to_history_before_closing() {
-        use ui::winit::keyboard::NamedKey;
-        let (mut layer, notifications) = layer_with(0);
-        // Nothing to open and no app to go to: the row opens the reader.
-        let id = notifications.post(Notification::new(
-            "Backup couldn't finish",
-            "Reconnect the disk and the next backup picks up where this one stopped.",
-        ));
-        notifications.host().dismiss(id);
-        notifications.take_outcomes();
-        layer.set_center_open(true);
-        assert!(layer.route(&reader_key_event(NamedKey::Tab), 1.0));
-        assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
-        assert!(layer.centre().unwrap().is_reading());
-        assert!(layer.route(&reader_key_event(NamedKey::Delete), 1.0));
-        assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
-        assert_eq!(notifications.log().history().len(), 1);
-        assert!(notifications.take_outcomes().is_empty());
-        assert!(layer.route(&reader_key_event(NamedKey::Escape), 1.0));
-        assert!(layer.center_open());
-        assert!(!layer.centre().unwrap().is_reading());
-        assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
-        assert!(layer.centre().unwrap().is_reading());
-        let back = layer.layout().unwrap().reader_back();
-        assert!(press(&mut layer, back.center()));
-        assert!(layer.center_open());
-        assert!(!layer.centre().unwrap().is_reading());
-        assert!(layer.route(&reader_key_event(NamedKey::Escape), 1.0));
-        assert!(!layer.center_open());
-        assert!(notifications.take_outcomes().is_empty());
-        assert!(notifications.take_open_app().is_none());
     }
 
     /// An ask as a host offers it: its answer, and "Not now" under it.
@@ -1963,86 +1971,90 @@ mod tests {
         ask
     }
 
-    #[test]
-    fn an_ask_shows_not_now_then_its_answer() {
-        let notifications = DesktopNotifications::default();
-        notifications.post(ask());
-        let notice = notifications.log().active()[0].clone();
-        let keys: Vec<String> = notifications
-            .host()
-            .actions_for(&notice)
-            .into_iter()
-            .map(|(key, _)| key)
-            .collect();
-        assert_eq!(keys, ["not-now", "host:keep-identity"]);
-        assert_eq!(
-            notice.default_action_key().as_deref(),
-            Some("host:keep-identity")
-        );
-        let plain = Notification::new("Tea", "Ready");
-        assert!(notifications.host().actions_for(&plain).is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn an_ask_waits_in_the_centre_until_answered_or_withdrawn;
 
-    #[test]
-    fn not_now_keeps_the_ask_in_the_centre_without_answering_it() {
-        let notifications = DesktopNotifications::default();
-        let id = notifications.post(ask());
-        notifications.host().invoke_action(id, "not-now");
-        assert!(notifications.take_outcomes().is_empty());
-        assert_eq!(notifications.counts(), (0, 1));
-        let activation = notifications.host().activate_history(id);
-        assert!(matches!(activation, HistoryActivation::Invoked));
-        assert!(matches!(
-            &notifications.take_outcomes()[..],
-            [NotificationOutcome::Activated { action: Some(action), .. }]
-                if action == "host:keep-identity"
-        ));
-    }
+        phase an_ask_shows_not_now_then_its_answer;
+        {
+            let notifications = DesktopNotifications::default();
+            notifications.post(ask());
+            let notice = notifications.log().active()[0].clone();
+            let keys: Vec<String> = notifications
+                .host()
+                .actions_for(&notice)
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect();
+            assert_eq!(keys, ["not-now", "host:keep-identity"]);
+            assert_eq!(
+                notice.default_action_key().as_deref(),
+                Some("host:keep-identity")
+            );
+            let plain = Notification::new("Tea", "Ready");
+            assert!(notifications.host().actions_for(&plain).is_empty());
+        }
 
-    #[test]
-    fn a_retained_rows_action_answers_its_sender_and_leaves_the_centre() {
-        let notifications = DesktopNotifications::default();
-        let ask = notifications.post(ask());
-        notifications.host().invoke_action(ask, "not-now");
-        let tea = notifications.post(Notification::new("Tea", "Ready"));
-        notifications.host().dismiss(tea);
-        notifications.take_outcomes();
-        assert_eq!(notifications.counts(), (0, 2));
-        notifications
-            .host()
-            .invoke_action(ask, "host:keep-identity");
-        assert!(matches!(
-            &notifications.take_outcomes()[..],
-            [NotificationOutcome::Activated { action: Some(action), .. }]
-                if action == "host:keep-identity"
-        ));
-        let left: Vec<u64> = notifications.log().history().iter().map(|n| n.id).collect();
-        assert_eq!(left, [tea], "the answered row is gone, the other stays");
-    }
+        phase not_now_keeps_the_ask_in_the_centre_without_answering_it;
+        {
+            let notifications = DesktopNotifications::default();
+            let id = notifications.post(ask());
+            notifications.host().invoke_action(id, "not-now");
+            assert!(notifications.take_outcomes().is_empty());
+            assert_eq!(notifications.counts(), (0, 1));
+            let activation = notifications.host().activate_history(id);
+            assert!(matches!(activation, HistoryActivation::Invoked));
+            assert!(matches!(
+                &notifications.take_outcomes()[..],
+                [NotificationOutcome::Activated { action: Some(action), .. }]
+                    if action == "host:keep-identity"
+            ));
+        }
 
-    #[test]
-    fn answering_an_ask_hands_its_action_to_the_host() {
-        let notifications = DesktopNotifications::default();
-        let id = notifications.post(ask());
-        notifications.host().invoke_action(id, "host:keep-identity");
-        assert!(matches!(
-            &notifications.take_outcomes()[..],
-            [NotificationOutcome::Activated { action: Some(action), .. }]
-                if action == "host:keep-identity"
-        ));
-    }
+        phase a_retained_rows_action_answers_its_sender_and_leaves_the_centre;
+        {
+            let notifications = DesktopNotifications::default();
+            let ask = notifications.post(ask());
+            notifications.host().invoke_action(ask, "not-now");
+            let tea = notifications.post(Notification::new("Tea", "Ready"));
+            notifications.host().dismiss(tea);
+            notifications.take_outcomes();
+            assert_eq!(notifications.counts(), (0, 2));
+            notifications
+                .host()
+                .invoke_action(ask, "host:keep-identity");
+            assert!(matches!(
+                &notifications.take_outcomes()[..],
+                [NotificationOutcome::Activated { action: Some(action), .. }]
+                    if action == "host:keep-identity"
+            ));
+            let left: Vec<u64> = notifications.log().history().iter().map(|n| n.id).collect();
+            assert_eq!(left, [tea], "the answered row is gone, the other stays");
+        }
 
-    #[test]
-    fn an_ask_for_an_action_no_longer_offered_is_withdrawn_everywhere() {
-        let notifications = DesktopNotifications::default();
-        notifications.post(ask());
-        let put_off = notifications.post(ask());
-        notifications.host().invoke_action(put_off, "not-now");
-        let other = notifications.post(Notification::new("Tea", "Ready"));
-        assert_eq!(notifications.counts(), (2, 1));
-        assert!(notifications.withdraw_host_action("keep-identity"));
-        assert_eq!(notifications.counts(), (1, 0));
-        assert_eq!(notifications.log().active()[0].id, other);
-        assert!(!notifications.withdraw_host_action("keep-identity"));
+        phase answering_an_ask_hands_its_action_to_the_host;
+        {
+            let notifications = DesktopNotifications::default();
+            let id = notifications.post(ask());
+            notifications.host().invoke_action(id, "host:keep-identity");
+            assert!(matches!(
+                &notifications.take_outcomes()[..],
+                [NotificationOutcome::Activated { action: Some(action), .. }]
+                    if action == "host:keep-identity"
+            ));
+        }
+
+        phase an_ask_for_an_action_no_longer_offered_is_withdrawn_everywhere;
+        {
+            let notifications = DesktopNotifications::default();
+            notifications.post(ask());
+            let put_off = notifications.post(ask());
+            notifications.host().invoke_action(put_off, "not-now");
+            let other = notifications.post(Notification::new("Tea", "Ready"));
+            assert_eq!(notifications.counts(), (2, 1));
+            assert!(notifications.withdraw_host_action("keep-identity"));
+            assert_eq!(notifications.counts(), (1, 0));
+            assert_eq!(notifications.log().active()[0].id, other);
+            assert!(!notifications.withdraw_host_action("keep-identity"));
+        }
     }
 }

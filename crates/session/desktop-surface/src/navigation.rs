@@ -1759,298 +1759,378 @@ mod tests {
         admit(verb, tree)
     }
 
-    /// Every verb of either vocabulary decodes from its declaration's id, and is asked for with
-    /// exactly the arguments its declaration makes optional: nothing of it can be dropped, or
-    /// invented, on the wire.
-    #[test]
-    fn every_verb_decodes_from_its_id_and_refuses_a_bad_argument() {
-        for declaration in LayoutEffect::declarations()
-            .into_iter()
-            .chain(ChromeEffect::declarations())
+    tilo_test_env::scenario! {
+        fn verbs_and_routes_decode_and_the_snapshot_names_only_what_is_live;
+
+        phase every_verb_decodes_from_its_id_and_refuses_a_bad_argument;
+        // Every verb of either vocabulary decodes from its declaration's id, and is asked for with
+        // exactly the arguments its declaration makes optional: nothing of it can be dropped, or
+        // invented, on the wire.
         {
-            let none_needed = declaration.params.iter().all(|param| !param.required);
-            let decoded = LayoutEffect::decode(declaration.id, &serde_json::Map::default()).is_ok()
-                || ChromeEffect::decode(declaration.id, &serde_json::Map::default()).is_ok();
-            assert_eq!(
-                decoded, none_needed,
-                "{}: arguments are required only where its declaration asks",
-                declaration.id
-            );
-        }
-        assert!(decode::<LayoutEffect>("no-such-verb", serde_json::json!({})).is_err());
-        assert_eq!(
-            decode::<LayoutEffect>("focus", serde_json::json!({"tab":"4"})).ok(),
-            Some(LayoutEffect::Focus { tab: "4".into() })
-        );
-        assert!(decode::<LayoutEffect>("focus", serde_json::json!({"tab":4})).is_err());
-        assert_eq!(
-            decode::<ChromeEffect>("pan", serde_json::json!({"strip":"9","offset":1.5})).ok(),
-            Some(ChromeEffect::Pan {
-                strip: "9".into(),
-                offset: 1.5
-            })
-        );
-    }
-
-    /// A window that runs only on another device is that device's window of the app. Asking for
-    /// the app here opens this device's own window, and never takes the person to the other
-    /// device's instead.
-    #[test]
-    fn an_app_whose_only_window_here_runs_on_another_device_is_opened_here() {
-        let mut tree = tree();
-        assert_eq!(
-            window_of_app(&tree, "so.tilo.notes").map(|ids| ids.tab),
-            Some(4),
-            "this device's own window of the app is the one asking for it selects"
-        );
-        assert!(matches!(
-            resolve_open(&tree, "so.tilo.notes"),
-            Admitted::Select(ids) if ids.tab == 4
-        ));
-        tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::HostedWindow {
-            app_id: "so.tilo.notes".into(),
-            label: "Notes".into(),
-            host: "ab".repeat(32),
-            host_label: "Laptop".into(),
-        };
-        assert_eq!(window_of_app(&tree, "so.tilo.notes"), None);
-        assert_eq!(
-            resolve_open(&tree, "so.tilo.notes"),
-            Admitted::Launch("so.tilo.notes".into(), false)
-        );
-    }
-
-    #[test]
-    fn a_window_of_one_tab_has_nothing_to_split() {
-        let mut tree = tree();
-        let split = chrome("split-right", serde_json::json!({"tab":"4"}));
-        assert_eq!(
-            admit(&split, &tree).unwrap_err(),
-            t("window-menu-split-one-tab")
-        );
-        // A second tab makes the window one a split has something to take out of: the same chord is
-        // admitted, and the same rule keeps the menu's row.
-        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
-        group.tabs.push(Tab {
-            id: 5,
-            title: "Another".into(),
-            ..group.tabs[0].clone()
-        });
-        let ids = tab_route(&tree, "4").unwrap();
-        assert!(has_a_second_tab(&tree, &ids));
-        assert!(matches!(admit(&split, &tree), Ok(Admitted::SplitRight(_))));
-    }
-
-    #[test]
-    fn route_round_trips_full_u64_and_rejects_numeric_ids() {
-        let route = Route {
-            workspace: WorkspaceId::from_u128(u128::MAX).to_string(),
-            strip: "9007199254740993".into(),
-            group: "3".into(),
-            tab: "4".into(),
-        };
-        assert_eq!(
-            route.ids().unwrap().workspace,
-            WorkspaceId::from_u128(u128::MAX)
-        );
-        assert_eq!(route.ids().unwrap().strip.0, 9_007_199_254_740_993);
-        assert_eq!(
-            serde_json::from_str::<Route>(&serde_json::to_string(&route).unwrap()).unwrap(),
-            route
-        );
-        assert!(
-            serde_json::from_str::<Route>(r#"{"workspace":1,"strip":"2","group":"3","tab":"4"}"#)
-                .is_err()
-        );
-        assert!(
-            Route {
-                tab: "04".into(),
-                ..route
+            for declaration in LayoutEffect::declarations()
+                .into_iter()
+                .chain(ChromeEffect::declarations())
+            {
+                let none_needed = declaration.params.iter().all(|param| !param.required);
+                let decoded = LayoutEffect::decode(declaration.id, &serde_json::Map::default()).is_ok()
+                    || ChromeEffect::decode(declaration.id, &serde_json::Map::default()).is_ok();
+                assert_eq!(
+                    decoded, none_needed,
+                    "{}: arguments are required only where its declaration asks",
+                    declaration.id
+                );
             }
-            .ids()
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn snapshot_names_the_active_window_and_admits_only_live_routes() {
-        let tree = tree();
-        let snapshot = snapshot(&tree, "g1", vec![]);
-        let active = snapshot.active.clone().unwrap();
-        assert_eq!(
-            active.workspace,
-            WorkspaceId::from_u128(u128::MAX).to_string()
-        );
-        assert_eq!(active.tab, "4");
-        assert_eq!(snapshot.entries.len(), 1);
-        assert_eq!(
-            snapshot.width_permille,
-            Some(WindowWidth::Normal.permille())
-        );
-        let json = serde_json::to_value(&snapshot).unwrap();
-        assert_eq!(json["activeStrip"], "9007199254740993");
-        assert_eq!(json["capabilities"]["workspaceSelect"], true);
-
-        let select = shell("focus", serde_json::json!({"tab":"4"}));
-        assert!(matches!(admit(&select, &tree), Ok(Admitted::Select(_))));
-        let gone = shell("focus", serde_json::json!({"tab":"5"}));
-        assert_eq!(admit(&gone, &tree).unwrap_err(), "Window unavailable");
-        let bad: Result<LayoutEffect, String> = decode("focus", serde_json::json!({"tab":"four"}));
-        assert_eq!(
-            bad.unwrap_err(),
-            "the effect's `tab` argument is `four`, which names no id: ids travel as decimal \
-             text"
-        );
-        let search = shell("search", serde_json::json!({}));
-        assert_eq!(admit(&search, &tree), Ok(Admitted::Search(None)));
-        let typed = shell("search", serde_json::json!({"query":"sheets"}));
-        assert_eq!(
-            admit(&typed, &tree),
-            Ok(Admitted::Search(Some("sheets".into())))
-        );
-        assert_eq!(json["capabilities"]["globalSearch"], true);
-    }
-
-    #[test]
-    fn pan_is_admitted_only_for_the_shown_strip_at_a_finite_offset() {
-        let tree = tree();
-        let s = "9007199254740993";
-        assert_eq!(
-            admitted(
-                &tree,
-                &chrome("pan", serde_json::json!({"strip":s,"offset":120.5}))
-            ),
-            Ok(Admitted::Pan(StripId(9_007_199_254_740_993), 120.5))
-        );
-        assert_eq!(
-            admitted(
-                &tree,
-                &chrome("pan", serde_json::json!({"strip":"8","offset":0}))
-            )
-            .unwrap_err(),
-            "Strip is no longer active"
-        );
-        assert_eq!(
-            admitted(
-                &tree,
-                &chrome("pan", serde_json::json!({"strip":s,"offset":0}))
-            ),
-            Ok(Admitted::Pan(StripId(9_007_199_254_740_993), 0.0))
-        );
-        let infinite = ChromeEffect::Pan {
-            strip: s.into(),
-            offset: f64::INFINITY,
-        };
-        assert_eq!(
-            admit(&infinite.into(), &tree).unwrap_err(),
-            "Invalid pan offset"
-        );
-    }
-
-    #[test]
-    fn scroll_and_history_name_a_live_window() {
-        let tree = tree();
-        let active = active_route(&tree).unwrap();
-        let region = scroll_region(active, "primary");
-        assert_eq!(
-            admitted(
-                &tree,
-                &chrome(
-                    "scroll",
-                    serde_json::json!({"region":region,"action":{"kind":"page","value":-1}})
-                )
-            ),
-            Ok(Admitted::Scroll(active, ScrollAction::Page(-1)))
-        );
-        let gone = scroll_region(RouteIds { tab: 99, ..active }, "primary");
-        assert_eq!(
-            admitted(
-                &tree,
-                &chrome(
-                    "scroll",
-                    serde_json::json!({"region":gone,"action":{"kind":"end"}})
-                )
-            )
-            .unwrap_err(),
-            "Scroll target is no longer active"
-        );
-        assert!(
-            admitted(
-                &tree,
-                &chrome(
-                    "scroll",
-                    serde_json::json!({"region":"nonsense","action":{"kind":"end"}})
-                )
-            )
-            .is_err()
-        );
-        assert_eq!(
-            admitted(
-                &tree,
-                &chrome("history", serde_json::json!({"tab":"4","target":"forward"}))
-            ),
-            Ok(Admitted::History(active, HistoryDirection::Forward))
-        );
-        assert_eq!(
-            admitted(
-                &tree,
-                &chrome("history", serde_json::json!({"tab":"4","target":"up"}))
-            )
-            .unwrap_err(),
-            "Unknown history target"
-        );
-    }
-
-    #[test]
-    fn activity_views_need_history_and_the_active_workspace() {
-        let mut tree = tree();
-        let w = WorkspaceId::from_u128(u128::MAX).to_string();
-        for view in ["catch-up", "explore", "replay"] {
-            let reason = admitted(
-                &tree,
-                &chrome("activity", serde_json::json!({"workspace":w,"view":view})),
-            )
-            .unwrap_err();
-            assert!(
-                reason.contains("history, which this desktop does not carry"),
-                "{view}: {reason}"
+            assert!(decode::<LayoutEffect>("no-such-verb", serde_json::json!({})).is_err());
+            assert_eq!(
+                decode::<LayoutEffect>("focus", serde_json::json!({"tab":"4"})).ok(),
+                Some(LayoutEffect::Focus { tab: "4".into() })
+            );
+            assert!(decode::<LayoutEffect>("focus", serde_json::json!({"tab":4})).is_err());
+            assert_eq!(
+                decode::<ChromeEffect>("pan", serde_json::json!({"strip":"9","offset":1.5})).ok(),
+                Some(ChromeEffect::Pan {
+                    strip: "9".into(),
+                    offset: 1.5
+                })
             );
         }
-        tree.workspaces
-            .push(Workspace::new(WorkspaceId::from_u128(2), "Other"));
-        let capabilities = Presentation {
-            retained_history: true,
-            ..Presentation::default()
+
+        phase a_window_of_one_tab_has_nothing_to_split;
+        {
+            let mut tree = tree();
+            let split = chrome("split-right", serde_json::json!({"tab":"4"}));
+            assert_eq!(
+                admit(&split, &tree).unwrap_err(),
+                t("window-menu-split-one-tab")
+            );
+            // A second tab makes the window one a split has something to take out of: the same chord is
+            // admitted, and the same rule keeps the menu's row.
+            let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+            group.tabs.push(Tab {
+                id: 5,
+                title: "Another".into(),
+                ..group.tabs[0].clone()
+            });
+            let ids = tab_route(&tree, "4").unwrap();
+            assert!(has_a_second_tab(&tree, &ids));
+            assert!(matches!(admit(&split, &tree), Ok(Admitted::SplitRight(_))));
         }
-        .capabilities();
-        let elsewhere = chrome(
-            "activity",
-            serde_json::json!({"workspace":WorkspaceId::from_u128(2).to_string(),"view":"explore"}),
-        );
-        assert_eq!(
-            admit_with(&elsewhere, &tree, &capabilities).unwrap_err(),
-            "Workspace is no longer active"
-        );
-        assert_eq!(
-            admitted(
-                &tree,
-                &chrome("close-activity", serde_json::json!({"workspace":w}))
-            ),
-            Ok(Admitted::CloseActivity(WorkspaceId::from_u128(u128::MAX)))
-        );
-        let caps =
-            serde_json::to_value(snapshot(&tree, "g", vec![])).unwrap()["capabilities"].clone();
-        assert_eq!(caps["swipe"], true);
-        assert_eq!(caps["workspaceHistory"], false);
-        assert_eq!(caps["workspaceReplay"], false);
-        assert_eq!(
-            (
-                caps["pan"].clone(),
-                caps["scroll"].clone(),
-                caps["history"].clone()
-            ),
-            (true.into(), true.into(), true.into())
-        );
+
+        phase route_round_trips_full_u64_and_rejects_numeric_ids;
+        {
+            let route = Route {
+                workspace: WorkspaceId::from_u128(u128::MAX).to_string(),
+                strip: "9007199254740993".into(),
+                group: "3".into(),
+                tab: "4".into(),
+            };
+            assert_eq!(
+                route.ids().unwrap().workspace,
+                WorkspaceId::from_u128(u128::MAX)
+            );
+            assert_eq!(route.ids().unwrap().strip.0, 9_007_199_254_740_993);
+            assert_eq!(
+                serde_json::from_str::<Route>(&serde_json::to_string(&route).unwrap()).unwrap(),
+                route
+            );
+            assert!(
+                serde_json::from_str::<Route>(r#"{"workspace":1,"strip":"2","group":"3","tab":"4"}"#)
+                    .is_err()
+            );
+            assert!(
+                Route {
+                    tab: "04".into(),
+                    ..route
+                }
+                .ids()
+                .is_err()
+            );
+        }
+
+        phase snapshot_names_the_active_window_and_admits_only_live_routes;
+        {
+            let tree = tree();
+            let snapshot = snapshot(&tree, "g1", vec![]);
+            let active = snapshot.active.clone().unwrap();
+            assert_eq!(
+                active.workspace,
+                WorkspaceId::from_u128(u128::MAX).to_string()
+            );
+            assert_eq!(active.tab, "4");
+            assert_eq!(snapshot.entries.len(), 1);
+            assert_eq!(
+                snapshot.width_permille,
+                Some(WindowWidth::Normal.permille())
+            );
+            let json = serde_json::to_value(&snapshot).unwrap();
+            assert_eq!(json["activeStrip"], "9007199254740993");
+            assert_eq!(json["capabilities"]["workspaceSelect"], true);
+
+            let select = shell("focus", serde_json::json!({"tab":"4"}));
+            assert!(matches!(admit(&select, &tree), Ok(Admitted::Select(_))));
+            let gone = shell("focus", serde_json::json!({"tab":"5"}));
+            assert_eq!(admit(&gone, &tree).unwrap_err(), "Window unavailable");
+            let bad: Result<LayoutEffect, String> = decode("focus", serde_json::json!({"tab":"four"}));
+            assert_eq!(
+                bad.unwrap_err(),
+                "the effect's `tab` argument is `four`, which names no id: ids travel as decimal \
+             text"
+            );
+            let search = shell("search", serde_json::json!({}));
+            assert_eq!(admit(&search, &tree), Ok(Admitted::Search(None)));
+            let typed = shell("search", serde_json::json!({"query":"sheets"}));
+            assert_eq!(
+                admit(&typed, &tree),
+                Ok(Admitted::Search(Some("sheets".into())))
+            );
+            assert_eq!(json["capabilities"]["globalSearch"], true);
+        }
+
+        phase stale_presentation_is_left_out_of_the_snapshot;
+        {
+            let tree = tree();
+            let active = active_route(&tree).unwrap();
+            let presentation = Presentation {
+                pan: Some(DesktopPan {
+                    workspace: WorkspaceId::from_u128(u128::MAX).to_string(),
+                    strip: "1".into(),
+                    offset: 0.0,
+                    viewport: 1.0,
+                    content: 2.0,
+                    max: 1.0,
+                }),
+                scroll: Some(ScrollState {
+                    region: scroll_region(RouteIds { tab: 7, ..active }, "primary"),
+                    offset: 0.0,
+                    viewport: 1.0,
+                    content: 2.0,
+                    max: 1.0,
+                }),
+                history: Some(HistoryState {
+                    can_back: true,
+                    can_forward: false,
+                }),
+                ..Presentation::default()
+            };
+            let json = serde_json::to_value(snapshot_with(&tree, "g", vec![], &presentation)).unwrap();
+            assert!(json["desktopPan"].is_null(), "another strip");
+            assert!(json["scroll"].is_null(), "another window");
+            assert_eq!(json["history"]["canBack"], true);
+            assert_eq!(json["history"]["canForward"], false);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_verb_is_admitted_only_for_what_the_shown_strip_holds;
+
+        phase an_app_whose_only_window_here_runs_on_another_device_is_opened_here;
+        // A window that runs only on another device is that device's window of the app. Asking for
+        // the app here opens this device's own window, and never takes the person to the other
+        // device's instead.
+        {
+            let mut tree = tree();
+            assert_eq!(
+                window_of_app(&tree, "so.tilo.notes").map(|ids| ids.tab),
+                Some(4),
+                "this device's own window of the app is the one asking for it selects"
+            );
+            assert!(matches!(
+                resolve_open(&tree, "so.tilo.notes"),
+                Admitted::Select(ids) if ids.tab == 4
+            ));
+            tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::HostedWindow {
+                app_id: "so.tilo.notes".into(),
+                label: "Notes".into(),
+                host: "ab".repeat(32),
+                host_label: "Laptop".into(),
+            };
+            assert_eq!(window_of_app(&tree, "so.tilo.notes"), None);
+            assert_eq!(
+                resolve_open(&tree, "so.tilo.notes"),
+                Admitted::Launch("so.tilo.notes".into(), false)
+            );
+        }
+
+        phase pan_is_admitted_only_for_the_shown_strip_at_a_finite_offset;
+        {
+            let tree = tree();
+            let s = "9007199254740993";
+            assert_eq!(
+                admitted(
+                    &tree,
+                    &chrome("pan", serde_json::json!({"strip":s,"offset":120.5}))
+                ),
+                Ok(Admitted::Pan(StripId(9_007_199_254_740_993), 120.5))
+            );
+            assert_eq!(
+                admitted(
+                    &tree,
+                    &chrome("pan", serde_json::json!({"strip":"8","offset":0}))
+                )
+                .unwrap_err(),
+                "Strip is no longer active"
+            );
+            assert_eq!(
+                admitted(
+                    &tree,
+                    &chrome("pan", serde_json::json!({"strip":s,"offset":0}))
+                ),
+                Ok(Admitted::Pan(StripId(9_007_199_254_740_993), 0.0))
+            );
+            let infinite = ChromeEffect::Pan {
+                strip: s.into(),
+                offset: f64::INFINITY,
+            };
+            assert_eq!(
+                admit(&infinite.into(), &tree).unwrap_err(),
+                "Invalid pan offset"
+            );
+        }
+
+        phase scroll_and_history_name_a_live_window;
+        {
+            let tree = tree();
+            let active = active_route(&tree).unwrap();
+            let region = scroll_region(active, "primary");
+            assert_eq!(
+                admitted(
+                    &tree,
+                    &chrome(
+                        "scroll",
+                        serde_json::json!({"region":region,"action":{"kind":"page","value":-1}})
+                    )
+                ),
+                Ok(Admitted::Scroll(active, ScrollAction::Page(-1)))
+            );
+            let gone = scroll_region(RouteIds { tab: 99, ..active }, "primary");
+            assert_eq!(
+                admitted(
+                    &tree,
+                    &chrome(
+                        "scroll",
+                        serde_json::json!({"region":gone,"action":{"kind":"end"}})
+                    )
+                )
+                .unwrap_err(),
+                "Scroll target is no longer active"
+            );
+            assert!(
+                admitted(
+                    &tree,
+                    &chrome(
+                        "scroll",
+                        serde_json::json!({"region":"nonsense","action":{"kind":"end"}})
+                    )
+                )
+                .is_err()
+            );
+            assert_eq!(
+                admitted(
+                    &tree,
+                    &chrome("history", serde_json::json!({"tab":"4","target":"forward"}))
+                ),
+                Ok(Admitted::History(active, HistoryDirection::Forward))
+            );
+            assert_eq!(
+                admitted(
+                    &tree,
+                    &chrome("history", serde_json::json!({"tab":"4","target":"up"}))
+                )
+                .unwrap_err(),
+                "Unknown history target"
+            );
+        }
+
+        phase activity_views_need_history_and_the_active_workspace;
+        {
+            let mut tree = tree();
+            let w = WorkspaceId::from_u128(u128::MAX).to_string();
+            for view in ["catch-up", "explore", "replay"] {
+                let reason = admitted(
+                    &tree,
+                    &chrome("activity", serde_json::json!({"workspace":w,"view":view})),
+                )
+                .unwrap_err();
+                assert!(
+                    reason.contains("history, which this desktop does not carry"),
+                    "{view}: {reason}"
+                );
+            }
+            tree.workspaces
+                .push(Workspace::new(WorkspaceId::from_u128(2), "Other"));
+            let capabilities = Presentation {
+                retained_history: true,
+                ..Presentation::default()
+            }
+            .capabilities();
+            let elsewhere = chrome(
+                "activity",
+                serde_json::json!({"workspace":WorkspaceId::from_u128(2).to_string(),"view":"explore"}),
+            );
+            assert_eq!(
+                admit_with(&elsewhere, &tree, &capabilities).unwrap_err(),
+                "Workspace is no longer active"
+            );
+            assert_eq!(
+                admitted(
+                    &tree,
+                    &chrome("close-activity", serde_json::json!({"workspace":w}))
+                ),
+                Ok(Admitted::CloseActivity(WorkspaceId::from_u128(u128::MAX)))
+            );
+            let caps =
+                serde_json::to_value(snapshot(&tree, "g", vec![])).unwrap()["capabilities"].clone();
+            assert_eq!(caps["swipe"], true);
+            assert_eq!(caps["workspaceHistory"], false);
+            assert_eq!(caps["workspaceReplay"], false);
+            assert_eq!(
+                (
+                    caps["pan"].clone(),
+                    caps["scroll"].clone(),
+                    caps["history"].clone()
+                ),
+                (true.into(), true.into(), true.into())
+            );
+        }
+
+        phase launch_names_an_application_on_the_shown_strip;
+        {
+            let tree = tree();
+            let launch = chrome("open-app", serde_json::json!({"app":"so.tilo.notes"}));
+            assert_eq!(
+                admit(&launch, &tree),
+                Ok(Admitted::Launch("so.tilo.notes".into(), false))
+            );
+            let empty = chrome("open-app", serde_json::json!({"app":""}));
+            assert!(admit(&empty, &tree).is_err());
+            assert_eq!(
+                serde_json::to_value(snapshot(&tree, "g1", vec![])).unwrap()["capabilities"]["launch"],
+                true
+            );
+        }
+
+        phase open_focuses_the_shown_window_of_an_app_or_launches_one;
+        {
+            let tree = tree();
+            let open = |app: &str| chrome("show-app", serde_json::json!({"app":app}));
+            let shown = RouteIds {
+                workspace: WorkspaceId::from_u128(u128::MAX),
+                strip: StripId(9_007_199_254_740_993),
+                group: 3,
+                tab: 4,
+            };
+            assert_eq!(
+                admit(&open("so.tilo.notes"), &tree),
+                Ok(Admitted::Select(shown))
+            );
+            assert_eq!(
+                admit(&open("so.tilo.chat"), &tree),
+                Ok(Admitted::Open("so.tilo.chat".into()))
+            );
+            assert!(admit(&open(""), &tree).is_err());
+            let json = serde_json::to_value(snapshot(&tree, "g1", vec![])).unwrap();
+            assert_eq!(json["entries"][0]["app"], "so.tilo.notes");
+        }
     }
 
     #[test]
@@ -2092,77 +2172,5 @@ mod tests {
         assert_eq!(json["capabilities"]["workspaceReplay"], true);
         assert_eq!(json["capabilities"]["notifications"], true);
         assert_eq!(json["notifications"]["retained"], 0);
-    }
-
-    #[test]
-    fn stale_presentation_is_left_out_of_the_snapshot() {
-        let tree = tree();
-        let active = active_route(&tree).unwrap();
-        let presentation = Presentation {
-            pan: Some(DesktopPan {
-                workspace: WorkspaceId::from_u128(u128::MAX).to_string(),
-                strip: "1".into(),
-                offset: 0.0,
-                viewport: 1.0,
-                content: 2.0,
-                max: 1.0,
-            }),
-            scroll: Some(ScrollState {
-                region: scroll_region(RouteIds { tab: 7, ..active }, "primary"),
-                offset: 0.0,
-                viewport: 1.0,
-                content: 2.0,
-                max: 1.0,
-            }),
-            history: Some(HistoryState {
-                can_back: true,
-                can_forward: false,
-            }),
-            ..Presentation::default()
-        };
-        let json = serde_json::to_value(snapshot_with(&tree, "g", vec![], &presentation)).unwrap();
-        assert!(json["desktopPan"].is_null(), "another strip");
-        assert!(json["scroll"].is_null(), "another window");
-        assert_eq!(json["history"]["canBack"], true);
-        assert_eq!(json["history"]["canForward"], false);
-    }
-
-    #[test]
-    fn launch_names_an_application_on_the_shown_strip() {
-        let tree = tree();
-        let launch = chrome("open-app", serde_json::json!({"app":"so.tilo.notes"}));
-        assert_eq!(
-            admit(&launch, &tree),
-            Ok(Admitted::Launch("so.tilo.notes".into(), false))
-        );
-        let empty = chrome("open-app", serde_json::json!({"app":""}));
-        assert!(admit(&empty, &tree).is_err());
-        assert_eq!(
-            serde_json::to_value(snapshot(&tree, "g1", vec![])).unwrap()["capabilities"]["launch"],
-            true
-        );
-    }
-
-    #[test]
-    fn open_focuses_the_shown_window_of_an_app_or_launches_one() {
-        let tree = tree();
-        let open = |app: &str| chrome("show-app", serde_json::json!({"app":app}));
-        let shown = RouteIds {
-            workspace: WorkspaceId::from_u128(u128::MAX),
-            strip: StripId(9_007_199_254_740_993),
-            group: 3,
-            tab: 4,
-        };
-        assert_eq!(
-            admit(&open("so.tilo.notes"), &tree),
-            Ok(Admitted::Select(shown))
-        );
-        assert_eq!(
-            admit(&open("so.tilo.chat"), &tree),
-            Ok(Admitted::Open("so.tilo.chat".into()))
-        );
-        assert!(admit(&open(""), &tree).is_err());
-        let json = serde_json::to_value(snapshot(&tree, "g1", vec![])).unwrap();
-        assert_eq!(json["entries"][0]["app"], "so.tilo.notes");
     }
 }

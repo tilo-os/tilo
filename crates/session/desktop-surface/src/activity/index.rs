@@ -687,86 +687,90 @@ mod folder_rows_tests {
         authors
     }
 
-    /// A folder's changes are one row per file and session, coalesced, named
-    /// as Files names them.
-    #[test]
-    fn folder_rows_coalesce_a_files_versions_by_session() {
-        let mut doc = AutoCommit::new();
-        let mut tree = fs_protocol::tree::Tree::default();
-        let placed = fs_protocol::tree::place(
-            &mut doc,
-            &mut tree,
-            fs_protocol::tree::ROOT_ID,
-            "terms.txt",
-            Placing::File {
-                hash: &"a".repeat(64),
-                size: 12,
-            },
-            (1_000, &hex::encode(device())),
-        )
-        .unwrap();
-        let record_id = tree.node(&placed.id).unwrap().record_id.unwrap();
-        // One session's run: two versions, minutes apart, coalesced into one row.
-        write_version(
-            &mut doc,
-            record_id,
-            1,
-            Some(fs_protocol::AttributedWriter::agent_session(
-                "claude", "abc",
-            )),
-        );
-        write_version(
-            &mut doc,
-            record_id,
-            2,
-            Some(fs_protocol::AttributedWriter::agent_session(
-                "claude", "abc",
-            )),
-        );
+    tilo_test_env::scenario! {
+        fn folder_rows_name_each_file_and_coalesce_its_versions;
 
-        let rows = folder_rows(&doc, &authors(), 100);
-        assert_eq!(rows.len(), 1, "one row for the one session's run");
-        assert_eq!(rows[0].summary, "Edited · terms.txt");
-        let parts = ui::author_parts(&rows[0].author);
-        assert_eq!(parts.person, "Ada");
-        assert_eq!(parts.writer.as_deref(), Some("Claude Code"));
-        assert_eq!(parts.device.as_deref(), Some("Ada's laptop"));
-        assert_eq!(
-            ui::attribution_hover(&rows[0].author).as_deref(),
-            Some("External agent · Claude Code · Ada's laptop · /")
-        );
-    }
-
-    /// The person at their own device is one writer; a second file is its own row.
-    #[test]
-    fn folder_rows_name_each_file_and_the_person_at_their_device() {
-        let mut doc = AutoCommit::new();
-        let mut tree = fs_protocol::tree::Tree::default();
-        for name in ["terms.txt", "logo.png"] {
+        phase folder_rows_coalesce_a_files_versions_by_session;
+        // A folder's changes are one row per file and session, coalesced, named
+        // as Files names them.
+        {
+            let mut doc = AutoCommit::new();
+            let mut tree = fs_protocol::tree::Tree::default();
             let placed = fs_protocol::tree::place(
                 &mut doc,
                 &mut tree,
                 fs_protocol::tree::ROOT_ID,
-                name,
+                "terms.txt",
                 Placing::File {
-                    hash: &"b".repeat(64),
-                    size: 3,
+                    hash: &"a".repeat(64),
+                    size: 12,
                 },
                 (1_000, &hex::encode(device())),
             )
             .unwrap();
             let record_id = tree.node(&placed.id).unwrap().record_id.unwrap();
+            // One session's run: two versions, minutes apart, coalesced into one row.
             write_version(
                 &mut doc,
                 record_id,
-                u128::from(name.len() as u64) + 10,
-                None,
+                1,
+                Some(fs_protocol::AttributedWriter::agent_session(
+                    "claude", "abc",
+                )),
+            );
+            write_version(
+                &mut doc,
+                record_id,
+                2,
+                Some(fs_protocol::AttributedWriter::agent_session(
+                    "claude", "abc",
+                )),
+            );
+
+            let rows = folder_rows(&doc, &authors(), 100);
+            assert_eq!(rows.len(), 1, "one row for the one session's run");
+            assert_eq!(rows[0].summary, "Edited · terms.txt");
+            let parts = ui::author_parts(&rows[0].author);
+            assert_eq!(parts.person, "Ada");
+            assert_eq!(parts.writer.as_deref(), Some("Claude Code"));
+            assert_eq!(parts.device.as_deref(), Some("Ada's laptop"));
+            assert_eq!(
+                ui::attribution_hover(&rows[0].author).as_deref(),
+                Some("External agent · Claude Code · Ada's laptop · /")
             );
         }
-        let rows = folder_rows(&doc, &authors(), 100);
-        assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|row| ui::author_line(&row.author) == "Ada"));
-        assert!(rows.iter().any(|row| row.summary == "Edited · terms.txt"));
-        assert!(rows.iter().any(|row| row.summary == "Edited · logo.png"));
+
+        phase folder_rows_name_each_file_and_the_person_at_their_device;
+        // The person at their own device is one writer; a second file is its own row.
+        {
+            let mut doc = AutoCommit::new();
+            let mut tree = fs_protocol::tree::Tree::default();
+            for name in ["terms.txt", "logo.png"] {
+                let placed = fs_protocol::tree::place(
+                    &mut doc,
+                    &mut tree,
+                    fs_protocol::tree::ROOT_ID,
+                    name,
+                    Placing::File {
+                        hash: &"b".repeat(64),
+                        size: 3,
+                    },
+                    (1_000, &hex::encode(device())),
+                )
+                .unwrap();
+                let record_id = tree.node(&placed.id).unwrap().record_id.unwrap();
+                write_version(
+                    &mut doc,
+                    record_id,
+                    u128::from(name.len() as u64) + 10,
+                    None,
+                );
+            }
+            let rows = folder_rows(&doc, &authors(), 100);
+            assert_eq!(rows.len(), 2);
+            assert!(rows.iter().all(|row| ui::author_line(&row.author) == "Ada"));
+            assert!(rows.iter().any(|row| row.summary == "Edited · terms.txt"));
+            assert!(rows.iter().any(|row| row.summary == "Edited · logo.png"));
+        }
     }
 }

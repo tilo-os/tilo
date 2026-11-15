@@ -743,21 +743,78 @@ mod tests {
         &tree.workspaces[0].strips[0]
     }
 
-    #[test]
-    fn shell_surfaces_stand_on_the_display_the_person_works_on() {
-        let mut tree = docked(&[1, 2], 1);
-        tree.outputs.set_focused(1);
-        assert_eq!(
-            working_display(&tree),
-            Some(Rect::new(800.0, 0.0, 1600.0, 600.0)),
-            "the right display, not the shell across both"
-        );
-        tree.outputs.set_focused(0);
-        assert_eq!(
-            working_display(&tree),
-            Some(Rect::new(0.0, 0.0, 800.0, 600.0))
-        );
-        assert_eq!(working_display(&Layout::default()), None, "one display");
+    tilo_test_env::scenario! {
+        fn each_display_has_its_lane_and_takes_its_own_presses;
+
+        phase shell_surfaces_stand_on_the_display_the_person_works_on;
+        {
+            let mut tree = docked(&[1, 2], 1);
+            tree.outputs.set_focused(1);
+            assert_eq!(
+                working_display(&tree),
+                Some(Rect::new(800.0, 0.0, 1600.0, 600.0)),
+                "the right display, not the shell across both"
+            );
+            tree.outputs.set_focused(0);
+            assert_eq!(
+                working_display(&tree),
+                Some(Rect::new(0.0, 0.0, 800.0, 600.0))
+            );
+            assert_eq!(working_display(&Layout::default()), None, "one display");
+        }
+
+        phase each_display_gets_a_lane_with_the_rows_insets_and_its_own_gutters;
+        {
+            let displays = [display(0, 0.0), display(1, 800.0)];
+            let surface = Rect::new(0.0, 0.0, 1600.0, 600.0);
+            let row = Rect::new(0.0, 40.0, 1600.0, 588.0);
+            let lanes = lanes(&displays, &[1, 0], surface, row);
+            assert_eq!(lanes.len(), 2);
+            assert_eq!(lanes[0].output, 1, "in the order asked");
+            assert_eq!(lanes[0].area, Rect::new(800.0, 40.0, 1600.0, 588.0));
+            assert_eq!(lanes[1].area, Rect::new(0.0, 40.0, 800.0, 588.0));
+            assert!(lanes.iter().all(|lane| lane.leading));
+            assert_eq!(lanes[1].usable, 800.0 - 2.0 * STRIP_EDGE_GUTTER_PX);
+        }
+
+        phase a_shorter_display_keeps_the_bottom_gutter_above_its_own_edge;
+        {
+            let mut short = display(1, 800.0);
+            short.height = 400.0;
+            let surface = Rect::new(0.0, 0.0, 1600.0, 600.0);
+            let row = Rect::new(0.0, 40.0, 1600.0, 588.0);
+            let lanes = lanes(&[display(0, 0.0), short], &[0, 1], surface, row);
+            assert_eq!(lanes[1].area, Rect::new(800.0, 40.0, 1600.0, 388.0));
+        }
+
+        phase one_strip_on_both_displays_is_one_row_with_a_lane_each;
+        {
+            let tree = docked(&[1, 2, 3], 2);
+            let plans = display_strips(&tree);
+            assert_eq!(plans.len(), 1, "both displays show the same strip");
+            assert_eq!(plans[0].displays, [0, 1]);
+            assert_eq!(plans[0].groups, [1, 2, 3], "the strip's order, by display");
+            assert_eq!(plans[0].assignment.get(&1), Some(&0));
+            assert_eq!(plans[0].assignment.get(&3), Some(&1));
+        }
+
+        phase a_press_finds_its_display;
+        {
+            let displays = [display(0, 0.0), display(1, 800.0)];
+            let surface = Rect::new(0.0, 0.0, 1600.0, 600.0);
+            assert_eq!(
+                display_at(&displays, surface, Point::new(10.0, 10.0)),
+                Some(0)
+            );
+            assert_eq!(
+                display_at(&displays, surface, Point::new(810.0, 10.0)),
+                Some(1)
+            );
+            assert_eq!(
+                display_at(&displays, surface, Point::new(1610.0, 10.0)),
+                None
+            );
+        }
     }
 
     #[test]
@@ -811,41 +868,6 @@ mod tests {
     }
 
     #[test]
-    fn each_display_gets_a_lane_with_the_rows_insets_and_its_own_gutters() {
-        let displays = [display(0, 0.0), display(1, 800.0)];
-        let surface = Rect::new(0.0, 0.0, 1600.0, 600.0);
-        let row = Rect::new(0.0, 40.0, 1600.0, 588.0);
-        let lanes = lanes(&displays, &[1, 0], surface, row);
-        assert_eq!(lanes.len(), 2);
-        assert_eq!(lanes[0].output, 1, "in the order asked");
-        assert_eq!(lanes[0].area, Rect::new(800.0, 40.0, 1600.0, 588.0));
-        assert_eq!(lanes[1].area, Rect::new(0.0, 40.0, 800.0, 588.0));
-        assert!(lanes.iter().all(|lane| lane.leading));
-        assert_eq!(lanes[1].usable, 800.0 - 2.0 * STRIP_EDGE_GUTTER_PX);
-    }
-
-    #[test]
-    fn a_shorter_display_keeps_the_bottom_gutter_above_its_own_edge() {
-        let mut short = display(1, 800.0);
-        short.height = 400.0;
-        let surface = Rect::new(0.0, 0.0, 1600.0, 600.0);
-        let row = Rect::new(0.0, 40.0, 1600.0, 588.0);
-        let lanes = lanes(&[display(0, 0.0), short], &[0, 1], surface, row);
-        assert_eq!(lanes[1].area, Rect::new(800.0, 40.0, 1600.0, 388.0));
-    }
-
-    #[test]
-    fn one_strip_on_both_displays_is_one_row_with_a_lane_each() {
-        let tree = docked(&[1, 2, 3], 2);
-        let plans = display_strips(&tree);
-        assert_eq!(plans.len(), 1, "both displays show the same strip");
-        assert_eq!(plans[0].displays, [0, 1]);
-        assert_eq!(plans[0].groups, [1, 2, 3], "the strip's order, by display");
-        assert_eq!(plans[0].assignment.get(&1), Some(&0));
-        assert_eq!(plans[0].assignment.get(&3), Some(&1));
-    }
-
-    #[test]
     fn each_display_lays_out_the_strip_it_shows() {
         let mut tree = docked(&[1, 2, 3], 2);
         let mut other = Strip::new(StripId(2), "T");
@@ -872,23 +894,5 @@ mod tests {
         assert_eq!(plans[0].assignment.get(&3), Some(&1));
         assert_eq!(plans[1].groups, [4], "the other display's own strip");
         assert_eq!(plans[1].assignment.get(&4), Some(&1));
-    }
-
-    #[test]
-    fn a_press_finds_its_display() {
-        let displays = [display(0, 0.0), display(1, 800.0)];
-        let surface = Rect::new(0.0, 0.0, 1600.0, 600.0);
-        assert_eq!(
-            display_at(&displays, surface, Point::new(10.0, 10.0)),
-            Some(0)
-        );
-        assert_eq!(
-            display_at(&displays, surface, Point::new(810.0, 10.0)),
-            Some(1)
-        );
-        assert_eq!(
-            display_at(&displays, surface, Point::new(1610.0, 10.0)),
-            None
-        );
     }
 }

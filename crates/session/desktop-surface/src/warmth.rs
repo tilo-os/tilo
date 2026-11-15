@@ -154,129 +154,134 @@ mod tests {
         (id == WorkspaceId::from_u128(1)).then_some(40.0)
     }
 
-    #[test]
-    fn each_window_takes_its_own_workspace_and_your_colour() {
-        let mut warmth = WindowWarmth::new(PresenceHue::Teal);
-        let now = Instant::now();
-        assert!(
-            warmth.due(Some(WorkspaceId::from_u128(1)), now),
-            "nothing looked at yet"
-        );
-        assert!(warmth.update(
-            &workspaces(),
-            Some(WorkspaceId::from_u128(1)),
-            now,
-            &mut temperature
-        ));
-        assert_eq!(
-            warmth.active(),
-            WindowAppearance {
-                workspace_hue: Some(40.0),
-                your_colour: Some(PresenceHue::Teal),
-                corner_radius: None,
-            }
-        );
-        assert_eq!(
-            warmth
-                .in_workspace(Some(WorkspaceId::from_u128(2)))
-                .workspace_hue,
-            None,
-            "a grey wallpaper leaves its windows neutral"
-        );
-        assert_eq!(
-            warmth
-                .in_workspace(Some(WorkspaceId::from_u128(9)))
-                .workspace_hue,
-            None,
-            "an unknown workspace has no temperature"
-        );
-        assert!(!warmth.due(Some(WorkspaceId::from_u128(1)), now));
-        assert!(
-            warmth.due(Some(WorkspaceId::from_u128(2)), now),
-            "a switch is looked at now"
-        );
-        assert!(warmth.due(Some(WorkspaceId::from_u128(1)), now + RECHECK));
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn a_windows_warmth_follows_its_workspace_and_moves_only_with_appearance;
 
-    #[test]
-    fn the_revision_moves_only_when_an_appearance_does() {
-        let mut warmth = WindowWarmth::new(PresenceHue::Blue);
-        let now = Instant::now();
-        warmth.update(
-            &workspaces(),
-            Some(WorkspaceId::from_u128(1)),
-            now,
-            &mut temperature,
-        );
-        let first = warmth.revision();
-        assert!(!warmth.update(
-            &workspaces(),
-            Some(WorkspaceId::from_u128(1)),
-            now,
-            &mut temperature
-        ));
-        assert_eq!(warmth.revision(), first, "the same temperatures again");
-        assert!(
+        phase each_window_takes_its_own_workspace_and_your_colour;
+        {
+            let mut warmth = WindowWarmth::new(PresenceHue::Teal);
+            let now = Instant::now();
+            assert!(
+                warmth.due(Some(WorkspaceId::from_u128(1)), now),
+                "nothing looked at yet"
+            );
+            assert!(warmth.update(
+                &workspaces(),
+                Some(WorkspaceId::from_u128(1)),
+                now,
+                &mut temperature
+            ));
+            assert_eq!(
+                warmth.active(),
+                WindowAppearance {
+                    workspace_hue: Some(40.0),
+                    your_colour: Some(PresenceHue::Teal),
+                    corner_radius: None,
+                }
+            );
+            assert_eq!(
+                warmth
+                    .in_workspace(Some(WorkspaceId::from_u128(2)))
+                    .workspace_hue,
+                None,
+                "a grey wallpaper leaves its windows neutral"
+            );
+            assert_eq!(
+                warmth
+                    .in_workspace(Some(WorkspaceId::from_u128(9)))
+                    .workspace_hue,
+                None,
+                "an unknown workspace has no temperature"
+            );
+            assert!(!warmth.due(Some(WorkspaceId::from_u128(1)), now));
+            assert!(
+                warmth.due(Some(WorkspaceId::from_u128(2)), now),
+                "a switch is looked at now"
+            );
+            assert!(warmth.due(Some(WorkspaceId::from_u128(1)), now + RECHECK));
+        }
+
+        phase the_revision_moves_only_when_an_appearance_does;
+        {
+            let mut warmth = WindowWarmth::new(PresenceHue::Blue);
+            let now = Instant::now();
+            warmth.update(
+                &workspaces(),
+                Some(WorkspaceId::from_u128(1)),
+                now,
+                &mut temperature,
+            );
+            let first = warmth.revision();
+            assert!(!warmth.update(
+                &workspaces(),
+                Some(WorkspaceId::from_u128(1)),
+                now,
+                &mut temperature
+            ));
+            assert_eq!(warmth.revision(), first, "the same temperatures again");
+            assert!(
+                warmth.update(
+                    &workspaces(),
+                    Some(WorkspaceId::from_u128(2)),
+                    now,
+                    &mut temperature
+                ),
+                "switching workspaces changes what the chrome wears"
+            );
+            assert_eq!(
+                warmth.revision(),
+                first,
+                "but no window's own workspace moved"
+            );
+            let mut cooler = |id: WorkspaceId| (id == WorkspaceId::from_u128(1)).then_some(200.0);
             warmth.update(
                 &workspaces(),
                 Some(WorkspaceId::from_u128(2)),
                 now,
-                &mut temperature
-            ),
-            "switching workspaces changes what the chrome wears"
-        );
-        assert_eq!(
-            warmth.revision(),
-            first,
-            "but no window's own workspace moved"
-        );
-        let mut cooler = |id: WorkspaceId| (id == WorkspaceId::from_u128(1)).then_some(200.0);
-        warmth.update(
-            &workspaces(),
-            Some(WorkspaceId::from_u128(2)),
-            now,
-            &mut cooler,
-        );
-        assert_ne!(
-            warmth.revision(),
-            first,
-            "a new wallpaper retints its workspace"
-        );
-        let second = warmth.revision();
-        assert!(!warmth.set_your_colour(PresenceHue::Blue));
-        assert!(warmth.set_your_colour(PresenceHue::Violet));
-        assert_ne!(warmth.revision(), second);
-        assert_eq!(warmth.active().your_colour, Some(PresenceHue::Violet));
-    }
+                &mut cooler,
+            );
+            assert_ne!(
+                warmth.revision(),
+                first,
+                "a new wallpaper retints its workspace"
+            );
+            let second = warmth.revision();
+            assert!(!warmth.set_your_colour(PresenceHue::Blue));
+            assert!(warmth.set_your_colour(PresenceHue::Violet));
+            assert_ne!(warmth.revision(), second);
+            assert_eq!(warmth.active().your_colour, Some(PresenceHue::Violet));
+        }
 
-    /// A wallpaper whose hue moves less than half a degree is the same wallpaper, so a re-look does
-    /// not retint the workspace every 3 s.
-    #[test]
-    fn a_temperature_within_half_a_degree_is_the_same_one() {
-        let mut warmth = WindowWarmth::new(PresenceHue::Teal);
-        let now = Instant::now();
-        warmth.update(
-            &workspaces(),
-            Some(WorkspaceId::from_u128(1)),
-            now,
-            &mut temperature,
-        );
-        let first = warmth.revision();
-        let mut barely = |id: WorkspaceId| (id == WorkspaceId::from_u128(1)).then_some(40.4);
-        assert!(!warmth.update(
-            &workspaces(),
-            Some(WorkspaceId::from_u128(1)),
-            now,
-            &mut barely
-        ));
-        assert_eq!(warmth.revision(), first);
-        let mut justover = |id: WorkspaceId| (id == WorkspaceId::from_u128(1)).then_some(40.5);
-        assert!(warmth.update(
-            &workspaces(),
-            Some(WorkspaceId::from_u128(1)),
-            now,
-            &mut justover
-        ));
-        assert_ne!(warmth.revision(), first);
+        phase a_temperature_within_half_a_degree_is_the_same_one;
+        // A wallpaper whose hue moves less than half a degree is the same wallpaper, so a re-look does
+        // not retint the workspace every 3 s.
+        {
+            let mut warmth = WindowWarmth::new(PresenceHue::Teal);
+            let now = Instant::now();
+            warmth.update(
+                &workspaces(),
+                Some(WorkspaceId::from_u128(1)),
+                now,
+                &mut temperature,
+            );
+            let first = warmth.revision();
+            let mut barely = |id: WorkspaceId| (id == WorkspaceId::from_u128(1)).then_some(40.4);
+            assert!(!warmth.update(
+                &workspaces(),
+                Some(WorkspaceId::from_u128(1)),
+                now,
+                &mut barely
+            ));
+            assert_eq!(warmth.revision(), first);
+            let mut justover = |id: WorkspaceId| (id == WorkspaceId::from_u128(1)).then_some(40.5);
+            assert!(warmth.update(
+                &workspaces(),
+                Some(WorkspaceId::from_u128(1)),
+                now,
+                &mut justover
+            ));
+            assert_ne!(warmth.revision(), first);
+        }
     }
 }

@@ -260,93 +260,97 @@ mod tests {
         translate(event, TILE, WINDOW, scale, ModifiersState::empty())
     }
 
-    #[test]
-    fn a_point_on_the_picture_lands_in_the_windows_own_pixels() {
-        let shown = picture_rect(TILE, WINDOW).expect("a picture");
-        assert_eq!(shown, Rect::new(100.0, 190.0, 740.0, 550.0));
-        assert_eq!(
-            of(&cursor_moved(420.0, 370.0), 1.0),
-            Some(InputEvent::PointerMotion { x: 640.0, y: 360.0 })
-        );
-        // The device's pixels are halved into points first.
-        assert_eq!(
-            of(&cursor_moved(200.0, 380.0), 2.0),
-            Some(InputEvent::PointerMotion { x: 0.0, y: 0.0 })
-        );
-        // The band the picture leaves empty is not the window.
-        assert_eq!(of(&cursor_moved(420.0, 100.0), 1.0), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_viewers_input_travels_in_the_hosts_own_terms;
 
-    #[test]
-    fn buttons_and_the_wheel_are_the_hosts_own_codes() {
-        assert_eq!(
-            of(&mouse_input(ElementState::Pressed, MouseButton::Left), 1.0),
-            Some(InputEvent::PointerButton {
-                button: 272,
-                pressed: true
-            })
-        );
-        assert_eq!(
-            of(
-                &mouse_input(ElementState::Released, MouseButton::Right),
-                1.0
-            ),
-            Some(InputEvent::PointerButton {
-                button: 273,
-                pressed: false
-            })
-        );
-        // Two lines away from the person scroll up by two detents.
-        assert_eq!(
-            of(&mouse_wheel(0.0, 2.0), 1.0),
-            Some(InputEvent::PointerAxis { dx: 0.0, dy: -30.0 })
-        );
-        // A trackpad's pixels are the tile's: at half size each is two of the window's.
-        let pixels = WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, -10.0)),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        assert_eq!(
-            of(&pixels, 1.0),
-            Some(InputEvent::PointerAxis { dx: 0.0, dy: 20.0 })
-        );
-    }
+        phase a_point_on_the_picture_lands_in_the_windows_own_pixels;
+        {
+            let shown = picture_rect(TILE, WINDOW).expect("a picture");
+            assert_eq!(shown, Rect::new(100.0, 190.0, 740.0, 550.0));
+            assert_eq!(
+                of(&cursor_moved(420.0, 370.0), 1.0),
+                Some(InputEvent::PointerMotion { x: 640.0, y: 360.0 })
+            );
+            // The device's pixels are halved into points first.
+            assert_eq!(
+                of(&cursor_moved(200.0, 380.0), 2.0),
+                Some(InputEvent::PointerMotion { x: 0.0, y: 0.0 })
+            );
+            // The band the picture leaves empty is not the window.
+            assert_eq!(of(&cursor_moved(420.0, 100.0), 1.0), None);
+        }
 
-    #[test]
-    fn a_key_is_its_evdev_code_with_the_held_modifiers_and_repeats_stay_here() {
-        let mut press = key_event(Key::Character("a".into()), None, ElementState::Pressed);
-        press.physical_key = PhysicalKey::Code(KeyCode::KeyA);
-        let event = keyboard_input(press.clone());
-        assert_eq!(
-            translate(&event, TILE, WINDOW, 1.0, ModifiersState::CONTROL),
-            Some(InputEvent::Key {
-                keysym: 30,
-                pressed: true,
-                modifiers: 4
-            })
-        );
-        press.repeat = true;
-        assert_eq!(of(&keyboard_input(press), 1.0), None);
-        let mut enter = key_event(Key::Named(NamedKey::Enter), None, ElementState::Released);
-        enter.physical_key = PhysicalKey::Code(KeyCode::Enter);
-        assert_eq!(
-            of(&keyboard_input(enter), 1.0),
-            Some(InputEvent::Key {
-                keysym: 28,
-                pressed: false,
-                modifiers: 0
-            })
-        );
-    }
+        phase buttons_and_the_wheel_are_the_hosts_own_codes;
+        {
+            assert_eq!(
+                of(&mouse_input(ElementState::Pressed, MouseButton::Left), 1.0),
+                Some(InputEvent::PointerButton {
+                    button: 272,
+                    pressed: true
+                })
+            );
+            assert_eq!(
+                of(
+                    &mouse_input(ElementState::Released, MouseButton::Right),
+                    1.0
+                ),
+                Some(InputEvent::PointerButton {
+                    button: 273,
+                    pressed: false
+                })
+            );
+            // Two lines away from the person scroll up by two detents.
+            assert_eq!(
+                of(&mouse_wheel(0.0, 2.0), 1.0),
+                Some(InputEvent::PointerAxis { dx: 0.0, dy: -30.0 })
+            );
+            // A trackpad's pixels are the tile's: at half size each is two of the window's.
+            let pixels = WindowEvent::MouseWheel {
+                device_id: winit::event::DeviceId::dummy(),
+                delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, -10.0)),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            assert_eq!(
+                of(&pixels, 1.0),
+                Some(InputEvent::PointerAxis { dx: 0.0, dy: 20.0 })
+            );
+        }
 
-    #[test]
-    fn composed_text_travels_as_text() {
-        let commit = WindowEvent::Ime(Ime::Commit("é".into()));
-        assert_eq!(
-            of(&commit, 1.0),
-            Some(InputEvent::Text { text: "é".into() })
-        );
-        assert_eq!(of(&WindowEvent::Ime(Ime::Commit(String::new())), 1.0), None);
+        phase a_key_is_its_evdev_code_with_the_held_modifiers_and_repeats_stay_here;
+        {
+            let mut press = key_event(Key::Character("a".into()), None, ElementState::Pressed);
+            press.physical_key = PhysicalKey::Code(KeyCode::KeyA);
+            let event = keyboard_input(press.clone());
+            assert_eq!(
+                translate(&event, TILE, WINDOW, 1.0, ModifiersState::CONTROL),
+                Some(InputEvent::Key {
+                    keysym: 30,
+                    pressed: true,
+                    modifiers: 4
+                })
+            );
+            press.repeat = true;
+            assert_eq!(of(&keyboard_input(press), 1.0), None);
+            let mut enter = key_event(Key::Named(NamedKey::Enter), None, ElementState::Released);
+            enter.physical_key = PhysicalKey::Code(KeyCode::Enter);
+            assert_eq!(
+                of(&keyboard_input(enter), 1.0),
+                Some(InputEvent::Key {
+                    keysym: 28,
+                    pressed: false,
+                    modifiers: 0
+                })
+            );
+        }
+
+        phase composed_text_travels_as_text;
+        {
+            let commit = WindowEvent::Ime(Ime::Commit("é".into()));
+            assert_eq!(
+                of(&commit, 1.0),
+                Some(InputEvent::Text { text: "é".into() })
+            );
+            assert_eq!(of(&WindowEvent::Ime(Ime::Commit(String::new())), 1.0), None);
+        }
     }
 }

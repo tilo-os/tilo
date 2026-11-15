@@ -167,70 +167,74 @@ mod tests {
         notification
     }
 
-    #[test]
-    fn apps_with_several_notifications_group_under_their_newest() {
-        let history = vec![
-            from_app("mail", "m1"),
-            Notification::new("system", ""),
-            from_app("chat", "c1"),
-            from_app("mail", "m2"),
-            from_app("calendar", "only"),
-        ];
-        let rows = history_rows(&history, &BTreeSet::new());
-        assert_eq!(
-            rows,
-            vec![
-                HistoryRow::Item {
-                    index: 4,
-                    grouped: false
-                },
-                HistoryRow::Group {
-                    key: "mail\u{1f}MAIL".into(),
-                    label: "MAIL".into(),
+    tilo_test_env::scenario! {
+        fn notification_history_groups_by_app;
+
+        phase apps_with_several_notifications_group_under_their_newest;
+        {
+            let history = vec![
+                from_app("mail", "m1"),
+                Notification::new("system", ""),
+                from_app("chat", "c1"),
+                from_app("mail", "m2"),
+                from_app("calendar", "only"),
+            ];
+            let rows = history_rows(&history, &BTreeSet::new());
+            assert_eq!(
+                rows,
+                vec![
+                    HistoryRow::Item {
+                        index: 4,
+                        grouped: false
+                    },
+                    HistoryRow::Group {
+                        key: "mail\u{1f}MAIL".into(),
+                        label: "MAIL".into(),
+                        count: 2,
+                        expanded: true,
+                        newest: 3,
+                    },
+                    HistoryRow::Item {
+                        index: 3,
+                        grouped: true
+                    },
+                    HistoryRow::Item {
+                        index: 0,
+                        grouped: true
+                    },
+                    HistoryRow::Item {
+                        index: 2,
+                        grouped: false
+                    },
+                    HistoryRow::Item {
+                        index: 1,
+                        grouped: false
+                    },
+                ]
+            );
+        }
+
+        phase a_collapsed_group_keeps_only_its_header;
+        {
+            let history = vec![from_app("mail", "m1"), from_app("mail", "m2")];
+            let collapsed = BTreeSet::from(["mail\u{1f}MAIL".to_string()]);
+            let rows = history_rows(&history, &collapsed);
+            assert!(matches!(
+                rows.as_slice(),
+                [HistoryRow::Group {
+                    expanded: false,
                     count: 2,
-                    expanded: true,
-                    newest: 3,
-                },
-                HistoryRow::Item {
-                    index: 3,
-                    grouped: true
-                },
-                HistoryRow::Item {
-                    index: 0,
-                    grouped: true
-                },
-                HistoryRow::Item {
-                    index: 2,
-                    grouped: false
-                },
-                HistoryRow::Item {
-                    index: 1,
-                    grouped: false
-                },
-            ]
-        );
-    }
+                    ..
+                }]
+            ));
+        }
 
-    #[test]
-    fn a_collapsed_group_keeps_only_its_header() {
-        let history = vec![from_app("mail", "m1"), from_app("mail", "m2")];
-        let collapsed = BTreeSet::from(["mail\u{1f}MAIL".to_string()]);
-        let rows = history_rows(&history, &collapsed);
-        assert!(matches!(
-            rows.as_slice(),
-            [HistoryRow::Group {
-                expanded: false,
-                count: 2,
-                ..
-            }]
-        ));
-    }
-
-    #[test]
-    fn a_mirrored_app_groups_apart_from_the_same_local_app() {
-        let local = from_app("mail", "here");
-        let mut remote = from_app("mail", "there");
-        remote.app_name = Some("MAIL · From Phone".into());
-        assert_ne!(group_key(&local), group_key(&remote));
+        phase a_mirrored_app_groups_apart_from_the_same_local_app;
+        {
+            let local = from_app("mail", "here");
+            let mut remote = from_app("mail", "there");
+            remote.app_name = Some("MAIL · From Phone".into());
+            assert_ne!(group_key(&local), group_key(&remote));
+        }
     }
 }

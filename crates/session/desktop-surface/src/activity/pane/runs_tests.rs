@@ -210,117 +210,368 @@ impl Fixture {
     }
 }
 
-/// An MCP session's run that asked a shell to run a command shows that command as the shell
-/// recorded it: its directory, how it ended, and the last lines it printed, with the whole output
-/// one read away. A command still running is what the run is doing now.
-#[test]
-fn an_agent_runs_commands_show_their_run_records_and_the_one_running_now() {
-    let mut fixture = Fixture::new();
-    let record = fixture.record();
-    fixture.as_agent();
-    ask(
-        &mut fixture.doc,
-        &record,
-        "req-1",
-        "a0",
-        "cargo test -p signup",
-        "mcp:session-2",
-        10,
-    );
-    fixture.as_terminal();
-    record_run(&mut fixture.doc, "req-1", 101, 11);
-    fixture.as_agent();
-    ask(
-        &mut fixture.doc,
-        &record,
-        "req-2",
-        "a1",
-        "cargo test -p signup -- rejects_taken_names",
-        "mcp:session-2",
-        20,
-    );
+tilo_test_env::scenario! {
+    fn agent_and_connection_runs_are_listed_and_undone_from_the_activity;
 
-    let served = fixture.runs();
-    let run = served
-        .runs
-        .iter()
-        .find(|run| run.id == "mcp:session-2")
-        .unwrap_or_else(|| panic!("the session's work is one run: {served:#?}"));
-    assert_eq!(run.agent.name, "Claude Code #2");
-    assert_eq!(run.agent.relation, wire::Relation::Software);
-    assert_eq!(run.actions.len(), 2, "{:#?}", run.actions);
-
-    let wire::ActionView::Command {
-        command,
-        cwd,
-        output,
-        exit,
-        started_ms,
-        ended_ms,
-        run: recorded,
-        ..
-    } = &run.actions[0].view
-    else {
-        panic!(
-            "a command it ran opens as that command: {:?}",
-            run.actions[0]
+    phase an_agent_runs_commands_show_their_run_records_and_the_one_running_now;
+    // An MCP session's run that asked a shell to run a command shows that command as the shell
+    // recorded it: its directory, how it ended, and the last lines it printed, with the whole output
+    // one read away. A command still running is what the run is doing now.
+    {
+        let mut fixture = Fixture::new();
+        let record = fixture.record();
+        fixture.as_agent();
+        ask(
+            &mut fixture.doc,
+            &record,
+            "req-1",
+            "a0",
+            "cargo test -p signup",
+            "mcp:session-2",
+            10,
         );
-    };
-    assert_eq!(command, "cargo test -p signup");
-    assert_eq!(cwd, "/home/ada/signup");
-    assert_eq!(*exit, Some(101));
-    assert_eq!((*started_ms, *ended_ms), (Some(11_000), Some(14_000)));
-    assert_eq!(
-        output.last().map(String::as_str),
-        Some("test result: FAILED. 1 passed; 1 failed")
-    );
-    assert!(
-        output.iter().all(|line| !line.contains('\u{1b}')),
-        "{output:?}"
-    );
-    let recorded = recorded.clone().expect("the run record is named");
-    assert_eq!(
-        (
-            recorded.app_id.as_str(),
-            recorded.record.as_str(),
-            recorded.run.as_str()
-        ),
-        (TERMINAL_APP, record.as_str(), "req-1")
-    );
-    assert!(!run.actions[0].view.is_running());
+        fixture.as_terminal();
+        record_run(&mut fixture.doc, "req-1", 101, 11);
+        fixture.as_agent();
+        ask(
+            &mut fixture.doc,
+            &record,
+            "req-2",
+            "a1",
+            "cargo test -p signup -- rejects_taken_names",
+            "mcp:session-2",
+            20,
+        );
 
-    assert!(run.actions[1].view.is_running(), "{:?}", run.actions[1]);
-    assert_eq!(
-        run.now,
-        Some(wire::Now::Running {
-            command: "cargo test -p signup -- rejects_taken_names".to_owned(),
-            since_ms: run.actions[1].at_ms,
-        })
-    );
+        let served = fixture.runs();
+        let run = served
+            .runs
+            .iter()
+            .find(|run| run.id == "mcp:session-2")
+            .unwrap_or_else(|| panic!("the session's work is one run: {served:#?}"));
+        assert_eq!(run.agent.name, "Claude Code #2");
+        assert_eq!(run.agent.relation, wire::Relation::Software);
+        assert_eq!(run.actions.len(), 2, "{:#?}", run.actions);
 
-    let whole = fixture.pane.serve_run_output(&recorded, &fixture.tree);
-    assert!(!whole.unavailable && !whole.running);
-    assert_eq!(
-        whole.lines.first().map(String::as_str),
-        Some("   Compiling signup v0.1.0")
-    );
-    assert_eq!(whole.lines.len(), 6, "{:?}", whole.lines);
+        let wire::ActionView::Command {
+            command,
+            cwd,
+            output,
+            exit,
+            started_ms,
+            ended_ms,
+            run: recorded,
+            ..
+        } = &run.actions[0].view
+        else {
+            panic!(
+                "a command it ran opens as that command: {:?}",
+                run.actions[0]
+            );
+        };
+        assert_eq!(command, "cargo test -p signup");
+        assert_eq!(cwd, "/home/ada/signup");
+        assert_eq!(*exit, Some(101));
+        assert_eq!((*started_ms, *ended_ms), (Some(11_000), Some(14_000)));
+        assert_eq!(
+            output.last().map(String::as_str),
+            Some("test result: FAILED. 1 passed; 1 failed")
+        );
+        assert!(
+            output.iter().all(|line| !line.contains('\u{1b}')),
+            "{output:?}"
+        );
+        let recorded = recorded.clone().expect("the run record is named");
+        assert_eq!(
+            (
+                recorded.app_id.as_str(),
+                recorded.record.as_str(),
+                recorded.run.as_str()
+            ),
+            (TERMINAL_APP, record.as_str(), "req-1")
+        );
+        assert!(!run.actions[0].view.is_running());
 
-    // The second command ends: the run did that last, and is running nothing.
-    fixture.as_terminal();
-    record_run(&mut fixture.doc, "req-2", 0, 30);
-    let served = fixture.runs();
-    let run = served
-        .runs
-        .iter()
-        .find(|run| run.id == "mcp:session-2")
-        .expect("the run is still there");
-    assert!(run.actions.iter().all(|action| !action.view.is_running()));
-    assert!(
-        matches!(run.now, Some(wire::Now::Ran { .. })),
-        "{:?}",
-        run.now
-    );
+        assert!(run.actions[1].view.is_running(), "{:?}", run.actions[1]);
+        assert_eq!(
+            run.now,
+            Some(wire::Now::Running {
+                command: "cargo test -p signup -- rejects_taken_names".to_owned(),
+                since_ms: run.actions[1].at_ms,
+            })
+        );
+
+        let whole = fixture.pane.serve_run_output(&recorded, &fixture.tree);
+        assert!(!whole.unavailable && !whole.running);
+        assert_eq!(
+            whole.lines.first().map(String::as_str),
+            Some("   Compiling signup v0.1.0")
+        );
+        assert_eq!(whole.lines.len(), 6, "{:?}", whole.lines);
+
+        // The second command ends: the run did that last, and is running nothing.
+        fixture.as_terminal();
+        record_run(&mut fixture.doc, "req-2", 0, 30);
+        let served = fixture.runs();
+        let run = served
+            .runs
+            .iter()
+            .find(|run| run.id == "mcp:session-2")
+            .expect("the run is still there");
+        assert!(run.actions.iter().all(|action| !action.view.is_running()));
+        assert!(
+            matches!(run.now, Some(wire::Now::Ran { .. })),
+            "{:?}",
+            run.now
+        );
+    }
+
+    phase a_connections_run_is_undone_whole_while_its_documents_are_open;
+    // An MCP session's run over the documents it changed is undone whole: each document's own
+    // history takes back what it grouped under the connection, while a command it asked a shell to
+    // run is no document's to take back. A record that is not open here is what blocks it.
+    {
+        let mut connection = Connection::new(&["release.note", "budget.note"]);
+        connection.in_a_shell("cargo test -p signup", 30);
+        let run = connection.run();
+        assert_eq!(run.actions.len(), 3, "two documents and one command");
+        assert_eq!(run.undo_blocked, None, "every document it changed is open");
+        let offered = |run: &wire::AgentRun| {
+            run.actions
+                .iter()
+                .filter_map(|action| action.undo.as_ref().map(|undo| undo.action))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            offered(&run),
+            vec![wire::DetailAction::UndoRecord; 2],
+            "each document undoes on its own; the command leaves no history"
+        );
+        let detail = connection.pane.serve_detail(
+            &wire::DetailQuery {
+                range: run.range,
+                compare: false,
+            },
+            &mut connection.tree,
+        );
+        assert!(!detail.gone);
+        assert!(
+            detail.offers.iter().any(|offer| {
+                offer.action == wire::DetailAction::UndoRun
+                    && offer.label == t("activity-detail-undo-run")
+            }),
+            "the run is offered whole under its own name, not a task's: {:?}",
+            detail.offers
+        );
+
+        // The budget note is busy elsewhere: the run cannot be taken back whole until it is open.
+        connection.closed.push(Connection::record("budget.note"));
+        let run = connection.run();
+        assert_eq!(
+            run.undo_blocked.as_deref(),
+            Some(t("activity-undo-run-needs-open").as_str())
+        );
+        assert_eq!(
+            offered(&run),
+            vec![wire::DetailAction::UndoRecord],
+            "the document still open undoes on its own"
+        );
+    }
+
+    phase undoing_a_connections_run_whole_names_its_group_in_every_document;
+    // Undoing an MCP session's run whole asks the host for the connection's group in each document
+    // it changed, and its outcome is reported beside the run the way a task's is.
+    {
+        let mut connection = Connection::new(&["release.note", "budget.note"]);
+        connection.in_a_shell("cargo test -p signup", 30);
+        let run = connection.run();
+        let query = serde_json::to_value(&run.range)
+            .unwrap()
+            .as_object()
+            .cloned()
+            .unwrap();
+        let outcome = connection
+            .pane
+            .serve_action(wire::UNDO_RUN, &query, &mut connection.tree)
+            .expect("the run is in the history");
+        assert!(outcome.handled);
+        let undo = connection.undo();
+        assert_eq!(undo.task_id, GROUP);
+        assert_eq!(
+            undo.steps,
+            vec![
+                (NOTES_APP.to_owned(), Connection::record("release.note")),
+                (NOTES_APP.to_owned(), Connection::record("budget.note")),
+            ],
+            "each document it changed, and no shell session's record"
+        );
+        assert_eq!(
+            undo.workspace,
+            connection
+                .tree
+                .active_workspace()
+                .expect("workspace")
+                .id()
+                .to_string()
+        );
+
+        // One undo at a time: asking again while it runs asks nothing more, and the run says so.
+        connection
+            .pane
+            .serve_action(wire::UNDO_RUN, &query, &mut connection.tree)
+            .expect("the run is still in the history");
+        assert_eq!(connection.host.undos.borrow().len(), 1);
+        assert_eq!(
+            connection.run().undo_blocked.as_deref(),
+            Some(t("activity-undo-run-in-progress").as_str())
+        );
+
+        let ended = undo
+            .steps
+            .iter()
+            .map(|(app, record)| TaskRunDocument {
+                app: app.clone(),
+                record: record.clone(),
+            })
+            .collect();
+        connection.host.ended.replace(Some(Ok(ended)));
+        connection.refresh();
+        assert!(connection.pane.undo_pending.is_none(), "it ended");
+        assert_eq!(
+            connection
+                .pane
+                .agent_undo_notice
+                .as_ref()
+                .map(|(run, notice)| (run.as_str(), notice.as_str())),
+            Some((GROUP, t("activity-undo-task-done").as_str()))
+        );
+        assert!(connection.pane.unreverted.is_empty());
+    }
+
+    phase one_document_of_a_connections_run_undoes_alone;
+    // One document of an MCP session's run undoes on its own: the host is asked for the connection's
+    // group in that one record, exactly as the run view's Undo this step asks.
+    {
+        let mut connection = Connection::new(&["release.note", "budget.note"]);
+        let run = connection.run();
+        let action = &run.actions[0];
+        assert_eq!(
+            action.undo.as_ref().map(|undo| undo.action),
+            Some(wire::DetailAction::UndoRecord)
+        );
+        let query = wire::RecordQuery {
+            range: run.range.clone(),
+            task: None,
+            app_id: action.app_id.clone(),
+            id: action.record.clone(),
+        };
+        let arguments = serde_json::to_value(&query)
+            .unwrap()
+            .as_object()
+            .cloned()
+            .unwrap();
+        let outcome = connection
+            .pane
+            .serve_action(wire::UNDO_RECORD, &arguments, &mut connection.tree)
+            .expect("the run is in the history");
+        assert!(outcome.handled);
+        let undo = connection.undo();
+        assert_eq!(undo.task_id, GROUP);
+        assert_eq!(
+            undo.steps,
+            vec![(NOTES_APP.to_owned(), Connection::record("release.note"))],
+            "only the record the person picked is undone"
+        );
+    }
+
+    phase an_agents_run_in_a_record_the_session_keeps_is_listed_and_undone_from_the_activity;
+    // The workspace record the session keeps holds a root per package it runs, and each app's record
+    // is admitted over that one document. The app's own steps are its entry's and no other's, and an
+    // agent's run there is listed — and taken back from the Activity — though no app's process holds
+    // the record and no marker holds the run.
+    {
+        const NOTES: &str = "so.tilo.lang.notes";
+        const NOTES_KIND: &str = "tl.so.tilo.lang.notes.Notebook";
+        const NOTES_ROOT: &str = "tl:so.tilo.lang.notes:notebook";
+        const CHAT_KIND: &str = "tl.so.tilo.lang.chat.Channel";
+        const CHAT_ROOT: &str = "tl:so.tilo.lang.chat:channel";
+        // The run an agent admitted at this desktop's door works in: one run of a task.
+        const RUN: &str =
+            "so.tilo.session/agent-session/243b7256ef6c400fa43d111a4988b8ca@ad46de5895801c1c";
+        // The person names a session-kept record as the app's own record of the workspace.
+        let primary = ui::RecordId::package_primary().as_str().to_owned();
+
+        let tree = WorkspaceTree::bootstrap_demo();
+        let host = Rc::new(Host::default());
+        let mut pane = WorkspaceActivityPane::new();
+        pane.set_host(Rc::clone(&host) as Rc<dyn ActivityHost>);
+        pane.view = ActivityView::Explore;
+
+        // One document, two apps' records: the agent renamed a note in one and wrote in the other.
+        let mut doc = AutoCommit::new();
+        doc.set_actor(ActorId::from(b"claude-code-agent".as_slice()));
+        let note = doc.put_object(ROOT, "note", ObjType::Text).unwrap();
+        doc.splice_text(&note, 0, 0, "Shopping").unwrap();
+        let context = tilo_actions::ActionContext::for_resource(NOTES_ROOT, NOTES_KIND, "Shopping")
+            .with_group(RUN, "Claude Code", ui::history_source::steps::TASK_RUN);
+        doc.commit_with(
+            CommitOptions::default()
+                .with_time(10)
+                .with_message(context.change_message().unwrap()),
+        );
+        let channel = doc.put_object(ROOT, "channel", ObjType::Text).unwrap();
+        doc.splice_text(&channel, 0, 0, "Morning").unwrap();
+        let other = tilo_actions::ActionContext::for_resource(CHAT_ROOT, CHAT_KIND, "Lounge")
+            .with_group(RUN, "Claude Code", ui::history_source::steps::TASK_RUN);
+        doc.commit_with(
+            CommitOptions::default()
+                .with_time(20)
+                .with_message(other.change_message().unwrap()),
+        );
+
+        let mut tree = tree;
+        pane.refresh(&mut tree);
+        pane.refresh_detached_records(
+            &mut tree,
+            vec![DetachedRecordHistory {
+                app: NOTES.to_owned(),
+                checkout: ui::RecordCheckout::package_primary(ui::RecordKind::new(NOTES_KIND)),
+                document: Some(doc),
+            }],
+        );
+        let served = pane.serve_runs(&wire::RunsQuery::default(), &tree);
+        let run = served
+            .runs
+            .iter()
+            .find(|run| run.id == RUN)
+            .unwrap_or_else(|| panic!("the agent's run is listed: {served:#?}"));
+        assert_eq!(
+            run.undo_blocked, None,
+            "the run is undone from the Activity: {run:#?}"
+        );
+        let [action] = run.actions.as_slice() else {
+            panic!("one action, in the note: {run:#?}");
+        };
+        assert_eq!(
+            (action.app_id.as_str(), action.record.as_str()),
+            (NOTES, primary.as_str()),
+            "the notes' record, and not the channel the same document holds"
+        );
+
+        // The person presses Undo run: the host is asked for the run in that record.
+        let arguments = serde_json::to_value(&run.range)
+            .unwrap()
+            .as_object()
+            .cloned()
+            .unwrap();
+        let outcome = pane
+            .serve_action(wire::UNDO_RUN, &arguments, &mut tree)
+            .expect("the run is in the history");
+        assert!(outcome.handled);
+        let undo = host.undos.borrow().first().cloned().expect("an undo");
+        assert_eq!(undo.task_id, RUN);
+        assert_eq!(undo.steps, vec![(NOTES.to_owned(), primary)]);
+    }
 }
 
 /// The app whose records the run changed.
@@ -457,251 +708,4 @@ impl Connection {
             .cloned()
             .expect("the host was asked to undo the run")
     }
-}
-
-/// An MCP session's run over the documents it changed is undone whole: each document's own
-/// history takes back what it grouped under the connection, while a command it asked a shell to
-/// run is no document's to take back. A record that is not open here is what blocks it.
-#[test]
-fn a_connections_run_is_undone_whole_while_its_documents_are_open() {
-    let mut connection = Connection::new(&["release.note", "budget.note"]);
-    connection.in_a_shell("cargo test -p signup", 30);
-    let run = connection.run();
-    assert_eq!(run.actions.len(), 3, "two documents and one command");
-    assert_eq!(run.undo_blocked, None, "every document it changed is open");
-    let offered = |run: &wire::AgentRun| {
-        run.actions
-            .iter()
-            .filter_map(|action| action.undo.as_ref().map(|undo| undo.action))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        offered(&run),
-        vec![wire::DetailAction::UndoRecord; 2],
-        "each document undoes on its own; the command leaves no history"
-    );
-    let detail = connection.pane.serve_detail(
-        &wire::DetailQuery {
-            range: run.range,
-            compare: false,
-        },
-        &mut connection.tree,
-    );
-    assert!(!detail.gone);
-    assert!(
-        detail.offers.iter().any(|offer| {
-            offer.action == wire::DetailAction::UndoRun
-                && offer.label == t("activity-detail-undo-run")
-        }),
-        "the run is offered whole under its own name, not a task's: {:?}",
-        detail.offers
-    );
-
-    // The budget note is busy elsewhere: the run cannot be taken back whole until it is open.
-    connection.closed.push(Connection::record("budget.note"));
-    let run = connection.run();
-    assert_eq!(
-        run.undo_blocked.as_deref(),
-        Some(t("activity-undo-run-needs-open").as_str())
-    );
-    assert_eq!(
-        offered(&run),
-        vec![wire::DetailAction::UndoRecord],
-        "the document still open undoes on its own"
-    );
-}
-
-/// Undoing an MCP session's run whole asks the host for the connection's group in each document
-/// it changed, and its outcome is reported beside the run the way a task's is.
-#[test]
-fn undoing_a_connections_run_whole_names_its_group_in_every_document() {
-    let mut connection = Connection::new(&["release.note", "budget.note"]);
-    connection.in_a_shell("cargo test -p signup", 30);
-    let run = connection.run();
-    let query = serde_json::to_value(&run.range)
-        .unwrap()
-        .as_object()
-        .cloned()
-        .unwrap();
-    let outcome = connection
-        .pane
-        .serve_action(wire::UNDO_RUN, &query, &mut connection.tree)
-        .expect("the run is in the history");
-    assert!(outcome.handled);
-    let undo = connection.undo();
-    assert_eq!(undo.task_id, GROUP);
-    assert_eq!(
-        undo.steps,
-        vec![
-            (NOTES_APP.to_owned(), Connection::record("release.note")),
-            (NOTES_APP.to_owned(), Connection::record("budget.note")),
-        ],
-        "each document it changed, and no shell session's record"
-    );
-    assert_eq!(
-        undo.workspace,
-        connection
-            .tree
-            .active_workspace()
-            .expect("workspace")
-            .id()
-            .to_string()
-    );
-
-    // One undo at a time: asking again while it runs asks nothing more, and the run says so.
-    connection
-        .pane
-        .serve_action(wire::UNDO_RUN, &query, &mut connection.tree)
-        .expect("the run is still in the history");
-    assert_eq!(connection.host.undos.borrow().len(), 1);
-    assert_eq!(
-        connection.run().undo_blocked.as_deref(),
-        Some(t("activity-undo-run-in-progress").as_str())
-    );
-
-    let ended = undo
-        .steps
-        .iter()
-        .map(|(app, record)| TaskRunDocument {
-            app: app.clone(),
-            record: record.clone(),
-        })
-        .collect();
-    connection.host.ended.replace(Some(Ok(ended)));
-    connection.refresh();
-    assert!(connection.pane.undo_pending.is_none(), "it ended");
-    assert_eq!(
-        connection
-            .pane
-            .agent_undo_notice
-            .as_ref()
-            .map(|(run, notice)| (run.as_str(), notice.as_str())),
-        Some((GROUP, t("activity-undo-task-done").as_str()))
-    );
-    assert!(connection.pane.unreverted.is_empty());
-}
-
-/// One document of an MCP session's run undoes on its own: the host is asked for the connection's
-/// group in that one record, exactly as the run view's Undo this step asks.
-#[test]
-fn one_document_of_a_connections_run_undoes_alone() {
-    let mut connection = Connection::new(&["release.note", "budget.note"]);
-    let run = connection.run();
-    let action = &run.actions[0];
-    assert_eq!(
-        action.undo.as_ref().map(|undo| undo.action),
-        Some(wire::DetailAction::UndoRecord)
-    );
-    let query = wire::RecordQuery {
-        range: run.range.clone(),
-        task: None,
-        app_id: action.app_id.clone(),
-        id: action.record.clone(),
-    };
-    let arguments = serde_json::to_value(&query)
-        .unwrap()
-        .as_object()
-        .cloned()
-        .unwrap();
-    let outcome = connection
-        .pane
-        .serve_action(wire::UNDO_RECORD, &arguments, &mut connection.tree)
-        .expect("the run is in the history");
-    assert!(outcome.handled);
-    let undo = connection.undo();
-    assert_eq!(undo.task_id, GROUP);
-    assert_eq!(
-        undo.steps,
-        vec![(NOTES_APP.to_owned(), Connection::record("release.note"))],
-        "only the record the person picked is undone"
-    );
-}
-
-/// The workspace record the session keeps holds a root per package it runs, and each app's record
-/// is admitted over that one document. The app's own steps are its entry's and no other's, and an
-/// agent's run there is listed — and taken back from the Activity — though no app's process holds
-/// the record and no marker holds the run.
-#[test]
-fn an_agents_run_in_a_record_the_session_keeps_is_listed_and_undone_from_the_activity() {
-    const NOTES: &str = "so.tilo.lang.notes";
-    const NOTES_KIND: &str = "tl.so.tilo.lang.notes.Notebook";
-    const NOTES_ROOT: &str = "tl:so.tilo.lang.notes:notebook";
-    const CHAT_KIND: &str = "tl.so.tilo.lang.chat.Channel";
-    const CHAT_ROOT: &str = "tl:so.tilo.lang.chat:channel";
-    // The run an agent admitted at this desktop's door works in: one run of a task.
-    const RUN: &str =
-        "so.tilo.session/agent-session/243b7256ef6c400fa43d111a4988b8ca@ad46de5895801c1c";
-    // The person names a session-kept record as the app's own record of the workspace.
-    let primary = ui::RecordId::package_primary().as_str().to_owned();
-
-    let tree = WorkspaceTree::bootstrap_demo();
-    let host = Rc::new(Host::default());
-    let mut pane = WorkspaceActivityPane::new();
-    pane.set_host(Rc::clone(&host) as Rc<dyn ActivityHost>);
-    pane.view = ActivityView::Explore;
-
-    // One document, two apps' records: the agent renamed a note in one and wrote in the other.
-    let mut doc = AutoCommit::new();
-    doc.set_actor(ActorId::from(b"claude-code-agent".as_slice()));
-    let note = doc.put_object(ROOT, "note", ObjType::Text).unwrap();
-    doc.splice_text(&note, 0, 0, "Shopping").unwrap();
-    let context = tilo_actions::ActionContext::for_resource(NOTES_ROOT, NOTES_KIND, "Shopping")
-        .with_group(RUN, "Claude Code", ui::history_source::steps::TASK_RUN);
-    doc.commit_with(
-        CommitOptions::default()
-            .with_time(10)
-            .with_message(context.change_message().unwrap()),
-    );
-    let channel = doc.put_object(ROOT, "channel", ObjType::Text).unwrap();
-    doc.splice_text(&channel, 0, 0, "Morning").unwrap();
-    let other = tilo_actions::ActionContext::for_resource(CHAT_ROOT, CHAT_KIND, "Lounge")
-        .with_group(RUN, "Claude Code", ui::history_source::steps::TASK_RUN);
-    doc.commit_with(
-        CommitOptions::default()
-            .with_time(20)
-            .with_message(other.change_message().unwrap()),
-    );
-
-    let mut tree = tree;
-    pane.refresh(&mut tree);
-    pane.refresh_detached_records(
-        &mut tree,
-        vec![DetachedRecordHistory {
-            app: NOTES.to_owned(),
-            checkout: ui::RecordCheckout::package_primary(ui::RecordKind::new(NOTES_KIND)),
-            document: Some(doc),
-        }],
-    );
-    let served = pane.serve_runs(&wire::RunsQuery::default(), &tree);
-    let run = served
-        .runs
-        .iter()
-        .find(|run| run.id == RUN)
-        .unwrap_or_else(|| panic!("the agent's run is listed: {served:#?}"));
-    assert_eq!(
-        run.undo_blocked, None,
-        "the run is undone from the Activity: {run:#?}"
-    );
-    let [action] = run.actions.as_slice() else {
-        panic!("one action, in the note: {run:#?}");
-    };
-    assert_eq!(
-        (action.app_id.as_str(), action.record.as_str()),
-        (NOTES, primary.as_str()),
-        "the notes' record, and not the channel the same document holds"
-    );
-
-    // The person presses Undo run: the host is asked for the run in that record.
-    let arguments = serde_json::to_value(&run.range)
-        .unwrap()
-        .as_object()
-        .cloned()
-        .unwrap();
-    let outcome = pane
-        .serve_action(wire::UNDO_RUN, &arguments, &mut tree)
-        .expect("the run is in the history");
-    assert!(outcome.handled);
-    let undo = host.undos.borrow().first().cloned().expect("an undo");
-    assert_eq!(undo.task_id, RUN);
-    assert_eq!(undo.steps, vec![(NOTES.to_owned(), primary)]);
 }

@@ -89,86 +89,90 @@ mod native_history {
         (snapshot, written, authors)
     }
 
-    /// A native session's history is the layout's own document: the pane lists
-    /// what changed there and who changed it.
-    #[test]
-    fn the_native_history_lists_what_changed_in_the_workspace() {
-        let (mut snapshot, _written, authors) = native_history();
-        let mut pane = native_pane();
-        crate::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
-        pane.view = ActivityView::Explore;
-        pane.refresh(&mut snapshot);
+    tilo_test_env::scenario! {
+        fn the_native_history_lists_changes_and_restores_a_version;
 
-        let rows: Vec<String> = pane
-            .entries()
-            .iter()
-            .map(|entry| entry.summary.clone())
-            .collect();
-        assert!(
-            rows.iter().any(|summary| summary.contains("Plans")),
-            "the rename is what changed in the workspace: {rows:?}"
-        );
-        assert!(
-            pane.entries()
+        phase the_native_history_lists_what_changed_in_the_workspace;
+        // A native session's history is the layout's own document: the pane lists
+        // what changed there and who changed it.
+        {
+            let (mut snapshot, _written, authors) = native_history();
+            let mut pane = native_pane();
+            crate::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
+            pane.view = ActivityView::Explore;
+            pane.refresh(&mut snapshot);
+
+            let rows: Vec<String> = pane
+                .entries()
                 .iter()
-                .any(|entry| entry.author.name == "Grace"),
-            "who changed it is named: {:?}",
-            pane.entries()
-                .iter()
-                .map(|entry| entry.author.name.clone())
-                .collect::<Vec<_>>()
-        );
-    }
+                .map(|entry| entry.summary.clone())
+                .collect();
+            assert!(
+                rows.iter().any(|summary| summary.contains("Plans")),
+                "the rename is what changed in the workspace: {rows:?}"
+            );
+            assert!(
+                pane.entries()
+                    .iter()
+                    .any(|entry| entry.author.name == "Grace"),
+                "who changed it is named: {:?}",
+                pane.entries()
+                    .iter()
+                    .map(|entry| entry.author.name.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
 
-    /// Restoring a version writes the layout back through the host that keeps
-    /// it, and the restore is itself a change of the workspace.
-    #[test]
-    fn a_version_restored_from_the_native_history_is_written_back() {
-        use tilo_actions::remote::workspace_activity as wire;
-        use tilo_desktop_model::Layout;
+        phase a_version_restored_from_the_native_history_is_written_back;
+        // Restoring a version writes the layout back through the host that keeps
+        // it, and the restore is itself a change of the workspace.
+        {
+            use tilo_actions::remote::workspace_activity as wire;
+            use tilo_desktop_model::Layout;
 
-        let (mut snapshot, written, authors) = native_history();
-        let mut pane = native_pane();
-        crate::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
-        pane.view = ActivityView::Explore;
-        pane.refresh(&mut snapshot);
+            let (mut snapshot, written, authors) = native_history();
+            let mut pane = native_pane();
+            crate::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
+            pane.view = ActivityView::Explore;
+            pane.refresh(&mut snapshot);
 
-        // The rows are oldest first: the newest is Ada closing Notes, so the
-        // one before it is the version with the window still open.
-        let listed = pane.entries().len();
-        let before_close = listed
-            .checked_sub(2)
-            .and_then(|older| pane.entries().get(older))
-            .map(|entry| entry.id)
-            .expect("a version before the close");
-        let arguments =
-            serde_json::json!(wire::Range::one(&wire::entry_hex(before_close.as_bytes())))
-                .as_object()
-                .cloned()
-                .expect("a range");
-        let outcome = pane
-            .serve_action(wire::RESTORE, &arguments, &mut snapshot)
-            .expect("the history takes the restore");
-        assert!(outcome.reverted, "the restore wrote");
-        let restored: Layout = written
-            .borrow_mut()
-            .take()
-            .expect("the layout is written back");
-        assert_eq!(
-            restored
-                .active_workspace()
-                .map(|workspace| workspace.name.as_str()),
-            Some("Plans"),
-            "the workspace is back at the version restored"
-        );
-        assert_eq!(
-            restored.workspaces[0].strips[0].window_groups.len(),
-            1,
-            "the window Ada closed is back"
-        );
-        assert!(
-            pane.entries().len() > listed,
-            "the restore is a new change on top, not a rewind"
-        );
+            // The rows are oldest first: the newest is Ada closing Notes, so the
+            // one before it is the version with the window still open.
+            let listed = pane.entries().len();
+            let before_close = listed
+                .checked_sub(2)
+                .and_then(|older| pane.entries().get(older))
+                .map(|entry| entry.id)
+                .expect("a version before the close");
+            let arguments =
+                serde_json::json!(wire::Range::one(&wire::entry_hex(before_close.as_bytes())))
+                    .as_object()
+                    .cloned()
+                    .expect("a range");
+            let outcome = pane
+                .serve_action(wire::RESTORE, &arguments, &mut snapshot)
+                .expect("the history takes the restore");
+            assert!(outcome.reverted, "the restore wrote");
+            let restored: Layout = written
+                .borrow_mut()
+                .take()
+                .expect("the layout is written back");
+            assert_eq!(
+                restored
+                    .active_workspace()
+                    .map(|workspace| workspace.name.as_str()),
+                Some("Plans"),
+                "the workspace is back at the version restored"
+            );
+            assert_eq!(
+                restored.workspaces[0].strips[0].window_groups.len(),
+                1,
+                "the window Ada closed is back"
+            );
+            assert!(
+                pane.entries().len() > listed,
+                "the restore is a new change on top, not a rewind"
+            );
+        }
     }
 }

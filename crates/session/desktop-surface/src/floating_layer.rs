@@ -664,356 +664,360 @@ mod tests {
         )
     }
 
-    /// A card that only ticks repaints its own ground: the cards that did not change stay as the
-    /// screen has them.
-    #[test]
-    fn a_ticking_card_repaints_only_itself() {
-        let theme = Theme::default();
-        let mut text = TextRenderer::new();
-        let mut layer = FloatingLayer::default();
-        layer.set(
-            placement(),
-            Corner::BottomRight,
-            vec![Card::new("so.tilo.clocks", timer()), music("Track 1")],
-        );
-        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
-        let cards = layer.layout().cards.clone();
-        assert_eq!(cards.len(), 2);
+    tilo_test_env::scenario! {
+        fn floating_cards_repaint_drag_and_answer_their_controls;
 
-        layer.set(
-            placement(),
-            Corner::BottomRight,
-            vec![Card::new("so.tilo.clocks", timer()), music("Track 2")],
-        );
-        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
-        assert_eq!(
-            layer.damage(),
-            painted_bounds(cards[1].rect, &theme),
-            "the card that changed, shadows and all"
-        );
-    }
+        phase a_ticking_card_repaints_only_itself;
+        // A card that only ticks repaints its own ground: the cards that did not change stay as the
+        // screen has them.
+        {
+            let theme = Theme::default();
+            let mut text = TextRenderer::new();
+            let mut layer = FloatingLayer::default();
+            layer.set(
+                placement(),
+                Corner::BottomRight,
+                vec![Card::new("so.tilo.clocks", timer()), music("Track 1")],
+            );
+            layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+            let cards = layer.layout().cards.clone();
+            assert_eq!(cards.len(), 2);
 
-    /// Dragging a card repaints where it left and where it is, and no other card.
-    #[test]
-    fn a_dragged_card_repaints_where_it_was_and_where_it_is() {
-        let theme = Theme::default();
-        let mut text = TextRenderer::new();
-        let mut layer = FloatingLayer::default();
-        layer.set(
-            placement(),
-            Corner::BottomRight,
-            vec![Card::new("so.tilo.clocks", timer()), music("Track 1")],
-        );
-        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
-        let cards = layer.layout().cards.clone();
-        let grabbed = cards[0].rect;
-        let point = Point::new(grabbed.x0 + 8.0, grabbed.y0 + 8.0);
-        assert!(layer.pointer_button(point, true).is_empty());
-        let moved = Point::new(point.x - 60.0, point.y + 40.0);
-        assert!(layer.pointer_motion(moved));
-        let dragged = Rect::from_origin_size(
-            Point::new(grabbed.x0 - 60.0, grabbed.y0 + 40.0),
-            grabbed.size(),
-        );
-        assert_eq!(
-            layer.shown().cards[0].2,
-            dragged,
-            "the layer reports the card where the pointer holds it, not where it settled"
-        );
-        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
-        let damage = layer.damage();
-        assert_eq!(
-            damage,
-            painted_bounds(grabbed, &theme).union(painted_bounds(
-                Rect::from_origin_size(
-                    Point::new(grabbed.x0 - 60.0, grabbed.y0 + 40.0),
-                    grabbed.size()
-                ),
-                &theme
-            )),
-            "the card's old and new ground"
-        );
-    }
+            layer.set(
+                placement(),
+                Corner::BottomRight,
+                vec![Card::new("so.tilo.clocks", timer()), music("Track 2")],
+            );
+            layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+            assert_eq!(
+                layer.damage(),
+                painted_bounds(cards[1].rect, &theme),
+                "the card that changed, shadows and all"
+            );
+        }
 
-    /// A press on a control runs it when it lifts on that control, and runs nothing when the
-    /// pointer moves off it.
-    #[test]
-    fn a_control_runs_when_the_press_lifts_on_it() {
-        let mut layer = layer();
-        let card = layer.layout().cards.first().expect("a card").rect;
-        let rows = card_parts(card, &timer());
-        let (id, control) = rows.controls.first().expect("a control");
-        assert_eq!(id, "toggle");
-        let at = control.center();
-        assert!(layer.pointer_button(at, true).is_empty());
-        assert_eq!(
-            layer.pointer_button(at, false),
-            vec![Ask::Control {
-                app: "so.tilo.clocks".into(),
-                activity: "tea".into(),
-                control: "toggle".into(),
-            }]
-        );
-        assert!(layer.pointer_button(at, true).is_empty());
-        assert!(
-            layer
-                .pointer_button(Point::new(at.x + control.width(), at.y), false)
-                .is_empty(),
-            "lifted off the control: nothing runs"
-        );
-    }
+        phase a_dragged_card_repaints_where_it_was_and_where_it_is;
+        // Dragging a card repaints where it left and where it is, and no other card.
+        {
+            let theme = Theme::default();
+            let mut text = TextRenderer::new();
+            let mut layer = FloatingLayer::default();
+            layer.set(
+                placement(),
+                Corner::BottomRight,
+                vec![Card::new("so.tilo.clocks", timer()), music("Track 1")],
+            );
+            layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+            let cards = layer.layout().cards.clone();
+            let grabbed = cards[0].rect;
+            let point = Point::new(grabbed.x0 + 8.0, grabbed.y0 + 8.0);
+            assert!(layer.pointer_button(point, true).is_empty());
+            let moved = Point::new(point.x - 60.0, point.y + 40.0);
+            assert!(layer.pointer_motion(moved));
+            let dragged = Rect::from_origin_size(
+                Point::new(grabbed.x0 - 60.0, grabbed.y0 + 40.0),
+                grabbed.size(),
+            );
+            assert_eq!(
+                layer.shown().cards[0].2,
+                dragged,
+                "the layer reports the card where the pointer holds it, not where it settled"
+            );
+            layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+            let damage = layer.damage();
+            assert_eq!(
+                damage,
+                painted_bounds(grabbed, &theme).union(painted_bounds(
+                    Rect::from_origin_size(
+                        Point::new(grabbed.x0 - 60.0, grabbed.y0 + 40.0),
+                        grabbed.size()
+                    ),
+                    &theme
+                )),
+                "the card's old and new ground"
+            );
+        }
 
-    /// The header's close and collapse ask the session, which owns what they mean.
-    #[test]
-    fn the_header_asks_to_close_or_collapse() {
-        let mut layer = layer();
-        let card = layer.layout().cards.first().expect("a card").rect;
-        let rows = card_parts(card, &timer());
-        assert_eq!(
-            layer.pointer_button(rows.close.center(), true),
-            vec![Ask::Close {
-                app: "so.tilo.clocks".into(),
-                activity: "tea".into(),
-            }]
-        );
-        assert_eq!(
-            layer.pointer_button(rows.collapse.center(), true),
-            vec![Ask::Collapse {
-                app: "so.tilo.clocks".into(),
-                activity: "tea".into(),
-            }]
-        );
-    }
+        phase a_control_runs_when_the_press_lifts_on_it;
+        // A press on a control runs it when it lifts on that control, and runs nothing when the
+        // pointer moves off it.
+        {
+            let mut layer = layer();
+            let card = layer.layout().cards.first().expect("a card").rect;
+            let rows = card_parts(card, &timer());
+            let (id, control) = rows.controls.first().expect("a control");
+            assert_eq!(id, "toggle");
+            let at = control.center();
+            assert!(layer.pointer_button(at, true).is_empty());
+            assert_eq!(
+                layer.pointer_button(at, false),
+                vec![Ask::Control {
+                    app: "so.tilo.clocks".into(),
+                    activity: "tea".into(),
+                    control: "toggle".into(),
+                }]
+            );
+            assert!(layer.pointer_button(at, true).is_empty());
+            assert!(
+                layer
+                    .pointer_button(Point::new(at.x + control.width(), at.y), false)
+                    .is_empty(),
+                "lifted off the control: nothing runs"
+            );
+        }
 
-    /// A card its app draws is a window of its own: the layer keeps the place it reserved for it
-    /// and paints, presses and names nothing there, so the app's first frame never lands over the
-    /// layer's own drawing of the same card and the layer's leftover never shows through after it
-    /// goes.
-    #[test]
-    fn a_card_its_app_draws_is_left_to_its_window() {
-        let theme = Theme::default();
-        let mut text = TextRenderer::new();
-        let mut layer = FloatingLayer::default();
-        let mut drawn = Card::new("so.tilo.chat", timer());
-        drawn.rich = true;
-        drawn.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
-        layer.set(
-            placement(),
-            Corner::BottomRight,
-            vec![drawn, music("Track 1")],
-        );
-        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
-        let cards = layer.layout().cards.clone();
-        assert_eq!(
-            cards.len(),
-            2,
-            "the app's card keeps the place it was given"
-        );
-        let app_card = cards.iter().find(|card| card.rich).expect("the app's card");
-        assert!(
-            !layer.accepts(app_card.rect.center()),
-            "a press inside the app's card reaches its window, not the layer"
-        );
-        assert!(
-            layer
-                .test_rects()
+        phase the_header_asks_to_close_or_collapse;
+        // The header's close and collapse ask the session, which owns what they mean.
+        {
+            let mut layer = layer();
+            let card = layer.layout().cards.first().expect("a card").rect;
+            let rows = card_parts(card, &timer());
+            assert_eq!(
+                layer.pointer_button(rows.close.center(), true),
+                vec![Ask::Close {
+                    app: "so.tilo.clocks".into(),
+                    activity: "tea".into(),
+                }]
+            );
+            assert_eq!(
+                layer.pointer_button(rows.collapse.center(), true),
+                vec![Ask::Collapse {
+                    app: "so.tilo.clocks".into(),
+                    activity: "tea".into(),
+                }]
+            );
+        }
+
+        phase a_card_its_app_draws_is_left_to_its_window;
+        // A card its app draws is a window of its own: the layer keeps the place it reserved for it
+        // and paints, presses and names nothing there, so the app's first frame never lands over the
+        // layer's own drawing of the same card and the layer's leftover never shows through after it
+        // goes.
+        {
+            let theme = Theme::default();
+            let mut text = TextRenderer::new();
+            let mut layer = FloatingLayer::default();
+            let mut drawn = Card::new("so.tilo.chat", timer());
+            drawn.rich = true;
+            drawn.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
+            layer.set(
+                placement(),
+                Corner::BottomRight,
+                vec![drawn, music("Track 1")],
+            );
+            layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+            let cards = layer.layout().cards.clone();
+            assert_eq!(
+                cards.len(),
+                2,
+                "the app's card keeps the place it was given"
+            );
+            let app_card = cards.iter().find(|card| card.rich).expect("the app's card");
+            assert!(
+                !layer.accepts(app_card.rect.center()),
+                "a press inside the app's card reaches its window, not the layer"
+            );
+            assert!(
+                layer
+                    .test_rects()
+                    .iter()
+                    .all(|(id, _)| id != "activity:tea"),
+                "the layer names only the cards it draws"
+            );
+
+            // The app's card updates: the layer paints nothing of it, so there is nothing to repaint.
+            let mut grown = Card::new(
+                "so.tilo.chat",
+                Summary::new(Kind::Timer, "Tea", "4:31")
+                    .with_id("tea")
+                    .with_progress(0.5),
+            );
+            grown.rich = true;
+            grown.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
+            layer.set(
+                placement(),
+                Corner::BottomRight,
+                vec![grown, music("Track 1")],
+            );
+            layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+            assert_eq!(layer.damage(), Rect::ZERO, "nothing of it is the layer's");
+
+            // The card the layer draws changes: only its ground is repainted.
+            let mut drawn = Card::new(
+                "so.tilo.chat",
+                Summary::new(Kind::Timer, "Tea", "4:31")
+                    .with_id("tea")
+                    .with_progress(0.5),
+            );
+            drawn.rich = true;
+            drawn.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
+            layer.set(
+                placement(),
+                Corner::BottomRight,
+                vec![drawn, music("Track 2")],
+            );
+            layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+            let music_card = layer
+                .layout()
+                .cards
                 .iter()
-                .all(|(id, _)| id != "activity:tea"),
-            "the layer names only the cards it draws"
-        );
+                .find(|card| !card.rich)
+                .expect("the music card")
+                .rect;
+            assert_eq!(
+                layer.damage(),
+                painted_bounds(music_card, &theme),
+                "the music card's ground, and nothing where the app draws"
+            );
 
-        // The app's card updates: the layer paints nothing of it, so there is nothing to repaint.
-        let mut grown = Card::new(
-            "so.tilo.chat",
-            Summary::new(Kind::Timer, "Tea", "4:31")
-                .with_id("tea")
-                .with_progress(0.5),
-        );
-        grown.rich = true;
-        grown.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
-        layer.set(
-            placement(),
-            Corner::BottomRight,
-            vec![grown, music("Track 1")],
-        );
-        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
-        assert_eq!(layer.damage(), Rect::ZERO, "nothing of it is the layer's");
+            let mut alone = FloatingLayer::default();
+            let mut drawn = Card::new("so.tilo.chat", timer());
+            drawn.rich = true;
+            alone.set(placement(), Corner::BottomRight, vec![drawn]);
+            assert!(
+                alone.accessibility().is_none(),
+                "nothing of the app's card is the layer's to read out"
+            );
+        }
 
-        // The card the layer draws changes: only its ground is repainted.
-        let mut drawn = Card::new(
-            "so.tilo.chat",
-            Summary::new(Kind::Timer, "Tea", "4:31")
-                .with_id("tea")
-                .with_progress(0.5),
-        );
-        drawn.rich = true;
-        drawn.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
-        layer.set(
-            placement(),
-            Corner::BottomRight,
-            vec![drawn, music("Track 2")],
-        );
-        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
-        let music_card = layer
-            .layout()
-            .cards
-            .iter()
-            .find(|card| !card.rich)
-            .expect("the music card")
-            .rect;
-        assert_eq!(
-            layer.damage(),
-            painted_bounds(music_card, &theme),
-            "the music card's ground, and nothing where the app draws"
-        );
+        phase a_dragged_card_settles_on_the_edge_and_reports_where;
+        // Dragging a card loose and letting it go snaps it to the edge it was thrown near and tells
+        // the session where it is.
+        {
+            let mut layer = layer();
+            let card = layer.layout().cards.first().expect("a card").rect;
+            let grab = Point::new(card.x0 + 40.0, card.y0 + 6.0);
+            assert!(layer.pointer_button(grab, true).is_empty());
+            // Thrown near the left edge: the card settles onto it.
+            assert!(layer.pointer_motion(Point::new(grab.x - 914.0, grab.y - 300.0)));
+            let asks = layer.pointer_button(Point::new(grab.x - 914.0, grab.y - 300.0), false);
+            let Some(Ask::Moved {
+                app,
+                activity,
+                at: Some(at),
+            }) = asks.first()
+            else {
+                panic!("a moved card reports its place: {asks:?}");
+            };
+            assert_eq!(app, "so.tilo.clocks");
+            assert_eq!(activity, "tea");
+            assert!(
+                (at.x0 - (placement().work.x0 + EDGE_INSET)).abs() < 0.5,
+                "it settles onto the left edge: {at:?}"
+            );
+            assert!(at.width() > 0.0 && at.height() > 0.0);
+        }
 
-        let mut alone = FloatingLayer::default();
-        let mut drawn = Card::new("so.tilo.chat", timer());
-        drawn.rich = true;
-        alone.set(placement(), Corner::BottomRight, vec![drawn]);
-        assert!(
-            alone.accessibility().is_none(),
-            "nothing of the app's card is the layer's to read out"
-        );
-    }
+        phase a_dragged_progress_bar_asks_for_the_point_it_is_left_at;
+        // Dragging a song's progress bar asks for the point the pointer left it at, from 0 to 1 along
+        // the bar, and the bar reads that point while the person drags.
+        {
+            let mut layer = FloatingLayer::default();
+            let song = Summary::new(Kind::Music, "Album", "Track 1")
+                .with_id("music")
+                .with_progress(0.25)
+                .with_length(200);
+            layer.set(
+                placement(),
+                Corner::BottomRight,
+                vec![Card::new("so.tilo.music", song.clone())],
+            );
+            let card = layer.layout().cards.first().expect("a card").rect;
+            let bar = card_parts(card, &song).progress.expect("a progress bar");
+            let press = Point::new(bar.x0 + bar.width() * 0.25, bar.center().y);
+            assert!(layer.pointer_button(press, true).is_empty());
+            let left = Point::new(bar.x0 + bar.width() * 0.75, bar.center().y);
+            assert!(layer.pointer_motion(left));
+            let asks = layer.pointer_button(left, false);
+            let Some(Ask::Seek {
+                app,
+                activity,
+                fraction,
+            }) = asks.first()
+            else {
+                panic!("a scrub asks to seek: {asks:?}");
+            };
+            assert_eq!(app, "so.tilo.music");
+            assert_eq!(activity, "music");
+            assert!((fraction - 0.75).abs() < 0.01, "{fraction}");
+        }
 
-    /// Dragging a card loose and letting it go snaps it to the edge it was thrown near and tells
-    /// the session where it is.
-    #[test]
-    fn a_dragged_card_settles_on_the_edge_and_reports_where() {
-        let mut layer = layer();
-        let card = layer.layout().cards.first().expect("a card").rect;
-        let grab = Point::new(card.x0 + 40.0, card.y0 + 6.0);
-        assert!(layer.pointer_button(grab, true).is_empty());
-        // Thrown near the left edge: the card settles onto it.
-        assert!(layer.pointer_motion(Point::new(grab.x - 914.0, grab.y - 300.0)));
-        let asks = layer.pointer_button(Point::new(grab.x - 914.0, grab.y - 300.0), false);
-        let Some(Ask::Moved {
-            app,
-            activity,
-            at: Some(at),
-        }) = asks.first()
-        else {
-            panic!("a moved card reports its place: {asks:?}");
-        };
-        assert_eq!(app, "so.tilo.clocks");
-        assert_eq!(activity, "tea");
-        assert!(
-            (at.x0 - (placement().work.x0 + EDGE_INSET)).abs() < 0.5,
-            "it settles onto the left edge: {at:?}"
-        );
-        assert!(at.width() > 0.0 && at.height() > 0.0);
-    }
+        phase the_keyboard_walks_the_cards_and_runs_their_first_control;
+        // Space runs the first control of the card the keyboard is on, and Escape leaves the layer.
+        {
+            use ui::winit::keyboard::{Key, NamedKey};
+            let mut layer = layer();
+            let card = layer.layout().cards.first().expect("a card").rect;
+            layer.pointer_button(Point::new(card.x0 + 40.0, card.y0 + 2.0), true);
+            layer.pointer_button(Point::new(card.x0 + 40.0, card.y0 + 2.0), false);
+            assert_eq!(
+                layer.key(&Key::Named(NamedKey::Space)),
+                Some(Ask::Control {
+                    app: "so.tilo.clocks".into(),
+                    activity: "tea".into(),
+                    control: "toggle".into(),
+                })
+            );
+            assert_eq!(layer.key(&Key::Named(NamedKey::Escape)), None);
+            assert_eq!(
+                layer.key(&Key::Named(NamedKey::Space)),
+                None,
+                "with the keyboard gone, the cards run nothing"
+            );
+        }
 
-    /// Dragging a song's progress bar asks for the point the pointer left it at, from 0 to 1 along
-    /// the bar, and the bar reads that point while the person drags.
-    #[test]
-    fn a_dragged_progress_bar_asks_for_the_point_it_is_left_at() {
-        let mut layer = FloatingLayer::default();
-        let song = Summary::new(Kind::Music, "Album", "Track 1")
-            .with_id("music")
-            .with_progress(0.25)
-            .with_length(200);
-        layer.set(
-            placement(),
-            Corner::BottomRight,
-            vec![Card::new("so.tilo.music", song.clone())],
-        );
-        let card = layer.layout().cards.first().expect("a card").rect;
-        let bar = card_parts(card, &song).progress.expect("a progress bar");
-        let press = Point::new(bar.x0 + bar.width() * 0.25, bar.center().y);
-        assert!(layer.pointer_button(press, true).is_empty());
-        let left = Point::new(bar.x0 + bar.width() * 0.75, bar.center().y);
-        assert!(layer.pointer_motion(left));
-        let asks = layer.pointer_button(left, false);
-        let Some(Ask::Seek {
-            app,
-            activity,
-            fraction,
-        }) = asks.first()
-        else {
-            panic!("a scrub asks to seek: {asks:?}");
-        };
-        assert_eq!(app, "so.tilo.music");
-        assert_eq!(activity, "music");
-        assert!((fraction - 0.75).abs() < 0.01, "{fraction}");
-    }
+        phase each_card_is_one_group_named_by_its_title;
+        // What a screen reader reads: one group per card with its own controls.
+        {
+            let layer = layer();
+            let tree = layer.accessibility().expect("a layer with a card");
+            assert_eq!(tree.children.len(), 1);
+            let group = tree.children.first().expect("the card's group");
+            assert_eq!(group.name.as_deref(), Some("Tea"));
+            let targets: Vec<&str> = group
+                .children
+                .iter()
+                .filter_map(|child| child.action_target.as_deref())
+                .collect();
+            assert_eq!(
+                targets,
+                [
+                    "activity:so.tilo.clocks:tea:toggle",
+                    "activity:so.tilo.clocks:tea:collapse",
+                    "activity:so.tilo.clocks:tea:close"
+                ]
+            );
+            assert_eq!(
+                layer.activate("activity:so.tilo.clocks:tea:toggle"),
+                Some(Ask::Control {
+                    app: "so.tilo.clocks".into(),
+                    activity: "tea".into(),
+                    control: "toggle".into(),
+                })
+            );
+        }
 
-    /// Space runs the first control of the card the keyboard is on, and Escape leaves the layer.
-    #[test]
-    fn the_keyboard_walks_the_cards_and_runs_their_first_control() {
-        use ui::winit::keyboard::{Key, NamedKey};
-        let mut layer = layer();
-        let card = layer.layout().cards.first().expect("a card").rect;
-        layer.pointer_button(Point::new(card.x0 + 40.0, card.y0 + 2.0), true);
-        layer.pointer_button(Point::new(card.x0 + 40.0, card.y0 + 2.0), false);
-        assert_eq!(
-            layer.key(&Key::Named(NamedKey::Space)),
-            Some(Ask::Control {
-                app: "so.tilo.clocks".into(),
-                activity: "tea".into(),
-                control: "toggle".into(),
-            })
-        );
-        assert_eq!(layer.key(&Key::Named(NamedKey::Escape)), None);
-        assert_eq!(
-            layer.key(&Key::Named(NamedKey::Space)),
-            None,
-            "with the keyboard gone, the cards run nothing"
-        );
-    }
+        phase the_shadow_lets_the_pointer_through;
+        // Only the cards' shapes take the pointer: a press beside one reaches what is under it.
+        {
+            let layer = layer();
+            let card = layer.layout().cards.first().expect("a card").rect;
+            assert!(layer.accepts(card.center()));
+            assert!(!layer.accepts(Point::new(card.x1 + 12.0, card.y1 + 12.0)));
+            assert!(!layer.accepts(Point::new(20.0, 20.0)));
+        }
 
-    /// What a screen reader reads: one group per card with its own controls.
-    #[test]
-    fn each_card_is_one_group_named_by_its_title() {
-        let layer = layer();
-        let tree = layer.accessibility().expect("a layer with a card");
-        assert_eq!(tree.children.len(), 1);
-        let group = tree.children.first().expect("the card's group");
-        assert_eq!(group.name.as_deref(), Some("Tea"));
-        let targets: Vec<&str> = group
-            .children
-            .iter()
-            .filter_map(|child| child.action_target.as_deref())
-            .collect();
-        assert_eq!(
-            targets,
-            [
-                "activity:so.tilo.clocks:tea:toggle",
-                "activity:so.tilo.clocks:tea:collapse",
-                "activity:so.tilo.clocks:tea:close"
-            ]
-        );
-        assert_eq!(
-            layer.activate("activity:so.tilo.clocks:tea:toggle"),
-            Some(Ask::Control {
-                app: "so.tilo.clocks".into(),
-                activity: "tea".into(),
-                control: "toggle".into(),
-            })
-        );
-    }
-
-    /// Only the cards' shapes take the pointer: a press beside one reaches what is under it.
-    #[test]
-    fn the_shadow_lets_the_pointer_through() {
-        let layer = layer();
-        let card = layer.layout().cards.first().expect("a card").rect;
-        assert!(layer.accepts(card.center()));
-        assert!(!layer.accepts(Point::new(card.x1 + 12.0, card.y1 + 12.0)));
-        assert!(!layer.accepts(Point::new(20.0, 20.0)));
-    }
-
-    /// A card the layout holds draws a height that covers every row it has.
-    #[test]
-    fn a_cards_height_holds_all_its_rows() {
-        let summary = timer();
-        let size = card_size(placement().work, &summary);
-        let rect = Rect::from_origin_size((100.0, 100.0), size);
-        let rows = card_parts(rect, &summary);
-        assert!(rows.controls.first().expect("a control").1.y1 <= rect.y1);
-        assert!(rows.close.y1 <= rect.y1);
-        assert!(rows.hero.y0 >= rows.icon.y1 - 0.5);
-        assert!(card_radius(rect, &Theme::dark()) > 0.0);
+        phase a_cards_height_holds_all_its_rows;
+        // A card the layout holds draws a height that covers every row it has.
+        {
+            let summary = timer();
+            let size = card_size(placement().work, &summary);
+            let rect = Rect::from_origin_size((100.0, 100.0), size);
+            let rows = card_parts(rect, &summary);
+            assert!(rows.controls.first().expect("a control").1.y1 <= rect.y1);
+            assert!(rows.close.y1 <= rect.y1);
+            assert!(rows.hero.y0 >= rows.icon.y1 - 0.5);
+            assert!(card_radius(rect, &Theme::dark()) > 0.0);
+        }
     }
 }

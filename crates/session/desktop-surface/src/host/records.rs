@@ -165,82 +165,86 @@ mod tests {
             .then(|| RecordKind::new("test.record"))
     }
 
-    /// A host that joins a shared layout holds every window on the record the layout shows, the
-    /// package primary under the route it travels as.
-    #[test]
-    fn a_joining_host_adopts_every_record_the_layout_shows() {
-        let layout = layout(&[
-            (1, "so.tilo.chat", ""),
-            (2, "so.tilo.notes", "derived:default@tab:0000000000000002"),
-        ]);
-        let (bound, held) = adopted(&layout, running);
-        assert!(held.is_empty(), "{held:?}");
-        assert_eq!(
-            bound[&1].id,
-            RecordId::package_primary(),
-            "chat's window shows the workspace's primary record"
-        );
-        assert_eq!(
-            bound[&2].id,
-            RecordId::from_route("derived:default@tab:0000000000000002").unwrap()
-        );
-        assert_eq!(
-            live(&bound, &held, &layout.tree),
-            layout.records,
-            "the host writes each record back as the layout showed it"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_hosts_records_follow_the_windows_the_layout_shows;
 
-    /// An application whose code has not arrived, and one a host does not run, keep their windows'
-    /// records: the host writes them back verbatim rather than leaving them out.
-    #[test]
-    fn a_window_whose_application_is_not_running_keeps_its_record() {
-        let shown = layout(&[
-            (1, "so.tilo.chat", ""),
-            (
-                3,
-                "so.tilo.elsewhere",
-                "derived:default@tab:0000000000000003",
-            ),
-        ]);
-        let (bound, held) = adopted(&shown, |_| None);
-        assert!(bound.is_empty(), "nothing runs yet");
-        assert_eq!(held[&1], "");
-        assert_eq!(
-            live(&bound, &held, &shown.tree),
-            shown.records,
-            "no window's record is lost"
-        );
+        phase a_joining_host_adopts_every_record_the_layout_shows;
+        // A host that joins a shared layout holds every window on the record the layout shows, the
+        // package primary under the route it travels as.
+        {
+            let layout = layout(&[
+                (1, "so.tilo.chat", ""),
+                (2, "so.tilo.notes", "derived:default@tab:0000000000000002"),
+            ]);
+            let (bound, held) = adopted(&layout, running);
+            assert!(held.is_empty(), "{held:?}");
+            assert_eq!(
+                bound[&1].id,
+                RecordId::package_primary(),
+                "chat's window shows the workspace's primary record"
+            );
+            assert_eq!(
+                bound[&2].id,
+                RecordId::from_route("derived:default@tab:0000000000000002").unwrap()
+            );
+            assert_eq!(
+                live(&bound, &held, &layout.tree),
+                layout.records,
+                "the host writes each record back as the layout showed it"
+            );
+        }
 
-        // The host runs chat now: it binds that window to the record the layout showed, and keeps
-        // the one whose application it does not run.
-        let (bound, held) = adopted(&shown, |app| running(app).filter(|_| app == "so.tilo.chat"));
-        assert_eq!(bound[&1].id, RecordId::package_primary());
-        assert!(held.contains_key(&3), "{held:?}");
-        assert_eq!(
-            live(&bound, &held, &shown.tree),
-            vec![
-                (1, String::new()),
-                (3, "derived:default@tab:0000000000000003".to_owned())
-            ]
-        );
+        phase a_window_whose_application_is_not_running_keeps_its_record;
+        // An application whose code has not arrived, and one a host does not run, keep their windows'
+        // records: the host writes them back verbatim rather than leaving them out.
+        {
+            let shown = layout(&[
+                (1, "so.tilo.chat", ""),
+                (
+                    3,
+                    "so.tilo.elsewhere",
+                    "derived:default@tab:0000000000000003",
+                ),
+            ]);
+            let (bound, held) = adopted(&shown, |_| None);
+            assert!(bound.is_empty(), "nothing runs yet");
+            assert_eq!(held[&1], "");
+            assert_eq!(
+                live(&bound, &held, &shown.tree),
+                shown.records,
+                "no window's record is lost"
+            );
 
-        // A spelling no record reads as a route is held, not dropped, so the host still shows the
-        // layout what its window shows.
-        let legacy = layout(&[(1, "so.tilo.chat", "@tilo:package-primary")]);
-        let (bound, held) = adopted(&legacy, running);
-        assert!(bound.is_empty(), "{bound:?}");
-        assert_eq!(live(&bound, &held, &legacy.tree), legacy.records);
-    }
+            // The host runs chat now: it binds that window to the record the layout showed, and keeps
+            // the one whose application it does not run.
+            let (bound, held) = adopted(&shown, |app| running(app).filter(|_| app == "so.tilo.chat"));
+            assert_eq!(bound[&1].id, RecordId::package_primary());
+            assert!(held.contains_key(&3), "{held:?}");
+            assert_eq!(
+                live(&bound, &held, &shown.tree),
+                vec![
+                    (1, String::new()),
+                    (3, "derived:default@tab:0000000000000003".to_owned())
+                ]
+            );
 
-    /// The package primary travels as the empty route; every other record travels as its id.
-    #[test]
-    fn the_primary_record_travels_as_its_route() {
-        assert_eq!(wire_record(&RecordId::package_primary()), "");
-        let derived = RecordId::from_route("derived:default@tab:0000000000000002").unwrap();
-        assert_eq!(
-            wire_record(&derived),
-            "derived:default@tab:0000000000000002"
-        );
+            // A spelling no record reads as a route is held, not dropped, so the host still shows the
+            // layout what its window shows.
+            let legacy = layout(&[(1, "so.tilo.chat", "@tilo:package-primary")]);
+            let (bound, held) = adopted(&legacy, running);
+            assert!(bound.is_empty(), "{bound:?}");
+            assert_eq!(live(&bound, &held, &legacy.tree), legacy.records);
+        }
+
+        phase the_primary_record_travels_as_its_route;
+        // The package primary travels as the empty route; every other record travels as its id.
+        {
+            assert_eq!(wire_record(&RecordId::package_primary()), "");
+            let derived = RecordId::from_route("derived:default@tab:0000000000000002").unwrap();
+            assert_eq!(
+                wire_record(&derived),
+                "derived:default@tab:0000000000000002"
+            );
+        }
     }
 }

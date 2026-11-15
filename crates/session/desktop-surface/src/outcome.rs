@@ -230,26 +230,30 @@ mod tests {
         assert!(!texts.iter().any(|text| text == "Try again"), "{texts:?}");
     }
 
-    /// One line says what happened and why, without doubling a full stop.
-    #[test]
-    fn an_outcome_reads_as_one_line() {
-        assert_eq!(
-            Outcome::new("Notes could not open")
-                .saying("it is not installed here")
-                .detail(),
-            "Notes could not open: it is not installed here"
-        );
-        assert_eq!(Outcome::new("No permission.").detail(), "No permission");
-    }
+    tilo_test_env::scenario! {
+        fn an_outcome_says_what_happened_in_a_card_a_line_or_a_notice;
 
-    /// What has nothing of it left on the shell is told as a notice: its sentence leads and its why
-    /// follows, waiting in the notification centre.
-    #[test]
-    fn an_outcome_with_nothing_to_be_drawn_on_is_a_notice() {
-        let notice = Outcome::new("Screenshots run in Tilo on a computer")
-            .saying("A browser page has no screen of its own.")
-            .notice();
-        assert_eq!(notice.title, "Screenshots run in Tilo on a computer");
-        assert_eq!(notice.body, "A browser page has no screen of its own.");
+        phase an_outcome_reads_as_one_line;
+        // One line says what happened and why, without doubling a full stop.
+        {
+            assert_eq!(
+                Outcome::new("Notes could not open")
+                    .saying("it is not installed here")
+                    .detail(),
+                "Notes could not open: it is not installed here"
+            );
+            assert_eq!(Outcome::new("No permission.").detail(), "No permission");
+        }
+
+        phase an_outcome_with_nothing_to_be_drawn_on_is_a_notice;
+        // What has nothing of it left on the shell is told as a notice: its sentence leads and its why
+        // follows, waiting in the notification centre.
+        {
+            let notice = Outcome::new("Screenshots run in Tilo on a computer")
+                .saying("A browser page has no screen of its own.")
+                .notice();
+            assert_eq!(notice.title, "Screenshots run in Tilo on a computer");
+            assert_eq!(notice.body, "A browser page has no screen of its own.");
+        }
     }
 }

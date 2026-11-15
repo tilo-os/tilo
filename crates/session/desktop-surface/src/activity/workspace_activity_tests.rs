@@ -73,159 +73,164 @@ mod workspace_activity {
         ActivitySnapshot::new(desktop, doc).unwrap()
     }
 
-    // Copied native causal regression, using actual admitted workspace topology
-    // commits and the same private playback/keyboard controller.
-    #[test]
-    fn replay_materializes_real_causal_layouts() {
-        let mut tree = causal_workspace();
-        let records = RecordStore::in_memory();
-        let record = ui::record::RecordCheckout::new(
-            RecordId::for_file("review.note"),
-            ui::record::RecordKind::new("note"),
-        );
-        assert!(records.open_record(&record));
-        records.with(&record.id, |doc| {
-            ui::record::init(
-                doc,
-                &record.id,
-                &record.kind,
-                &tree.active_workspace().unwrap().id().to_string(),
+    tilo_test_env::scenario! {
+        fn workspace_replay_shows_only_what_history_holds;
+
+        phase replay_materializes_real_causal_layouts;
+        // Copied native causal regression, using actual admitted workspace topology
+        // commits and the same private playback/keyboard controller.
+        {
+            let mut tree = causal_workspace();
+            let records = RecordStore::in_memory();
+            let record = ui::record::RecordCheckout::new(
+                RecordId::for_file("review.note"),
+                ui::record::RecordKind::new("note"),
             );
-            doc.put(ROOT, "body", "Keep live content").unwrap();
-            doc.commit_with(CommitOptions::default().with_time(5));
-        });
-        let heads_before = tree.doc.get_heads();
-        let record_heads_before = records
-            .read(&record.id, |doc| doc.clone().get_heads())
-            .unwrap();
-        let mut pane = WorkspaceActivityPane::new();
-        pane.begin_view(tree.active);
-        pane.refresh(&mut tree);
-        pane.refresh_records(&mut tree, &records);
-        pane.period = Period::AllTime;
-        pane.reinstall_filter();
-        assert!(pane.replay_frames.len() >= 2);
-        let tab_counts: Vec<usize> = pane
-            .replay_frames
-            .iter()
-            .map(|frame| {
-                frame
-                    .workspaces
-                    .iter()
-                    .flat_map(|workspace| &workspace.groups)
-                    .map(|group| group.tabs.len())
-                    .sum()
-            })
-            .collect();
-        assert!(
-            tab_counts.windows(2).any(|pair| pair[0] != pair[1]),
-            "causal forks must expose a changing real layout: {tab_counts:?}"
-        );
-        pane.view = ActivityView::Replay;
-        assert_eq!(pane.serve_replay().frames.len(), pane.replay_frames.len());
-        pane.author = Some("absent".into());
-        pane.reinstall_filter();
-        pane.author = None;
-        pane.reinstall_filter();
-        let mut presence = PresenceCtx::empty();
-        let ada = MemberId::person("ada");
-        presence.names.insert(ada.clone(), "Ada".into());
-        presence.set_pointer(
-            &ui::presence::PresenceKey::shell_pointer("design-workspace"),
-            ada,
-            (420., 260.),
-        );
-        pane.observe_replay_presence(&presence);
-        let pointer = pane
-            .replay_frames
-            .last()
-            .and_then(|frame| frame.pointers.first())
-            .expect("session presence is retained against durable checkpoint");
-        assert_eq!(pointer.name, "Ada");
-        assert!(pointer.desktop_space);
-        pane.finish_view(tree.active);
-        assert!(!(pane.view == ActivityView::Replay && pane.replay_playing));
-        assert_eq!(tree.doc.get_heads(), heads_before);
-        assert_eq!(
-            records
+            assert!(records.open_record(&record));
+            records.with(&record.id, |doc| {
+                ui::record::init(
+                    doc,
+                    &record.id,
+                    &record.kind,
+                    &tree.active_workspace().unwrap().id().to_string(),
+                );
+                doc.put(ROOT, "body", "Keep live content").unwrap();
+                doc.commit_with(CommitOptions::default().with_time(5));
+            });
+            let heads_before = tree.doc.get_heads();
+            let record_heads_before = records
                 .read(&record.id, |doc| doc.clone().get_heads())
-                .unwrap(),
-            record_heads_before
-        );
-    }
-
-    #[test]
-    fn historical_topology_does_not_claim_current_geometry_is_historical() {
-        let mut tree = causal_workspace();
-        tree.resync_activity_cache().unwrap();
-        assert_eq!(
-            tree.workspaces[0].strips[0].window_groups[0].width,
-            WindowWidth::Normal
-        );
-    }
-    #[test]
-    fn unavailable_mutation_host_hides_naming_and_rejects_restore() {
-        struct Enabled;
-        impl ActivityHost for Enabled {
-            fn mutations_available(&self) -> bool {
-                true
-            }
-        }
-        let mut tree = causal_workspace();
-        // Layout/setup commits are omitted from the feed; rename the workspace so
-        // there is a Change row to select and attempt restore against.
-        // `causal_workspace` is a workspace projection doc (not a desktop_doc workspaces
-        // list), so write the name on the workspace document directly.
-        tree.workspaces[0].name = "Design studio".into();
-        tree.doc.put(ROOT, "name", "Design studio").unwrap();
-        tilo_resource::history::commit_stamped(&mut tree.doc);
-        let mut pane = WorkspaceActivityPane::new();
-        pane.refresh(&mut tree);
-        assert!(
-            !pane.entries().is_empty(),
-            "expected a feed-visible rename, got {:?}",
-            pane.entries()
-                .iter()
-                .map(|e| e.summary.as_str())
-                .collect::<Vec<_>>()
-        );
-        pane.timeline.set_selection(Some((0, 0)));
-        assert!(!pane.timeline.begin_naming_selection());
-        let heads = tree.doc.get_heads();
-        assert!(!pane.revert_to(&mut tree, &pane.entries()[0].id.clone()));
-        assert_eq!(tree.doc.get_heads(), heads);
-        pane.set_host(Rc::new(Enabled));
-        assert!(pane.timeline.begin_naming_selection());
-        pane.set_host(Rc::new(UnavailableActivityHost));
-        assert!(!pane.timeline.begin_naming_selection());
-        assert!(!pane.timeline.wants_keyboard());
-    }
-
-    #[test]
-    fn malformed_historical_workspace_is_not_a_valid_replay_checkpoint() {
-        let mut tree = causal_workspace();
-        let workspace = tree.active_workspace().unwrap().id();
-        tree.doc.delete(ROOT, WORKSPACE_ID_KEY).unwrap();
-        let broken = tree
-            .doc
-            .commit_with(CommitOptions::default().with_time(6))
-            .unwrap();
-        let mut bytes = [0; 16];
-        bytes.copy_from_slice(&broken.0[..16]);
-        let broken_id = HistoryEntryId::from_bytes(bytes);
-        tree.doc
-            .put(ROOT, WORKSPACE_ID_KEY, workspace.to_string())
-            .unwrap();
-        tree.doc.commit_with(CommitOptions::default().with_time(7));
-        let mut pane = WorkspaceActivityPane::new();
-        pane.refresh(&mut tree);
-        assert!(pane.entries().iter().any(|entry| entry.id == broken_id));
-        assert!(
-            !pane
+                .unwrap();
+            let mut pane = WorkspaceActivityPane::new();
+            pane.begin_view(tree.active);
+            pane.refresh(&mut tree);
+            pane.refresh_records(&mut tree, &records);
+            pane.period = Period::AllTime;
+            pane.reinstall_filter();
+            assert!(pane.replay_frames.len() >= 2);
+            let tab_counts: Vec<usize> = pane
                 .replay_frames
                 .iter()
-                .any(|frame| frame.entry_id == broken_id)
-        );
-        assert_eq!(pane.replay_unavailable, 1);
+                .map(|frame| {
+                    frame
+                        .workspaces
+                        .iter()
+                        .flat_map(|workspace| &workspace.groups)
+                        .map(|group| group.tabs.len())
+                        .sum()
+                })
+                .collect();
+            assert!(
+                tab_counts.windows(2).any(|pair| pair[0] != pair[1]),
+                "causal forks must expose a changing real layout: {tab_counts:?}"
+            );
+            pane.view = ActivityView::Replay;
+            assert_eq!(pane.serve_replay().frames.len(), pane.replay_frames.len());
+            pane.author = Some("absent".into());
+            pane.reinstall_filter();
+            pane.author = None;
+            pane.reinstall_filter();
+            let mut presence = PresenceCtx::empty();
+            let ada = MemberId::person("ada");
+            presence.names.insert(ada.clone(), "Ada".into());
+            presence.set_pointer(
+                &ui::presence::PresenceKey::shell_pointer("design-workspace"),
+                ada,
+                (420., 260.),
+            );
+            pane.observe_replay_presence(&presence);
+            let pointer = pane
+                .replay_frames
+                .last()
+                .and_then(|frame| frame.pointers.first())
+                .expect("session presence is retained against durable checkpoint");
+            assert_eq!(pointer.name, "Ada");
+            assert!(pointer.desktop_space);
+            pane.finish_view(tree.active);
+            assert!(!(pane.view == ActivityView::Replay && pane.replay_playing));
+            assert_eq!(tree.doc.get_heads(), heads_before);
+            assert_eq!(
+                records
+                    .read(&record.id, |doc| doc.clone().get_heads())
+                    .unwrap(),
+                record_heads_before
+            );
+        }
+
+        phase historical_topology_does_not_claim_current_geometry_is_historical;
+        {
+            let mut tree = causal_workspace();
+            tree.resync_activity_cache().unwrap();
+            assert_eq!(
+                tree.workspaces[0].strips[0].window_groups[0].width,
+                WindowWidth::Normal
+            );
+        }
+
+        phase unavailable_mutation_host_hides_naming_and_rejects_restore;
+        {
+            struct Enabled;
+            impl ActivityHost for Enabled {
+                fn mutations_available(&self) -> bool {
+                    true
+                }
+            }
+            let mut tree = causal_workspace();
+            // Layout/setup commits are omitted from the feed; rename the workspace so
+            // there is a Change row to select and attempt restore against.
+            // `causal_workspace` is a workspace projection doc (not a desktop_doc workspaces
+            // list), so write the name on the workspace document directly.
+            tree.workspaces[0].name = "Design studio".into();
+            tree.doc.put(ROOT, "name", "Design studio").unwrap();
+            tilo_resource::history::commit_stamped(&mut tree.doc);
+            let mut pane = WorkspaceActivityPane::new();
+            pane.refresh(&mut tree);
+            assert!(
+                !pane.entries().is_empty(),
+                "expected a feed-visible rename, got {:?}",
+                pane.entries()
+                    .iter()
+                    .map(|e| e.summary.as_str())
+                    .collect::<Vec<_>>()
+            );
+            pane.timeline.set_selection(Some((0, 0)));
+            assert!(!pane.timeline.begin_naming_selection());
+            let heads = tree.doc.get_heads();
+            assert!(!pane.revert_to(&mut tree, &pane.entries()[0].id.clone()));
+            assert_eq!(tree.doc.get_heads(), heads);
+            pane.set_host(Rc::new(Enabled));
+            assert!(pane.timeline.begin_naming_selection());
+            pane.set_host(Rc::new(UnavailableActivityHost));
+            assert!(!pane.timeline.begin_naming_selection());
+            assert!(!pane.timeline.wants_keyboard());
+        }
+
+        phase malformed_historical_workspace_is_not_a_valid_replay_checkpoint;
+        {
+            let mut tree = causal_workspace();
+            let workspace = tree.active_workspace().unwrap().id();
+            tree.doc.delete(ROOT, WORKSPACE_ID_KEY).unwrap();
+            let broken = tree
+                .doc
+                .commit_with(CommitOptions::default().with_time(6))
+                .unwrap();
+            let mut bytes = [0; 16];
+            bytes.copy_from_slice(&broken.0[..16]);
+            let broken_id = HistoryEntryId::from_bytes(bytes);
+            tree.doc
+                .put(ROOT, WORKSPACE_ID_KEY, workspace.to_string())
+                .unwrap();
+            tree.doc.commit_with(CommitOptions::default().with_time(7));
+            let mut pane = WorkspaceActivityPane::new();
+            pane.refresh(&mut tree);
+            assert!(pane.entries().iter().any(|entry| entry.id == broken_id));
+            assert!(
+                !pane
+                    .replay_frames
+                    .iter()
+                    .any(|frame| frame.entry_id == broken_id)
+            );
+            assert_eq!(pane.replay_unavailable, 1);
+        }
     }
 }

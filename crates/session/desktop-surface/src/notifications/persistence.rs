@@ -162,47 +162,52 @@ pub(crate) fn decode_history(
 mod tests {
     use super::*;
 
-    #[test]
-    fn real_retained_history_survives_reload_without_stale_actions() {
-        let now = ui::time::now();
-        let wall = UNIX_EPOCH + Duration::from_secs(1_000);
-        let mut notification = Notification::new("Timer finished", "Tea is ready");
-        notification.app_id = Some("so.tilo.clocks".into());
-        notification.app_name = Some("Clocks".into());
-        notification.source_workspace = Some(tilo_desktop_model::WorkspaceId::from_u128(7));
-        notification.actions = vec![("default".into(), "Open".into())];
-        let bytes = encode_history(&[notification], |_| true, wall, now).unwrap();
-        let restored = decode_history(&bytes, wall + Duration::from_secs(30), now).unwrap();
-        assert_eq!(restored.len(), 1);
-        let (notice, unread) = &restored[0];
-        assert!(unread, "what the person had not seen is still unread");
-        assert_eq!(notice.title, "Timer finished");
-        assert_eq!(notice.body, "Tea is ready");
-        assert_eq!(notice.app_id.as_deref(), Some("so.tilo.clocks"));
-        assert_eq!(
-            notice.source_workspace,
-            Some(tilo_desktop_model::WorkspaceId::from_u128(7))
-        );
-        assert_eq!(
-            now.duration_since(notice.created_at),
-            Duration::from_secs(30)
-        );
-        assert!(notice.actions.is_empty());
-        assert!(notice.remote_route.is_none());
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
+        fn stored_notification_history_reloads_within_its_bounds;
 
-    #[test]
-    fn stored_history_keeps_existing_count_and_utf8_text_bounds() {
-        let history: Vec<_> = (0..MAX_HISTORY + 3)
-            .map(|i| Notification::new(i.to_string(), "ä".repeat(MAX_PERSISTED_TEXT)))
-            .collect();
-        let now = ui::time::now();
-        let bytes = encode_history(&history, |_| false, UNIX_EPOCH, now).unwrap();
-        let restored = decode_history(&bytes, UNIX_EPOCH, now).unwrap();
-        assert_eq!(restored.len(), MAX_HISTORY);
-        assert_eq!(restored[0].0.title, "3");
-        assert_eq!(restored[0].0.body.len(), MAX_PERSISTED_TEXT);
-        assert!(!restored[0].1, "what the person saw stays read");
-        assert!(decode_history(b"broken", UNIX_EPOCH, now).is_err());
+        phase real_retained_history_survives_reload_without_stale_actions;
+        {
+            let now = ui::time::now();
+            let wall = UNIX_EPOCH + Duration::from_secs(1_000);
+            let mut notification = Notification::new("Timer finished", "Tea is ready");
+            notification.app_id = Some("so.tilo.clocks".into());
+            notification.app_name = Some("Clocks".into());
+            notification.source_workspace = Some(tilo_desktop_model::WorkspaceId::from_u128(7));
+            notification.actions = vec![("default".into(), "Open".into())];
+            let bytes = encode_history(&[notification], |_| true, wall, now).unwrap();
+            let restored = decode_history(&bytes, wall + Duration::from_secs(30), now).unwrap();
+            assert_eq!(restored.len(), 1);
+            let (notice, unread) = &restored[0];
+            assert!(unread, "what the person had not seen is still unread");
+            assert_eq!(notice.title, "Timer finished");
+            assert_eq!(notice.body, "Tea is ready");
+            assert_eq!(notice.app_id.as_deref(), Some("so.tilo.clocks"));
+            assert_eq!(
+                notice.source_workspace,
+                Some(tilo_desktop_model::WorkspaceId::from_u128(7))
+            );
+            assert_eq!(
+                now.duration_since(notice.created_at),
+                Duration::from_secs(30)
+            );
+            assert!(notice.actions.is_empty());
+            assert!(notice.remote_route.is_none());
+        }
+
+        phase stored_history_keeps_existing_count_and_utf8_text_bounds;
+        {
+            let history: Vec<_> = (0..MAX_HISTORY + 3)
+                .map(|i| Notification::new(i.to_string(), "ä".repeat(MAX_PERSISTED_TEXT)))
+                .collect();
+            let now = ui::time::now();
+            let bytes = encode_history(&history, |_| false, UNIX_EPOCH, now).unwrap();
+            let restored = decode_history(&bytes, UNIX_EPOCH, now).unwrap();
+            assert_eq!(restored.len(), MAX_HISTORY);
+            assert_eq!(restored[0].0.title, "3");
+            assert_eq!(restored[0].0.body.len(), MAX_PERSISTED_TEXT);
+            assert!(!restored[0].1, "what the person saw stays read");
+            assert!(decode_history(b"broken", UNIX_EPOCH, now).is_err());
+        }
     }
 }
