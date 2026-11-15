@@ -1014,10 +1014,34 @@ for tid in tids:
 """
 
 
+# Every running process that loaded Vulkan: its command, and whether the device-select switch and
+# a pinned driver reached it. The crashed ones are gone; the ones of their kind that run say which
+# path starts them without the switch.
+VULKAN_PROCESSES = r"""
+import os
+for pid in sorted((p for p in os.listdir("/proc") if p.isdigit()), key=int):
+    try:
+        maps = open(f"/proc/{pid}/maps").read()
+        if "libvulkan" not in maps:
+            continue
+        env = dict(e.split("=", 1) for e in open(f"/proc/{pid}/environ").read().split("\0") if "=" in e)
+        args = open(f"/proc/{pid}/cmdline").read().replace("\0", " ")[:140]
+        comm = open(f"/proc/{pid}/comm").read().strip()
+        layer = "device_select loaded" if "device_select" in maps else "no device_select"
+    except OSError:
+        continue
+    print(pid, comm, f"NODEVICE_SELECT={env.get('NODEVICE_SELECT', '-')}",
+          f"VK_DRIVER_FILES={os.path.basename(env.get('VK_DRIVER_FILES', '-'))}", layer, args)
+"""
+
+
 def crashed_processes(ctx) -> str:
     """Which processes the drawing threads that crashed since boot were."""
-    return ctx.vm.root_exec("python3 -I - <<'PY'\n" + CRASHED_PROCESSES + "\nPY", timeout=180,
-                            check=False).strip()[-1500:]
+    named = ctx.vm.root_exec("python3 -I - <<'PY'\n" + CRASHED_PROCESSES + "\nPY", timeout=180,
+                             check=False).strip()[-800:]
+    running = ctx.vm.root_exec("python3 -I - <<'PY'\n" + VULKAN_PROCESSES + "\nPY", timeout=120,
+                               check=False).strip()[-1500:]
+    return f"{named}; the processes running Vulkan now: {running}"
 
 
 CHAT_PS = "/var/tmp/e2e-chat-processes.log"
