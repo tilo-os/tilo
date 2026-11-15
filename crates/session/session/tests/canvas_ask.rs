@@ -263,6 +263,29 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     let place = format!("shell:place:{}", note.key);
     let refused = session.invoke_with_actor(AGENT, &place, "position", &serde_json::json!({}));
     assert!(refused.is_err(), "no point and nothing beside is refused");
+    // Nor is half a point a point, the place itself something to stand beside, or a place that is
+    // not there; and a position that was refused moves nothing.
+    for (what, arguments) in [
+        ("an x without a y", serde_json::json!({"x": 1600})),
+        ("a y without an x", serde_json::json!({"y": 0})),
+        ("beside itself", serde_json::json!({"beside": place})),
+        (
+            "beside a place that is not there",
+            serde_json::json!({"beside": "shell:place:999999"}),
+        ),
+    ] {
+        let refused = session.invoke_with_actor(AGENT, &place, "position", &arguments);
+        assert!(refused.is_err(), "{what} is refused: {arguments}");
+    }
+    session.step(Duration::from_millis(1)).expect("a frame");
+    let stayed = crate::common::place(&session, crate::common::number(&note.key))
+        .expect("the note's place stands");
+    let (sx, sy, _) = canvas_point(&session, &stayed);
+    assert_eq!(
+        (sx, sy),
+        (nx, ny),
+        "a refused position leaves the note where it stood"
+    );
 
     session
         .invoke_with_actor(
