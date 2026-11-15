@@ -185,6 +185,7 @@ impl ChatPart {
                 attachments: posting.attachments,
                 appearance: posting.appearance.map(Into::into),
                 acting: cx.invoked_by().filter(|acting| !acting.is_person()),
+                author_name: Some(cx.acting_name()).filter(|name| !name.trim().is_empty()),
                 origin: posting.origin,
                 share: posting.share,
                 ..Message::default()

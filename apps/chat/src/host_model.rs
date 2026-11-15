@@ -154,6 +154,7 @@ impl ChatApp {
             self.acting_name(
                 &message.author,
                 message.acting.as_ref(),
+                message.author_name.as_deref(),
                 crate::identity::RoleWord::InName,
             )
             .unwrap_or_else(|| self.user_name(&message.author))
@@ -217,8 +218,13 @@ impl ChatApp {
                 &[("name", shown.into()), ("bot", name.into())],
             )
         } else {
-            self.acting_name(&message.author, message.acting.as_ref(), word)
-                .unwrap_or_else(|| self.user_name(&message.author))
+            self.acting_name(
+                &message.author,
+                message.acting.as_ref(),
+                message.author_name.as_deref(),
+                word,
+            )
+            .unwrap_or_else(|| self.user_name(&message.author))
         }
     }
 

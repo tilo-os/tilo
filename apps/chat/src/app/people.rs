@@ -94,7 +94,7 @@ impl ChatApp {
             }
             return crate::identity::unnamed_label(id);
         }
-        if let Some(agent) = self.acting_name(id, None, crate::identity::RoleWord::InName) {
+        if let Some(agent) = self.acting_name(id, None, None, crate::identity::RoleWord::InName) {
             return agent;
         }
         let named = self.display_name(id);
@@ -110,18 +110,25 @@ impl ChatApp {
         crate::identity::unnamed_label(id)
     }
 
-    /// What to call the agent or app `id`: the workspace's name for it, with the person it acted
-    /// for as `acting` kept it where it wrote, else as presence says ("Helper for Ada"), after it
-    /// left too. `None` for anyone else.
+    /// What to call the agent or app `id`: the name it wrote under (`kept`), else the workspace's
+    /// name for it, with the person it acted for as `acting` kept it where it wrote, else as
+    /// presence says ("Helper for Ada"), after it left too. `None` for anyone else.
     pub(crate) fn acting_name(
         &self,
         id: &str,
         acting: Option<&ui::tilo_resource::Acting>,
+        kept: Option<&str>,
         word: crate::identity::RoleWord,
     ) -> Option<String> {
-        let name = MemberId::parse(id)
-            .filter(|member| !member.is_person())
-            .and_then(|member| self.known_agent_name(member.id()))
+        let name = kept
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                MemberId::parse(id)
+                    .filter(|member| !member.is_person())
+                    .and_then(|member| self.known_agent_name(member.id()))
+            })
             .or_else(|| self.agent_authors.get(id).cloned())?;
         let person = acting
             .and_then(ui::tilo_resource::Acting::acted_for_person)

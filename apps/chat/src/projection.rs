@@ -448,6 +448,7 @@ pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message 
             .map(Into::into)
             .or_else(|| message.origin.as_ref().map(origin_appearance)),
         acting: message.acting.clone(),
+        author_name: message.author_name.clone(),
         share: message.share.clone(),
         attempts: message.attempts,
         sending: false,

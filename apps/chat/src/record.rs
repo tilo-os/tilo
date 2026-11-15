@@ -693,6 +693,10 @@ pub struct Message {
     /// "Helper for Ada" after it left too. `None` for a person's own words.
     #[model(readonly)]
     pub acting: Option<ui::tilo_resource::Acting>,
+    /// The name the author went by where it wrote, for an author that is not a person: what
+    /// the host that admitted it called it, kept so every reader names it after it left.
+    #[model(readonly)]
+    pub author_name: Option<String>,
     /// Where it was first written, when it was moved here from another chat:
     /// shown as its author's, at its time there, while `author` keeps who
     /// moved it.

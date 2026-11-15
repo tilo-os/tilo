@@ -911,6 +911,7 @@ mod tests {
             work: None,
             appearance: None,
             acting: None,
+            author_name: None,
             share: None,
             attempts: 0,
             sending: false,
