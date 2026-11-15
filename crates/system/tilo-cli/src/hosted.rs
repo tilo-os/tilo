@@ -145,6 +145,24 @@ pub enum WorkspacesCmd {
         #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
         labels: Vec<(String, String)>,
     },
+    /// Branch a workspace of yours: a new one of yours that starts with
+    /// everything it holds and goes on apart; you are its only member.
+    #[command(
+        after_help = "Example:\n  tilo account workspaces branch template \"Acme\" --label customer_id=cus_8121\n\n\
+                      Its records, with their history, and its files come along; its chat, its \
+                      members and each person's own places stay behind, as do its labels. \
+                      Nothing merges back."
+    )]
+    Branch {
+        /// The workspace to branch, by its id or its name.
+        source: String,
+        /// What to call the branch, as your workspaces list will name it.
+        name: String,
+        /// A label for your programs to find it by, `NAME=VALUE`
+        /// (`customer_id=cus_8121`); repeat it for more. Only your keys read them.
+        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
+        labels: Vec<(String, String)>,
+    },
     /// Delete a workspace of yours with everything in it, and revoke its
     /// minted keys: final, there is no undo.
     Rm { workspace: String },
@@ -618,6 +636,27 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                 // person's own gets a folder by itself, and waiting for the
                 // peer's next list would be a minute of `tilo folders add`
                 // saying it is not there.
+                crate::mcp::ask_peer_list_again();
+                Ok(show(reach.json, &made, &workspace_line(&made)))
+            }
+            WorkspacesCmd::Branch {
+                source,
+                name,
+                labels,
+            } => {
+                let id = workspace_id(&client, &source).await?;
+                let labels: serde_json::Map<String, Value> = labels
+                    .into_iter()
+                    .map(|(name, value)| (name, Value::String(value)))
+                    .collect();
+                let made = client
+                    .post(
+                        &format!("/v1/workspaces/{id}/branches"),
+                        &serde_json::json!({"name": name, "labels": labels}),
+                    )
+                    .await?;
+                // The branch gets a folder of its own, as a created workspace
+                // does.
                 crate::mcp::ask_peer_list_again();
                 Ok(show(reach.json, &made, &workspace_line(&made)))
             }
@@ -1303,6 +1342,7 @@ mod tests {
     use std::sync::Arc;
 
     const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
+    const BRANCH: &str = "0b5e7c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d";
 
     /// A folder goes up whole, each file named by its path from the folder's
     /// own place, in one order however the tree is walked; a file is itself.
@@ -1360,6 +1400,12 @@ mod tests {
                 201,
                 json!({"id": WORKSPACE, "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh",
                     "role": "owner"}),
+            ),
+            ("POST", route) if route.ends_with("/branches") => json_reply(
+                201,
+                json!({"id": BRANCH, "name": "Applicant: Jane Doe, second try",
+                    "host": "eu1.tilo.sh", "role": "owner",
+                    "labels": {"customer_id": "cus_8121"}}),
             ),
             ("POST", route) if route.ends_with("/uploads") => json_reply(
                 201,
@@ -1435,6 +1481,30 @@ mod tests {
             assert_eq!(
                 serde_json::from_slice::<Value>(&made[0].body).unwrap(),
                 json!({"name": "Applicant: Jane Doe", "labels": {"customer_id": "cus_8121"}})
+            );
+            // A branch is `POST /v1/workspaces/{source}/branches`, its source
+            // named by a read of the list, its labels as create takes them.
+            account(
+                reach,
+                AccountCmd::Workspaces(WorkspacesCmd::Branch {
+                    source: "Applicant: Jane Doe".into(),
+                    name: "Applicant: Jane Doe, second try".into(),
+                    labels: vec![("customer_id".into(), "cus_8121".into())],
+                }),
+            );
+            let branched = api_server.drain_requests();
+            assert_eq!(branched.len(), 2, "the source is named by the list first");
+            let branch = branched.last().expect("the branch");
+            assert_eq!(branch.method, "POST");
+            assert_eq!(branch.target, format!("/v1/workspaces/{WORKSPACE}/branches"));
+            assert!(
+                branch.header("idempotency-key").is_some(),
+                "a call that makes something names its invocation"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&branch.body).unwrap(),
+                json!({"name": "Applicant: Jane Doe, second try",
+                    "labels": {"customer_id": "cus_8121"}})
             );
             // Listing by a label is `GET /v1/workspaces?label[name]=value`.
             account(
