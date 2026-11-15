@@ -1468,17 +1468,23 @@ mod tests {
                 },
                 InvocationOwner::Certified {
                     root: [1; 32],
-                    device: [2; 32],
-                },
-                InvocationOwner::Certified {
-                    root: [1; 32],
                     device: [3; 32],
+                },
+                InvocationOwner::AuthenticatedLocal {
+                    root: [1; 32],
+                    device: [2; 32],
+                    agent: None,
+                },
+                InvocationOwner::AuthenticatedLocal {
+                    root: [1; 32],
+                    device: [2; 32],
+                    agent: Some("worker-a".into()),
                 },
             ] {
                 foreign.owner = owner;
                 assert!(
                     recovered.lookup(&foreign).unwrap().is_none(),
-                    "private recovered result cannot alias a public owner"
+                    "a recovered result answers its owner alone"
                 );
             }
         }

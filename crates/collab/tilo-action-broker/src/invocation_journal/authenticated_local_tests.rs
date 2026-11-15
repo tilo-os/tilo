@@ -52,10 +52,6 @@ tilo_test_env::scenario! {
             let mut owners = vec![
                 json!({"Local":{"actor":"person"}}),
                 json!({"Certified":{"root":vec![1;32],"device":vec![2;32]}}),
-                json!({"Enrolled":{"root":vec![1;32],"device":vec![2;32],
-                    "task":"00000000-0000-0000-0000-000000000005",
-                    "run":"00000000-0000-0000-0000-000000000006",
-                    "channel":"00000000-0000-0000-0000-000000000007"}}),
                 local_owner(Some("worker-b")),
             ];
             owners.push(local_owner(if agent.is_some() {
