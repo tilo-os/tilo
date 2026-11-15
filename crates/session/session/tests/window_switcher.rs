@@ -169,14 +169,20 @@ fn hold_alt_tab(session: &mut Session) -> Duration {
     pressed.elapsed()
 }
 
-/// Where the panel's cards stand, once it has drawn what it shows now. The panel is up from the pass
-/// that shows it, and its cards stand nowhere until a frame has drawn them: a look at them before
-/// that frame finds none, or the ones of what the panel showed before.
-fn drawn_cards(session: &mut Session) -> Vec<(usize, Rect)> {
+/// Run frames until the panel has drawn what it shows now. The panel is up from the pass that shows
+/// it, and the frame that draws it is that pass's or the next one's: a look before that frame finds
+/// no card, or the ones of what the panel showed before, and a capture finds the display without
+/// the panel.
+fn until_drawn(session: &mut Session) {
     until(session, "the panel draws the cards it shows", |session| {
         let panel = session.window_switcher();
         !panel.needs_redraw() && !panel.card_rects().is_empty()
     });
+}
+
+/// Where the panel's cards stand, once it has drawn what it shows now.
+fn drawn_cards(session: &mut Session) -> Vec<(usize, Rect)> {
+    until_drawn(session);
     session.window_switcher().card_rects()
 }
 
@@ -335,6 +341,7 @@ tilo_test_env::scenario! {
             "Mail",
             "the shell lifts the window the walk reached, as the shell's reading always has"
         );
+        until_drawn(&mut session);
         let held = shot(&mut session, "switcher-held");
         assert!(
             changed(&plain, &held) > plain.rgba.len() / 4 / 100,
@@ -392,6 +399,7 @@ fn alt_grave_walks_only_the_front_apps_windows() {
     );
     assert!(view.app_scope, "the panel says which walk it shows");
     assert_eq!(view.selected, 1);
+    until_drawn(&mut session);
     let app = shot(&mut session, "switcher-app-scope");
 
     // Home chooses the window in front, End the last of them.
@@ -402,6 +410,7 @@ fn alt_grave_walks_only_the_front_apps_windows() {
         0,
         "Home chooses the first"
     );
+    until_drawn(&mut session);
     let chosen = shot(&mut session, "switcher-app-scope-first");
     let moved = changed(&app, &chosen);
     assert!(moved > 0, "moving the walk draws another card");
