@@ -1,0 +1,26 @@
+//! What a branch of a workspace leaves behind (`docs/architecture/workspace.md`, "Branching a
+//! workspace"): one rule, for a device branching a workspace it holds and for a host branching
+//! one it keeps.
+
+/// Chat's records: every conversation of the workspace, which stays behind.
+pub const CHAT: &str = "so.tilo.chat";
+/// Terminal's records: its environments, which the runtime branches itself.
+pub const TERMINAL: &str = "so.tilo.terminal";
+/// The record each person's place in the workspace's tilolang apps is kept in, one for all of them.
+pub const PERSONAL_PLACES: (&str, &str) = ("tilo.host", "tilolang.personal");
+
+/// Whether the record `record` of `app` stays behind when its workspace is branched: what is tied
+/// to other people, and what the branch makes of its own.
+#[must_use]
+pub fn stays(app: &str, record: &str) -> bool {
+    match app {
+        // Every conversation, and each person's drafts and read marks. The workspace's own emoji
+        // and agents are Chat's to keep but the workspace's, so they come along.
+        CHAT => collab_types::workspace_record(app, record).is_none(),
+        // The runtime branches the environments, with their own files; the branch's layout is
+        // written from its own windows, never the source's layout of everyone's.
+        TERMINAL | crate::ownership::DESKTOP_APP => true,
+        _ => collab_types::workspace_record(app, record)
+            .is_some_and(|known| (known.app, known.kind) == PERSONAL_PLACES),
+    }
+}

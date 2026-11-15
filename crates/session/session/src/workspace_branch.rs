@@ -37,6 +37,8 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
+// What stays behind is one rule for a device and for a host that branches a workspace.
+use tilo_desktop_model::branch::{CHAT, TERMINAL, stays};
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
 };
@@ -47,31 +49,9 @@ use crate::engine::{Engine, SealKeys};
 use crate::engine_write::Polled;
 use crate::platform::notice::Notice;
 
-/// Chat's records: every conversation of the workspace, which stays behind.
-const CHAT: &str = "so.tilo.chat";
-/// Terminal's records: its environments, which the runtime branches itself.
-const TERMINAL: &str = "so.tilo.terminal";
-/// The record each person's place in the workspace's tilolang apps is kept in, one for all of them.
-const PERSONAL_PLACES: (&str, &str) = ("tilo.host", "tilolang.personal");
 /// How long a branch waits for what it reads and writes to be here: a record its hosts send only
 /// once asked, and the keys of the branch's channels, which its first sealed write asks for.
 const PATIENCE: Duration = Duration::from_secs(60);
-
-/// Whether the record `record` of `app` stays behind when its workspace is branched: what is tied
-/// to other people, and what the branch makes of its own.
-#[must_use]
-pub(crate) fn stays(app: &str, record: &str) -> bool {
-    match app {
-        // Every conversation, and each person's drafts and read marks. The workspace's own emoji
-        // and agents are Chat's to keep but the workspace's, so they come along.
-        CHAT => collab_types::workspace_record(app, record).is_none(),
-        // The runtime branches the environments, with their own files; the branch's layout is
-        // written from its own windows, never the source's layout of everyone's.
-        TERMINAL | tilo_desktop_model::ownership::DESKTOP_APP => true,
-        _ => collab_types::workspace_record(app, record)
-            .is_some_and(|known| (known.app, known.kind) == PERSONAL_PLACES),
-    }
-}
 
 /// Whether `request` is a branch of a workspace other than `workspace` , or of one the session does
 /// not know: `workspaces` are the session's, each by its id and its name. An agent reads only the workspace it works in, so it branches that one or none.

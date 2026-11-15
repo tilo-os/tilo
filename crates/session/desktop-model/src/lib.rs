@@ -13,6 +13,7 @@
 pub mod app;
 pub mod apps;
 pub mod bots;
+pub mod branch;
 pub mod capability;
 pub mod closed_tabs;
 pub mod commands;
