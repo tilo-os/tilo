@@ -106,19 +106,19 @@ pub(super) fn admitted_now(caller: &VerifiedActionCaller) -> Option<AdmittedJoin
     })
 }
 
+/// Full certified-caller verifications run so far. Admission runs on a
+/// blocking thread, so a test counts them across threads.
 #[cfg(test)]
-std::thread_local! {
-    static VERIFICATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
+static VERIFICATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Count one full verification of a certified caller's presentation.
 #[cfg(test)]
 pub(super) fn count_verification() {
-    VERIFICATIONS.with(|count| count.set(count.get().saturating_add(1)));
+    VERIFICATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Full certified-caller verifications run on this thread.
+/// Full certified-caller verifications run so far.
 #[cfg(test)]
-pub(crate) fn verifications_on_this_thread() -> usize {
-    VERIFICATIONS.with(std::cell::Cell::get)
+pub(crate) fn verifications() -> usize {
+    VERIFICATIONS.load(std::sync::atomic::Ordering::Relaxed)
 }

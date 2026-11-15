@@ -89,8 +89,9 @@ mod eager_bridge_tests {
                 // Even scheduling other tasks cannot admit work before the drain.
                 tokio::task::yield_now().await;
                 assert_eq!(response.poll_ready(), PendingPoll::Waiting);
-                drain_directory_bridge(&fixture).await;
-                assert!(matches!(response.poll_ready(), PendingPoll::Ready(Err(_))));
+                // The turn hands admission to a blocking thread, so the answer
+                // arrives after the drain.
+                assert!(fixture.drive(response).await.is_err());
                 assert!(fixture.take_invocation_identity().is_none());
 
                 let request = self::request(&fixture);

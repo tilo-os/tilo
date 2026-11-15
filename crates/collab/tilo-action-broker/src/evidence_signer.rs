@@ -15,12 +15,10 @@ use tilo_identity_host::join_proof::{CurrentDeviceStamp, current_device_stamp};
 use tilo_identity_host::registry::IdentityRegistryStore;
 use tilo_user_identity::DeviceCert;
 
+/// One-shot fault injection. Admission signs on a blocking thread, so a test
+/// installs the hook from any thread.
 #[cfg(test)]
-thread_local! {
-    // One-shot, thread-local fault injection: other tests keep their real signer.
-    pub(crate) static BEFORE_SIGN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        const { std::cell::RefCell::new(None) };
-}
+pub(crate) static BEFORE_SIGN: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
 
 static CACHE: LazyLock<Mutex<SignerCache>> = LazyLock::new(Mutex::default);
 const CACHE_LIMIT: usize = 256;
@@ -51,12 +49,12 @@ struct SignerCache {
 /// root key. The returned certificate identifies the device signing the bytes.
 pub(crate) fn sign(workspace: &str, bytes: &[u8]) -> Result<(DeviceCert, [u8; 64]), String> {
     #[cfg(test)]
-    BEFORE_SIGN.with(|hook| {
-        let hook = hook.borrow_mut().take();
+    {
+        let hook = BEFORE_SIGN.lock().take();
         if let Some(hook) = hook {
             hook();
         }
-    });
+    }
     let mut cache = CACHE.lock();
     let now = tilo_clock::try_unix_now_ns().ok_or("receipt signing clock is unavailable")?;
     cache.sign_at(workspace, bytes, now)

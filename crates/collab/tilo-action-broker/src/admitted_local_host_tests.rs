@@ -632,7 +632,7 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
 /// revoked device still fails the very next call.
 #[tokio::test(flavor = "current_thread")]
 async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
-    use crate::collab_app_broker::admission_memo::verifications_on_this_thread as verifications;
+    use crate::collab_app_broker::admission_memo::verifications;
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();
@@ -792,22 +792,34 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
                 done.send((retry, next)).unwrap();
             });
             let (answers, queued) = std::sync::mpsc::channel();
-            crate::evidence_signer::BEFORE_SIGN.with(|hook| {
-                *hook.borrow_mut() = Some(Box::new(move || {
-                    send.send(()).unwrap();
-                    let pending = tilo_test_env::recv(
-                        "UI lookup/cancel/enqueue to finish while signing is stalled",
-                        &completed,
-                    );
-                    answers.send(pending).unwrap();
-                }));
-            });
+            *crate::evidence_signer::BEFORE_SIGN.lock() = Some(Box::new(move || {
+                send.send(()).unwrap();
+                let pending = tilo_test_env::recv(
+                    "UI lookup/cancel/enqueue to finish while signing is stalled",
+                    &completed,
+                );
+                answers.send(pending).unwrap();
+            }));
             let original = local_host_answer(host.invoke(&caller, request.clone()))
                 .await
                 .unwrap();
             let (retry, next) = queued.recv().unwrap();
             ui.join().unwrap();
-            let retried = local_host_answer(retry).await.unwrap();
+            // The duplicate was enqueued while the first admission was still
+            // signing: the broker may tell it to ask again, and asking again
+            // then answers with the same invocation.
+            let retried = match local_host_answer(retry).await {
+                Ok(retried) => retried,
+                Err(error) => {
+                    assert!(
+                        matches!(&error, tilo_actions::remote::ActionHostError::Unavailable { reason } if reason.contains("still being admitted")),
+                        "{error:?}"
+                    );
+                    local_host_answer(host.invoke(&caller, request.clone()))
+                        .await
+                        .unwrap()
+                }
+            };
             assert_eq!(original, retried);
             assert_eq!(
                 local_host_answer(next).await.unwrap().invocation,
