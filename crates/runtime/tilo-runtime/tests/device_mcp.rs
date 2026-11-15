@@ -1,6 +1,6 @@
 //! An agent on one of the person's devices works on another of them over iroh:
 //! its client asks its own host to carry it to that device's MCP server, the
-//! door decides from the transport and the person's own store whether the
+//! server decides from the transport and the person's own store whether the
 //! dialing device is one of theirs, and an admitted agent is served there as an
 //! agent delegated by the person, named after the device it came from. Every
 //! other device — another person's, a revoked one, a store node, one showing a
@@ -29,9 +29,9 @@ use tilo_actions::remote::{
     ReceiptStatus,
 };
 use tilo_peer_state::{PersonalStore, PersonalSync};
-use tilo_runtime::remote_door::{
-    ALPN, Arrival, Arrivals, Doors, Forward, Origin, PersonalDevices, PersonsDevices, RemoteDoor,
-    agent_id, ask_forward, forward_request, open, read_list,
+use tilo_runtime::device_mcp::{
+    ALPN, Arrival, Arrivals, DeviceServer, Forward, Origin, OtherDevices, PersonalDevices,
+    PersonsDevices, agent_id, ask_forward, forward_request, open, read_list,
 };
 use tilo_runtime::session_door::{Beside, Consent, read_first_line, serve_with};
 use tilo_user_identity::{
@@ -237,10 +237,10 @@ impl ActionHost for Host {
 }
 
 /// B's MCP server: each connection its endpoint opens is served as the
-/// desktop's door serves one, admitted as the agent the device it came from
+/// desktop's server serves one, admitted as the agent the device it came from
 /// names, for the person.
 #[derive(Clone, Default)]
-struct Door {
+struct Server {
     host: Host,
     arrived: Arc<Mutex<Vec<Origin>>>,
     /// Each connection's serving thread, which ends when it does.
@@ -249,7 +249,7 @@ struct Door {
     list: Arc<Mutex<Option<tilo_relay_session::workspaces::PersonalList>>>,
 }
 
-impl Arrivals for Door {
+impl Arrivals for Server {
     fn arrive(&self, arrival: Arrival) -> Result<(), String> {
         let Arrival { origin, stream } = arrival;
         self.arrived.lock().unwrap().push(origin.clone());
@@ -298,17 +298,17 @@ impl Person {
     }
 }
 
-/// B, serving its door over its person's store, which holds the
+/// B, serving its server over its person's store, which holds the
 /// revocations `revoked`.
 struct B {
     endpoint: Endpoint,
-    door: Door,
+    server: Server,
     _router: Router,
 }
 
 async fn b(person: &Person, revoked: &[&DeviceCert]) -> B {
     let endpoint = endpoint(&person.b.0).await;
-    let door = Door::default();
+    let server = Server::default();
     let devices = Arc::new(PersonalDevices::new(store(
         &person.root,
         &person.b,
@@ -316,22 +316,22 @@ async fn b(person: &Person, revoked: &[&DeviceCert]) -> B {
         revoked,
     )));
     let router = Router::builder(endpoint.clone())
-        .accept(ALPN, RemoteDoor::new(devices, Arc::new(door.clone())))
+        .accept(ALPN, DeviceServer::new(devices, Arc::new(server.clone())))
         .spawn();
     B {
         endpoint,
-        door,
+        server,
         _router: router,
     }
 }
 
-/// A's host, reaching B's door from A's endpoint as A, and the person's
+/// A's host, reaching B's server from A's endpoint as A, and the person's
 /// devices as A's store holds them: B, and `others`.
-async fn a(person: &Person, b: &B, others: &[&DeviceCert]) -> Arc<Doors> {
+async fn a(person: &Person, b: &B, others: &[&DeviceCert]) -> Arc<OtherDevices> {
     let endpoint = endpoint(&person.a.0).await;
     let mut known = vec![&person.b.1];
     known.extend_from_slice(others);
-    let doors = Doors::new(
+    let servers = OtherDevices::new(
         endpoint,
         Arc::new(PersonalDevices::new(store(
             &person.root,
@@ -341,24 +341,24 @@ async fn a(person: &Person, b: &B, others: &[&DeviceCert]) -> Arc<Doors> {
         ))),
         tokio::runtime::Handle::current(),
     );
-    doors.learn(addr(&b.endpoint));
-    Arc::new(doors)
+    servers.learn(addr(&b.endpoint));
+    Arc::new(servers)
 }
 
 /// A client of A's host asking to be carried to `device`, as
 /// `tilo-runtime-mcp --connect --device` does: A's host reads the line it
 /// opens with and carries it on, as its MCP server does.
 fn connect(
-    doors: &Arc<Doors>,
+    servers: &Arc<OtherDevices>,
     device: &str,
 ) -> (std::io::Result<UnixStream>, std::thread::JoinHandle<()>) {
     let (mut client, host_end) = UnixStream::pair().unwrap();
-    let doors = Arc::clone(doors);
+    let servers = Arc::clone(servers);
     let carrying = std::thread::spawn(move || {
         let mut host_end = host_end;
         let first = read_first_line(&mut host_end).unwrap();
         let forward = forward_request(&first).expect("the client asks for a forward");
-        doors.serve_forward(host_end, &forward);
+        servers.serve_forward(host_end, &forward);
     });
     client.set_read_timeout(Some(PATIENCE)).unwrap();
     let asked = ask_forward(
@@ -412,17 +412,17 @@ async fn blocking<T: Send + 'static>(step: impl FnOnce() -> T + Send + 'static) 
 async fn an_agent_on_one_device_lists_and_acts_on_another_as_an_agent_via_the_first() {
     let person = Person::new();
     let b = b(&person, &[]).await;
-    let doors = a(&person, &b, &[]).await;
+    let servers = a(&person, &b, &[]).await;
     let expected = agent_id("claude-code", &person.a.1);
     assert!(
         expected.starts_with("claude-code@studio-laptop-"),
         "the agent is named after the device it came from: {expected}"
     );
     let (answers, carried) = {
-        let doors = Arc::clone(&doors);
+        let servers = Arc::clone(&servers);
         blocking(move || {
-            let (client, carrying) = connect(&doors, "build box");
-            let mut client = BufReader::new(client.expect("B's door opens for A"));
+            let (client, carrying) = connect(&servers, "build box");
+            let mut client = BufReader::new(client.expect("B's server opens for A"));
             let introduced = call(&mut client, &initialize());
             let apps = call(&mut client, &tool(2, "tilo_ls", &json!({})));
             let done = call(
@@ -445,16 +445,16 @@ async fn an_agent_on_one_device_lists_and_acts_on_another_as_an_agent_via_the_fi
         answers[1]
     );
     assert_eq!(answers[2]["result"]["isError"], false, "{}", answers[2]);
-    let invoked = b.door.host.invoked.lock().unwrap().clone();
+    let invoked = b.server.host.invoked.lock().unwrap().clone();
     assert_eq!(invoked.len(), 1, "the action ran on B once");
     assert_eq!(invoked[0].target.address.action, "pin");
-    let arrived = b.door.arrived.lock().unwrap().clone();
+    let arrived = b.server.arrived.lock().unwrap().clone();
     assert_eq!(arrived.len(), 1);
     assert_eq!(
         arrived[0].device, person.a.1,
         "B knows the connection came from A"
     );
-    let callers = b.door.host.callers.lock().unwrap().clone();
+    let callers = b.server.host.callers.lock().unwrap().clone();
     assert!(!callers.is_empty());
     for caller in &callers {
         assert_eq!(
@@ -469,7 +469,7 @@ async fn an_agent_on_one_device_lists_and_acts_on_another_as_an_agent_via_the_fi
     let (client, carrying) = carried;
     drop(client);
     blocking(move || carrying.join().unwrap()).await;
-    let served = b.door.served.lock().unwrap().pop().unwrap();
+    let served = b.server.served.lock().unwrap().pop().unwrap();
     blocking(move || served.join().unwrap().unwrap()).await;
 }
 
@@ -477,15 +477,15 @@ async fn an_agent_on_one_device_lists_and_acts_on_another_as_an_agent_via_the_fi
 async fn what_b_refuses_reaches_the_agent_and_ends_its_connection_on_a() {
     let person = Person::new();
     let b = b(&person, &[]).await;
-    let doors = a(&person, &b, &[]).await;
+    let servers = a(&person, &b, &[]).await;
     // B named by its endpoint id rather than its name.
     let b_id = hex::encode(person.b.1.device_public_key);
     let (said, carrying) = {
-        let doors = Arc::clone(&doors);
+        let servers = Arc::clone(&servers);
         blocking(move || {
-            let (client, carrying) = connect(&doors, &b_id);
-            let mut client = client.expect("B's door opens for A");
-            // A tool call before `initialize`: B's door answers it with a
+            let (client, carrying) = connect(&servers, &b_id);
+            let mut client = client.expect("B's server opens for A");
+            // A tool call before `initialize`: B's server answers it with a
             // refusal and closes, and the agent on A reads to the end.
             client
                 .write_all(format!("{}\n", tool(9, "tilo_ls", &json!({}))).as_bytes())
@@ -499,17 +499,17 @@ async fn what_b_refuses_reaches_the_agent_and_ends_its_connection_on_a() {
     assert!(said.contains("initialize"), "{said}");
     blocking(move || carrying.join().unwrap()).await;
     assert!(
-        b.door.host.callers.lock().unwrap().is_empty(),
+        b.server.host.callers.lock().unwrap().is_empty(),
         "nothing the agent asked before it was admitted reached B's host"
     );
 }
 
-/// Dial B's door from `key`'s endpoint showing `certificate`, and read what
+/// Dial B's server from `key`'s endpoint showing `certificate`, and read what
 /// it says.
 async fn dial(b: &B, key: &SigningKey, certificate: &DeviceCert) -> Result<(), String> {
     let endpoint = endpoint(key).await;
     let dialed = open(&endpoint, addr(&b.endpoint), certificate, None, false).await;
-    dialed.map(tilo_runtime::remote_door::Dialed::close)
+    dialed.map(tilo_runtime::device_mcp::Dialed::close)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -520,7 +520,7 @@ async fn a_device_of_another_person_is_refused_before_anyone_is_asked() {
     let theirs = device(&stranger, 3, "Their laptop");
     let refused = dial(&b, &theirs.0, &theirs.1).await.unwrap_err();
     assert!(refused.contains("someone else"), "{refused}");
-    assert!(b.door.arrived.lock().unwrap().is_empty());
+    assert!(b.server.arrived.lock().unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -530,7 +530,7 @@ async fn a_revoked_device_is_refused() {
     let b = b(&person, &[&lost.1]).await;
     let refused = dial(&b, &lost.0, &lost.1).await.unwrap_err();
     assert!(refused.contains("removed"), "{refused}");
-    assert!(b.door.arrived.lock().unwrap().is_empty());
+    assert!(b.server.arrived.lock().unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -541,7 +541,7 @@ async fn a_device_showing_another_devices_certificate_is_refused() {
     let impostor = SigningKey::from_bytes(&[0x33; 32]);
     let refused = dial(&b, &impostor, &person.a.1).await.unwrap_err();
     assert!(refused.contains("another device"), "{refused}");
-    assert!(b.door.arrived.lock().unwrap().is_empty());
+    assert!(b.server.arrived.lock().unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -550,8 +550,8 @@ async fn the_persons_devices_are_listed_with_whether_each_answers() {
     let b = b(&person, &[]).await;
     // A third device of the person's, which A knows of and which is away.
     let away = device(&person.root, 6, "Phone");
-    let doors = a(&person, &b, &[&away.1]).await;
-    let reach = doors.reach_now().await;
+    let servers = a(&person, &b, &[&away.1]).await;
+    let reach = servers.reach_now().await;
     let state = |label: &str| {
         reach
             .iter()
@@ -563,10 +563,10 @@ async fn the_persons_devices_are_listed_with_whether_each_answers() {
     assert_eq!(state("Build box").answer, Ok(()));
     assert!(state("Phone").answer.is_err());
     assert!(
-        b.door.arrived.lock().unwrap().is_empty(),
+        b.server.arrived.lock().unwrap().is_empty(),
         "asking whether a device answers admits nothing there"
     );
-    let listing = tilo_runtime::remote_door::listing(&reach);
+    let listing = tilo_runtime::device_mcp::listing(&reach);
     assert!(
         listing.contains("Build box") && listing.contains("reachable"),
         "{listing}"
@@ -618,18 +618,18 @@ async fn a_device_lists_and_names_the_siblings_it_never_met() {
     until_listed(&phone, "Build box").await;
     until_listed(&second, "Phone").await;
 
-    let doors = Doors::new(
+    let servers = OtherDevices::new(
         phone_endpoint,
         Arc::new(PersonalDevices::new(phone.clone())),
         tokio::runtime::Handle::current(),
     );
-    let listing = tilo_runtime::remote_door::listing(&doors.reach_now().await);
+    let listing = tilo_runtime::device_mcp::listing(&servers.reach_now().await);
     assert!(
         listing.contains("Build box") && listing.contains("Studio laptop"),
         "{listing}"
     );
     assert_eq!(
-        doors.resolve("build box"),
+        servers.resolve("build box"),
         Ok(person.b.1.device_public_key),
         "--device names the sibling this device never met"
     );
@@ -653,11 +653,11 @@ async fn a_device_lists_and_names_the_siblings_it_never_met() {
 async fn a_device_the_person_has_none_of_is_named_back_with_theirs() {
     let person = Person::new();
     let b = b(&person, &[]).await;
-    let doors = a(&person, &b, &[]).await;
+    let servers = a(&person, &b, &[]).await;
     let refused = {
-        let doors = Arc::clone(&doors);
+        let servers = Arc::clone(&servers);
         blocking(move || {
-            let (asked, carrying) = connect(&doors, "kitchen");
+            let (asked, carrying) = connect(&servers, "kitchen");
             carrying.join().unwrap();
             asked.map(|_| ()).unwrap_err().to_string()
         })
@@ -668,16 +668,16 @@ async fn a_device_the_person_has_none_of_is_named_back_with_theirs() {
         "{refused}"
     );
     let this = {
-        let doors = Arc::clone(&doors);
+        let servers = Arc::clone(&servers);
         blocking(move || {
-            let (asked, carrying) = connect(&doors, "Studio laptop");
+            let (asked, carrying) = connect(&servers, "Studio laptop");
             carrying.join().unwrap();
             asked.map(|_| ()).unwrap_err().to_string()
         })
         .await
     };
     assert!(this.contains("this device"), "{this}");
-    assert!(b.door.arrived.lock().unwrap().is_empty());
+    assert!(b.server.arrived.lock().unwrap().is_empty());
 }
 
 /// A grant of the person `root`'s for an agent, reaching `scope`, keyed `n`.
@@ -735,7 +735,7 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
         workspaces: vec![entry(SHELL, "Build box"), entry(ON_RELAY, "eu1.tilo.sh")],
         ..PersonalList::default()
     };
-    *b.door.list.lock().unwrap() = Some(held.clone());
+    *b.server.list.lock().unwrap() = Some(held.clone());
     // A key reaching all their workspaces reads all of them, each with its
     // host; nobody is asked, and nothing is admitted.
     assert_eq!(
@@ -744,7 +744,7 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
             .unwrap(),
         held
     );
-    assert!(b.door.arrived.lock().unwrap().is_empty());
+    assert!(b.server.arrived.lock().unwrap().is_empty());
     // A key for one workspace reads that one.
     let one = grant(
         &person.root,
@@ -780,7 +780,7 @@ async fn a_revoked_key_reads_no_workspace_list() {
         tilo_user_identity::AgentScope::AllWorkspaces,
     );
     let b = b(&person, &[&revoked.1]).await;
-    *b.door.list.lock().unwrap() = Some(tilo_relay_session::workspaces::PersonalList::default());
+    *b.server.list.lock().unwrap() = Some(tilo_relay_session::workspaces::PersonalList::default());
     let refused = read_list(&endpoint(&revoked.0).await, addr(&b.endpoint), &revoked.1)
         .await
         .unwrap_err();
@@ -850,8 +850,12 @@ async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_
         .await
         .unwrap();
     assert_eq!(done["result"]["isError"], false, "{done}");
-    assert_eq!(b.door.host.invoked.lock().unwrap().len(), 1, "it ran on B");
-    let arrived = b.door.arrived.lock().unwrap().clone();
+    assert_eq!(
+        b.server.host.invoked.lock().unwrap().len(),
+        1,
+        "it ran on B"
+    );
+    let arrived = b.server.arrived.lock().unwrap().clone();
     assert_eq!(arrived.len(), 1);
     assert_eq!(arrived[0].device, all.1, "B knows which key came in");
     assert_eq!(arrived[0].workspace.as_deref(), Some(SHELL));
@@ -904,7 +908,7 @@ async fn a_key_for_another_workspace_or_a_revoked_key_is_refused_at_the_device()
     .expect("refused");
     assert!(refused.contains("removed"), "{refused}");
     assert!(
-        b.door.arrived.lock().unwrap().is_empty(),
+        b.server.arrived.lock().unwrap().is_empty(),
         "nobody was asked"
     );
 }

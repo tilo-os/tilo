@@ -19,7 +19,7 @@
 use std::time::Duration;
 
 use tilo_session::{Options, Session};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use ui::a11y::Action;
 use ui::accesskit::{Node, NodeId, Role, TreeUpdate};
@@ -149,12 +149,12 @@ fn an_app_the_session_hosts_is_exported_with_working_controls() {
     let (_home, mut session) = session();
     // A question on the portal sheet: an app of its own, drawn by the session's loop, so only the
     // export a screen reader gets carries it.
-    let seat = session
+    let state = session
         .portal()
         .expect("the session mounts the portal sheet")
         .clone();
-    seat.presentation().open(false);
-    seat.show(Some(Dialog {
+    state.presentation().open(false);
+    state.show(Some(Dialog {
         handle: "a11y-export-1".to_owned(),
         title: "Share your screen?".to_owned(),
         heading: "Meet".to_owned(),
@@ -181,7 +181,7 @@ fn an_app_the_session_hosts_is_exported_with_working_controls() {
     let mut asked = Vec::new();
     let confirmed = crate::common::wait_maybe(&mut session, |session| {
         session.step(REFRESH).expect("a turn of the session");
-        asked.extend(seat.take_asked());
+        asked.extend(state.take_asked());
         asked
             .iter()
             .any(|effect| matches!(effect, PortalEffect::Confirm { .. }))

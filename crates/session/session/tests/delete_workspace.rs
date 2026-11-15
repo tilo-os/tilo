@@ -21,7 +21,7 @@ use tilo_desktop_surface::i18n::t;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
 use tilo_session::{Options, Session};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::delete_workspace::DeleteWorkspaceEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -179,7 +179,7 @@ fn asked(session: &Session) -> String {
 fn delete_sheet_open(session: &Session) -> bool {
     session
         .delete_workspace_sheet()
-        .is_some_and(|seat| seat.presentation().is_open())
+        .is_some_and(|state| state.presentation().is_open())
 }
 
 /// Whether the shell is asking the person anything on a banner.
@@ -223,11 +223,11 @@ fn deleting_a_workspace_asks_in_its_own_question_and_keep_deletes_nothing() {
     capture(&mut session, "delete-asked");
 
     // Keep: the question goes and the workspace stays, with everything in it.
-    let seat = session
+    let state = session
         .delete_workspace_sheet()
         .expect("the delete question")
         .clone();
-    seat.answer(DeleteWorkspaceEffect::Keep);
+    state.answer(DeleteWorkspaceEffect::Keep);
     settle(&mut session);
     assert_eq!(front(&session), shown, "keeping deletes nothing");
     assert!(!delete_sheet_open(&session), "the question is answered");
@@ -322,11 +322,11 @@ fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
     );
 
     // The row asks first, over the settings, and the yes is the shell's.
-    let seat = session
+    let state = session
         .workspace_settings()
         .expect("workspace settings")
         .clone();
-    let mut app = HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", seat)
+    let mut app = HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state)
         .expect("the sheet draws");
     app.harness().resize((1280, 900)).expect("a screen");
     app.settle();

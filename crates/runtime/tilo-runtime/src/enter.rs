@@ -5,7 +5,7 @@
 //! enters it there, over iroh, wherever it is hosted:
 //!
 //! - **A device of the person's** (their desktop, a paired box) hosts it: the
-//!   key dials that device's MCP server ([`crate::remote_door`]), which admits
+//!   key dials that device's MCP server ([`crate::device_mcp`]), which admits
 //!   it as the person's relay does (`tilo_workspace_host::workspace_access`): a
 //!   certificate the person's root signed, unrevoked, current, its scope
 //!   reaching the workspace, and the person's "allow this agent?" where the
@@ -109,7 +109,7 @@ pub async fn enter(
     if *endpoint.id().as_bytes() != key.cert.device_public_key {
         return Err("the endpoint dials as another key than the one entering".to_owned());
     }
-    let dialed = crate::remote_door::open(
+    let dialed = crate::device_mcp::open(
         endpoint,
         device.endpoint_addr.clone(),
         &key.cert,
@@ -142,12 +142,12 @@ impl Entered {
 /// request a line out, its answer the line back with its id; what the door
 /// says in between (a notification) is not an answer.
 pub struct DoorLines {
-    lines: tokio::sync::Mutex<crate::remote_door::Lines>,
+    lines: tokio::sync::Mutex<crate::device_mcp::Lines>,
     live: std::sync::atomic::AtomicBool,
 }
 
 impl DoorLines {
-    fn new(dialed: crate::remote_door::Dialed) -> Self {
+    fn new(dialed: crate::device_mcp::Dialed) -> Self {
         Self {
             lines: tokio::sync::Mutex::new(dialed.into_lines()),
             live: std::sync::atomic::AtomicBool::new(true),

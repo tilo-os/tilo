@@ -711,9 +711,9 @@ async fn leaves_who_is_here(ending: Ending) {
                 on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: mcp_server::target(mcp_server::STOP),
-                argument: mcp_server::argument(&mcp_server::RunRef {
+                argument: mcp_server::argument(&mcp_server::AgentSessionRef {
                     grant: hex::encode(device),
-                    run: "Claude Code".into(),
+                    session: "Claude Code".into(),
                 }),
                 context: None,
                 confirmation: None,

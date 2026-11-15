@@ -71,7 +71,7 @@ pub fn definition() -> &'static ui::prelude::ApplicationDefinition {
 
 #[cfg(test)]
 mod tests {
-    use tilo_sheets::Seat as _;
+    use tilo_sheets::SheetState as _;
     use ui::vello::kurbo::Rect;
     use ui::widget::{CapturePreview, ScreenshotKept, ScreenshotSendDevice, Widget};
 
@@ -141,22 +141,22 @@ mod tests {
         let folder = tempfile::tempdir().expect("a folder");
         let path = folder.path().join("Screenshot 1.png");
         std::fs::write(&path, b"the screenshot").expect("a screenshot");
-        let seat = Studio::new();
+        let state = Studio::new();
         let mut frame = ui::headless::FrameHarness::for_root(
             ui::state::State::new(),
-            StudioSurface::new(Some(seat.clone())),
+            StudioSurface::new(Some(state.clone())),
             (1280, 800),
             ui::theme::Theme::dark(),
         );
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
-        seat.presentation().open(false);
+        state.presentation().open(false);
         poll_at(&mut frame, step(1), "the bar comes up");
         let phone = ScreenshotSendDevice {
             id: "device-phone".into(),
             label: "Ada's phone".into(),
         };
-        seat.link().publish(Scene {
+        state.link().publish(Scene {
             kept: Some(capture(path.clone())),
             devices: vec![phone.clone()],
             ..Scene::default()
@@ -171,15 +171,15 @@ mod tests {
         press(&mut frame, step(5), "capture.send-to-device.device-phone");
         poll_at(&mut frame, step(6), "the pick is answered");
         assert_eq!(
-            seat.link().take_asks(),
+            state.link().take_asks(),
             [Ask::SendLastTo("device-phone".into())],
             "the session is asked for the last capture, by the picked device"
         );
         assert!(
-            seat.presentation().is_open(),
+            state.presentation().is_open(),
             "the receipt stays up until the session says what became of the send"
         );
-        seat.link().publish(Scene {
+        state.link().publish(Scene {
             kept: Some(capture(path)),
             devices: vec![phone],
             sent: Some(Sent::offered("Ada's phone".into())),
@@ -198,7 +198,7 @@ mod tests {
             "what became of it is read",
         );
         assert!(
-            !seat.presentation().is_open(),
+            !state.presentation().is_open(),
             "the receipt goes once what it says has been read"
         );
     }
@@ -213,18 +213,18 @@ mod tests {
         let folder = tempfile::tempdir().expect("a folder");
         let path = folder.path().join("Screenshot 1.png");
         std::fs::write(&path, b"the screenshot").expect("a screenshot");
-        let seat = Studio::new();
+        let state = Studio::new();
         let mut frame = ui::headless::FrameHarness::for_root(
             ui::state::State::new(),
-            StudioSurface::new(Some(seat.clone())),
+            StudioSurface::new(Some(state.clone())),
             (1280, 800),
             ui::theme::Theme::dark(),
         );
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
-        seat.presentation().open(false);
+        state.presentation().open(false);
         poll_at(&mut frame, step(1), "the bar comes up");
-        seat.link().publish(Scene {
+        state.link().publish(Scene {
             kept: Some(capture(path.clone())),
             ..Scene::default()
         });
@@ -238,15 +238,15 @@ mod tests {
         press(&mut frame, step(5), "capture.send-to-workspace");
         poll_at(&mut frame, step(6), "the pick is answered");
         assert_eq!(
-            seat.link().take_asks(),
+            state.link().take_asks(),
             [Ask::SendLastToWorkspace],
             "the session is asked to save the last capture"
         );
         assert!(
-            seat.presentation().is_open(),
+            state.presentation().is_open(),
             "the receipt stays up until the session says what became of the save"
         );
-        seat.link().publish(Scene {
+        state.link().publish(Scene {
             kept: Some(capture(path)),
             sent: Some(Sent::saved("Screenshot 1.png".into())),
             ..Scene::default()
@@ -266,18 +266,18 @@ mod tests {
         let folder = tempfile::tempdir().expect("a folder");
         let recording = folder.path().join("Recording 1.mp4");
         std::fs::write(&recording, b"the recording").expect("a recording");
-        let seat = Studio::new();
+        let state = Studio::new();
         let mut frame = ui::headless::FrameHarness::for_root(
             ui::state::State::new(),
-            StudioSurface::new(Some(seat.clone())),
+            StudioSurface::new(Some(state.clone())),
             (1280, 800),
             ui::theme::Theme::dark(),
         );
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
-        seat.presentation().open(false);
+        state.presentation().open(false);
         poll_at(&mut frame, step(1), "the bar comes up");
-        seat.link().publish(Scene {
+        state.link().publish(Scene {
             recording: Some(Recording {
                 path: recording.clone(),
                 paused: false,
@@ -290,11 +290,11 @@ mod tests {
             has(&frame, step(2), "capture.recording-skipped"),
             "the bar says how many frames the recording skipped"
         );
-        assert!(seat.link().take_asks().is_empty(), "nothing is asked yet");
+        assert!(state.link().take_asks().is_empty(), "nothing is asked yet");
 
         // The recording is finished: the bar gives way to a receipt that
         // says what the file is missing and plays it.
-        seat.link().publish(Scene {
+        state.link().publish(Scene {
             finished: Some(Finished {
                 path: Some(recording.clone()),
                 skipped: 12,
@@ -309,7 +309,7 @@ mod tests {
         );
         press(&mut frame, step(4), "capture.play-recording");
         assert_eq!(
-            seat.link().take_asks(),
+            state.link().take_asks(),
             [Ask::Open(recording)],
             "the receipt plays the recording it is about"
         );
@@ -323,18 +323,18 @@ mod tests {
         let folder = tempfile::tempdir().expect("a folder");
         let recording = folder.path().join("Recording 1.mp4");
         std::fs::write(&recording, b"the recording").expect("a recording");
-        let seat = Studio::new();
+        let state = Studio::new();
         let mut frame = ui::headless::FrameHarness::for_root(
             ui::state::State::new(),
-            StudioSurface::new(Some(seat.clone())),
+            StudioSurface::new(Some(state.clone())),
             (1280, 800),
             ui::theme::Theme::dark(),
         );
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
-        seat.presentation().open(false);
+        state.presentation().open(false);
         poll_at(&mut frame, step(1), "the bar comes up");
-        seat.link().publish(Scene {
+        state.link().publish(Scene {
             recording: Some(Recording {
                 path: recording.clone(),
                 paused: false,
@@ -350,16 +350,16 @@ mod tests {
 
         // The person stops: the take is down at once, the encoder still has
         // the file to finish.
-        seat.link().publish(Scene::default());
+        state.link().publish(Scene::default());
         poll_at(&mut frame, step(3), "the take is down");
         poll_at(&mut frame, step(4), "the bar put itself away");
         assert!(
-            !seat.presentation().is_drawn(),
+            !state.presentation().is_drawn(),
             "the studio is down while the file is finished"
         );
 
         // What the file is missing is still said: the receipt comes back up.
-        seat.link().publish(Scene {
+        state.link().publish(Scene {
             finished: Some(Finished {
                 path: Some(recording),
                 skipped: 3,
@@ -370,7 +370,7 @@ mod tests {
         poll_at(&mut frame, step(5), "the receipt comes back");
         poll_at(&mut frame, step(6), "the receipt stays");
         assert!(
-            seat.presentation().is_open(),
+            state.presentation().is_open(),
             "the shell shows the studio again"
         );
         assert!(
@@ -379,7 +379,7 @@ mod tests {
         );
 
         // The shell takes the studio down itself: that stays down.
-        seat.presentation().close();
+        state.presentation().close();
         poll_at(&mut frame, step(7), "the shell takes the studio down");
         poll_at(&mut frame, step(8), "the studio stays down");
         assert!(
@@ -396,18 +396,18 @@ mod tests {
         let folder = tempfile::tempdir().expect("a folder");
         let recording = folder.path().join("Recording 1.mp4");
         std::fs::write(&recording, b"half a recording").expect("a recording");
-        let seat = Studio::new();
+        let state = Studio::new();
         let mut frame = ui::headless::FrameHarness::for_root(
             ui::state::State::new(),
-            StudioSurface::new(Some(seat.clone())),
+            StudioSurface::new(Some(state.clone())),
             (1280, 800),
             ui::theme::Theme::dark(),
         );
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
-        seat.presentation().open(false);
+        state.presentation().open(false);
         poll_at(&mut frame, step(1), "the bar comes up");
-        seat.link().publish(Scene {
+        state.link().publish(Scene {
             recording: Some(Recording {
                 path: recording.clone(),
                 paused: false,
@@ -423,14 +423,14 @@ mod tests {
 
         // The person stops, the bar puts itself away, and the encoder fails
         // to finish the file.
-        seat.link().publish(Scene::default());
+        state.link().publish(Scene::default());
         poll_at(&mut frame, step(3), "the take is down");
         poll_at(&mut frame, step(4), "the bar put itself away");
         assert!(
-            !seat.presentation().is_drawn(),
+            !state.presentation().is_drawn(),
             "the studio is down while the file is finished"
         );
-        seat.link().publish(Scene {
+        state.link().publish(Scene {
             finished: Some(Finished {
                 path: Some(recording.clone()),
                 skipped: 0,
@@ -441,7 +441,7 @@ mod tests {
         poll_at(&mut frame, step(5), "the failure comes back");
         poll_at(&mut frame, step(6), "the failure stays");
         assert!(
-            seat.presentation().is_open(),
+            state.presentation().is_open(),
             "the shell shows the studio again, saying what became of the recording"
         );
         assert!(
@@ -450,7 +450,7 @@ mod tests {
         );
         press(&mut frame, step(7), "capture.show-recording");
         assert_eq!(
-            seat.link().take_asks(),
+            state.link().take_asks(),
             [Ask::Reveal(recording)],
             "the receipt shows what was written in Files"
         );
@@ -459,18 +459,18 @@ mod tests {
     /// A recording that kept no file says so too, and offers nothing to open.
     #[test]
     fn a_recording_that_kept_no_file_says_so_and_offers_nothing() {
-        let seat = Studio::new();
+        let state = Studio::new();
         let mut frame = ui::headless::FrameHarness::for_root(
             ui::state::State::new(),
-            StudioSurface::new(Some(seat.clone())),
+            StudioSurface::new(Some(state.clone())),
             (1280, 800),
             ui::theme::Theme::dark(),
         );
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
-        seat.presentation().open(false);
+        state.presentation().open(false);
         poll_at(&mut frame, step(1), "the bar comes up");
-        seat.link().publish(Scene {
+        state.link().publish(Scene {
             finished: Some(Finished {
                 path: None,
                 skipped: 0,
@@ -480,7 +480,7 @@ mod tests {
         });
         poll_at(&mut frame, step(2), "the failure shows");
         assert!(
-            seat.presentation().is_open(),
+            state.presentation().is_open(),
             "the studio says what became of the recording"
         );
         assert!(

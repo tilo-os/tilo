@@ -1,95 +1,96 @@
 //! The MCP server toward the person's other devices.
 //!
-//! This device's endpoint answers [`tilo_runtime::remote_door::ALPN`]: an
+//! This device's endpoint answers [`tilo_runtime::device_mcp::ALPN`]: an
 //! agent on another of the person's own devices connects to this session's
 //! MCP server over iroh, and is asked about and served exactly as a program of
 //! this login is ([`crate::mcp_server`]), as an agent the person delegates to,
 //! named after the device it came from. Which device dials is the transport's
 //! to say, and whether it is one of the person's is their own store's
-//! ([`tilo_runtime::remote_door::PersonalDevices`]); a connection from anyone
+//! ([`tilo_runtime::device_mcp::PersonalDevices`]); a connection from anyone
 //! else is refused before the person is asked.
 //!
-//! A connection the door admits takes one of the MCP server's places as it arrives, and waits
-//! in it for the session's pass ([`crate::mcp_server::Room`]): no more wait than the door
-//! serves, and one there is no place for is refused here, where the dialer would otherwise be
-//! told the door opened.
+//! A connection the server admits takes one of the MCP server's places as it arrives, and waits
+//! in it for the session's pass ([`crate::mcp_server::Room`]): it waits no longer than the
+//! server serves, and one there is no place for is refused here, where the dialer would
+//! otherwise be told the connection opened.
 //!
 //! The person may let such agents in without being asked here — on a box
 //! nobody sits at — with this device's `mcp_server` setting
 //! ([`settings_store::mcp_server`]), which is off unless they turn it on. With
 //! its second switch on as well, such an agent's steps go unasked too: a step
-//! its run would ask the person about here is allowed by the setting
+//! it would ask the person about here is allowed by the setting
 //! ([`crate::step_questions`]).
 //!
-//! A key of the person's that dials the door only to read their workspace list is answered it
-//! without anyone being asked ([`Remote::show_list`]): the workspaces it reaches, each with its
-//! host's signed address.
+//! A key of the person's that dials the server only to read their workspace list is answered it
+//! without anyone being asked ([`DeviceAgents::show_list`]): the workspaces it reaches, each with
+//! its host's signed address.
 //!
 //! The other way round, a `--connect --device NAME` client of this login asks
-//! this session to carry it to another device's door ([`Remote::forward`]),
+//! this session to carry it to another device's server ([`DeviceAgents::forward`]),
 //! and an agent lists the person's devices with
-//! [`tilo_runtime::remote_door::DEVICES_TOOL`].
+//! [`tilo_runtime::device_mcp::DEVICES_TOOL`].
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tilo_lock::MutexRecover as _;
-use tilo_runtime::remote_door::{
-    Arrival, Arrivals, DeviceDirectory, Doors, Forward, PersonsDevices, Reach, RemoteDoor,
+use tilo_runtime::device_mcp::{
+    Arrival, Arrivals, DeviceDirectory, DeviceServer, Forward, OtherDevices, PersonsDevices, Reach,
 };
 use tilo_service::Wake;
 
 use crate::mcp_server::{PeerRefusal, Place, Room};
 
-/// What the session's MCP server hears from the person's other devices, and how it reaches theirs.
-pub(crate) struct Remote {
-    /// Connections the door opened, each waiting for the MCP server's pass in the place it took
-    /// there: as many as that door has places free, and no more.
+/// What the session's MCP server hears from the person's other devices, and how it reaches
+/// theirs.
+pub(crate) struct DeviceAgents {
+    /// Connections the server opened, each waiting for the MCP server's pass in the place it
+    /// took there: as many as that server has places free, and no more.
     arrivals: Mutex<Vec<(Arrival, Place)>>,
     /// Wakes the session's loop when one arrives.
     wake: Wake,
     /// The room of the session's MCP server, once it takes what arrives: a session that serves no
-    /// door refuses them at once.
+    /// such server refuses them at once.
     room: OnceLock<Room>,
-    /// The person's other devices' doors, once this device's endpoint has bound and its store is
-    /// open.
-    doors: OnceLock<Arc<Doors>>,
-    /// The person's workspace list as this device holds it, for a key of theirs that dials the door
-    /// to read it.
+    /// The person's other devices' servers, once this device's endpoint has bound and its store
+    /// is open.
+    servers: OnceLock<Arc<OtherDevices>>,
+    /// The person's workspace list as this device holds it, for a key of theirs that dials the
+    /// server to read it.
     list: Mutex<Option<tilo_relay_session::workspaces::PersonalList>>,
 }
 
-impl Remote {
+impl DeviceAgents {
     pub(crate) fn new(wake: Wake) -> Arc<Self> {
         Arc::new(Self {
             arrivals: Mutex::default(),
             wake,
             room: OnceLock::new(),
-            doors: OnceLock::new(),
+            servers: OnceLock::new(),
             list: Mutex::default(),
         })
     }
 
-    /// The door this device answers the person's other devices' agents at,
+    /// The MCP server this device answers the person's other devices' agents at,
     /// admitting those `devices` says are theirs.
-    pub(crate) fn door(self: &Arc<Self>, devices: Arc<dyn PersonsDevices>) -> RemoteDoor {
-        RemoteDoor::new(devices, Arc::clone(self) as Arc<dyn Arrivals>)
+    pub(crate) fn server(self: &Arc<Self>, devices: Arc<dyn PersonsDevices>) -> DeviceServer {
+        DeviceServer::new(devices, Arc::clone(self) as Arc<dyn Arrivals>)
     }
 
-    /// The protocol this device's endpoint answers the door on.
+    /// The protocol this device's endpoint answers the server on.
     pub(crate) fn protocol(
         self: &Arc<Self>,
         devices: Arc<dyn PersonsDevices>,
     ) -> (Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>) {
         (
-            tilo_runtime::remote_door::ALPN.to_vec(),
-            Box::<dyn iroh::protocol::DynProtocolHandler>::from(self.door(devices)),
+            tilo_runtime::device_mcp::ALPN.to_vec(),
+            Box::<dyn iroh::protocol::DynProtocolHandler>::from(self.server(devices)),
         )
     }
 
-    /// Reach the person's other devices through `doors` from now on.
-    pub(crate) fn attach(&self, doors: Doors) {
-        let _ = self.doors.set(Arc::new(doors));
+    /// Reach the person's other devices through `servers` from now on.
+    pub(crate) fn attach(&self, servers: OtherDevices) {
+        let _ = self.servers.set(Arc::new(servers));
     }
 
     /// The MCP server serves what arrives from now on, each in a place of `room`.
@@ -99,7 +100,8 @@ impl Remote {
         }
     }
 
-    /// Answer `list` to the person's keys that dial the door to read where their workspaces are.
+    /// Answer `list` to the person's keys that dial the server to read where their workspaces
+    /// are.
     pub(crate) fn show_list(&self, list: tilo_relay_session::workspaces::PersonalList) {
         *self.list.lock_recover() = Some(list);
     }
@@ -109,12 +111,12 @@ impl Remote {
         std::mem::take(&mut *self.arrivals.lock_recover())
     }
 
-    /// Carry `stream` , whose client asked for `forward` , to that device's door. Blocks the
+    /// Carry `stream`, whose client asked for `forward`, to that device's server. Blocks the
     /// calling thread for as long as the connection lasts.
     pub(crate) fn forward(&self, stream: UnixStream, forward: &Forward) {
-        match self.doors.get() {
-            Some(doors) => doors.serve_forward(stream, forward),
-            None => tilo_runtime::remote_door::refuse_forward(
+        match self.servers.get() {
+            Some(servers) => servers.serve_forward(stream, forward),
+            None => tilo_runtime::device_mcp::refuse_forward(
                 stream,
                 "this desktop reaches none of your other devices: it takes no part in the \
                  collaboration plane"
@@ -136,17 +138,17 @@ impl Remote {
     }
 }
 
-impl Arrivals for Remote {
+impl Arrivals for DeviceAgents {
     fn arrive(&self, arrival: Arrival) -> Result<(), String> {
         let Some(room) = self.room.get() else {
             return Err("this desktop serves no agents now".into());
         };
-        // Its device is the person's, or the door would not have handed it over: it is told
-        // what a program of this login is, and before its dialer hears that the door opened.
+        // Its device is the person's, or the server would not have handed it over: it is told
+        // what a program of this login is, and before its dialer hears that it opened.
         let Some(place) = room.take() else {
             tracing::info!(
                 device = %arrival.origin.name(),
-                "MCP server: another device's connection is refused: the door has no place free"
+                "MCP server: another device's connection is refused: the server has no place free"
             );
             return Err(PeerRefusal::Busy.message().to_owned());
         };
@@ -160,12 +162,12 @@ impl Arrivals for Remote {
     }
 }
 
-impl DeviceDirectory for Remote {
+impl DeviceDirectory for DeviceAgents {
     fn reach(&self) -> std::pin::Pin<Box<dyn Future<Output = Vec<Reach>> + Send + '_>> {
-        let doors = self.doors.get().cloned();
+        let servers = self.servers.get().cloned();
         Box::pin(async move {
-            match doors {
-                Some(doors) => doors.reach_now().await,
+            match servers {
+                Some(servers) => servers.reach_now().await,
                 None => Vec::new(),
             }
         })

@@ -1,47 +1,47 @@
 //! The sheets the session lends its seats to: the power menu, a workspace's settings, the
 //! directory, the portal apps open links through, the file picker, the guide, the display sheet,
 //! the questions about the person's apps and the one deleting a workspace asks — each mounted over
-//! the desktop and what it shows, and handed to the session as the seat it speaks through.
+//! the desktop and what it shows, and handed to the session as the state it speaks through.
 
 use tilo_compositor::Compositor;
 use tilo_session_core::door::Doors;
-use tilo_sheets::Seat as _;
-use tilo_sheets::add_app::AddSeat;
-use tilo_sheets::delete_workspace::DeleteWorkspaceSeat;
-use tilo_sheets::directory::DirectorySeat;
-use tilo_sheets::display_confirm::ConfirmSeat;
-use tilo_sheets::displays::DisplaysSeat;
-use tilo_sheets::file_picker::FilePickerSeat;
-use tilo_sheets::invite::InviteSeat;
-use tilo_sheets::lock::LockSeat;
-use tilo_sheets::pair_device::AddDeviceSeat;
-use tilo_sheets::portal::PortalSeat;
-use tilo_sheets::power::PowerSeat;
-use tilo_sheets::shortcut_guide::GuideSeat;
-use tilo_sheets::uninstall::UninstallSeat;
-use tilo_sheets::workspace_settings::WorkspaceSettingsSeat;
+use tilo_sheets::SheetState as _;
+use tilo_sheets::add_app::AddState;
+use tilo_sheets::delete_workspace::DeleteWorkspaceState;
+use tilo_sheets::directory::DirectoryState;
+use tilo_sheets::display_confirm::ConfirmState;
+use tilo_sheets::displays::DisplaysState;
+use tilo_sheets::file_picker::FilePickerState;
+use tilo_sheets::invite::InviteState;
+use tilo_sheets::lock::LockState;
+use tilo_sheets::pair_device::AddDeviceState;
+use tilo_sheets::portal::PortalState;
+use tilo_sheets::power::PowerState;
+use tilo_sheets::shortcut_guide::GuideState;
+use tilo_sheets::uninstall::UninstallState;
+use tilo_sheets::workspace_settings::WorkspaceSettingsState;
 
 use crate::Options;
 use crate::sheets::Sheet;
 
 /// The sheets the session lends its seats to.
 pub(crate) struct Sheets {
-    pub(crate) power: Option<PowerSeat>,
-    pub(crate) workspace_settings: Option<WorkspaceSettingsSeat>,
-    pub(crate) directory: Option<DirectorySeat>,
-    pub(crate) invite: Option<InviteSeat>,
-    pub(crate) pair_device: Option<AddDeviceSeat>,
-    pub(crate) delete_workspace: Option<DeleteWorkspaceSeat>,
-    pub(crate) portal: Option<PortalSeat>,
-    pub(crate) file_picker: Option<FilePickerSeat>,
-    pub(crate) display_confirm: Option<ConfirmSeat>,
-    pub(crate) displays: Option<DisplaysSeat>,
-    pub(crate) shortcut_guide: Option<GuideSeat>,
-    pub(crate) add_app: Option<AddSeat>,
-    pub(crate) uninstall: Option<UninstallSeat>,
+    pub(crate) power: Option<PowerState>,
+    pub(crate) workspace_settings: Option<WorkspaceSettingsState>,
+    pub(crate) directory: Option<DirectoryState>,
+    pub(crate) invite: Option<InviteState>,
+    pub(crate) pair_device: Option<AddDeviceState>,
+    pub(crate) delete_workspace: Option<DeleteWorkspaceState>,
+    pub(crate) portal: Option<PortalState>,
+    pub(crate) file_picker: Option<FilePickerState>,
+    pub(crate) display_confirm: Option<ConfirmState>,
+    pub(crate) displays: Option<DisplaysState>,
+    pub(crate) shortcut_guide: Option<GuideState>,
+    pub(crate) add_app: Option<AddState>,
+    pub(crate) uninstall: Option<UninstallState>,
     /// The lock screen, drawn in the session's own process when the app that normally draws it is
     /// not there.
-    pub(crate) lock_view: Option<LockSeat>,
+    pub(crate) lock_view: Option<LockState>,
 }
 
 impl Sheets {
@@ -49,8 +49,8 @@ impl Sheets {
     /// keys, so the desktop's chords wait until it is answered. Not the guide, whose own state
     /// holds its keys, nor the lock's view, which locking holds.
     pub(crate) fn modal(&self) -> Vec<tilo_sheets::Presentation> {
-        fn of<S: tilo_sheets::Seat>(seat: Option<&S>) -> Option<tilo_sheets::Presentation> {
-            seat.map(|seat| seat.presentation().clone())
+        fn of<S: tilo_sheets::SheetState>(state: Option<&S>) -> Option<tilo_sheets::Presentation> {
+            state.map(|state| state.presentation().clone())
         }
         [
             of(self.power.as_ref()),
@@ -96,7 +96,7 @@ pub(crate) fn mount_sheets(
         compositor,
         doors,
         tilo_sheets::power::definition(),
-        PowerSeat::default(),
+        PowerState::default(),
         who,
         options,
     );
@@ -107,7 +107,7 @@ pub(crate) fn mount_sheets(
         compositor,
         doors,
         tilo_sheets::workspace_settings::definition(),
-        WorkspaceSettingsSeat::default(),
+        WorkspaceSettingsState::default(),
         who,
         options,
     );
@@ -115,7 +115,7 @@ pub(crate) fn mount_sheets(
         compositor,
         doors,
         tilo_sheets::directory::definition(),
-        DirectorySeat::default(),
+        DirectoryState::default(),
         who,
         options,
     );
@@ -123,7 +123,7 @@ pub(crate) fn mount_sheets(
         compositor,
         doors,
         tilo_sheets::invite::definition(),
-        InviteSeat::default(),
+        InviteState::default(),
         who,
         options,
     );
@@ -131,7 +131,7 @@ pub(crate) fn mount_sheets(
         compositor,
         doors,
         tilo_sheets::pair_device::definition(),
-        AddDeviceSeat::default(),
+        AddDeviceState::default(),
         who,
         options,
     );
@@ -141,7 +141,7 @@ pub(crate) fn mount_sheets(
         compositor,
         doors,
         tilo_sheets::delete_workspace::definition(),
-        DeleteWorkspaceSeat::default(),
+        DeleteWorkspaceState::default(),
         who,
         options,
     );
@@ -149,7 +149,7 @@ pub(crate) fn mount_sheets(
         compositor,
         doors,
         tilo_sheets::portal::definition(),
-        PortalSeat::default(),
+        PortalState::default(),
         who,
         options,
     );
@@ -157,7 +157,7 @@ pub(crate) fn mount_sheets(
         compositor,
         doors,
         tilo_sheets::file_picker::definition(),
-        FilePickerSeat::default(),
+        FilePickerState::default(),
         who,
         options,
     );
@@ -165,7 +165,7 @@ pub(crate) fn mount_sheets(
         compositor,
         doors,
         tilo_sheets::shortcut_guide::definition(),
-        GuideSeat::default(),
+        GuideState::default(),
         who,
         options,
     );
@@ -198,12 +198,12 @@ fn mount_displays(
     doors: &mut Doors,
     who: (&str, &str),
     options: &Options,
-) -> (Option<ConfirmSeat>, Option<DisplaysSeat>) {
+) -> (Option<ConfirmState>, Option<DisplaysState>) {
     let display_confirm = mount_sheet(
         compositor,
         doors,
         tilo_sheets::display_confirm::definition(),
-        ConfirmSeat::default(),
+        ConfirmState::default(),
         who,
         options,
     );
@@ -214,7 +214,7 @@ fn mount_displays(
         compositor,
         doors,
         tilo_sheets::displays::definition(),
-        DisplaysSeat::default(),
+        DisplaysState::default(),
         who,
         options,
     );
@@ -230,22 +230,22 @@ fn mount_lock_view(
     doors: &mut Doors,
     who: (&str, &str),
     options: &Options,
-) -> Option<LockSeat> {
+) -> Option<LockState> {
     match Sheet::mount(
         tilo_sheets::lock::definition(),
-        LockSeat::default(),
+        LockState::default(),
         who,
         (options.presentation)(),
         options.scale,
     ) {
         Ok(sheet) => {
             let sheet = sheet.standing_over_lock();
-            let seat = sheet.seat().clone();
-            seat.presentation().cover_every_display();
+            let state = sheet.state().clone();
+            state.presentation().cover_every_display();
             let sheet = sheet.layer();
             compositor.add_host(sheet.clone());
             doors.add(sheet);
-            Some(seat)
+            Some(state)
         }
         Err(error) => {
             tracing::warn!(%error, app = tilo_sheets::lock::APP_ID, "lock view not mounted");
@@ -261,12 +261,12 @@ fn mount_app_questions(
     doors: &mut Doors,
     who: (&str, &str),
     options: &Options,
-) -> (Option<AddSeat>, Option<UninstallSeat>) {
+) -> (Option<AddState>, Option<UninstallState>) {
     let add_app = mount_sheet(
         compositor,
         doors,
         tilo_sheets::add_app::definition(),
-        AddSeat::default(),
+        AddState::default(),
         who,
         options,
     );
@@ -274,34 +274,34 @@ fn mount_app_questions(
         compositor,
         doors,
         tilo_sheets::uninstall::definition(),
-        UninstallSeat::default(),
+        UninstallState::default(),
         who,
         options,
     );
     (add_app, uninstall)
 }
 
-fn mount_sheet<S: tilo_sheets::Seat + 'static>(
+fn mount_sheet<S: tilo_sheets::SheetState + 'static>(
     compositor: &mut Compositor,
     doors: &mut Doors,
     definition: &'static ui::application::ApplicationDefinition,
-    seat: S,
+    state: S,
     who: (&str, &str),
     options: &Options,
 ) -> Option<S> {
     match Sheet::mount(
         definition,
-        seat,
+        state,
         who,
         (options.presentation)(),
         options.scale,
     ) {
         Ok(sheet) => {
-            let seat = sheet.seat().clone();
+            let state = sheet.state().clone();
             let sheet = sheet.layer();
             compositor.add_host(sheet.clone());
             doors.add(sheet);
-            Some(seat)
+            Some(state)
         }
         Err(error) => {
             tracing::warn!(%error, app = definition.app_id(), "sheet not mounted");

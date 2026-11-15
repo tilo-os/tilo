@@ -259,8 +259,8 @@ fn agent_reach(grant: &mcp_server::Grant) -> (String, String) {
 }
 
 /// An agent let in: its face, what it may reach, what it is doing now, the way to its card, and
-/// the way to take its grant back. Revoking ends its access and its runs, so that control asks
-/// first.
+/// the way to take its grant back. Revoking ends its access and its sessions, so that control
+/// asks first.
 fn agent_row(grant: &mcp_server::Grant) -> TiloItem {
     let hue = agent_hue(grant);
     let (reach, in_sentence) = agent_reach(grant);
@@ -269,7 +269,7 @@ fn agent_row(grant: &mcp_server::Grant) -> TiloItem {
         // Its key's own word on its pages: what it does in Browser without asking each time.
         facts.push(Fact::text(t("overview-tilo-agent-browser-pages")));
     }
-    if !grant.runs.is_empty() {
+    if !grant.sessions.is_empty() {
         // What the agent is doing is the row's live state: a dot in its own colour, and the
         // fact that stays when the row is too narrow for both it and what the agent may reach.
         facts.push(
@@ -277,7 +277,7 @@ fn agent_row(grant: &mcp_server::Grant) -> TiloItem {
                 Tone::Presence(hue),
                 t_args(
                     "overview-tilo-agent-working",
-                    &[("runs", grant.runs.len().into())],
+                    &[("sessions", grant.sessions.len().into())],
                 ),
             )
             .priority(1),

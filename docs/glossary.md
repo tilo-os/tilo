@@ -16,6 +16,8 @@ used in code.
   person adds it and picks the device it runs on. Claude Code connected over MCP is an agent.
 - **Agent session**: one context of one agent: a conversation with a Tilo agent, or one Claude
   Code session (one MCP connection).
+- **Step**: one thing an agent session asks for: an action it calls, or a question it puts to
+  its person.
 - **Bot**: an installed program with its own identity and role in a workspace, reacting to events
   as itself (a bridge, an integration, moderation).
 - **Automation**: saved steps with triggers. Runs for the member who owns it. Not a member.

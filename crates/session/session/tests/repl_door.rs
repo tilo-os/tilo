@@ -197,7 +197,7 @@ fn the_person_admits_the_repl_on_the_sheet_and_it_works_as_them() {
     });
     let shown = session
         .portal()
-        .and_then(tilo_sheets::portal::PortalSeat::dialog)
+        .and_then(tilo_sheets::portal::PortalState::dialog)
         .expect("the question stands on the portal's sheet");
     // The shell keeps no name for a workspace nobody named: the question says the word for one.
     assert_eq!(shown.title, "Act as you in “Workspace”", "what it asks");

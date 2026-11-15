@@ -9,7 +9,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_sheets::display_confirm::{ConfirmEffect, ConfirmSeat, DisplayConfirmApp, Question};
+use tilo_sheets::display_confirm::{ConfirmEffect, ConfirmState, DisplayConfirmApp, Question};
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
 use ui::vello::kurbo::Rect;
@@ -45,14 +45,14 @@ fn question(tool: Option<&str>) -> Question {
     }
 }
 
-fn seated(question: Question) -> (HeadlessApp<DisplayConfirmApp>, ConfirmSeat) {
-    let seat = ConfirmSeat::default();
-    seat.ask(question);
+fn mounted(question: Question) -> (HeadlessApp<DisplayConfirmApp>, ConfirmState) {
+    let state = ConfirmState::default();
+    state.ask(question);
     let mut app =
-        HeadlessApp::<DisplayConfirmApp>::for_person_with_lent("person", seat.clone()).unwrap();
+        HeadlessApp::<DisplayConfirmApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 tilo_test_env::scenario! {
@@ -116,18 +116,18 @@ tilo_test_env::scenario! {
 
     phase enter_keeps_and_escape_reverts;
     {
-        let (mut app, seat) = seated(question(Some("kanshi")));
+        let (mut app, state) = mounted(question(Some("kanshi")));
         app.harness().key("Enter");
         app.settle();
-        assert_eq!(seat.take_asked(), [ConfirmEffect::Keep]);
+        assert_eq!(state.take_asked(), [ConfirmEffect::Keep]);
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.take_asked(), [ConfirmEffect::Revert]);
+        assert_eq!(state.take_asked(), [ConfirmEffect::Revert]);
     }
 
     phase a_press_on_revert_answers_the_shell;
     {
-        let (mut app, seat) = seated(question(None));
+        let (mut app, state) = mounted(question(None));
         let revert = buttons(&mut app)
             .into_iter()
             .find(|(label, _)| label == "Revert")
@@ -135,16 +135,16 @@ tilo_test_env::scenario! {
             .1;
         app.harness().click_at(revert.center().x, revert.center().y);
         app.settle();
-        assert_eq!(seat.take_asked(), [ConfirmEffect::Revert]);
+        assert_eq!(state.take_asked(), [ConfirmEffect::Revert]);
     }
 
     phase an_agent_reverts_at_once_but_keeping_is_the_persons_answer;
     {
         use ui::tilo_resource::Effect as _;
-        let (mut app, seat) = seated(question(Some("kanshi")));
+        let (mut app, state) = mounted(question(Some("kanshi")));
         app.effect(&ConfirmEffect::Revert).unwrap();
         app.settle();
-        assert_eq!(seat.take_asked(), [ConfirmEffect::Revert]);
+        assert_eq!(state.take_asked(), [ConfirmEffect::Revert]);
         for declaration in ConfirmEffect::declarations() {
             assert_eq!(
                 declaration.attended,
@@ -157,8 +157,8 @@ tilo_test_env::scenario! {
 
     phase the_shell_updates_the_countdown_in_place;
     {
-        let (mut app, seat) = seated(question(Some("kanshi")));
-        seat.ask(Question {
+        let (mut app, state) = mounted(question(Some("kanshi")));
+        state.ask(Question {
             status: "Reverting in 3 s".to_owned(),
             ..question(Some("kanshi"))
         });
@@ -190,12 +190,12 @@ tilo_test_env::scenario! {
 
     phase tab_walks_keep_revert_and_the_trust_answer_and_enter_gives_it;
     {
-        let (mut app, seat) = seated(question(Some("kanshi")));
+        let (mut app, state) = mounted(question(Some("kanshi")));
         app.harness().key("Tab");
         app.harness().key("Tab");
         app.settle();
         app.harness().key("Enter");
         app.settle();
-        assert_eq!(seat.take_asked(), [ConfirmEffect::KeepAndTrust]);
+        assert_eq!(state.take_asked(), [ConfirmEffect::KeepAndTrust]);
     }
 }

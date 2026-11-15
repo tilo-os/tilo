@@ -232,13 +232,13 @@ fn capture_parity_frames() {
 
     // A dialog over a window: the portal asking to share a screen.
     {
-        use tilo_sheets::Seat as _;
+        use tilo_sheets::SheetState as _;
         let mut session = session();
         let client = mapped(&mut session, "org.example.Terminal");
         settle(&mut session, 4);
-        let seat = session.portal().expect("portal sheet").clone();
-        seat.presentation().open(false);
-        seat.show(Some(Dialog {
+        let state = session.portal().expect("portal sheet").clone();
+        state.presentation().open(false);
+        state.show(Some(Dialog {
             handle: "request-1".to_owned(),
             title: "Share your screen?".to_owned(),
             heading: "Meet".to_owned(),

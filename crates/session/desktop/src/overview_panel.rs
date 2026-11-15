@@ -1062,14 +1062,14 @@ mod tests {
 
     /// A shell whose Tilo let one agent in, working now, with what the overview measured of it.
     fn shell_with_an_agent() -> OverviewCards {
-        use tilo_actions::remote::mcp_server::{Grant, Reach, Run, Server};
+        use tilo_actions::remote::mcp_server::{AgentSession, Grant, Reach, Server};
         let mut shell = shell();
         shell.tilo.door = Some(Server {
             grants: vec![Grant {
                 id: "g1".into(),
                 agent: "Claude Code".into(),
                 reach: Reach::Account,
-                runs: vec![Run {
+                sessions: vec![AgentSession {
                     name: "Claude Code #2".into(),
                     started_ms: 1,
                 }],
@@ -1103,8 +1103,8 @@ mod tests {
         fn the_overview_panels_agent_and_host_rows;
 
         phase revoking_an_agents_access_asks_at_the_control_first;
-        // Revoking ends an agent's access and its runs: the control asks at the row, naming what the
-        // agent loses, and nothing is taken back until the person answers there.
+        // Revoking ends an agent's access and its sessions: the control asks at the row, naming what
+        // the agent loses, and nothing is taken back until the person answers there.
         {
             let mut panel = drawn(TALL, shell_with_an_agent());
             let control = panel
@@ -1280,7 +1280,7 @@ mod tests {
         // A row too narrow for both facts keeps the live one: what an agent is doing now is what the
         // person acts on, and what it may reach is its card's to say.
         {
-            use tilo_actions::remote::mcp_server::{Grant, Reach, Run};
+            use tilo_actions::remote::mcp_server::{AgentSession, Grant, Reach};
             ui::i18n::I18nManager::init("en-US");
             let row = crate::overview_tilo::rows(&TiloOverview {
                 door: Some(tilo_actions::remote::mcp_server::Server {
@@ -1288,7 +1288,7 @@ mod tests {
                         id: "g1".into(),
                         agent: "Claude Code".into(),
                         reach: Reach::Account,
-                        runs: vec![Run {
+                        sessions: vec![AgentSession {
                             name: "Claude Code #2".into(),
                             started_ms: 1,
                         }],

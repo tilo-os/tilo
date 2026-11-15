@@ -828,9 +828,9 @@ overview-tilo-manage-billing = Manage billing
 overview-tilo-agent-everywhere = All your workspaces
 overview-tilo-agent-everywhere-lower = all your workspaces
 overview-tilo-agent-browser-pages = Operates web pages in Browser
-overview-tilo-agent-working = { $runs ->
+overview-tilo-agent-working = { $sessions ->
         [one] Working now
-       *[other] { $runs } runs now
+       *[other] { $sessions } sessions now
     }
 overview-tilo-revoke = Revoke
 overview-tilo-revoke-question = { $agent } loses access to { $reach } and stops now

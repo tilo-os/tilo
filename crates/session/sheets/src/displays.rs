@@ -14,7 +14,7 @@
 //! at once, Escape closes. The shell holds the displays, the receivers and
 //! the change waiting for an answer, carries out every choice through its
 //! own published display actions and tells the sheet what to show
-//! ([`DisplaysSeat`]). A PIN typed here goes to the shell through the seat,
+//! ([`DisplaysState`]). A PIN typed here goes to the shell through the state,
 //! never through an action.
 
 use std::cell::RefCell;
@@ -384,7 +384,7 @@ impl Shown {
 /// What the shell lends the sheet: whether it is up, what it shows, the
 /// choices made in it and the PIN typed into it.
 #[derive(Clone, Default)]
-pub struct DisplaysSeat {
+pub struct DisplaysState {
     presentation: Presentation,
     sheet: Rc<RefCell<Sheet>>,
     shown: Rc<RefCell<Option<LocalState<Shown>>>>,
@@ -394,22 +394,22 @@ pub struct DisplaysSeat {
     opening: Rc<RefCell<u64>>,
 }
 
-impl std::fmt::Debug for DisplaysSeat {
+impl std::fmt::Debug for DisplaysState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DisplaysSeat")
+        f.debug_struct("DisplaysState")
             .field("presentation", &self.presentation)
             .field("sheet", &self.sheet.borrow())
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for DisplaysSeat {
+impl crate::SheetState for DisplaysState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl DisplaysSeat {
+impl DisplaysState {
     /// Show `sheet`; a new opening starts the highlight afresh.
     pub fn show(&self, sheet: Sheet) {
         let opening = self.presentation.openings();
@@ -470,9 +470,9 @@ impl ResourceApp for DisplaysApp {
     }
 
     fn view(cx: &mut ViewCx<DisplaySheet>) -> Element {
-        let seat = cx.take_lent::<DisplaysSeat>();
-        let initial = match &seat {
-            Some(seat) => seat.sheet(),
+        let state = cx.take_lent::<DisplaysState>();
+        let initial = match &state {
+            Some(state) => state.sheet(),
             None => cx
                 .fixture::<Sheet>()
                 .map(|sheet| (*sheet).clone())
@@ -483,17 +483,17 @@ impl ResourceApp for DisplaysApp {
             spot: None,
         });
         let pin = cx.local(String::new());
-        if let Some(seat) = &seat {
-            *seat.shown.borrow_mut() = Some(shown.clone());
-            seat.presentation.wake_with(cx.waker());
+        if let Some(state) = &state {
+            *state.shown.borrow_mut() = Some(shown.clone());
+            state.presentation.wake_with(cx.waker());
         }
-        let asking = seat.clone();
+        let asking = state.clone();
         cx.effects(move |effect: DisplaysEffect, _cx| match &asking {
-            Some(seat) => {
+            Some(state) => {
                 if effect == DisplaysEffect::Close {
-                    seat.presentation.dismissed();
+                    state.presentation.dismissed();
                 }
-                seat.asked.borrow_mut().push(effect);
+                state.asked.borrow_mut().push(effect);
                 Ok(Effected::done())
             }
             None => Err("no displays to arrange here".to_owned()),
@@ -503,7 +503,7 @@ impl ResourceApp for DisplaysApp {
             dispatch: dispatch.clone(),
             shown: shown.clone(),
             pin,
-            seat,
+            state,
         };
         let content = cx.switch(&shown, move |_cx, shown| sheet(shown, &parts));
         Box::new(Keys {
@@ -615,7 +615,7 @@ struct Parts {
     dispatch: Dispatcher<DisplaySheet>,
     shown: LocalState<Shown>,
     pin: LocalState<String>,
-    seat: Option<DisplaysSeat>,
+    state: Option<DisplaysState>,
 }
 
 impl Parts {
@@ -632,7 +632,7 @@ impl Parts {
     }
 
     /// The PIN is submitted: the shell connects with it, reading it from
-    /// the seat when it carries out the choice, so the seat keeps it while
+    /// the state when it carries out the choice, so the state keeps it while
     /// the field is emptied.
     fn submit_pin(&self) {
         let Shown { sheet, .. } = self.shown.get();
@@ -707,7 +707,7 @@ fn sheet(shown: &Shown, parts: &Parts) -> Element {
         Text::new(&t("wireless-protocols")).with_role(TextRole::Caption),
     ));
     let close = parts.clone();
-    let presentation = parts.seat.as_ref().map(crate::Seat::presentation);
+    let presentation = parts.state.as_ref().map(crate::SheetState::presentation);
     Box::new(presented(
         presentation,
         ModalDialog::new(t("display-sheet-title"), body)
@@ -894,10 +894,10 @@ fn stream_options(stream: &Stream, parts: &Parts) -> Element {
 
 const PIN_FIELD: &str = "display-receiver-pin";
 
-/// The chosen receiver's PIN or password: kept in the seat for the shell,
+/// The chosen receiver's PIN or password: kept in the state for the shell,
 /// never in an action, and Enter connects with it.
 fn pin_field(spot: Option<&Spot>, parts: &Parts) -> Element {
-    let typed = parts.seat.clone();
+    let typed = parts.state.clone();
     let submitted = parts.clone();
     let mut field = TextInput::from_state(&parts.pin)
         .with_id(PIN_FIELD)
@@ -905,8 +905,8 @@ fn pin_field(spot: Option<&Spot>, parts: &Parts) -> Element {
         .with_accessible_name(t("wireless-credential-label"))
         .with_secret(true)
         .on_change_view(move |text| {
-            if let Some(seat) = &typed {
-                text.clone_into(&mut seat.pin.borrow_mut());
+            if let Some(state) = &typed {
+                text.clone_into(&mut state.pin.borrow_mut());
             }
         })
         .on_submit_view(move |_| submitted.submit_pin());

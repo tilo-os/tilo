@@ -282,8 +282,8 @@ fn the_door(open: bool) -> mcp_server::Server {
         grants: vec![mcp_server::Grant {
             id: "g1".into(),
             agent: "Claude Code".into(),
-            runs: if open {
-                vec![mcp_server::Run {
+            sessions: if open {
+                vec![mcp_server::AgentSession {
                     name: "Claude Code #2".into(),
                     started_ms: 1,
                 }]
@@ -336,13 +336,13 @@ fn stopping_a_working_run_asks_the_door_to_end_that_run_alone() {
     asked(&mut app);
     app.harness().click_named("console-run-stop").unwrap();
     let requests = asked(&mut app);
-    let stop: mcp_server::RunRef =
+    let stop: mcp_server::AgentSessionRef =
         argument(&find(&requests, &mcp_server::target(mcp_server::STOP)));
     assert_eq!(
         stop,
-        mcp_server::RunRef {
+        mcp_server::AgentSessionRef {
             grant: "g1".into(),
-            run: "Claude Code #2".into(),
+            session: "Claude Code #2".into(),
         }
     );
 }

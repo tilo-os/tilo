@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use tilo_session::Session;
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 
 use super::{
     CLUB_WORKSPACE, ask_to_join, club_entry, community_entry, community_site, joining_site, now_ms,
@@ -53,7 +53,7 @@ fn typing_reaches_the_sheets_field_and_not_the_window_behind_it() {
             client.exchange();
             session
                 .workspace_directory()
-                .is_some_and(|seat| seat.query() == "salon")
+                .is_some_and(|state| state.query() == "salon")
         },
     );
     assert_eq!(
@@ -79,7 +79,7 @@ fn escape_closes_the_sheet_and_never_reaches_the_window() {
     assert!(
         session
             .workspace_directory()
-            .is_some_and(|seat| seat.presentation().is_open()),
+            .is_some_and(|state| state.presentation().is_open()),
         "the sheet is up to begin with"
     );
     let seen_before = client.seen.keys.clone();
@@ -90,13 +90,13 @@ fn escape_closes_the_sheet_and_never_reaches_the_window() {
         client.exchange();
         session
             .workspace_directory()
-            .is_some_and(|seat| !seat.presentation().is_open())
+            .is_some_and(|state| !state.presentation().is_open())
     });
     assert_eq!(
         client.seen.keys, seen_before,
         "the window behind the sheet saw none of the Escape"
     );
-    assert!(client.seen.keyboard_focused, "the window kept the seat");
+    assert!(client.seen.keyboard_focused, "the window kept the state");
 }
 
 /// A press outside the sheet's card is the sheet's, not the window's behind it: it closes the sheet
@@ -120,7 +120,7 @@ fn a_click_outside_the_sheet_never_reaches_the_window() {
         client.exchange();
         session
             .workspace_directory()
-            .is_some_and(|seat| !seat.presentation().is_open())
+            .is_some_and(|state| !state.presentation().is_open())
             .then_some(())
     });
     assert!(
@@ -128,7 +128,7 @@ fn a_click_outside_the_sheet_never_reaches_the_window() {
         "the press beside the card closed the sheet; it stays {} and the window saw {:?}",
         session
             .workspace_directory()
-            .is_some_and(|seat| seat.presentation().is_open()),
+            .is_some_and(|state| state.presentation().is_open()),
         client.seen.buttons
     );
     assert_eq!(
@@ -168,7 +168,7 @@ fn a_click_inside_the_sheet_reaches_its_controls() {
             client.exchange();
             session
                 .workspace_directory()
-                .is_some_and(|seat| seat.query() == "a")
+                .is_some_and(|state| state.query() == "a")
         },
     );
     assert_eq!(
@@ -217,7 +217,7 @@ fn choosing_join_closes_the_sheet() {
             session.step(Duration::from_millis(2)).expect("step");
             session
                 .workspace_directory()
-                .is_some_and(|seat| !seat.presentation().is_drawn())
+                .is_some_and(|state| !state.presentation().is_drawn())
         },
     );
 }
@@ -231,17 +231,17 @@ fn a_sheet_the_session_closed_stops_being_drawn() {
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     open_directory(&mut session);
-    let seat = session
+    let state = session
         .workspace_directory()
         .expect("the session hosts the workspace directory")
         .clone();
-    seat.presentation().close();
+    state.presentation().close();
     crate::common::until(
         &mut session,
         "the closed sheet to stop being drawn",
         |session| {
             session.step(Duration::from_millis(16)).expect("step");
-            !seat.presentation().is_drawn()
+            !state.presentation().is_drawn()
         },
     );
 }

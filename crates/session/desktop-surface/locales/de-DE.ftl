@@ -870,9 +870,9 @@ overview-tilo-manage-billing = Abrechnung verwalten
 overview-tilo-agent-everywhere = Alle deine Workspaces
 overview-tilo-agent-everywhere-lower = alle deine Workspaces
 overview-tilo-agent-browser-pages = Bedient Webseiten im Browser
-overview-tilo-agent-working = { $runs ->
+overview-tilo-agent-working = { $sessions ->
         [one] Arbeitet gerade
-       *[other] { $runs } Läufe gerade
+       *[other] { $sessions } Sitzungen gerade
     }
 overview-tilo-revoke = Widerrufen
 overview-tilo-revoke-question = { $agent } verliert den Zugriff auf { $reach } und hört sofort auf

@@ -17,8 +17,8 @@ use std::collections::{HashSet, VecDeque};
 
 use tilo_relay_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
-use tilo_sheets::Seat as _;
-use tilo_sheets::portal::{AgentQuestion, Dialog, DrawnSheet, PortalEffect, PortalSeat};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::portal::{AgentQuestion, Dialog, DrawnSheet, PortalEffect, PortalState};
 use tokio::sync::mpsc;
 use wasm_bindgen::prelude::*;
 
@@ -186,7 +186,7 @@ fn answer(id: [u8; 32], answer: ConfirmationAnswer) {
 /// The question sheet over the page: the first waiting question, until the
 /// person answers it or the host takes it back.
 pub(crate) struct PageQuestions {
-    seat: PortalSeat,
+    state: PortalState,
     sheet: DrawnSheet,
     /// The question the sheet asks now.
     up: Option<[u8; 32]>,
@@ -196,10 +196,10 @@ pub(crate) struct PageQuestions {
 
 impl PageQuestions {
     pub(crate) fn new() -> Self {
-        let seat = PortalSeat::default();
-        let sheet = DrawnSheet::new(&seat);
+        let state = PortalState::default();
+        let sheet = DrawnSheet::new(&state);
         Self {
-            seat,
+            state,
             sheet,
             up: None,
             built: false,
@@ -208,8 +208,8 @@ impl PageQuestions {
 
     fn follow(&mut self, show: &mut dyn FnMut(Option<ui::widget::Element>), missing: bool) -> bool {
         let mut changed = false;
-        // The seat took only presses naming the question up.
-        for effect in self.seat.take_asked() {
+        // The state took only presses naming the question up.
+        for effect in self.state.take_asked() {
             let given = match effect {
                 PortalEffect::Confirm { .. } => ConfirmationAnswer::AllowOnce,
                 PortalEffect::Cancel { .. } => ConfirmationAnswer::Deny,
@@ -217,7 +217,7 @@ impl PageQuestions {
             };
             if let Some(id) = self.up.take() {
                 answer(id, given);
-                self.seat.presentation().close();
+                self.state.presentation().close();
                 changed = true;
             }
         }
@@ -225,18 +225,18 @@ impl PageQuestions {
             WAITING.with_borrow(|waiting| waiting.front().map(|asked| asked.question.clone()));
         match first {
             Some(question) if self.up != Some(question.id) => {
-                self.seat.show(Some(dialog(&question)));
-                self.seat.presentation().open(false);
+                self.state.show(Some(dialog(&question)));
+                self.state.presentation().open(false);
                 self.up = Some(question.id);
                 changed = true;
             }
             None if self.up.take().is_some() => {
-                self.seat.taken_down();
+                self.state.taken_down();
                 changed = true;
             }
             _ => {}
         }
-        let presentation = self.seat.presentation();
+        let presentation = self.state.presentation();
         // Its card leaves until nothing of it is drawn; then the sheet is down.
         if presentation.phase() == tilo_sheets::Phase::Leaving
             && !presentation.appearance().is_drawn()
@@ -274,7 +274,7 @@ impl OverSheet for PageQuestions {
     }
 
     fn drawn(&self) -> bool {
-        self.seat.presentation().is_open()
+        self.state.presentation().is_open()
     }
 
     fn sheet_name(&self) -> &'static str {

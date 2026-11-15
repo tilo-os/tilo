@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
 use tilo_user_identity::{
     CommunityState, DeviceCert, DirectoryError, DirectoryUpdate, RevocationList,
@@ -1331,21 +1331,21 @@ impl crate::Shared {
             self.directory_store.enrolled(&key, &listed, &said);
             settled = true;
         }
-        let Some(seat) = &self.directory else {
+        let Some(state) = &self.directory else {
             return;
         };
         if settled {
             // The sheet lists the directory as it now stands, a refusal included: its row says the
             // join did not happen and offers to join again, so the directory a person opens next is
             // not the one they left while the join was on its way.
-            seat.show(
+            state.show(
                 self.directory_store
                     .view(&crate::platform::directory::held(&self.handle)),
             );
             if !self.directory_store.settling() {
                 // The person lands in the workspace they joined: the directory has nothing left to
                 // say.
-                seat.presentation().close();
+                state.presentation().close();
             }
         }
     }
@@ -1556,7 +1556,7 @@ impl crate::Shared {
         if personal.kept.as_ref() == Some(&list) && (personal.kept_on_hosts || hosted.is_none()) {
             return;
         }
-        self.remote.show_list(list.clone());
+        self.device_agents.show_list(list.clone());
         if let (Some(engine), Some(hosted)) = (&self.engine, hosted) {
             crate::hosted_workspaces::keep_on_hosts(hosted, engine, &list);
         }

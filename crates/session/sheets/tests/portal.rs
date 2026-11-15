@@ -11,22 +11,22 @@
 )]
 
 use tilo_sheets::portal::{
-    Body, Device, Dialog, DraftRow, DraftValue, Field, PortalApp, PortalEffect, PortalSeat, Prompt,
-    PromptField, Remember, Shortcut,
+    Body, Device, Dialog, DraftRow, DraftValue, Field, PortalApp, PortalEffect, PortalState,
+    Prompt, PromptField, Remember, Shortcut,
 };
 use ui::framework::testing::HeadlessApp;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-fn seated(dialog: Dialog) -> (HeadlessApp<PortalApp>, PortalSeat) {
-    use tilo_sheets::Seat as _;
-    let seat = PortalSeat::default();
-    seat.presentation().open(true);
-    seat.show(Some(dialog));
-    let mut app = HeadlessApp::<PortalApp>::for_person_with_lent("person", seat.clone()).unwrap();
+fn mounted(dialog: Dialog) -> (HeadlessApp<PortalApp>, PortalState) {
+    use tilo_sheets::SheetState as _;
+    let state = PortalState::default();
+    state.presentation().open(true);
+    state.show(Some(dialog));
+    let mut app = HeadlessApp::<PortalApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 fn key(app: &mut HeadlessApp<PortalApp>, spec: &str) {
@@ -95,7 +95,7 @@ tilo_test_env::scenario! {
 
     phase up_and_down_move_the_choice_enter_answers_and_escape_declines;
     {
-        let (mut app, seat) = seated(dialog(choices(&["Writer", "Editor", "Browser"])));
+        let (mut app, state) = mounted(dialog(choices(&["Writer", "Editor", "Browser"])));
         // The shell keeps the highlight: until it moves it, each key moves
         // from the first choice.
         key(&mut app, "ArrowDown");
@@ -104,7 +104,7 @@ tilo_test_env::scenario! {
         key(&mut app, "Enter");
         key(&mut app, "Escape");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 PortalEffect::Select {
                     handle: request_1(),
@@ -130,8 +130,8 @@ tilo_test_env::scenario! {
 
     phase the_shell_moves_the_highlight_and_a_reader_hears_every_choice;
     {
-        let (mut app, seat) = seated(dialog(choices(&["Writer", "Editor"])));
-        seat.show(Some(Dialog {
+        let (mut app, state) = mounted(dialog(choices(&["Writer", "Editor"])));
+        state.show(Some(Dialog {
             selected: 1,
             ..dialog(choices(&["Writer", "Editor"]))
         }));
@@ -147,7 +147,7 @@ tilo_test_env::scenario! {
         }
         key(&mut app, "ArrowDown");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [PortalEffect::Select {
                 handle: request_1(),
                 index: 0,
@@ -161,11 +161,11 @@ tilo_test_env::scenario! {
             page: Some((0, 2)),
             ..dialog(choices(&["Allow once"]))
         };
-        let (mut app, seat) = seated(paged.clone());
+        let (mut app, state) = mounted(paged.clone());
         key(&mut app, "Enter");
         key(&mut app, "ArrowRight");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 PortalEffect::Next {
                     handle: request_1()
@@ -179,7 +179,7 @@ tilo_test_env::scenario! {
             app.harness().a11y_node_named("Continue").is_some(),
             "the primary button says the review goes on"
         );
-        seat.show(Some(Dialog {
+        state.show(Some(Dialog {
             page: Some((1, 2)),
             ..paged
         }));
@@ -187,7 +187,7 @@ tilo_test_env::scenario! {
         key(&mut app, "ArrowLeft");
         key(&mut app, "Enter");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 PortalEffect::Back {
                     handle: request_1()
@@ -214,14 +214,14 @@ tilo_test_env::scenario! {
                 selected: true,
             },
         ]);
-        let (mut app, seat) = seated(Dialog {
+        let (mut app, state) = mounted(Dialog {
             selected: 1,
             ..dialog(devices)
         });
         key(&mut app, "Space");
         key(&mut app, "Enter");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 PortalEffect::Toggle {
                     handle: request_1(),
@@ -236,7 +236,7 @@ tilo_test_env::scenario! {
 
     phase backspace_clears_the_shortcut_in_focus;
     {
-        let (mut app, seat) = seated(dialog(Body::Shortcuts(vec![Shortcut {
+        let (mut app, state) = mounted(dialog(Body::Shortcuts(vec![Shortcut {
             name: "Push to talk".to_owned(),
             keys: None,
             status: Some("Needs a modifier".to_owned()),
@@ -244,7 +244,7 @@ tilo_test_env::scenario! {
         assert!(app.harness().a11y_node_named("Push to talk").is_some());
         key(&mut app, "Backspace");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [PortalEffect::Unbind {
                 handle: request_1()
             }]
@@ -261,12 +261,12 @@ tilo_test_env::scenario! {
                 on: false,
             }),
         };
-        let (mut app, seat) = seated(dialog(drive));
+        let (mut app, state) = mounted(dialog(drive));
         key(&mut app, "Space");
         key(&mut app, "ArrowDown");
         key(&mut app, "Enter");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 PortalEffect::Remember {
                     handle: request_1()
@@ -284,7 +284,7 @@ tilo_test_env::scenario! {
         app.harness().click_named("portal-answer-1").unwrap();
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [PortalEffect::Answer {
                 handle: request_1(),
                 index: 1,
@@ -297,7 +297,7 @@ tilo_test_env::scenario! {
 fn a_shortcut_takes_the_keys_pressed_by_their_place_on_the_keyboard() {
     use ui::winit::event::ElementState;
     use ui::winit::keyboard::{Key, KeyCode, PhysicalKey};
-    let (mut app, seat) = seated(dialog(Body::Shortcuts(vec![Shortcut {
+    let (mut app, state) = mounted(dialog(Body::Shortcuts(vec![Shortcut {
         name: "Push to talk".to_owned(),
         keys: None,
         status: None,
@@ -314,7 +314,7 @@ fn a_shortcut_takes_the_keys_pressed_by_their_place_on_the_keyboard() {
         .send(&ui::synthetic_input::keyboard_input(press));
     app.settle();
     assert_eq!(
-        seat.take_asked(),
+        state.take_asked(),
         [PortalEffect::Bind {
             handle: request_1(),
             keys: "CTRL+SHIFT+KEYK".to_owned()
@@ -323,21 +323,21 @@ fn a_shortcut_takes_the_keys_pressed_by_their_place_on_the_keyboard() {
 }
 
 tilo_test_env::scenario! {
-    /// Typed answers, drafts and secrets: kept in the seat, never in an effect.
-    fn what_is_typed_stays_in_the_seat_and_out_of_every_effect;
+    /// Typed answers, drafts and secrets: kept in the state, never in an effect.
+    fn what_is_typed_stays_in_the_state_and_out_of_every_effect;
 
-    phase a_typed_answer_reaches_the_shell_through_the_seat_alone;
+    phase a_typed_answer_reaches_the_shell_through_the_state_alone;
     {
-        let (mut app, seat) = seated(dialog(Body::Entry {
+        let (mut app, state) = mounted(dialog(Body::Entry {
             masked: true,
             required: true,
             choices: Vec::new(),
         }));
         app.harness().type_text("4711");
         app.settle();
-        assert_eq!(seat.text(Field::Answer).as_str(), "4711");
+        assert_eq!(state.text(Field::Answer).as_str(), "4711");
         key(&mut app, "Enter");
-        let asked = seat.take_asked();
+        let asked = state.take_asked();
         assert_eq!(
             asked,
             [PortalEffect::Confirm {
@@ -346,7 +346,7 @@ tilo_test_env::scenario! {
         );
         assert!(!asked_text(&asked).contains("4711"));
         // A refusal is said in the sheet; what was typed stays.
-        seat.show(Some(Dialog {
+        state.show(Some(Dialog {
             error: Some("Those digits do not match".to_owned()),
             ..dialog(Body::Entry {
                 masked: true,
@@ -360,32 +360,32 @@ tilo_test_env::scenario! {
                 .a11y_node_named("Those digits do not match")
                 .is_some()
         );
-        assert_eq!(seat.text(Field::Answer).as_str(), "4711");
+        assert_eq!(state.text(Field::Answer).as_str(), "4711");
         // Another request starts afresh, with nothing of the last one.
-        seat.show(Some(Dialog {
+        state.show(Some(Dialog {
             handle: "request-2".to_owned(),
             ..dialog(choices(&["Yes"]))
         }));
-        assert!(seat.text(Field::Answer).is_empty());
+        assert!(state.text(Field::Answer).is_empty());
     }
 
     phase the_person_changes_the_draft_on_the_sheet;
     {
-        let (mut app, seat) = seated(dialog(draft()));
-        assert_eq!(seat.text(Field::Draft(0)).as_str(), "ada@example.org");
+        let (mut app, state) = mounted(dialog(draft()));
+        assert_eq!(state.text(Field::Draft(0)).as_str(), "ada@example.org");
         app.harness().type_text("x");
         app.settle();
-        assert_eq!(seat.text(Field::Draft(0)).as_str(), "ada@example.orgx");
+        assert_eq!(state.text(Field::Draft(0)).as_str(), "ada@example.orgx");
         // Into the prose field: Enter is a new line there.
         key(&mut app, "Tab");
         key(&mut app, "Enter");
-        assert!(seat.take_asked().is_empty(), "a new line, not an answer");
-        assert!(seat.text(Field::Draft(1)).contains('\n'));
+        assert!(state.take_asked().is_empty(), "a new line, not an answer");
+        assert!(state.text(Field::Draft(1)).contains('\n'));
         // The check row: Space ticks it; then the answers.
         key(&mut app, "Tab");
         key(&mut app, "Space");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [PortalEffect::Toggle {
                 handle: request_1(),
                 index: 2,
@@ -393,7 +393,7 @@ tilo_test_env::scenario! {
         );
         key(&mut app, "Tab");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [PortalEffect::Select {
                 handle: request_1(),
                 index: 0,
@@ -405,14 +405,14 @@ tilo_test_env::scenario! {
             .unwrap();
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [PortalEffect::Toggle {
                 handle: request_1(),
                 index: 2,
             }]
         );
         with_modifiers(&mut app, &["Control"], "Enter");
-        let asked = seat.take_asked();
+        let asked = state.take_asked();
         assert_eq!(
             asked,
             [PortalEffect::Confirm {
@@ -422,18 +422,18 @@ tilo_test_env::scenario! {
         assert!(!asked_text(&asked).contains("example"));
     }
 
-    phase a_secret_goes_to_the_shell_through_the_seat_and_never_into_an_effect;
+    phase a_secret_goes_to_the_shell_through_the_state_and_never_into_an_effect;
     {
         // The keyboard starts in the first field still empty, the password;
         // Tab walks the prompt's own fields.
-        let (mut app, seat) = seated(network());
+        let (mut app, state) = mounted(network());
         with_modifiers(&mut app, &["Shift"], "Tab");
         app.harness().type_text("x");
         key(&mut app, "Tab");
         app.harness().type_text("hunter2");
         app.settle();
         assert_eq!(
-            seat.secrets()[1].lock().unwrap().as_str(),
+            state.secrets()[1].lock().unwrap().as_str(),
             "hunter2",
             "the shell's buffer holds it"
         );
@@ -442,7 +442,7 @@ tilo_test_env::scenario! {
         let Body::Secret(prompt) = network().body else {
             panic!("the network fixture asks with a secret prompt")
         };
-        seat.show(Some(Dialog {
+        state.show(Some(Dialog {
             body: Body::Secret(Prompt {
                 error: Some((1, "Too short".to_owned())),
                 ..prompt
@@ -458,7 +458,7 @@ tilo_test_env::scenario! {
                 })
         );
         key(&mut app, "Enter");
-        let asked = seat.take_asked();
+        let asked = state.take_asked();
         assert_eq!(
             asked,
             [PortalEffect::Submit {
@@ -466,11 +466,11 @@ tilo_test_env::scenario! {
             }]
         );
         assert!(!asked_text(&asked).contains("hunter2"));
-        let answer = seat.take_answer().expect("the answer waits in the seat");
+        let answer = state.take_answer().expect("the answer waits in the state");
         assert_eq!(answer.values[0].as_str(), "adax");
         assert_eq!(answer.values[1].as_str(), "hunter2");
         assert!(
-            seat.secrets()
+            state.secrets()
                 .iter()
                 .all(|buffer| buffer.lock().unwrap().is_empty()),
             "taking the answer wipes the buffers"
@@ -479,21 +479,21 @@ tilo_test_env::scenario! {
 
     phase escape_backs_out_of_a_secret_prompt;
     {
-        let (mut app, seat) = seated(network());
+        let (mut app, state) = mounted(network());
         app.harness().type_text("ada");
         key(&mut app, "Escape");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [PortalEffect::Cancel {
                 handle: request_1()
             }]
         );
-        assert!(seat.take_answer().is_none());
+        assert!(state.take_answer().is_none());
     }
 
-    phase typing_is_a_published_step_whose_text_stays_in_the_seat;
+    phase typing_is_a_published_step_whose_text_stays_in_the_state;
     {
-        let (mut app, seat) = seated(dialog(draft()));
+        let (mut app, state) = mounted(dialog(draft()));
         app.effect(&PortalEffect::Type {
             handle: request_1(),
             field: "draft-0".to_owned(),
@@ -501,7 +501,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.settle();
-        assert_eq!(seat.text(Field::Draft(0)).as_str(), "grace@example.org");
+        assert_eq!(state.text(Field::Draft(0)).as_str(), "grace@example.org");
         assert!(
             app.harness()
                 .a11y_nodes()
@@ -510,7 +510,7 @@ tilo_test_env::scenario! {
             "the field shows what was typed"
         );
         assert!(
-            seat.take_asked().is_empty(),
+            state.take_asked().is_empty(),
             "typing asks the shell nothing"
         );
         // Only the fields the question has, and the person may change.
@@ -525,7 +525,7 @@ tilo_test_env::scenario! {
                 "{field}"
             );
         }
-        let (mut app, seat) = seated(dialog(Body::Entry {
+        let (mut app, state) = mounted(dialog(Body::Entry {
             masked: true,
             required: true,
             choices: Vec::new(),
@@ -540,7 +540,7 @@ tilo_test_env::scenario! {
             handle: request_1(),
         })
         .unwrap();
-        let asked = seat.take_asked();
+        let asked = state.take_asked();
         assert_eq!(
             asked,
             [PortalEffect::Confirm {
@@ -548,12 +548,12 @@ tilo_test_env::scenario! {
             }]
         );
         assert!(!asked_text(&asked).contains("4711"));
-        assert_eq!(seat.text(Field::Answer).as_str(), "4711");
+        assert_eq!(state.text(Field::Answer).as_str(), "4711");
     }
 
     phase a_secret_prompt_is_answered_through_the_door_as_the_prompt_checks_it;
     {
-        let (mut app, seat) = seated(network());
+        let (mut app, state) = mounted(network());
         // A required field still empty: the prompt refuses, and nothing is
         // asked.
         assert!(
@@ -562,8 +562,8 @@ tilo_test_env::scenario! {
             })
             .is_err()
         );
-        assert!(seat.take_asked().is_empty());
-        assert!(seat.take_answer().is_none());
+        assert!(state.take_asked().is_empty());
+        assert!(state.take_answer().is_none());
         app.effect(&PortalEffect::TypeSecret {
             handle: request_1(),
             field: 1,
@@ -579,12 +579,12 @@ tilo_test_env::scenario! {
             .is_err()
         );
         app.settle();
-        assert_eq!(seat.secrets()[1].lock().unwrap().as_str(), "hunter2");
+        assert_eq!(state.secrets()[1].lock().unwrap().as_str(), "hunter2");
         app.effect(&PortalEffect::Submit {
             handle: request_1(),
         })
         .unwrap();
-        let asked = seat.take_asked();
+        let asked = state.take_asked();
         assert_eq!(
             asked,
             [PortalEffect::Submit {
@@ -592,7 +592,7 @@ tilo_test_env::scenario! {
             }]
         );
         assert!(!asked_text(&asked).contains("hunter2"));
-        let answer = seat.take_answer().expect("the answer waits in the seat");
+        let answer = state.take_answer().expect("the answer waits in the state");
         assert_eq!(answer.values[0].as_str(), "ada");
         assert_eq!(answer.values[1].as_str(), "hunter2");
     }
@@ -602,7 +602,7 @@ tilo_test_env::scenario! {
         let Body::Secret(prompt) = network().body else {
             panic!("the network fixture asks with a secret prompt")
         };
-        let (mut app, seat) = seated(Dialog {
+        let (mut app, state) = mounted(Dialog {
             body: Body::Secret(Prompt {
                 option: Some(("Remember the password".to_owned(), true)),
                 ..prompt
@@ -614,7 +614,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.settle();
-        assert_eq!(seat.option(), Some(false));
+        assert_eq!(state.option(), Some(false));
         app.effect(&PortalEffect::TypeSecret {
             handle: request_1(),
             field: 1,
@@ -625,7 +625,7 @@ tilo_test_env::scenario! {
             handle: request_1(),
         })
         .unwrap();
-        assert_eq!(seat.take_answer().unwrap().option, Some(false));
+        assert_eq!(state.take_answer().unwrap().option, Some(false));
     }
 }
 
@@ -709,10 +709,10 @@ tilo_test_env::scenario! {
 
     phase an_answer_for_a_question_that_is_no_longer_showing_never_answers_the_next;
     {
-        let (mut app, seat) = seated(dialog(choices(&["Writer", "Editor"])));
+        let (mut app, state) = mounted(dialog(choices(&["Writer", "Editor"])));
         // The person answers the first question.
         key(&mut app, "Enter");
-        let mut asked = seat.take_asked();
+        let mut asked = state.take_asked();
         assert_eq!(
             asked,
             [PortalEffect::Confirm {
@@ -721,7 +721,7 @@ tilo_test_env::scenario! {
         );
         let for_the_first = asked.remove(0);
         // The next question opens before that answer reaches the shell.
-        seat.show(Some(Dialog {
+        state.show(Some(Dialog {
             handle: "request-2".to_owned(),
             title: "Record your screen?".to_owned(),
             ..dialog(choices(&["Whole screen", "One window"]))
@@ -735,7 +735,7 @@ tilo_test_env::scenario! {
             "the refusal says the question is gone: {refused:?}"
         );
         assert!(
-            seat.take_asked().is_empty(),
+            state.take_asked().is_empty(),
             "the question that is up was not answered"
         );
         assert!(
@@ -745,7 +745,7 @@ tilo_test_env::scenario! {
         // The question that is up answers itself, naming itself.
         key(&mut app, "Enter");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [PortalEffect::Confirm {
                 handle: "request-2".to_owned()
             }]
@@ -826,7 +826,7 @@ fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
     };
     assert_eq!(edits.dialog("r").caution, None);
 
-    let (mut app, _seat) = seated(dialog.clone());
+    let (mut app, _state) = mounted(dialog.clone());
     let focused = app.harness().a11y_focus().map(|(_, node)| node);
     assert_eq!(
         focused.as_ref().and_then(|node| node.label()),
@@ -950,7 +950,7 @@ tilo_test_env::scenario! {
         // The sheet draws it: the card is the picture taller than the same
         // question without one.
         let card_height = |dialog: Dialog| {
-            let (mut app, _seat) = seated(dialog);
+            let (mut app, _state) = mounted(dialog);
             app.harness()
                 .a11y_nodes()
                 .into_iter()
@@ -996,7 +996,7 @@ tilo_test_env::scenario! {
         };
         let dialog = asked.dialog("request-1");
         assert_eq!(dialog.facts.len(), 8, "every argument is on the question");
-        let (mut app, _seat) = seated(dialog.clone());
+        let (mut app, _state) = mounted(dialog.clone());
         assert_eq!(
             listed_facts(&mut app),
             dialog.facts[..6],

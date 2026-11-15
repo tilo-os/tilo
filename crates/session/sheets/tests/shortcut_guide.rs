@@ -9,9 +9,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{
-    Guide, GuideEffect, GuideSeat, Modality, Pair, Shortcut, ShortcutGuideApp,
+    Guide, GuideEffect, GuideState, Modality, Pair, Shortcut, ShortcutGuideApp,
 };
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
@@ -55,15 +55,15 @@ fn guide() -> Guide {
     }
 }
 
-fn seated(guide: Guide) -> (HeadlessApp<ShortcutGuideApp>, GuideSeat) {
-    let seat = GuideSeat::default();
-    seat.show(guide);
-    seat.presentation().open(false);
+fn mounted(guide: Guide) -> (HeadlessApp<ShortcutGuideApp>, GuideState) {
+    let state = GuideState::default();
+    state.show(guide);
+    state.presentation().open(false);
     let mut app =
-        HeadlessApp::<ShortcutGuideApp>::for_person_with_lent("person", seat.clone()).unwrap();
+        HeadlessApp::<ShortcutGuideApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 tilo_test_env::scenario! {
@@ -86,13 +86,13 @@ tilo_test_env::scenario! {
 
     phase pressing_a_key_asks_the_shell_for_its_new_chord;
     {
-        let (mut app, seat) = seated(guide());
+        let (mut app, state) = mounted(guide());
         app.harness()
             .perform_named("guide-key-focus-next-window", &A11yAction::Activate)
             .unwrap();
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [GuideEffect::Listen {
                 action: "focus-next-window".to_owned()
             }]
@@ -101,13 +101,13 @@ tilo_test_env::scenario! {
 
     phase a_changed_pair_can_go_back_to_its_defaults;
     {
-        let (mut app, seat) = seated(guide());
+        let (mut app, state) = mounted(guide());
         app.harness()
             .perform_named("guide-reset-focus-previous-window", &A11yAction::Activate)
             .unwrap();
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [GuideEffect::Reset {
                 first: "focus-previous-window".to_owned(),
                 second: "focus-next-window".to_owned(),
@@ -117,8 +117,8 @@ tilo_test_env::scenario! {
 
     phase listening_says_which_shortcut_takes_the_next_chord;
     {
-        let (mut app, seat) = seated(guide());
-        seat.show(Guide {
+        let (mut app, state) = mounted(guide());
+        state.show(Guide {
             listening: Some("focus-next-window".to_owned()),
             ..guide()
         });
@@ -128,19 +128,19 @@ tilo_test_env::scenario! {
 
     phase escape_closes_the_guide;
     {
-        let (mut app, seat) = seated(guide());
+        let (mut app, state) = mounted(guide());
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.take_asked(), [GuideEffect::Done]);
-        assert!(!seat.presentation().is_open());
+        assert_eq!(state.take_asked(), [GuideEffect::Done]);
+        assert!(!state.presentation().is_open());
     }
 
     phase an_agent_closes_the_guide_through_the_same_door;
     {
-        let (mut app, seat) = seated(guide());
+        let (mut app, state) = mounted(guide());
         app.effect(&GuideEffect::Done).unwrap();
         app.settle();
-        assert_eq!(seat.take_asked(), [GuideEffect::Done]);
+        assert_eq!(state.take_asked(), [GuideEffect::Done]);
     }
 
     phase every_scenario_renders;

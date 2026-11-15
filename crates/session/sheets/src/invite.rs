@@ -6,7 +6,7 @@
 //! short link with the button that puts it on the clipboard. Below it stand
 //! the invitations that still work, each with the button that takes it back.
 //! The shell makes, lists and cancels them; it keeps the sheet current through
-//! [`InviteSeat`].
+//! [`InviteState`].
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -20,7 +20,7 @@ use ui::widget::{
     Segment, TextInput, ToggleGroup,
 };
 
-use crate::presentation::{Presentation, Seat, presented};
+use crate::presentation::{Presentation, SheetState, presented};
 use crate::{caption, code, word, words};
 
 /// The app the shell mounts the sheet as.
@@ -524,28 +524,28 @@ impl Choosing {
 /// What the shell lends the sheet: whether it is up, what it shows, and where
 /// its requests go.
 #[derive(Clone, Default)]
-pub struct InviteSeat {
+pub struct InviteState {
     presentation: Presentation,
     invite: Rc<RefCell<Invite>>,
     shown: Rc<RefCell<Option<LocalState<Invite>>>>,
     asked: Rc<RefCell<Vec<InviteEffect>>>,
 }
 
-impl std::fmt::Debug for InviteSeat {
+impl std::fmt::Debug for InviteState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InviteSeat")
+        f.debug_struct("InviteState")
             .field("presentation", &self.presentation)
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for InviteSeat {
+impl crate::SheetState for InviteState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl InviteSeat {
+impl InviteState {
     /// Show `invite`, or the same invitation as it stands now.
     pub fn show(&self, invite: Invite) {
         if *self.invite.borrow() == invite {
@@ -570,7 +570,7 @@ impl InviteSeat {
 
 /// How the sheet asks its host for something: an effect the person pressed,
 /// carried out by whoever shows the sheet. The session's window pushes it
-/// into the seat its shell reads; a page's host hands it to the page.
+/// into the state its shell reads; a page's host hands it to the page.
 pub type Ask = Rc<dyn Fn(InviteEffect)>;
 
 /// The sheet as its hosts draw it, from the [`Invite`] they keep current: the
@@ -842,9 +842,9 @@ impl ResourceApp for InviteApp {
     }
 
     fn view(cx: &mut ViewCx<InviteLinks>) -> Element {
-        let seat = cx.take_lent::<InviteSeat>();
-        let initial = match &seat {
-            Some(seat) => seat.invite(),
+        let state = cx.take_lent::<InviteState>();
+        let initial = match &state {
+            Some(state) => state.invite(),
             None => cx
                 .fixture::<Invite>()
                 .map(|invite| (*invite).clone())
@@ -853,22 +853,22 @@ impl ResourceApp for InviteApp {
         let shown = cx.local(initial);
         let choosing = cx.local(Choosing::default());
         let link = cx.local(String::new());
-        if let Some(seat) = &seat {
-            *seat.shown.borrow_mut() = Some(shown.clone());
+        if let Some(state) = &state {
+            *state.shown.borrow_mut() = Some(shown.clone());
             // The sheet follows what the shell says of its presentation: being
             // opened, taken down, put on another display.
-            seat.presentation.wake_with(cx.waker());
+            state.presentation.wake_with(cx.waker());
         }
-        let asking = seat.clone();
-        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
+        let asking = state.clone();
+        let presentation = state.as_ref().map(|state| state.presentation().clone());
         cx.effects(move |effect: InviteEffect, _cx| match &asking {
-            Some(seat) => {
+            Some(state) => {
                 if effect == InviteEffect::Done {
                     // Its own close: the card leaves the screen, and the shell tells it gone
                     // once nothing of it is drawn.
-                    seat.presentation.close();
+                    state.presentation.close();
                 }
-                seat.asked.borrow_mut().push(effect);
+                state.asked.borrow_mut().push(effect);
                 Ok(Effected::done())
             }
             None => Err("no workspace to invite anyone into here".to_owned()),

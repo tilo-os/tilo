@@ -742,7 +742,7 @@ tilo_test_env::scenario! {
             ])
             .unwrap()
             .forward,
-            Some(crate::remote_door::Forward {
+            Some(crate::device_mcp::Forward {
                 device: "Build box".into(),
                 workspace: None
             })

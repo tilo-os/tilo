@@ -29,7 +29,7 @@ use tilo_onboarding::OnboardingEffect;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session, quick_settings};
 use tilo_session_core::door::Published;
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
@@ -1238,7 +1238,7 @@ tilo_test_env::scenario! {
 /// machine the window runs on, and shutting down ends the session rather than the host.
 #[test]
 fn a_session_in_a_window_takes_no_power_on_its_host() {
-    use tilo_sheets::Seat as _;
+    use tilo_sheets::SheetState as _;
     let _settled = ui::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         machine: tilo_session::Machine::Window,
@@ -1316,7 +1316,7 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
 /// Locking stays on offer where a password does unlock it.
 #[test]
 fn a_session_that_cannot_check_a_password_never_locks() {
-    use tilo_sheets::Seat as _;
+    use tilo_sheets::SheetState as _;
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
@@ -1350,14 +1350,14 @@ fn a_session_that_cannot_check_a_password_never_locks() {
 /// caller offered it put up the same menu.
 #[test]
 fn the_power_menu_opens_by_its_published_verb() {
-    use tilo_sheets::Seat as _;
+    use tilo_sheets::SheetState as _;
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     assert!(
         !session
             .power_menu()
-            .is_some_and(|seat| seat.presentation().is_open()),
+            .is_some_and(|state| state.presentation().is_open()),
         "the menu is down to begin with"
     );
 
@@ -1846,15 +1846,15 @@ tilo_test_env::scenario! {
 
     phase workspace_settings_renames_the_workspace_through_its_action;
     {
-        use tilo_sheets::Seat as _;
+        use tilo_sheets::SheetState as _;
         let _settled = ui::motion::testing::settled();
         let mut session = session();
         session.step(Duration::from_millis(1)).unwrap();
-        let seat = session
+        let state = session
             .workspace_settings()
             .expect("workspace settings")
             .clone();
-        seat.presentation().open(false);
+        state.presentation().open(false);
         session.step(Duration::from_millis(1)).unwrap();
         let rename = WorkspaceSettingsEffect::RENAME.id;
         let sheet = publishers(&session, rename)
@@ -1886,12 +1886,12 @@ tilo_test_env::scenario! {
 
     phase a_portal_question_is_answered_through_the_sheets_actions;
     {
-        use tilo_sheets::Seat as _;
+        use tilo_sheets::SheetState as _;
         let _settled = ui::motion::testing::settled();
         let mut session = session();
-        let seat = session.portal().expect("portal sheet").clone();
-        seat.presentation().open(false);
-        seat.show(Some(Dialog {
+        let state = session.portal().expect("portal sheet").clone();
+        state.presentation().open(false);
+        state.show(Some(Dialog {
             handle: "request-1".to_owned(),
             title: "Share your screen?".to_owned(),
             heading: "Meet".to_owned(),
@@ -1918,7 +1918,7 @@ tilo_test_env::scenario! {
                 &arguments(serde_json::json!({ "handle": "request-1" })),
             )
             .expect("confirm");
-        let asked = seat.take_asked();
+        let asked = state.take_asked();
         assert!(
             asked.contains(&PortalEffect::Select {
                 handle: "request-1".to_owned(),
@@ -1930,14 +1930,14 @@ tilo_test_env::scenario! {
 
     phase the_file_chooser_answers_the_file_chosen_through_its_actions;
     {
-        use tilo_sheets::Seat as _;
+        use tilo_sheets::SheetState as _;
         let _settled = ui::motion::testing::settled();
         let home = tempfile::tempdir().unwrap();
         std::fs::write(home.path().join("beach.png"), b"bytes").unwrap();
         let mut session = session();
-        let seat = session.file_picker().expect("file chooser").clone();
-        seat.presentation().open(true);
-        seat.ask(Some(FileRequest {
+        let state = session.file_picker().expect("file chooser").clone();
+        state.presentation().open(true);
+        state.ask(Some(FileRequest {
             handle: "request-1".to_owned(),
             title: "Choose a picture".to_owned(),
             mode: FileMode::Open,
@@ -1948,7 +1948,7 @@ tilo_test_env::scenario! {
         // The chooser reads the folder off the loop: choose once it has, so the step lands on the
         // listing the person sees.
         pump(&mut session, &mut [], |_, _| {
-            let listing = seat.listing();
+            let listing = state.listing();
             !listing.reading
                 && listing
                     .entries
@@ -1969,7 +1969,7 @@ tilo_test_env::scenario! {
             )
             .expect("select");
         // Choosing takes the choice at once; confirming checks it off the loop.
-        pump(&mut session, &mut [], |_, _| seat.listing().can_confirm);
+        pump(&mut session, &mut [], |_, _| state.listing().can_confirm);
         session
             .invoke(
                 &sheet,
@@ -1979,7 +1979,7 @@ tilo_test_env::scenario! {
             .expect("confirm");
         let mut answer = None;
         pump(&mut session, &mut [], |_, _| {
-            answer = answer.take().or_else(|| seat.take_answer());
+            answer = answer.take().or_else(|| state.take_answer());
             answer.is_some()
         });
         assert_eq!(answer, Some(FileAnswer::Chosen(vec![beach])));
@@ -1990,15 +1990,15 @@ tilo_test_env::scenario! {
 /// device has.
 #[test]
 fn workspace_settings_shows_a_tab_and_moves_the_workspace() {
-    use tilo_sheets::Seat as _;
+    use tilo_sheets::SheetState as _;
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
-    let seat = session
+    let state = session
         .workspace_settings()
         .expect("workspace settings")
         .clone();
-    seat.presentation().open(false);
+    state.presentation().open(false);
     session.step(Duration::from_millis(1)).unwrap();
     let show = WorkspaceSettingsEffect::SHOW_TAB.id;
     let sheet = publisher(&session, show).expect("the open sheet publishes its tabs");
@@ -2011,7 +2011,7 @@ fn workspace_settings_shows_a_tab_and_moves_the_workspace() {
         .expect("show tab");
     session.step(Duration::from_millis(1)).unwrap();
     assert_eq!(
-        seat.settings().tab,
+        state.settings().tab,
         tilo_sheets::workspace_settings::Tab::People,
         "the sheet shows the tab the person picked"
     );
@@ -2485,7 +2485,7 @@ fn leaving_another_workspace_keeps_the_person_where_they_are() {
 fn the_next_session_comes_up_where_this_one_was() {
     let _settled = ui::motion::testing::settled();
     // A workspace's layout is the workspace's own record, which a device holds once it has an
-    // identity: this session is on a device seated as one is at its first login.
+    // identity: this session is on a device set up as it is at its first login.
     let mut device = tilo_test_env::TestHome::new().expect("a home");
     let state = crate::common::seat_in(&mut device);
     let home = {
@@ -2682,16 +2682,19 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
     );
     settings.presentation().close();
     invoke(&mut session, CHROME_RESOURCE, "join-workspace");
-    let seat = session
+    let state = session
         .workspace_directory()
         .expect("the session hosts the workspace directory");
-    assert!(seat.presentation().is_open(), "joining opens the directory");
+    assert!(
+        state.presentation().is_open(),
+        "joining opens the directory"
+    );
     let held: Vec<String> = workspaces(&session)
         .into_iter()
         .map(|(name, _)| name)
         .collect();
     assert_eq!(held.len(), 1, "one workspace is held: {held:?}");
-    let listed: Vec<String> = seat
+    let listed: Vec<String> = state
         .directory()
         .listings
         .iter()
@@ -2701,7 +2704,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
         listed.is_empty(),
         "the directory offers what this computer can join, not what it holds: {listed:?}"
     );
-    seat.presentation().close();
+    state.presentation().close();
     invoke(&mut session, CHROME_RESOURCE, "new-workspace");
     assert_eq!(
         workspaces(&session).len(),

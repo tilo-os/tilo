@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use tilo_sheets::{Presentation, Seat};
+use tilo_sheets::{Presentation, SheetState};
 use ui::vello::kurbo::Rect;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CapturePreview, CaptureTarget, RegionAnchor,
@@ -483,7 +483,7 @@ impl Link {
     }
 }
 
-/// The capture studio's seat: whether it is up (shared with the session) and
+/// The capture studio's state: whether it is up (shared with the session) and
 /// what the session lends it ([`Link`]). The session keeps a clone, opens
 /// the studio and carries out what it asks.
 #[derive(Clone, Default)]
@@ -504,7 +504,7 @@ impl Studio {
     }
 }
 
-impl Seat for Studio {
+impl SheetState for Studio {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }

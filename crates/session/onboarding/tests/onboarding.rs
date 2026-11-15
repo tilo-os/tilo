@@ -10,7 +10,7 @@
 )]
 
 use tilo_onboarding::{
-    OnboardingApp, OnboardingEffect, OnboardingSeat, Page, Screen, Secrets, TourPage,
+    OnboardingApp, OnboardingEffect, OnboardingState, Page, Screen, Secrets, TourPage,
 };
 use ui::framework::ResourceApp as _;
 use ui::framework::testing::HeadlessApp;
@@ -23,14 +23,14 @@ fn staged(scenario: &str) -> HeadlessApp<OnboardingApp> {
     HeadlessApp::<OnboardingApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
-fn seated(page: Page) -> (HeadlessApp<OnboardingApp>, OnboardingSeat) {
-    let seat = OnboardingSeat::new(Secrets::default(), None);
-    seat.show(page);
+fn mounted(page: Page) -> (HeadlessApp<OnboardingApp>, OnboardingState) {
+    let state = OnboardingState::new(Secrets::default(), None);
+    state.show(page);
     let mut app =
-        HeadlessApp::<OnboardingApp>::for_person_with_lent("person", seat.clone()).unwrap();
+        HeadlessApp::<OnboardingApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 fn page(screen: Screen) -> Page {
@@ -125,27 +125,27 @@ fn there_is_a_scenario_for_every_step() {
 
 #[test]
 fn the_intro_offers_both_ways_and_asks_the_shell_for_the_chosen_one() {
-    let (mut app, seat) = seated(page(Screen::Intro));
+    let (mut app, state) = mounted(page(Screen::Intro));
     assert!(says(&mut app, &tilo_onboarding::copy::intro_title()));
     press(&mut app, &tilo_onboarding::t("onboarding-choice-create"));
-    assert_eq!(seat.take_asked(), [OnboardingEffect::choose("create")]);
+    assert_eq!(state.take_asked(), [OnboardingEffect::choose("create")]);
     press(&mut app, &tilo_onboarding::t("onboarding-choice-existing"));
-    assert_eq!(seat.take_asked(), [OnboardingEffect::choose("existing")]);
+    assert_eq!(state.take_asked(), [OnboardingEffect::choose("existing")]);
 }
 
 #[test]
 fn ticking_the_acknowledgement_asks_the_shell_to_record_it() {
-    let (mut app, seat) = seated(page(Screen::NoRecovery));
+    let (mut app, state) = mounted(page(Screen::NoRecovery));
     press(&mut app, &tilo_onboarding::copy::acknowledgement());
     assert_eq!(
-        seat.take_asked(),
+        state.take_asked(),
         [OnboardingEffect::Acknowledge { checked: true }]
     );
 }
 
 #[test]
 fn create_waits_for_the_shell_to_allow_it() {
-    let (mut app, seat) = seated(page(Screen::NoRecovery));
+    let (mut app, state) = mounted(page(Screen::NoRecovery));
     let create = tilo_onboarding::t("onboarding-create-local-identity");
     let disabled = app
         .harness()
@@ -157,24 +157,24 @@ fn create_waits_for_the_shell_to_allow_it() {
         disabled,
         "nothing is created before the fact is acknowledged"
     );
-    seat.show(Page {
+    state.show(Page {
         acknowledged: true,
         can_create: true,
         ..page(Screen::NoRecovery)
     });
     app.settle();
     press(&mut app, &create);
-    assert_eq!(seat.take_asked(), [OnboardingEffect::Continue]);
+    assert_eq!(state.take_asked(), [OnboardingEffect::Continue]);
 }
 
 #[test]
 fn escape_goes_back_while_setup_may_and_skips_the_tour() {
-    let (mut app, seat) = seated(page(Screen::Nearby));
+    let (mut app, state) = mounted(page(Screen::Nearby));
     app.harness().key("Escape");
     app.settle();
-    assert_eq!(seat.take_asked(), [OnboardingEffect::Back]);
+    assert_eq!(state.take_asked(), [OnboardingEffect::Back]);
 
-    seat.show(Page {
+    state.show(Page {
         identity_ready_page: true,
         tour_page: Some(TourPage::Organise),
         ..page(Screen::Done)
@@ -182,21 +182,21 @@ fn escape_goes_back_while_setup_may_and_skips_the_tour() {
     app.settle();
     app.harness().key("Escape");
     app.settle();
-    assert_eq!(seat.take_asked(), [OnboardingEffect::Skip]);
+    assert_eq!(state.take_asked(), [OnboardingEffect::Skip]);
 
-    seat.show(page(Screen::Intro));
+    state.show(page(Screen::Intro));
     app.settle();
     app.harness().key("Escape");
     app.settle();
     assert!(
-        seat.take_asked().is_empty(),
+        state.take_asked().is_empty(),
         "the intro cannot be dismissed"
     );
 }
 
 #[test]
 fn a_typed_passphrase_stays_in_the_shells_buffer() {
-    let (mut app, seat) = seated(Page {
+    let (mut app, state) = mounted(Page {
         connect_path: "/home/person/backup.tilo-identity".to_owned(),
         ..page(Screen::Restore)
     });
@@ -212,10 +212,10 @@ fn a_typed_passphrase_stays_in_the_shells_buffer() {
     app.harness().type_text("correct horse battery");
     app.settle();
     assert_eq!(
-        *seat.secrets().connect_passphrase.lock().unwrap(),
+        *state.secrets().connect_passphrase.lock().unwrap(),
         "correct horse battery"
     );
-    let asked = seat.take_asked();
+    let asked = state.take_asked();
     assert!(
         asked
             .iter()
@@ -226,11 +226,11 @@ fn a_typed_passphrase_stays_in_the_shells_buffer() {
 
 #[test]
 fn the_backup_file_is_entered_as_a_value() {
-    let (mut app, seat) = seated(page(Screen::Restore));
+    let (mut app, state) = mounted(page(Screen::Restore));
     press(&mut app, &tilo_onboarding::t("onboarding-connect-file"));
     app.harness().type_text("/b");
     app.settle();
-    assert!(seat.take_asked().contains(&OnboardingEffect::Enter {
+    assert!(state.take_asked().contains(&OnboardingEffect::Enter {
         field: "backup-file".to_owned(),
         value: "/b".to_owned(),
     }));
@@ -238,7 +238,7 @@ fn the_backup_file_is_entered_as_a_value() {
 
 #[test]
 fn a_secret_entered_as_an_action_reaches_only_its_buffer() {
-    let (mut app, seat) = seated(page(Screen::Restore));
+    let (mut app, state) = mounted(page(Screen::Restore));
     let output = app
         .effect(&OnboardingEffect::EnterSecret {
             field: "backup-passphrase".to_owned(),
@@ -248,15 +248,15 @@ fn a_secret_entered_as_an_action_reaches_only_its_buffer() {
     app.settle();
     assert!(!format!("{output:?}").contains("s3cret"), "{output:?}");
     assert_eq!(
-        *seat.secrets().connect_passphrase.lock().unwrap(),
+        *state.secrets().connect_passphrase.lock().unwrap(),
         "s3cret passphrase"
     );
-    assert!(seat.take_asked().is_empty());
+    assert!(state.take_asked().is_empty());
 }
 
 #[test]
 fn an_agent_cannot_hand_setup_a_secret_or_choose_where_identity_goes() {
-    let (mut app, seat) = seated(page(Screen::Restore));
+    let (mut app, state) = mounted(page(Screen::Restore));
     let refused = app.effect_by(
         "agent",
         &OnboardingEffect::EnterSecret {
@@ -266,7 +266,14 @@ fn an_agent_cannot_hand_setup_a_secret_or_choose_where_identity_goes() {
     );
     app.settle();
     assert!(refused.is_err(), "{refused:?}");
-    assert!(seat.secrets().connect_passphrase.lock().unwrap().is_empty());
+    assert!(
+        state
+            .secrets()
+            .connect_passphrase
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
     for declaration in OnboardingEffect::declarations() {
         assert_eq!(
             declaration.attended,
@@ -279,12 +286,12 @@ fn an_agent_cannot_hand_setup_a_secret_or_choose_where_identity_goes() {
 
 #[test]
 fn the_ordinary_steps_are_driven_without_a_screen() {
-    let (mut app, seat) = seated(page(Screen::Existing));
+    let (mut app, state) = mounted(page(Screen::Existing));
     app.effect(&OnboardingEffect::choose("nearby")).unwrap();
     app.effect(&OnboardingEffect::Back).unwrap();
     app.settle();
     assert_eq!(
-        seat.take_asked(),
+        state.take_asked(),
         [OnboardingEffect::choose("nearby"), OnboardingEffect::Back]
     );
 }
@@ -296,16 +303,16 @@ fn secrets_are_never_printed() {
         value: "hunter2hunter2".to_owned(),
     };
     assert!(!format!("{effect:?}").contains("hunter2"));
-    let seat = OnboardingSeat::new(Secrets::default(), None);
-    seat.secrets().enter("new-passphrase", "hunter2hunter2");
-    seat.show(Page {
+    let state = OnboardingState::new(Secrets::default(), None);
+    state.secrets().enter("new-passphrase", "hunter2hunter2");
+    state.show(Page {
         recovery_key_copy: Some(tilo_onboarding::KeyCopy {
             words: tilo_onboarding::SecretText::new("alpha beta gamma".to_owned().into()),
             checks: [1, 2, 3],
         }),
         ..page(Screen::Done)
     });
-    let printed = format!("{seat:?} {:?}", seat.secrets());
+    let printed = format!("{state:?} {:?}", state.secrets());
     assert!(
         !printed.contains("hunter2") && !printed.contains("gamma"),
         "{printed}"
@@ -314,8 +321,8 @@ fn secrets_are_never_printed() {
 
 #[test]
 fn the_page_changes_in_place_when_the_shell_moves_on() {
-    let (mut app, seat) = seated(page(Screen::Intro));
-    seat.show(page(Screen::Existing));
+    let (mut app, state) = mounted(page(Screen::Intro));
+    state.show(page(Screen::Existing));
     app.settle();
     assert!(says(
         &mut app,

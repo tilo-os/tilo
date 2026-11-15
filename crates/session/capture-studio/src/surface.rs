@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use tilo_sheets::{Phase, Seat as _};
+use tilo_sheets::{Phase, SheetState as _};
 use ui::framework::{EffectAnswer, EffectCx, Effected, ResourceSurface, SurfaceCx};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -29,7 +29,7 @@ use ui::widget::DrawChild;
 /// receipt it belongs to.
 const SENT_SHOWN: ui::time::Duration = ui::time::Duration::from_millis(5_500);
 
-/// The capture bar over the desktop, over the studio's seat.
+/// The capture bar over the desktop, over the studio's state.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each one is a different thing the studio may have to say"
@@ -66,12 +66,12 @@ pub struct StudioSurface {
 }
 
 impl StudioSurface {
-    /// The studio over the session's seat, or on its own when no session
+    /// The studio over the session's state, or on its own when no session
     /// lent one.
     #[must_use]
-    pub fn new(seat: Option<Studio>) -> Self {
-        let own = seat.is_none();
-        let studio = seat.unwrap_or_default();
+    pub fn new(state: Option<Studio>) -> Self {
+        let own = state.is_none();
+        let studio = state.unwrap_or_default();
         let mut surface = Self {
             widget: CaptureStudio::default(),
             studio,
@@ -127,7 +127,7 @@ impl StudioSurface {
         }
     }
 
-    /// The seat the studio talks to the session over.
+    /// The state the studio talks to the session over.
     #[must_use]
     pub const fn studio(&self) -> &Studio {
         &self.studio
@@ -494,26 +494,26 @@ impl StudioSurface {
     }
 }
 
-/// Say what became of a send in a chip over the studio's seat, and answer
+/// Say what became of a send in a chip over the studio's state, and answer
 /// where it was drawn.
 fn said_chip(
     scene: &mut VelloScene,
     transform: Affine,
     text: &mut TextRenderer,
     theme: &Theme,
-    seat: Rect,
+    rect: Rect,
     said: &str,
 ) -> Rect {
-    if seat.width() <= 0.0 || seat.height() <= 0.0 {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return Rect::ZERO;
     }
     let style = theme.text(TextRole::Label);
-    let room = ui::num::f32_of_f64((seat.width() * 0.8).min(520.0));
+    let room = ui::num::f32_of_f64((rect.width() * 0.8).min(520.0));
     let shown = text.elide_to_width_style(said, room, &style);
     let (w, h) = text.measure_style(&shown, None, &style);
     let (pad_x, pad_y) = (12.0, 8.0);
     let (width, height) = (f64::from(w) + 2.0 * pad_x, f64::from(h) + 2.0 * pad_y);
-    let center = seat.center();
+    let center = rect.center();
     let chip = Rect::new(
         center.x - width / 2.0,
         center.y - height / 2.0,

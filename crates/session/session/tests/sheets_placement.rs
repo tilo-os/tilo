@@ -20,7 +20,7 @@ use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, OutputConfig, Screenshot};
 use tilo_desktop::verbs::DISPLAY_KIND;
 use tilo_session::{Options, Session};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
 
 const WIDTH: i32 = 1000;
@@ -61,7 +61,7 @@ fn client(session: &mut Session) -> Client {
     client.pump(session, |_, seen| {
         seen.wm_base.is_some() && seen.shm.is_some() && seen.seat.is_some()
     });
-    // The seat tells the client its capabilities on its first event.
+    // The state tells the client its capabilities on its first event.
     client.pump(session, |_, seen| seen.keyboard.is_some());
     client
 }
@@ -389,7 +389,7 @@ tilo_test_env::scenario! {
         );
 
         // The window is still the client with focus, and takes keys again once the sheet is gone.
-        assert!(client.seen.keyboard_focused, "the window kept the seat");
+        assert!(client.seen.keyboard_focused, "the window kept the state");
         client.tap(&mut session, KEY_A);
         client.pump(&mut session, |_, seen| {
             seen.keys

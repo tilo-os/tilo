@@ -9,8 +9,8 @@
 //! instead of being lost.
 //!
 //! Allowing the microphone is the person's own answer, so it is a press on
-//! this card and nothing else: the buttons answer the session's seat
-//! directly ([`DictationSeat::take_answers`]). The sheet publishes no
+//! this card and nothing else: the buttons answer the session's state
+//! directly ([`DictationState::take_answers`]). The sheet publishes no
 //! effect vocabulary for them, and none for the dictation's other answers
 //! either — an effect is reachable through the session's action door, and a
 //! remote action is not consent.
@@ -173,29 +173,29 @@ struct Shown {
 
 /// What the session lends the sheet: what to show, and where the answer goes.
 #[derive(Clone, Default)]
-pub struct DictationSeat {
+pub struct DictationState {
     presentation: Presentation,
     prompt: Rc<RefCell<Option<Prompt>>>,
     shown: Rc<RefCell<Option<LocalState<Shown>>>>,
     answers: Rc<RefCell<Vec<Answer>>>,
 }
 
-impl std::fmt::Debug for DictationSeat {
+impl std::fmt::Debug for DictationState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DictationSeat")
+        f.debug_struct("DictationState")
             .field("presentation", &self.presentation)
             .field("prompt", &self.prompt.borrow())
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for DictationSeat {
+impl crate::SheetState for DictationState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl DictationSeat {
+impl DictationState {
     /// Show `prompt`; `None` when there is nothing to show.
     pub fn show(&self, prompt: Option<Prompt>) {
         if *self.prompt.borrow() == prompt {
@@ -221,7 +221,7 @@ impl DictationSeat {
     }
 
     /// The person answered from the card. Only the card calls this: the
-    /// seat is the sheet's own, and no action reaches it.
+    /// state is the sheet's own, and no action reaches it.
     fn answer(&self, answer: Answer) {
         self.answers.borrow_mut().push(answer);
         self.presentation.wake();
@@ -249,24 +249,24 @@ impl ResourceApp for DictationApp {
     }
 
     fn view(cx: &mut ViewCx<Dictation>) -> Element {
-        let seat = cx.take_lent::<DictationSeat>();
-        let initial = match &seat {
-            Some(seat) => seat.prompt(),
+        let state = cx.take_lent::<DictationState>();
+        let initial = match &state {
+            Some(state) => state.prompt(),
             None => cx
                 .fixture::<Prompt>()
                 .map(|prompt| Some((*prompt).clone()))
                 .unwrap_or_default(),
         };
         let shown = cx.local(Shown { prompt: initial });
-        if let Some(seat) = &seat {
-            *seat.shown.borrow_mut() = Some(shown.clone());
+        if let Some(state) = &state {
+            *state.shown.borrow_mut() = Some(shown.clone());
         }
-        let lent = seat.clone();
+        let lent = state.clone();
         let cards = cx.switch(&shown, move |_cx, shown| card(shown, lent.as_ref()));
         Box::new(Answering {
             content: cards,
             shown,
-            seat,
+            state,
         })
     }
 
@@ -435,7 +435,7 @@ fn escape(prompt: &Prompt) -> Answer {
 }
 
 /// The card the stage draws: the words, and the answers it allows.
-fn card(shown: &Shown, seat: Option<&DictationSeat>) -> Element {
+fn card(shown: &Shown, state: Option<&DictationState>) -> Element {
     let Some(prompt) = shown.prompt.as_ref() else {
         // Nothing to show: the session has taken the dictation away.
         return Box::new(Column::new());
@@ -443,7 +443,7 @@ fn card(shown: &Shown, seat: Option<&DictationSeat>) -> Element {
     let Some(words) = words(shown) else {
         return Box::new(Column::new());
     };
-    let footer = answers(prompt, seat);
+    let footer = answers(prompt, state);
     let mut body = Column::new().with_rhythm(ui::tokens::Rhythm::Tight);
     if let Some(state) = &words.state {
         body = body.push(Box::new(Text::new(state).with_role(TextRole::Caption)));
@@ -461,19 +461,19 @@ fn card(shown: &Shown, seat: Option<&DictationSeat>) -> Element {
 }
 
 /// The answers the stage allows, the one the keyboard starts on first.
-fn answers(prompt: &Prompt, seat: Option<&DictationSeat>) -> Element {
+fn answers(prompt: &Prompt, state: Option<&DictationState>) -> Element {
     let id = prompt.id;
-    // These buttons answer the seat with a plain local handler
+    // These buttons answer the state with a plain local handler
     // (`Button::on_click`), never through `cx.effects(..)` or `cx.actions()`,
     // and the sheet publishes no vocabulary for their answers: an effect is
     // reachable through the session's action door, and a remote action is not
     // consent to listen through the microphone. The session can read what the
-    // person answered ([`DictationSeat::take_answers`]); nothing but a press
+    // person answered ([`DictationState::take_answers`]); nothing but a press
     // on this card can answer for them.
-    let answering = |answer: Answer, button: Button| match seat {
-        Some(seat) => {
-            let seat = seat.clone();
-            button.on_click(move || seat.answer(answer))
+    let answering = |answer: Answer, button: Button| match state {
+        Some(state) => {
+            let state = state.clone();
+            button.on_click(move || state.answer(answer))
         }
         None => button,
     };
@@ -602,7 +602,7 @@ fn centred(card: Element) -> Element {
 struct Answering {
     content: Element,
     shown: LocalState<Shown>,
-    seat: Option<DictationSeat>,
+    state: Option<DictationState>,
 }
 
 impl ui::widget::Decorator for Answering {
@@ -622,8 +622,8 @@ impl ui::widget::Decorator for Answering {
             && key.state == ui::winit::event::ElementState::Pressed
             && key.logical_key == Key::Named(NamedKey::Escape)
         {
-            if let (Some(seat), Some(prompt)) = (&self.seat, self.shown.get().prompt) {
-                seat.answer(escape(&prompt));
+            if let (Some(state), Some(prompt)) = (&self.state, self.shown.get().prompt) {
+                state.answer(escape(&prompt));
             }
             *ctx.handled = true;
             return;

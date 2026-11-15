@@ -50,19 +50,19 @@ pub enum DevicesAccessEffect {
         #[param("retired, lost, stolen or compromised", choices = REVOKE_REASONS)]
         reason: String,
     },
-    /// Take an agent's grant back: its runs end now and it gets in no more.
+    /// Take an agent's grant back: its sessions end now and it gets in no more.
     #[effect(job, row, destructive)]
     RevokeAgent {
-        #[param("The grant's id, as the door lists it")]
+        #[param("The grant's id, as the MCP server lists it")]
         grant: String,
     },
-    /// End an agent's open run, keeping its grant so it can come back.
+    /// End an agent's open session, keeping its grant so it can come back.
     #[effect(job, row)]
-    StopRun {
-        #[param("The grant's id, as the door lists it")]
+    StopSession {
+        #[param("The grant's id, as the MCP server lists it")]
         grant: String,
-        #[param("The run's name, as History names it")]
-        run: String,
+        #[param("The session's name, as History names it")]
+        session: String,
     },
     /// Approve or decline a device asking to be the person.
     #[effect(job, row)]
@@ -331,7 +331,7 @@ impl AgentEntry<'_> {
 
     fn active_now(&self) -> bool {
         self.key.is_some_and(|key| key.online)
-            || self.grant.is_some_and(|grant| !grant.runs.is_empty())
+            || self.grant.is_some_and(|grant| !grant.sessions.is_empty())
     }
 
     fn last_active(&self) -> Option<i64> {
@@ -489,13 +489,13 @@ impl AccessModel {
                     Some(Confirmation::Confirmed),
                 )
             }
-            DevicesAccessEffect::StopRun { grant, run } => {
+            DevicesAccessEffect::StopSession { grant, session } => {
                 self.grant(grant)?;
                 remote.invoke(
                     mcp_server::target(mcp_server::STOP),
-                    mcp_server::argument(&mcp_server::RunRef {
+                    mcp_server::argument(&mcp_server::AgentSessionRef {
                         grant: grant.clone(),
-                        run: run.clone(),
+                        session: session.clone(),
                     }),
                     None,
                 )
@@ -1272,11 +1272,11 @@ fn agent_row(agent: &AgentEntry<'_>, draft: &str) -> LiveRow {
             .bound(),
         );
     }
-    for run in agent.grant.iter().flat_map(|grant| &grant.runs) {
+    for session in agent.grant.iter().flat_map(|grant| &grant.sessions) {
         row = row.operation(
-            SettingsEffect::from(DevicesAccessEffect::StopRun {
+            SettingsEffect::from(DevicesAccessEffect::StopSession {
                 grant: id.clone(),
-                run: run.name.clone(),
+                session: session.name.clone(),
             })
             .bound(),
         );
@@ -1308,20 +1308,20 @@ fn agent_item(
         } else {
             "settings-access-browser-pages-off"
         })));
-        for run in &grant.runs {
+        for session in &grant.sessions {
             let stop = crate::on_row::bind_invocation(
                 &dispatcher,
                 &live,
                 Button::new(
-                    &format!("settings.access.{id}.stop.{}", run.name),
+                    &format!("settings.access.{id}.stop.{}", session.name),
                     &t_args(
-                        "settings-access-stop-run",
-                        &[("run", run.name.clone().into())],
+                        "settings-access-stop-session",
+                        &[("session", session.name.clone().into())],
                     ),
                 ),
-                DevicesAccessEffect::StopRun {
+                DevicesAccessEffect::StopSession {
                     grant: key.clone(),
-                    run: run.name.clone(),
+                    session: session.name.clone(),
                 },
             );
             extra.push(Box::new(

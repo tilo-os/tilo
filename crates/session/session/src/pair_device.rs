@@ -13,8 +13,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilo_sheets::Seat as _;
-use tilo_sheets::pair_device::{AddDevice, AddDeviceSeat, PairDeviceEffect};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::pair_device::{AddDevice, AddDeviceState, PairDeviceEffect};
 
 use crate::pairing_link::Invites;
 use crate::platform::clipboard::Clipboard;
@@ -114,8 +114,8 @@ impl Adding {
 
     /// Carry out what the person pressed in the sheet, and say the link is on the clipboard when it
     /// is.
-    pub(crate) fn take(&self, seat: &AddDeviceSeat) {
-        for effect in seat.take_asked() {
+    pub(crate) fn take(&self, state: &AddDeviceState) {
+        for effect in state.take_asked() {
             match effect {
                 PairDeviceEffect::Copy { link } => {
                     self.clipboard.copy(link.clone(), ON_CLIPBOARD_FOR);
@@ -145,31 +145,31 @@ const MINUTE_MS: u64 = 60_000;
 
 /// Serve the sheet for one pass: what it shows at `now_ms`, while it is up.
 pub(crate) fn follow(
-    seat: Option<&AddDeviceSeat>,
+    state: Option<&AddDeviceState>,
     adding: &Adding,
     place: impl FnOnce() -> Result<Place, NoLink>,
     now_ms: u64,
 ) {
-    let Some(seat) = seat else {
+    let Some(state) = state else {
         return;
     };
-    adding.take(seat);
-    if !seat.presentation().is_open() {
+    adding.take(state);
+    if !state.presentation().is_open() {
         return;
     }
-    seat.show(adding.device(place(), now_ms));
+    state.show(adding.device(place(), now_ms));
 }
 
 impl crate::Shared {
     /// Add a device: the sheet showing the link a new device of this person's becomes one of
     /// theirs, up over the shell.
     pub(crate) fn open_pair_device(&self) {
-        let Some(seat) = self.pair_device.as_ref() else {
+        let Some(state) = self.pair_device.as_ref() else {
             return;
         };
         let now = ui::time::unix_now_ms();
-        seat.show(self.adding.device(self.pairing_place(), now));
-        seat.presentation().open(false);
+        state.show(self.adding.device(self.pairing_place(), now));
+        state.presentation().open(false);
         self.wait_for_new_device();
     }
 
@@ -188,8 +188,8 @@ impl crate::Shared {
     /// When the sheet next changes on its own while it is up: its minutes count down, and the link
     /// that ran out gives way to a new one.
     pub(crate) fn pair_device_deadline(&self) -> Option<std::time::Instant> {
-        let seat = self.pair_device.as_ref()?;
-        if !seat.presentation().is_open() {
+        let state = self.pair_device.as_ref()?;
+        if !state.presentation().is_open() {
             return None;
         }
         let waiting = self.adding.waiting()?;
@@ -393,14 +393,14 @@ mod tests {
         }
 
         phase the_seat_shows_the_link_the_session_made;
-        // The sheet the session hands the seat is the one it shows: a press copies exactly the link
+        // The sheet the session hands the state is the one it shows: a press copies exactly the link
         // on screen, never one that was replaced under it.
         {
             let (adding, _) = adding();
-            let seat = AddDeviceSeat::default();
-            seat.presentation().open(false);
-            follow(Some(&seat), &adding, || Ok(place()), START);
-            let shown = seat.device();
+            let state = AddDeviceState::default();
+            state.presentation().open(false);
+            follow(Some(&state), &adding, || Ok(place()), START);
+            let shown = state.device();
             assert_eq!(shown, adding.device(Ok(place()), START));
             assert!(shown.link.contains("?pair="));
         }

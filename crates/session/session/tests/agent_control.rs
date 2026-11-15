@@ -39,7 +39,7 @@ fn session(root: &std::path::Path, socket: &std::path::Path) -> (Session, Questi
 }
 
 /// An agent's own program at the door: it introduces itself, reads its answer, and stays connected
-/// — its presence is what an agent's seat is served for.
+/// — its presence is what an agent's state is served for.
 struct Program {
     served: mpsc::Receiver<Value>,
     leave: mpsc::Sender<()>,
@@ -115,7 +115,7 @@ fn press(session: &mut Session, effect: &str, args: Value) {
     };
     let handle = session
         .portal()
-        .and_then(tilo_sheets::portal::PortalSeat::dialog)
+        .and_then(tilo_sheets::portal::PortalState::dialog)
         .map(|dialog| dialog.handle);
     if let Some(handle) = handle
         && !args.contains_key("handle")
@@ -239,7 +239,7 @@ fn a_send_lists_the_workspaces_agents_and_people() {
     program.end();
 }
 
-/// Ask for a seat on the control protocol and read the refusal: it names the protocol as served to
+/// Ask for a state on the control protocol and read the refusal: it names the protocol as served to
 /// a program inside an app this session started, and to nothing else.
 #[track_caller]
 fn refused_control(session: &mut Session, socket: &std::path::Path, when: &str) {

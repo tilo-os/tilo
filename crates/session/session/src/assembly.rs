@@ -210,9 +210,9 @@ pub(crate) struct Shared {
     /// for apps and services, and the one deleting a workspace asks, by
     /// their seats.
     #[cfg(target_os = "linux")]
-    pub(crate) power: Option<tilo_sheets::power::PowerSeat>,
+    pub(crate) power: Option<tilo_sheets::power::PowerState>,
     #[cfg(target_os = "linux")]
-    pub(crate) workspace_settings: Option<tilo_sheets::workspace_settings::WorkspaceSettingsSeat>,
+    pub(crate) workspace_settings: Option<tilo_sheets::workspace_settings::WorkspaceSettingsState>,
     /// The session revision workspace settings was last fed at: its panes are
     /// rebuilt when the session changed under it.
     pub(crate) ws_settings_fed: Cell<Option<u64>>,
@@ -229,28 +229,28 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) workspace_tabs: crate::workspace_settings::WorkspaceTabs,
     #[cfg(target_os = "linux")]
-    pub(crate) portal: Option<tilo_sheets::portal::PortalSeat>,
+    pub(crate) portal: Option<tilo_sheets::portal::PortalState>,
     #[cfg(target_os = "linux")]
-    pub(crate) file_picker: Option<tilo_sheets::file_picker::FilePickerSeat>,
+    pub(crate) file_picker: Option<tilo_sheets::file_picker::FilePickerState>,
     /// The question about a display change, which stands on every display
     /// at once so it is seen even when the change blanked one of them.
     #[cfg(target_os = "linux")]
-    pub(crate) display_confirm: Option<tilo_sheets::display_confirm::ConfirmSeat>,
+    pub(crate) display_confirm: Option<tilo_sheets::display_confirm::ConfirmState>,
     /// The workspaces this computer may join or open.
     #[cfg(target_os = "linux")]
-    pub(crate) directory: Option<tilo_sheets::directory::DirectorySeat>,
+    pub(crate) directory: Option<tilo_sheets::directory::DirectoryState>,
     /// Inviting people: the sheet a link into the workspace in front is made
     /// from, and what it made in this opening.
-    pub(crate) invite: Option<tilo_sheets::invite::InviteSeat>,
+    pub(crate) invite: Option<tilo_sheets::invite::InviteState>,
     pub(crate) inviting: crate::invite::Invite,
     /// Adding a device: the sheet the link a new device becomes one of the person's is shown in,
     /// and the link it shows, renewed as it runs out.
-    pub(crate) pair_device: Option<tilo_sheets::pair_device::AddDeviceSeat>,
+    pub(crate) pair_device: Option<tilo_sheets::pair_device::AddDeviceState>,
     #[cfg(target_os = "linux")]
     pub(crate) adding: crate::pair_device::Adding,
     /// The question deleting a workspace asks, and the workspace it is about.
     #[cfg(target_os = "linux")]
-    pub(crate) delete_workspace: Option<tilo_sheets::delete_workspace::DeleteWorkspaceSeat>,
+    pub(crate) delete_workspace: Option<tilo_sheets::delete_workspace::DeleteWorkspaceState>,
     pub(crate) delete_workspace_ask: RefCell<Option<tilo_desktop_model::WorkspaceId>>,
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
@@ -437,7 +437,7 @@ pub(crate) struct Shared {
     pub(crate) session_doors: std::sync::Arc<crate::mcp_server::SessionDoors>,
     /// The MCP server toward the person's other devices.
     #[cfg(target_os = "linux")]
-    pub(crate) remote: std::sync::Arc<crate::remote_door::Remote>,
+    pub(crate) device_agents: std::sync::Arc<crate::device_mcp::DeviceAgents>,
     /// The installed folder importer's side of this login, once the session
     /// serves it: what it asks on whether first use is over, and the review
     /// it saved to be opened when it is.

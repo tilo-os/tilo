@@ -72,7 +72,7 @@ impl Sheet {
         Self {
             questions,
             sessions,
-            unasked: crate::remote_door::Remote::acts_without_asking,
+            unasked: crate::device_mcp::DeviceAgents::acts_without_asking,
         }
     }
 

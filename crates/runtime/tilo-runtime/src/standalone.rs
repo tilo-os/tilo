@@ -32,7 +32,7 @@ mod workspace;
 mod workspace_keys;
 mod workspaces;
 
-use crate::remote_door::PersonalDevices;
+use crate::device_mcp::PersonalDevices;
 use crate::{
     BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, Joiner, RuntimeServices, apps, profile, unix,
 };
@@ -101,7 +101,7 @@ pub struct Standalone {
     _personal_router: iroh::protocol::Router,
     /// The MCP servers of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
-    remote_doors: Arc<crate::remote_door::Doors>,
+    other_devices: Arc<crate::device_mcp::OtherDevices>,
     _lock: advisory_lock::FileLock,
 }
 
@@ -261,7 +261,7 @@ impl Standalone {
         Ok(Self {
             policy_origin,
             broker,
-            remote_doors: remote_doors(&joined, &personal.sync),
+            other_devices: other_devices(&joined, &personal.sync),
             joined,
             _workspace_keys: group_keys,
             _identity: identity_broker,
@@ -542,8 +542,8 @@ impl RuntimeServices for Standalone {
         )))
     }
 
-    fn remote_doors(&self) -> Option<Arc<crate::remote_door::Doors>> {
-        Some(Arc::clone(&self.remote_doors))
+    fn other_devices(&self) -> Option<Arc<crate::device_mcp::OtherDevices>> {
+        Some(Arc::clone(&self.other_devices))
     }
 }
 
@@ -1065,10 +1065,10 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
 
 /// The MCP servers of the person's other devices, dialed from `joined`'s
 /// endpoint as the device the person's store `personal` certifies.
-fn remote_doors(joined: &Joined, personal: &PersonalSync) -> Arc<crate::remote_door::Doors> {
-    Arc::new(crate::remote_door::Doors::new(
+fn other_devices(joined: &Joined, personal: &PersonalSync) -> Arc<crate::device_mcp::OtherDevices> {
+    Arc::new(crate::device_mcp::OtherDevices::new(
         joined.endpoint(),
-        Arc::new(crate::remote_door::PersonalDevices::new(personal.clone())),
+        Arc::new(crate::device_mcp::PersonalDevices::new(personal.clone())),
         tilo_rt::app().handle().clone(),
     ))
 }

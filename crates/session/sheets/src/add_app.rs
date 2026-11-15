@@ -15,7 +15,7 @@
 //! Any other way of closing it is an answer too: that file is not asked
 //! about again. The shell carries the answer out through the downloaded
 //! programs' own registry and keeps the sheet current through
-//! [`AddSeat`].
+//! [`AddState`].
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -26,7 +26,7 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::widget::{Column, Element, ListRow, MediaAspect, MediaSource, ModalDialog, Toggle};
 
-use crate::presentation::{Presentation, Seat, presented};
+use crate::presentation::{Presentation, SheetState, presented};
 use crate::t;
 
 /// The app the shell mounts the sheet as.
@@ -106,7 +106,7 @@ pub enum AddAppEffect {
 /// What the shell lends the sheet: which program is asked about, the switch
 /// beside it, and what the person answered.
 #[derive(Clone, Default)]
-pub struct AddSeat {
+pub struct AddState {
     presentation: Presentation,
     offer: Rc<RefCell<Option<Offer>>>,
     shown: Rc<RefCell<Option<LocalState<Offer>>>>,
@@ -114,21 +114,21 @@ pub struct AddSeat {
     asked: Rc<RefCell<Vec<AddAppEffect>>>,
 }
 
-impl std::fmt::Debug for AddSeat {
+impl std::fmt::Debug for AddState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AddSeat")
+        f.debug_struct("AddState")
             .field("offer", &self.offer.borrow())
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for AddSeat {
+impl crate::SheetState for AddState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl AddSeat {
+impl AddState {
     /// Ask about `offer`, as a new question: the switch starts off, as
     /// adding where the file is does, whether or not this program was asked
     /// about before.
@@ -194,22 +194,22 @@ impl ResourceApp for AddApp {
     }
 
     fn view(cx: &mut ViewCx<AddToApps>) -> Element {
-        let seat = cx.take_lent::<AddSeat>();
-        let initial = match &seat {
-            Some(seat) => seat.offer(),
+        let state = cx.take_lent::<AddState>();
+        let initial = match &state {
+            Some(state) => state.offer(),
             None => cx.fixture::<Offer>().map(|offer| (*offer).clone()),
         };
         let shown = cx.local(initial.unwrap_or_default());
         let moved = cx.local(false);
-        if let Some(seat) = &seat {
-            *seat.shown.borrow_mut() = Some(shown.clone());
-            *seat.moved.borrow_mut() = Some(moved.clone());
+        if let Some(state) = &state {
+            *state.shown.borrow_mut() = Some(shown.clone());
+            *state.moved.borrow_mut() = Some(moved.clone());
         }
-        let answering = seat.clone();
-        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
+        let answering = state.clone();
+        let presentation = state.as_ref().map(|state| state.presentation().clone());
         cx.effects(move |effect: AddAppEffect, _cx| match &answering {
-            Some(seat) => {
-                seat.asked.borrow_mut().push(effect);
+            Some(state) => {
+                state.asked.borrow_mut().push(effect);
                 Ok(Effected::done())
             }
             None => Err("no apps to add this program to here".to_owned()),

@@ -97,7 +97,7 @@ fn the_door() -> mcp_server::Server {
         grants: vec![mcp_server::Grant {
             id: "g1".into(),
             agent: "Claude Code".into(),
-            runs: vec![mcp_server::Run {
+            sessions: vec![mcp_server::AgentSession {
                 name: "Claude Code #2".into(),
                 started_ms: 1,
             }],
@@ -170,7 +170,7 @@ fn each_agent_is_published_with_its_card_and_its_commands() {
 }
 
 #[test]
-fn stopping_an_agent_from_its_face_opens_its_card_and_ends_its_run() {
+fn stopping_an_agent_from_its_face_opens_its_card_and_ends_its_session() {
     let mut app = opened();
     app.call_on(AGENT, "stop-agent", json!({}))
         .expect("stop the agent");
@@ -178,8 +178,8 @@ fn stopping_an_agent_from_its_face_opens_its_card_and_ends_its_run() {
     let stop = find(&requests, &mcp_server::target(mcp_server::STOP));
     assert_eq!(
         argument(&stop),
-        json!({"grant": "g1", "run": "Claude Code #2"}),
-        "the working run ends, its grant kept"
+        json!({"grant": "g1", "session": "Claude Code #2"}),
+        "the working session ends, its grant kept"
     );
     assert!(
         app.harness().targets().contains_key("console-agent-head"),

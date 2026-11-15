@@ -333,7 +333,7 @@ struct Local {
 /// What the shell lends the sheet: whether it is up, what it shows, and
 /// where its requests go.
 #[derive(Clone, Default)]
-pub struct WorkspaceSettingsSeat {
+pub struct WorkspaceSettingsState {
     presentation: Presentation,
     settings: Rc<RefCell<Settings>>,
     shown: Rc<RefCell<Option<LocalState<Settings>>>>,
@@ -344,21 +344,21 @@ pub struct WorkspaceSettingsSeat {
     notice: Rc<RefCell<Option<Notice>>>,
 }
 
-impl std::fmt::Debug for WorkspaceSettingsSeat {
+impl std::fmt::Debug for WorkspaceSettingsState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WorkspaceSettingsSeat")
+        f.debug_struct("WorkspaceSettingsState")
             .field("presentation", &self.presentation)
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for WorkspaceSettingsSeat {
+impl crate::SheetState for WorkspaceSettingsState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl WorkspaceSettingsSeat {
+impl WorkspaceSettingsState {
     /// Show `settings`, or the same settings as they stand now. A name the
     /// person has not started changing follows the workspace's.
     pub fn show(&self, settings: Settings) {
@@ -455,9 +455,9 @@ impl ResourceApp for WorkspaceSettingsApp {
     }
 
     fn view(cx: &mut ViewCx<WorkspaceSettings>) -> Element {
-        let seat = cx.take_lent::<WorkspaceSettingsSeat>();
-        let initial = match &seat {
-            Some(seat) => seat.settings(),
+        let state = cx.take_lent::<WorkspaceSettingsState>();
+        let initial = match &state {
+            Some(state) => state.settings(),
             None => cx
                 .fixture::<Settings>()
                 .map(|settings| (*settings).clone())
@@ -471,15 +471,15 @@ impl ResourceApp for WorkspaceSettingsApp {
         let shown = cx.local(initial);
         let staged = cx.fixture::<Local>().map(|local| (*local).clone());
         let local = cx.local(staged.unwrap_or_default());
-        if let Some(seat) = &seat {
-            *seat.shown.borrow_mut() = Some(shown.clone());
-            *seat.name.borrow_mut() = Some(name.clone());
-            seat.presentation.wake_with(cx.waker());
+        if let Some(state) = &state {
+            *state.shown.borrow_mut() = Some(shown.clone());
+            *state.name.borrow_mut() = Some(name.clone());
+            state.presentation.wake_with(cx.waker());
         }
-        let asking = seat.clone();
+        let asking = state.clone();
         cx.effects(move |effect: WorkspaceSettingsEffect, _cx| match &asking {
-            Some(seat) => {
-                seat.ask(effect);
+            Some(state) => {
+                state.ask(effect);
                 Ok(Effected::done())
             }
             None => Err("there is no workspace to change here".to_owned()),
@@ -493,7 +493,7 @@ impl ResourceApp for WorkspaceSettingsApp {
             new_colour,
             limit,
             local: local.clone(),
-            seat,
+            state,
         };
         let sheet_parts = parts.clone();
         let content = cx.switch(&shown, move |cx, settings| {
@@ -687,7 +687,7 @@ struct Parts {
     limit: LocalState<String>,
     /// What the sheet keeps to itself while it is up.
     local: LocalState<Local>,
-    seat: Option<WorkspaceSettingsSeat>,
+    state: Option<WorkspaceSettingsState>,
 }
 
 impl Parts {
@@ -706,8 +706,8 @@ impl Parts {
             self.new_colour.set(String::new());
             self.local.update(|local| local.creating = false);
         }
-        match &self.seat {
-            Some(seat) if self.dispatch.is_own_gesture(&effect) => seat.ask(effect),
+        match &self.state {
+            Some(state) if self.dispatch.is_own_gesture(&effect) => state.ask(effect),
             _ => self.dispatch.effect(&effect),
         }
     }
@@ -874,7 +874,7 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
     }
     let body = body.push(pane);
     let close = parts.clone();
-    let presentation = parts.seat.as_ref().map(crate::Seat::presentation);
+    let presentation = parts.state.as_ref().map(crate::SheetState::presentation);
     Box::new(presented(
         presentation,
         ModalDialog::new(settings.name.clone(), body)
@@ -931,7 +931,7 @@ fn decision(settings: &Settings, confirm: &Confirm, parts: &Parts) -> Element {
         .with_intrinsic_height()
         .push(general::caption(&subject));
     let (keep, going, dismissed) = (parts.clone(), parts.clone(), parts.clone());
-    let presentation = parts.seat.as_ref().map(crate::Seat::presentation);
+    let presentation = parts.state.as_ref().map(crate::SheetState::presentation);
     let mut dialog = ModalDialog::new(question.title.clone(), body)
         .with_test_id("ws-settings-decision")
         .with_description(question.description.clone())

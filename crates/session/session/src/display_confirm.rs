@@ -6,7 +6,7 @@
 //! and Settings, whose change waits in its settings
 //! ([`DisplayTransaction`](settings_store::hardware::DisplayTransaction)).
 //! Both are one question here, on the sheet
-//! of [`tilo_sheets::display_confirm`]: one seat, one question, one place that
+//! of [`tilo_sheets::display_confirm`]: one state, one question, one place that
 //! answers it. The question stands on every display that is on, so it is
 //! seen even when the change blanked another one, and the countdown is read
 //! again on every settle pass: nothing counts down on a timer of its own.
@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
 use tilo_compositor::{Compositor, DisplayEvent};
 
-use tilo_sheets::Seat as _;
-use tilo_sheets::display_confirm::{self, ConfirmEffect, ConfirmSeat};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::display_confirm::{self, ConfirmEffect, ConfirmState};
 
 use crate::display_settings::{self, Displays};
 use crate::i18n::{t, t_args};
@@ -69,18 +69,18 @@ impl Confirmation {
     pub(crate) fn follow(
         &mut self,
         compositor: &mut Compositor,
-        seat: &ConfirmSeat,
+        state: &ConfirmState,
         displays: &Displays,
         notices: &dyn Notices,
     ) {
         for event in compositor.take_display_events() {
             self.hear(event, notices);
         }
-        for effect in seat.take_asked() {
+        for effect in state.take_asked() {
             self.answer(effect, compositor, displays);
         }
         self.follow_settings(displays);
-        self.tell(seat);
+        self.tell(state);
     }
 
     /// What the compositor reported about display tools' changes.
@@ -206,8 +206,8 @@ impl Confirmation {
     /// Say the question, or take it down. The countdown is read from the change's deadline here, on
     /// every pass: it is the loop's own wait that brings the next reading, never a clock the
     /// question runs.
-    fn tell(&self, seat: &ConfirmSeat) {
-        let presentation = seat.presentation();
+    fn tell(&self, state: &ConfirmState) {
+        let presentation = state.presentation();
         let Some(asked) = &self.asked else {
             if presentation.is_drawn() {
                 presentation.close();
@@ -229,7 +229,7 @@ impl Confirmation {
             Change::Tool { tool, .. } => tool.as_ref().map(|tool| tool.name().to_owned()),
             Change::Settings { .. } => None,
         };
-        seat.asking(
+        state.asking(
             tool,
             display_confirm::status(seconds, asked.answering),
             asked.answering,

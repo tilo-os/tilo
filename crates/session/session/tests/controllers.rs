@@ -32,7 +32,7 @@ use tilo_session::controller_nav::NavDirection;
 use tilo_session::controllers::{ControllerId, ControllerWake, GamepadSources, Source};
 use tilo_session::surfaces::Surface as SurfaceSpec;
 use tilo_session::{Options, Session, SessionConfig, quick_settings};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{Guide, Modality};
 use tilo_test_env::ScopedEnv;
 use ui::ControllerFamily;
@@ -211,7 +211,7 @@ fn guide(session: &Session) -> Guide {
 fn guide_up(session: &Session) -> bool {
     session
         .shortcut_guide()
-        .is_some_and(|seat| seat.presentation().is_open())
+        .is_some_and(|state| state.presentation().is_open())
 }
 
 /// What a binding spells: `binding(&["Super"], "left")` .

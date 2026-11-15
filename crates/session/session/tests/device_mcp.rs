@@ -1,11 +1,11 @@
 //! An agent on another of the person's devices at this desktop's MCP server,
-//! over iroh: the door this session answers on (`Session::remote_door`, what
-//! its endpoint serves on `tilo_runtime::remote_door::ALPN`) admits only the
+//! over iroh: the server this session answers on (`Session::device_mcp`, what
+//! its endpoint serves on `tilo_runtime::device_mcp::ALPN`) admits only the
 //! person's own devices, and an agent from one is asked about on the same
 //! sheet as a program of this login — named after the device it came from —
 //! unless the person let agents from their other devices in on this device.
 //! Nobody answering admits nothing, the agent leaving withdraws the question,
-//! and the person's Stop on its seat ends its connection. Once in, a step its
+//! and the person's Stop on its state ends its connection. Once in, a step its
 //! run asks about is put to the person on the same sheet, unless they let such
 //! agents act without asking on this device too.
 
@@ -35,7 +35,7 @@ use tilo_actions::remote::workspace_activity as wire;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_peer_state::owner::{self, testing};
 use tilo_peer_state::{PersonalStore, PersonalSync, TransportOrigin};
-use tilo_runtime::remote_door::{ALPN, PersonalDevices, agent_id, open};
+use tilo_runtime::device_mcp::{ALPN, PersonalDevices, agent_id, open};
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
@@ -138,7 +138,7 @@ impl Person {
 }
 
 /// This box: its headless session with the MCP server open, the questions it asks the person, and
-/// its endpoint answering the door toward the person's other devices.
+/// its endpoint answering the server toward the person's other devices.
 struct ThisBox {
     session: Session,
     questions: Questions,
@@ -175,10 +175,12 @@ impl ThisBox {
             .enable_all()
             .build()
             .unwrap();
-        let door = session.remote_door(Arc::new(PersonalDevices::new(person.store())));
+        let server = session.device_mcp(Arc::new(PersonalDevices::new(person.store())));
         let (endpoint, router) = runtime.block_on(async {
             let endpoint = endpoint(&person.this_box.0).await;
-            let router = Router::builder(endpoint.clone()).accept(ALPN, door).spawn();
+            let router = Router::builder(endpoint.clone())
+                .accept(ALPN, server)
+                .spawn();
             (endpoint, router)
         });
         Self {
@@ -194,7 +196,7 @@ impl ThisBox {
         }
     }
 
-    /// Dial this box's door from the device `key`, showing `certificate`,
+    /// Dial this box's server from the device `key`, showing `certificate`,
     /// asking for `workspace`.
     fn dial(
         &self,
@@ -271,7 +273,7 @@ impl ThisBox {
         let dialog = self
             .session
             .portal()
-            .and_then(tilo_sheets::portal::PortalSeat::dialog)
+            .and_then(tilo_sheets::portal::PortalState::dialog)
             .expect("a question is up");
         (dialog.heading, dialog.title)
     }
@@ -362,7 +364,7 @@ fn came_from(session: &Session, name: &str) -> Vec<CameFrom> {
     from
 }
 
-/// The device Notes was told the agent that took `taken` works from: the one the door verified,
+/// The device Notes was told the agent that took `taken` works from: the one the server verified,
 /// said beside the agent and nowhere else. Empty for an agent of this device.
 fn told_device(taken: &runtime_collab::Invocation) -> CameFrom {
     let context: Value = serde_json::from_str(&taken.context_json).unwrap_or_default();
@@ -404,7 +406,7 @@ fn an_agent_from_another_device_waits_for_the_person_and_leaving_withdraws_it() 
     // as for any other client.
     let agent = b
         .dial(&person.laptop, Some("dddddddd-dddd-4ddd-8ddd-dddddddddddd"))
-        .expect("this box's door opens for the person's laptop");
+        .expect("this box's server admits the person's laptop");
     agent.send(initialize());
     b.pump(|b| b.questions.pending().len() == 1);
     let (who, what) = b.asked();
@@ -446,7 +448,7 @@ fn an_agent_the_person_lets_in_works_here_as_their_agent_via_its_device_until_th
     );
     b.pump(|b| b.shown() == [SHOWN.to_owned()]);
     // The shell calls it as it calls any connection of that client, and says beside the name
-    // the device it came from, as the door verified it.
+    // the device it came from, as the server verified it.
     assert_eq!(came_from(&b.session, SHOWN), [device_of(&person.laptop.1)]);
 
     // The same tools as a program of this login, and the person's devices.
@@ -480,7 +482,7 @@ fn an_agent_the_person_lets_in_works_here_as_their_agent_via_its_device_until_th
     let done = b.answer(&agent).expect("an answer");
     assert_eq!(done["result"]["isError"], false, "{done}");
 
-    // The person's Stop on its seat ends the connection on the other device.
+    // The person's Stop on its state ends the connection on the other device.
     b.session
         .invoke(
             "session:agents",
@@ -600,7 +602,7 @@ impl ThisComputer {
         }
     }
 
-    /// The person's own store as this box keeps it: the devices and keys the door admits.
+    /// The person's own store as this box keeps it: the devices and keys the server admits.
     fn store(&self) -> PersonalSync {
         let store = PersonalStore::open(
             self.cert.user_public_key,
@@ -750,7 +752,7 @@ fn dial_in(
             Some(&computer.workspace),
             false,
         ))
-        .expect("the desktop's door opens for the person's key");
+        .expect("the desktop's server admits the person's key");
     let (ours, theirs) = UnixStream::pair().unwrap();
     theirs.set_nonblocking(true).unwrap();
     let theirs = {
@@ -820,7 +822,7 @@ fn back_to_its_title(session: &mut Session, agent: &Agent, note: &str) {
 }
 
 /// A key elsewhere — an agent's grant the person's root certified, on no device of theirs —
-/// enters the workspace this desktop holds over iroh, through the same door: the person lets it
+/// enters the workspace this desktop holds over iroh, through the same server: the person lets it
 /// in, and it renames a note as a step of its run, on this real session. The notes are the
 /// session's own records, which no app's process holds, and still offer their History and their
 /// undo: History names the run, the agent's `undo task` takes its step back, and the person's
@@ -829,11 +831,11 @@ fn back_to_its_title(session: &mut Session, agent: &Agent, note: &str) {
 fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds() {
     let _settled = ui::motion::testing::settled();
     let computer = ThisComputer::new();
-    let seated = hex::encode(computer.cert.user_public_key);
+    let person = hex::encode(computer.cert.user_public_key);
     let root = private_home();
     let questions = Questions::new();
     // The notes this person keeps here, one of them the test renames and reads back.
-    let (notebook, notes) = crate::common::notebook_of(&seated, &[crate::common::NOTE_TITLE]);
+    let (notebook, notes) = crate::common::notebook_of(&person, &[crate::common::NOTE_TITLE]);
     let note = notes.into_iter().next().expect("a note");
     let book = tilo_service::Service::resources(&notebook)
         .into_iter()
@@ -843,7 +845,7 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
         .as_str()
         .to_owned();
     let mut session = crate::common::headless(Options {
-        person: seated.clone(),
+        person: person.clone(),
         collab: true,
         state: Some(computer.state.path().to_path_buf()),
         questions: Some(questions.clone()),
@@ -855,7 +857,7 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
     // The shell shows the workspace this computer holds, as its own desktop does.
     session
         .handle()
-        .replace_tree(layout(&computer.workspace, &seated));
+        .replace_tree(layout(&computer.workspace, &person));
     crate::common::until(
         &mut session,
         "the workspace this computer holds",
@@ -867,10 +869,12 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
         .enable_all()
         .build()
         .unwrap();
-    let door = session.remote_door(Arc::new(PersonalDevices::new(computer.store())));
+    let server = session.device_mcp(Arc::new(PersonalDevices::new(computer.store())));
     let (this_box, _router) = runtime.block_on(async {
         let endpoint = endpoint(&computer.key).await;
-        let router = Router::builder(endpoint.clone()).accept(ALPN, door).spawn();
+        let router = Router::builder(endpoint.clone())
+            .accept(ALPN, server)
+            .spawn();
         (endpoint, router)
     });
     let agent = dial_in(&runtime, &computer, &this_box);
@@ -930,7 +934,7 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
         title.starts_with("Claude Code"),
         "History names the later run: {title}"
     );
-    let listed = listed_run(&mut session, &computer.workspace, &seated, &run);
+    let listed = listed_run(&mut session, &computer.workspace, &person, &run);
     undo_from_activity(&mut session, &listed);
     back_to_its_title(&mut session, &agent, &note);
     agent.leave();
@@ -1035,7 +1039,7 @@ fn laptop_of(computer: &ThisComputer) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-/// This computer's shell with Notes running in the workspace it holds, and the door toward the
+/// This computer's shell with Notes running in the workspace it holds, and the server toward the
 /// person's other devices answered on its endpoint: the session, the questions it puts to the
 /// person, what the app took, and the laptop the agent runs on.
 struct ShellWithNotes {
@@ -1046,7 +1050,7 @@ struct ShellWithNotes {
     laptop: (SigningKey, DeviceCert),
     runtime: tokio::runtime::Runtime,
     this_box: Endpoint,
-    /// The door of this login's own programs.
+    /// The server of this login's own programs.
     socket: std::path::PathBuf,
     _router: Router,
     _root: tempfile::TempDir,
@@ -1059,7 +1063,7 @@ impl ShellWithNotes {
         let computer = ThisComputer::new();
         // Notes' package names its surface, as the launcher does for an app it starts.
         ui::app_surface::register_package(NOTES_APP, NOTES_SURFACE);
-        let seated = hex::encode(computer.cert.user_public_key);
+        let person = hex::encode(computer.cert.user_public_key);
         let root = private_home();
         let questions = Questions::new();
         let plane = root.path().join("plane.sock");
@@ -1069,7 +1073,7 @@ impl ShellWithNotes {
         let launches = Arc::new(tilo_session::Launches::default());
         launches.started(std::process::id(), NOTES_APP, &computer.workspace, true);
         let mut session = crate::common::headless(Options {
-            person: seated.clone(),
+            person: person.clone(),
             collab: true,
             state: Some(computer.state.path().to_path_buf()),
             questions: Some(questions.clone()),
@@ -1083,7 +1087,7 @@ impl ShellWithNotes {
         });
         session
             .handle()
-            .replace_tree(layout(&computer.workspace, &seated));
+            .replace_tree(layout(&computer.workspace, &person));
         crate::common::until(
             &mut session,
             "the workspace this computer holds",
@@ -1114,10 +1118,12 @@ impl ShellWithNotes {
             .enable_all()
             .build()
             .unwrap();
-        let door = session.remote_door(Arc::new(PersonalDevices::new(store)));
+        let server = session.device_mcp(Arc::new(PersonalDevices::new(store)));
         let (this_box, router) = runtime.block_on(async {
             let endpoint = endpoint(&computer.key).await;
-            let router = Router::builder(endpoint.clone()).accept(ALPN, door).spawn();
+            let router = Router::builder(endpoint.clone())
+                .accept(ALPN, server)
+                .spawn();
             (endpoint, router)
         });
         Self {
@@ -1149,7 +1155,7 @@ impl ShellWithNotes {
         });
     }
 
-    /// The agent on `device`, dialing this computer's door and naming the workspace it holds.
+    /// The agent on `device`, dialing this computer's server and naming the workspace it holds.
     fn dial(&self, (key, certificate): &(SigningKey, DeviceCert)) -> Result<Agent, String> {
         let dialing = self.runtime.block_on(endpoint(key));
         let dialed = self.runtime.block_on(open(
@@ -1396,7 +1402,7 @@ fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person()
     );
     let agent = shell
         .dial(&shell.laptop)
-        .expect("the door opens for the laptop");
+        .expect("the server admits the laptop");
     agent.send(initialize());
     let introduced = answer(&mut shell.session, &agent);
     assert!(
@@ -1448,7 +1454,7 @@ fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person()
 /// With their steps let go unasked as well, a step an agent from another of the person's devices
 /// would ask about is allowed by the setting: no sheet goes up, and the step is taken under the
 /// agent's session, as one the person allowed is. A program of this login is still asked about
-/// its step, and a device of someone else's is still refused at the door.
+/// its step, and a device of someone else's is still refused at the server.
 #[test]
 fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_question() {
     let _settled = ui::motion::testing::settled();
@@ -1463,7 +1469,7 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
     );
     let agent = shell
         .dial(&shell.laptop)
-        .expect("the door opens for the laptop");
+        .expect("the server admits the laptop");
     agent.send(initialize());
     let introduced = answer(&mut shell.session, &agent);
     assert!(
@@ -1492,7 +1498,7 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
         "Notes is told the device the agent works from"
     );
 
-    // A program of this login is asked about, at the door and for its step.
+    // A program of this login is asked about, at the server and for its step.
     let local = Agent::over(UnixStream::connect(&shell.socket).unwrap(), None);
     local.send(initialize());
     crate::common::until(
@@ -1540,7 +1546,7 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
     );
     local.leave();
 
-    // A device of someone else's is refused at the door, the settings notwithstanding.
+    // A device of someone else's is refused at the server, the settings notwithstanding.
     let stranger = SigningKey::from_bytes(&[0x22; 32]);
     let theirs = device(&stranger, 4, "Their laptop");
     let refused = shell.dial(&theirs).map(|_| ()).unwrap_err();

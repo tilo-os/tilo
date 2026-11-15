@@ -8,7 +8,7 @@
 //!
 //! The app shows setup and asks; the shell decides. The shell keeps the
 //! identity work, the crash journal, the helpers and every secret's custody,
-//! and lends the app an [`OnboardingSeat`]: the [`Page`] to show, the
+//! and lends the app an [`OnboardingState`]: the [`Page`] to show, the
 //! buffers secrets are typed into, and a queue for what the person asked
 //! ([`OnboardingEffect`]). Every action is published, so setup can be driven
 //! without a screen; the ones that hand over a secret or choose where
@@ -24,7 +24,7 @@ mod compose;
 pub mod copy;
 mod effect;
 mod page;
-mod seat;
+mod state;
 
 pub use app::{APP_ID, Onboarding, OnboardingApp, definition};
 pub use effect::{CHOICES, FIELDS, OnboardingEffect, SECRET_FIELDS};
@@ -33,6 +33,6 @@ pub use page::{
     OnboardingContext, PackState, Page, Prepared, Screen, SecretText, Step, TourPage, Transfer,
     WordsCheck,
 };
-pub use seat::{OnboardingSeat, SecretBuffer, Secrets, WordMistakes};
+pub use state::{OnboardingState, SecretBuffer, Secrets, WordMistakes};
 
 ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);

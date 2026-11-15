@@ -23,7 +23,7 @@ use tilo_compositor::{Compositor, InputEvent, OutputConfig};
 use tilo_desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND, SHELL_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::WindowWidth;
 use tilo_session::{Options, Session};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
 
 const WIDTH: i32 = 1000;

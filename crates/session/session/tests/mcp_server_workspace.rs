@@ -37,7 +37,7 @@ use runtime_portal::environment_door::{self, Lease, Request};
 use serde_json::{Value, json};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_peer_state::{PersonalStore, PersonalSync};
-use tilo_runtime::remote_door::{ALPN, PersonalDevices, open};
+use tilo_runtime::device_mcp::{ALPN, PersonalDevices, open};
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
@@ -363,7 +363,7 @@ impl Shell {
             .enable_all()
             .build()
             .unwrap();
-        let remote = session.remote_door(Arc::new(PersonalDevices::new(person.store())));
+        let remote = session.device_mcp(Arc::new(PersonalDevices::new(person.store())));
         let (endpoint, router) = runtime.block_on(async {
             let endpoint = endpoint(&person.this_box.0).await;
             let router = Router::builder(endpoint.clone())
@@ -513,7 +513,7 @@ impl Shell {
                 .then(|| {
                     session
                         .portal()
-                        .and_then(tilo_sheets::portal::PortalSeat::dialog)
+                        .and_then(tilo_sheets::portal::PortalState::dialog)
                 })
                 .flatten()
         });

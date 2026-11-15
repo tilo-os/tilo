@@ -34,12 +34,12 @@ use tilo_portal::trigger::Trigger;
 use tilo_portal::usb::UsbQuestion;
 use tilo_portal::wallpaper::WallpaperQuestion;
 use tilo_service::{Answer, Question, Questions, Services};
-use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerSeat, FileRequest, FileType};
+use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerState, FileRequest, FileType};
 use tilo_sheets::portal::{
-    Body, Device, Dialog, DraftRow, DraftValue, Field, PortalEffect, PortalSeat, Prompt,
+    Body, Device, Dialog, DraftRow, DraftValue, Field, PortalEffect, PortalState, Prompt,
     PromptField, PromptKind, Remember, Shortcut,
 };
-use tilo_sheets::{Seat as _, word, words};
+use tilo_sheets::{SheetState as _, word, words};
 
 /// The sheet that asked the person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,8 +137,8 @@ struct Shown {
 /// The services' questions on the sheets.
 pub(crate) struct Asker {
     questions: Option<Questions>,
-    portal: Option<PortalSeat>,
-    picker: Option<FilePickerSeat>,
+    portal: Option<PortalState>,
+    picker: Option<FilePickerState>,
     /// What the session publishes, to take an allowance back through the portal's own action.
     services: Rc<RefCell<Services>>,
     shown: RefCell<Option<Shown>>,
@@ -149,8 +149,8 @@ impl Asker {
     /// `services` .
     pub(crate) const fn new(
         questions: Option<Questions>,
-        portal: Option<PortalSeat>,
-        picker: Option<FilePickerSeat>,
+        portal: Option<PortalState>,
+        picker: Option<FilePickerState>,
         services: Rc<RefCell<Services>>,
     ) -> Self {
         Self {
@@ -207,7 +207,8 @@ impl Asker {
             };
             match shown.sheet {
                 Sheet::Files => {
-                    if let Some(answer) = self.picker.as_ref().and_then(FilePickerSeat::take_answer)
+                    if let Some(answer) =
+                        self.picker.as_ref().and_then(FilePickerState::take_answer)
                     {
                         decision = Some(match answer {
                             FileAnswer::Chosen(paths) => Decision::Answer(Answer {
@@ -481,7 +482,7 @@ impl Shown {
     }
 
     /// Take `effect` into the sheet, and what came of it.
-    fn apply(&mut self, effect: &PortalEffect, seat: &PortalSeat) -> Step {
+    fn apply(&mut self, effect: &PortalEffect, state: &PortalState) -> Step {
         match effect {
             PortalEffect::Select { index, .. } | PortalEffect::Icon { index, .. } => {
                 self.highlight(*index);
@@ -511,11 +512,11 @@ impl Shown {
             | PortalEffect::Type { .. }
             | PortalEffect::TypeSecret { .. } => Step::Nothing,
             // Confirming answers with the highlight as it stands; an answer names its own.
-            PortalEffect::Confirm { .. } => self.decide(seat, None),
-            PortalEffect::Answer { index, .. } => self.decide(seat, Some(*index)),
+            PortalEffect::Confirm { .. } => self.decide(state, None),
+            PortalEffect::Answer { index, .. } => self.decide(state, Some(*index)),
             PortalEffect::Submit { .. } => match self.plan {
                 Plan::Password { identity } => {
-                    let Some(answer) = seat.take_answer() else {
+                    let Some(answer) = state.take_answer() else {
                         return Step::Nothing;
                     };
                     Step::Decide(Decision::Answer(Answer {
@@ -525,11 +526,11 @@ impl Shown {
                     }))
                 }
                 Plan::Secrets { remember } => {
-                    let Some(answer) = seat.take_answer() else {
+                    let Some(answer) = state.take_answer() else {
                         return Step::Nothing;
                     };
                     let remembered =
-                        remember.is_some_and(|default| seat.option().unwrap_or(default));
+                        remember.is_some_and(|default| state.option().unwrap_or(default));
                     Step::Decide(Decision::Answer(Answer {
                         remember: remembered,
                         values: answer.values,
@@ -543,7 +544,7 @@ impl Shown {
     }
 
     /// The person confirmed, having picked `index` or the highlight.
-    fn decide(&self, seat: &PortalSeat, index: Option<u32>) -> Step {
+    fn decide(&self, state: &PortalState, index: Option<u32>) -> Step {
         // A sheet that asks nothing of the person has nothing to decide: confirming a code on show
         // leaves the question waiting until the other device has finished.
         if matches!(self.plan, Plan::Nothing) {
@@ -553,7 +554,7 @@ impl Shown {
         if let Some(index) = index {
             copy.selected = usize::try_from(index).unwrap_or(usize::MAX);
         }
-        match self.confirm(&copy, seat) {
+        match self.confirm(&copy, state) {
             Ok(answer) => Step::Decide(Decision::Answer(answer)),
             Err(why) => Step::Refused(why),
         }
@@ -611,7 +612,7 @@ impl Shown {
     }
 
     /// The person confirmed `dialog` : what the service is answered, or why it cannot be.
-    fn confirm(&self, dialog: &Dialog, seat: &PortalSeat) -> Result<Answer, String> {
+    fn confirm(&self, dialog: &Dialog, state: &PortalState) -> Result<Answer, String> {
         match &self.plan {
             Plan::Choose(choices) => Ok(Answer {
                 choice: choices.get(dialog.selected).copied(),
@@ -627,7 +628,7 @@ impl Shown {
                 ..Answer::default()
             }),
             Plan::Entry => {
-                let typed = seat.text(Field::Answer);
+                let typed = state.text(Field::Answer);
                 let entry = typed.trim();
                 if entry.is_empty() {
                     return Err(word("portal-secret-incomplete"));
@@ -657,7 +658,7 @@ impl Shown {
             Plan::Launcher { name, icons } => {
                 let mut values = Vec::new();
                 if *name {
-                    let typed = seat.text(Field::Name);
+                    let typed = state.text(Field::Name);
                     if !valid_name(&typed) {
                         return Err(word("portal-launcher-bad-name"));
                     }

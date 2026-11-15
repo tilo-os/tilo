@@ -1,11 +1,11 @@
 //! The setup app as this view hosts it: mounted in the shell's process, lent
-//! the seat, shown the page the ceremony stands on, and asked for nothing
+//! the state, shown the page the ceremony stands on, and asked for nothing
 //! but what its person did.
 
 use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
-use tilo_onboarding::{OnboardingEffect, OnboardingSeat, Page, Secrets, Step};
+use tilo_onboarding::{OnboardingEffect, OnboardingState, Page, Secrets, Step};
 use ui::device_local_door::SharedDoor;
 use ui::theme::Theme;
 use ui::widget::{AppModel, AppWidget, ModelPath, Widget};
@@ -30,7 +30,7 @@ const SETUP_INSTANCE: u64 = u64::MAX - 0x0005_e70b;
 
 /// The mounted app and where it is laid out.
 pub(super) struct Hosted {
-    seat: OnboardingSeat,
+    state: OnboardingState,
     app: Option<Box<dyn AppWidget>>,
     /// Mounting failed once: setup is not mounted again on every frame.
     refused: bool,
@@ -47,7 +47,7 @@ impl Default for Hosted {
 impl Hosted {
     pub(super) fn new(secrets: Secrets) -> Self {
         Self {
-            seat: OnboardingSeat::new(secrets, Some(runtime_identity::unknown_recovery_words)),
+            state: OnboardingState::new(secrets, Some(runtime_identity::unknown_recovery_words)),
             app: None,
             refused: false,
             door: SharedDoor::default(),
@@ -55,8 +55,8 @@ impl Hosted {
         }
     }
 
-    pub(super) fn seat(&self) -> &OnboardingSeat {
-        &self.seat
+    pub(super) fn state(&self) -> &OnboardingState {
+        &self.state
     }
 
     /// Mount the app, once. It is this device's own: a private window whose
@@ -66,10 +66,10 @@ impl Hosted {
         if self.app.is_some() || self.refused {
             return;
         }
-        let seat = self.seat.clone();
+        let state = self.state.clone();
         let mounted = mount_in_memory(SETUP_INSTANCE, |cx| {
             cx.provide_private();
-            cx.lend(seat);
+            cx.lend(state);
         })
         .and_then(|component| {
             tilo_desktop::resolver::app_tile(component, None, |_| crate::host::wake())
@@ -174,7 +174,7 @@ impl Hosted {
         }
     }
 
-    /// Run the app's pump: what it was asked lands in the seat.
+    /// Run the app's pump: what it was asked lands in the state.
     pub(super) fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let changed = self.app.as_mut().is_some_and(|app| app.update(doc, path));
         // A page that has not been laid out yet is presented by the frame
@@ -425,13 +425,13 @@ impl OnboardingView {
 
     /// Show the app the page the ceremony stands on now.
     pub(super) fn show_page(&self) {
-        self.app.seat().show(self.page());
+        self.app.state().show(self.page());
     }
 
     /// Take what the app's person asked into the ceremony's own queues.
     pub(super) fn take_app_asks(&mut self) {
         let mut asked = std::mem::take(&mut self.deferred_asks);
-        asked.extend(self.app.seat().take_asked());
+        asked.extend(self.app.state().take_asked());
         if asked.is_empty() {
             return;
         }

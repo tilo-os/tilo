@@ -25,7 +25,7 @@ use tilo_actions::remote::host_account::{
     Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer,
     Standing, Usage, WorkspaceUsage,
 };
-use tilo_actions::remote::mcp_server::{Grant, Run, Server};
+use tilo_actions::remote::mcp_server::{AgentSession, Grant, Server};
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::ClockSnapshot;
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
@@ -161,7 +161,7 @@ fn tilo_shell(build_box: &str) -> TiloOverview {
             grants: vec![Grant {
                 id: "g1".into(),
                 agent: "Claude Code".into(),
-                runs: vec![Run {
+                sessions: vec![AgentSession {
                     name: "Claude Code #2".into(),
                     started_ms: 1,
                 }],

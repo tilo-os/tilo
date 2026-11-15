@@ -11,9 +11,9 @@
 
 use std::path::PathBuf;
 
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::uninstall::{
-    App, Going, REMOVE_DATA_SWITCH, Removal, UninstallApp, UninstallEffect, UninstallSeat,
+    App, Going, REMOVE_DATA_SWITCH, Removal, UninstallApp, UninstallEffect, UninstallState,
 };
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
@@ -50,15 +50,15 @@ fn installed(device_wide: bool) -> App {
 }
 
 /// The sheet as the shell lends it, with `app` asked about.
-fn seated(app: App) -> (HeadlessApp<UninstallApp>, UninstallSeat) {
-    let seat = UninstallSeat::default();
-    seat.show(app);
-    seat.presentation().open(true);
+fn mounted(app: App) -> (HeadlessApp<UninstallApp>, UninstallState) {
+    let state = UninstallState::default();
+    state.show(app);
+    state.presentation().open(true);
     let mut app =
-        HeadlessApp::<UninstallApp>::for_person_with_lent("person", seat.clone()).unwrap();
+        HeadlessApp::<UninstallApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 fn says(app: &mut HeadlessApp<UninstallApp>, text: &str) -> bool {
@@ -123,14 +123,14 @@ tilo_test_env::scenario! {
 
     phase a_copy_in_the_home_folder_says_so;
     {
-        let (mut app, _seat) = seated(downloaded(&["/home/ute/tilo-imager.AppImage"]));
+        let (mut app, _state) = mounted(downloaded(&["/home/ute/tilo-imager.AppImage"]));
         assert!(says(&mut app, "Home"), "the home folder is named as such");
         assert!(!says(&mut app, "/home/ute"), "not by its path");
     }
 
     phase an_installed_app_asks_whether_its_data_goes_too;
     {
-        let (mut app, seat) = seated(installed(false));
+        let (mut app, state) = mounted(installed(false));
         for text in [
             "Uninstall Transmission?",
             "Remove its data",
@@ -141,12 +141,12 @@ tilo_test_env::scenario! {
             assert!(says(&mut app, text), "{text:?} is shown");
         }
         assert!(
-            seat.offers_data_switch(),
+            state.offers_data_switch(),
             "an installed app may have saved something"
         );
         press(&mut app, "uninstall.primary");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [UninstallEffect::Confirm {
                 remove_data: Some(true)
             }],
@@ -156,11 +156,11 @@ tilo_test_env::scenario! {
 
     phase keeping_the_data_is_the_persons_choice;
     {
-        let (mut app, seat) = seated(installed(false));
+        let (mut app, state) = mounted(installed(false));
         press(&mut app, REMOVE_DATA_SWITCH);
         press(&mut app, "uninstall.primary");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [UninstallEffect::Confirm {
                 remove_data: Some(false)
             }]
@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
     {
         let mut app = staged("installed");
         assert!(says(&mut app, "Remove its data"));
-        let (mut device_wide, _seat) = seated(installed(true));
+        let (mut device_wide, _state) = mounted(installed(true));
         assert!(
             says(
                 &mut device_wide,
@@ -206,7 +206,7 @@ tilo_test_env::scenario! {
             WayOut::PressBeside,
         ];
         for way in ways {
-            let (mut app, seat) = seated(downloaded(&["/home/ute/Downloads/tilo-imager"]));
+            let (mut app, state) = mounted(downloaded(&["/home/ute/Downloads/tilo-imager"]));
             match way {
                 WayOut::Key(key) => {
                     app.harness().key(key);
@@ -218,20 +218,20 @@ tilo_test_env::scenario! {
                     app.settle();
                 }
             }
-            assert_eq!(seat.take_asked(), [UninstallEffect::Cancel], "{way:?}");
+            assert_eq!(state.take_asked(), [UninstallEffect::Cancel], "{way:?}");
         }
     }
 
     phase a_part_of_the_system_is_removed_by_its_own_button;
     {
-        let (mut app, seat) = seated(App {
+        let (mut app, state) = mounted(App {
             removal: Removal::FromApps,
             going: Going::Entry,
             ..installed(false)
         });
         press(&mut app, "uninstall.primary");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [UninstallEffect::Confirm { remove_data: None }],
             "taking it off the apps loses nothing on the computer, so nothing is asked about data"
         );

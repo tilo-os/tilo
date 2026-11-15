@@ -50,7 +50,7 @@ use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_p
 use tilo_relay_protocol::workspaces::Role;
 use tilo_session::{Options, Session};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::directory::{Listing, ListingAction, Status};
 
 /// The app the lounge's workspace talks in, and the record its people wrote there before this
@@ -2041,7 +2041,7 @@ fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
         session.people(&lounge.workspace),
         session
             .workspace_directory()
-            .map(tilo_sheets::directory::DirectorySeat::directory)
+            .map(tilo_sheets::directory::DirectoryState::directory)
     );
 }
 

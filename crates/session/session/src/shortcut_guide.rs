@@ -8,31 +8,33 @@
 use std::rc::Rc;
 
 use settings_store::hardware::{ActionChord, ShortcutConfig};
-use tilo_sheets::Seat as _;
-use tilo_sheets::shortcut_guide::{GuideEffect, GuideSeat, State};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::shortcut_guide::{GuideEffect, GuideState, State};
 
 /// The guide's sheet, its state, and the apps' shortcuts that step aside for its table.
 pub(crate) struct ShortcutGuide {
-    /// The sheet's seat; `None` when the sheet did not mount.
-    seat: Option<GuideSeat>,
+    /// The sheet's state; `None` when the sheet did not mount.
+    sheet: Option<GuideState>,
     /// What the guide explains and waits for, shared with the key surface.
     state: Rc<State>,
 }
 
 impl ShortcutGuide {
-    pub(crate) fn new(seat: Option<GuideSeat>, state: Rc<State>) -> Self {
-        Self { seat, state }
+    pub(crate) fn new(sheet: Option<GuideState>, state: Rc<State>) -> Self {
+        Self { sheet, state }
     }
 
-    /// The guide's sheet's seat: whether it is up, where it sits, and what it shows; `None` when
+    /// The guide's sheet's state: whether it is up, where it sits, and what it shows; `None` when
     /// the sheet did not mount.
-    pub(crate) fn seat(&self) -> Option<&GuideSeat> {
-        self.seat.as_ref()
+    pub(crate) fn sheet(&self) -> Option<&GuideState> {
+        self.sheet.as_ref()
     }
 
     /// The guide's presentation: where it sits; `None` when the sheet did not mount.
     pub(crate) fn presentation(&self) -> Option<&tilo_sheets::Presentation> {
-        self.seat.as_ref().map(tilo_sheets::Seat::presentation)
+        self.sheet
+            .as_ref()
+            .map(tilo_sheets::SheetState::presentation)
     }
 
     /// Whether the guide is up.
@@ -43,34 +45,34 @@ impl ShortcutGuide {
     /// The person asked for the guide, or asked for it to go: put it up with the keys as they are,
     /// or take it down.
     pub(crate) fn toggle(&self) {
-        let Some(seat) = &self.seat else {
+        let Some(sheet) = &self.sheet else {
             return;
         };
         if self.state.toggle() {
-            seat.show(self.state.shaped());
-            seat.presentation().open(true);
+            sheet.show(self.state.shaped());
+            sheet.presentation().open(true);
         } else {
-            seat.presentation().close();
+            sheet.presentation().close();
         }
     }
 
     /// Carry out what the person chose on the guide, and keep it showing the table as it stands.
     pub(crate) fn follow(&self) {
-        let Some(seat) = &self.seat else {
+        let Some(sheet) = &self.sheet else {
             return;
         };
-        for effect in seat.take_asked() {
+        for effect in sheet.take_asked() {
             let done = effect == GuideEffect::Done;
             self.state.effect(effect);
             if done {
                 // Its own close: the card leaves the screen, and the shell tells it gone once
                 // nothing of it is drawn.
-                seat.presentation().close();
+                sheet.presentation().close();
             }
         }
         self.state.follow();
         if self.state.up() {
-            seat.show(self.state.shaped());
+            sheet.show(self.state.shaped());
         }
     }
 

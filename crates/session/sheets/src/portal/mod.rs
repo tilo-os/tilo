@@ -7,11 +7,11 @@
 //!
 //! The shell holds every request and its one reply, decides what may be
 //! answered and how, and tells the sheet what to show ([`Dialog`], plain
-//! data through [`PortalSeat`]). The sheet presents it and asks: every
+//! data through [`PortalState`]). The sheet presents it and asks: every
 //! choice comes back as a [`PortalEffect`], and answering needs the person
 //! (agents may decline, but never allow). Anything typed stays out of what
 //! the shell is asked: typing (by key or by the `type` actions, whose text
-//! is a secret parameter) goes to the shell through the seat, and a secret
+//! is a secret parameter) goes to the shell through the state, and a secret
 //! prompt's fields are kept in buffers the shell owns and wipes. Every
 //! effect names the request it answers, so an answer that arrives after
 //! another question opened is refused rather than answering that one.
@@ -364,7 +364,7 @@ impl Default for DraftValue {
 }
 
 /// A secret prompt as the shell asks it. Its values are never here: what
-/// is typed stays in the buffers the seat lends ([`PortalSeat::secrets`]).
+/// is typed stays in the buffers the state lends ([`PortalState::secrets`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Prompt {
     pub kind: PromptKind,
@@ -406,7 +406,7 @@ pub struct PromptField {
 }
 
 /// A typed field of the sheet, whose text reaches the shell through the
-/// seat.
+/// state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Field {
     /// A launcher's name.
@@ -471,7 +471,7 @@ fn draft_focus(row: &DraftRow) -> Focus {
 /// What the shell lends the sheet: whether it is up, what it shows, what
 /// was asked in it and what was typed into it.
 #[derive(Clone, Default)]
-pub struct PortalSeat {
+pub struct PortalState {
     presentation: Presentation,
     dialog: Rc<RefCell<Option<Dialog>>>,
     shown: Rc<RefCell<Option<LocalState<Shown>>>>,
@@ -482,23 +482,23 @@ pub struct PortalSeat {
     option: Rc<Cell<Option<bool>>>,
 }
 
-impl std::fmt::Debug for PortalSeat {
+impl std::fmt::Debug for PortalState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // What was typed is never written out.
-        f.debug_struct("PortalSeat")
+        f.debug_struct("PortalState")
             .field("presentation", &self.presentation)
             .field("dialog", &self.dialog.borrow())
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for PortalSeat {
+impl crate::SheetState for PortalState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl PortalSeat {
+impl PortalState {
     /// Show `dialog`, or nothing; another request starts the sheet afresh
     /// and wipes what was typed into the last one.
     pub fn show(&self, dialog: Option<Dialog>) {
@@ -533,7 +533,7 @@ impl PortalSeat {
         self.presentation.wake();
     }
 
-    /// Whether `other` is this same seat, lent again.
+    /// Whether `other` is this same state, lent again.
     pub fn is(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.dialog, &other.dialog)
     }
@@ -650,7 +650,7 @@ impl PortalSeat {
         self.asked.borrow_mut().push(effect);
     }
 
-    /// Take `effect` from the sheet's door. Typing stays in the seat and
+    /// Take `effect` from the sheet's door. Typing stays in the state and
     /// is never asked; a secret prompt answered through the door is
     /// answered with what its buffers hold, checked as the prompt checks
     /// it. An effect that names a request that is not the one up is
@@ -777,25 +777,25 @@ fn typed_field(dialog: &Dialog, name: &str) -> Option<Field> {
 
 /// The sheet for a host that draws it itself rather than mounting it as an
 /// app (a page, over its desktop): the same view and keys, every press taken
-/// by the seat as the app's door takes it ([`PortalSeat::take_asked`]).
+/// by the state as the app's door takes it ([`PortalState::take_asked`]).
 pub struct DrawnSheet {
     parts: view::Parts,
     built: Option<Shown>,
 }
 
 impl DrawnSheet {
-    /// The sheet of `seat`, which shows what the host hands the seat.
+    /// The sheet of `state`, which shows what the host hands the state.
     #[must_use]
-    pub fn new(seat: &PortalSeat) -> Self {
-        let dialog = seat.drawn();
+    pub fn new(state: &PortalState) -> Self {
+        let dialog = state.drawn();
         let focus = dialog.as_ref().map_or(Focus::Choices, Shown::first_focus);
         let shown = LocalState::new(Shown {
             dialog,
             focus,
             typed: 0,
         });
-        *seat.shown.borrow_mut() = Some(shown.clone());
-        let taking = seat.clone();
+        *state.shown.borrow_mut() = Some(shown.clone());
+        let taking = state.clone();
         let ask: Ask = Rc::new(move |effect: &PortalEffect| {
             // A press for a question no longer up answers nothing.
             if taking.take(effect.clone()).is_ok() {
@@ -806,7 +806,7 @@ impl DrawnSheet {
             parts: view::Parts {
                 ask,
                 shown,
-                seat: seat.clone(),
+                state: state.clone(),
             },
             built: None,
         }
@@ -849,27 +849,27 @@ impl ResourceApp for PortalApp {
     }
 
     fn view(cx: &mut ViewCx<PortalSheet>) -> Element {
-        let seat = cx.take_lent::<PortalSeat>();
-        let seat = seat.unwrap_or_else(|| {
+        let state = cx.take_lent::<PortalState>();
+        let state = state.unwrap_or_else(|| {
             // Headless, a scenario stands in for the shell: it hands the
             // sheet its question and puts it up, as the shell does.
-            let seat = PortalSeat::default();
+            let state = PortalState::default();
             if let Some(dialog) = cx.fixture::<Dialog>() {
-                seat.show(Some((*dialog).clone()));
-                seat.presentation.open(false);
+                state.show(Some((*dialog).clone()));
+                state.presentation.open(false);
             }
-            seat
+            state
         });
-        let dialog = seat.drawn();
+        let dialog = state.drawn();
         let focus = dialog.as_ref().map_or(Focus::Choices, Shown::first_focus);
         let shown = cx.local(Shown {
             dialog,
             focus,
             typed: 0,
         });
-        *seat.shown.borrow_mut() = Some(shown.clone());
-        seat.presentation.wake_with(cx.waker());
-        let asking = seat.clone();
+        *state.shown.borrow_mut() = Some(shown.clone());
+        state.presentation.wake_with(cx.waker());
+        let asking = state.clone();
         cx.effects(move |effect: PortalEffect, _cx| {
             asking.take(effect)?;
             Ok(Effected::done())
@@ -878,7 +878,7 @@ impl ResourceApp for PortalApp {
         let parts = view::Parts {
             ask: Rc::new(move |effect: &PortalEffect| dispatch.effect(effect)),
             shown: shown.clone(),
-            seat,
+            state,
         };
         let building = parts.clone();
         let content = cx.switch(&shown, move |_cx, shown| view::sheet(shown, &building));

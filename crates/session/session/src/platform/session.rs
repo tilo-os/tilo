@@ -693,7 +693,7 @@ impl Session {
         }
         // The MCP server toward the person's other devices: answered on this device's
         // endpoint, and served by the MCP server once it opens.
-        let remote = crate::remote_door::Remote::new(options.wake.handle());
+        let device_agents = crate::device_mcp::DeviceAgents::new(options.wake.handle());
         let peer_documents = crate::sync::PeerDocuments::new(
             std::sync::Arc::clone(&channels_broker),
             std::sync::Arc::clone(&channels_fanout),
@@ -704,7 +704,7 @@ impl Session {
             &options,
             continuity.clone(),
             engine.clone(),
-            (beside, &remote),
+            (beside, &device_agents),
             Some(peer_documents.clone()),
         );
         // The records the session itself writes are the workspaces' own, and its writes reach this
@@ -1116,7 +1116,7 @@ impl Session {
                 sheets: crate::keys::SheetKeys {
                     displays: display_seat
                         .as_ref()
-                        .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
+                        .map(|state| tilo_sheets::SheetState::presentation(state).clone()),
                     modal: modal_sheets,
                 },
                 fold,
@@ -1309,7 +1309,7 @@ impl Session {
                     .as_ref()
                     .map(|plane| std::sync::Arc::clone(&plane.layout)),
             );
-            door.hear_remote(std::sync::Arc::clone(&remote));
+            door.hear_device_agents(std::sync::Arc::clone(&device_agents));
             door
         });
         let automation = crate::automation::Automation::new(
@@ -1646,7 +1646,7 @@ impl Session {
             asker,
             mcp_server: RefCell::new(mcp_server),
             session_doors,
-            remote: std::sync::Arc::clone(&remote),
+            device_agents: std::sync::Arc::clone(&device_agents),
             folder_import: RefCell::new(None),
             sync,
             engine,
@@ -2248,16 +2248,14 @@ impl Session {
         self.shared.doors.resources()
     }
 
-    /// The windows the overview pictures as the compositor draws them now:
-    /// each window's id and the rect its picture rests at, logical
-    /// `(x, y, width, height)`, bottom first. Empty while the overview is
-    /// away, and before a window on the shell has a picture.
+    /// The server this device answers the person's other devices' agents at,
+    /// admitting those `devices` says are theirs.
     #[must_use]
-    pub fn remote_door(
+    pub fn device_mcp(
         &self,
-        devices: std::sync::Arc<dyn tilo_runtime::remote_door::PersonsDevices>,
-    ) -> tilo_runtime::remote_door::RemoteDoor {
-        self.shared.remote.door(devices)
+        devices: std::sync::Arc<dyn tilo_runtime::device_mcp::PersonsDevices>,
+    ) -> tilo_runtime::device_mcp::DeviceServer {
+        self.shared.device_agents.server(devices)
     }
 
     /// The windows the overview pictures as the compositor draws them now: each window's id and

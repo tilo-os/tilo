@@ -431,7 +431,7 @@ pub fn say(session: &mut Session, text: &str) {
 }
 
 /// Type `text` on the keyboard, a key at a time, as the person does: each character's key on the
-/// seat's layout, with the modifiers it needs, pressed and let go before the next frame. A key held
+/// state's layout, with the modifiers it needs, pressed and let go before the next frame. A key held
 /// across a frame would repeat whenever that frame outlasts the repeat delay, as one on a loaded
 /// machine does.
 pub fn type_text(session: &mut Session, text: &str) {
@@ -652,19 +652,19 @@ pub fn last_step(session: &mut Session, verb: &str) -> String {
 /// The home, the identity or their directories cannot be made.
 pub fn seated_state() -> std::path::PathBuf {
     thread_local! {
-        static STATE: std::path::PathBuf = seat();
+        static STATE: std::path::PathBuf = state();
     }
     STATE.with(Clone::clone)
 }
 
-fn seat() -> std::path::PathBuf {
+fn state() -> std::path::PathBuf {
     seat_in(Box::leak(Box::new(
         tilo_test_env::TestHome::new().expect("a home"),
     )))
 }
 
-/// Seat a device in `home`: the throwaway identity `dist/dev/nested-session.sh` mints, and a secret
-/// store, so a session there holds its workspaces. Its state directory.
+/// Seats a device in `home`: the throwaway identity `dist/dev/nested-session.sh` mints, and a
+/// secret store, so a session there holds its workspaces. Its state directory.
 ///
 /// # Panics
 /// The identity or its directories cannot be made.
@@ -1111,7 +1111,7 @@ pub fn press_sheet(session: &mut Session, effect: &str, args: &Value) {
         |session| {
             session
                 .portal()
-                .and_then(tilo_sheets::portal::PortalSeat::dialog)
+                .and_then(tilo_sheets::portal::PortalState::dialog)
                 .map(|dialog| dialog.handle)
         },
     );

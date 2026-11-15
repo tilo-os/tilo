@@ -8,8 +8,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_sheets::Seat as _;
-use tilo_sheets::power::{Offers, PowerApp, PowerEffect, PowerSeat};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::power::{Offers, PowerApp, PowerEffect, PowerState};
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
 use ui::vello::kurbo::Rect;
@@ -38,15 +38,15 @@ fn rows(app: &mut HeadlessApp<PowerApp>) -> Vec<(String, Rect)> {
     rows
 }
 
-/// A menu the shell put up, lent the seat it reports to.
-fn seated(offers: Offers) -> (HeadlessApp<PowerApp>, PowerSeat) {
-    let seat = PowerSeat::default();
-    seat.set_offers(offers);
-    seat.presentation().open(false);
-    let mut app = HeadlessApp::<PowerApp>::for_person_with_lent("person", seat.clone()).unwrap();
+/// A menu the shell put up, lent the state it reports to.
+fn mounted(offers: Offers) -> (HeadlessApp<PowerApp>, PowerState) {
+    let state = PowerState::default();
+    state.set_offers(offers);
+    state.presentation().open(false);
+    let mut app = HeadlessApp::<PowerApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 fn key(app: &mut HeadlessApp<PowerApp>, key: &str) {
@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
 
     phase every_action_is_published_and_those_not_offered_say_why;
     {
-        let (mut app, _seat) = seated(Offers {
+        let (mut app, _state) = mounted(Offers {
             host_power: false,
             ..Offers::default()
         });
@@ -161,58 +161,58 @@ tilo_test_env::scenario! {
 
     phase a_press_asks_the_shell_and_closes_the_menu;
     {
-        let (mut app, seat) = seated(Offers::default());
+        let (mut app, state) = mounted(Offers::default());
         app.harness()
             .perform_named("power_shut_down", &A11yAction::Activate)
             .unwrap();
         app.settle();
-        assert_eq!(seat.take_asked(), [PowerEffect::ShutDown]);
-        assert!(!seat.presentation().is_open(), "the menu took itself down");
+        assert_eq!(state.take_asked(), [PowerEffect::ShutDown]);
+        assert!(!state.presentation().is_open(), "the menu took itself down");
     }
 
     phase an_agent_invoking_an_action_reaches_the_same_door;
     {
-        let (mut app, seat) = seated(Offers::default());
+        let (mut app, state) = mounted(Offers::default());
         app.effect(&PowerEffect::Lock).unwrap();
         app.settle();
-        assert_eq!(seat.take_asked(), [PowerEffect::Lock]);
+        assert_eq!(state.take_asked(), [PowerEffect::Lock]);
         // Restart takes everything down: whoever acts for the person is asked.
-        let (mut app, seat) = seated(Offers::default());
-        assert!(app.effect(&PowerEffect::Restart).is_err() || seat.take_asked().is_empty());
+        let (mut app, state) = mounted(Offers::default());
+        assert!(app.effect(&PowerEffect::Restart).is_err() || state.take_asked().is_empty());
         app.effect_confirmed(&PowerEffect::Restart).unwrap();
         app.settle();
-        assert_eq!(seat.take_asked(), [PowerEffect::Restart]);
+        assert_eq!(state.take_asked(), [PowerEffect::Restart]);
     }
 
     phase the_keyboard_reaches_every_row_and_escape_leaves;
     {
-        let (mut app, seat) = seated(Offers::default());
-        seat.presentation().open(true);
+        let (mut app, state) = mounted(Offers::default());
+        state.presentation().open(true);
         app.settle();
         key(&mut app, "ArrowDown");
         key(&mut app, "Enter");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [PowerEffect::LogOut],
             "from the first row, one step down is Log out"
         );
 
-        seat.presentation().open(true);
+        state.presentation().open(true);
         app.settle();
         key(&mut app, "Escape");
-        assert!(seat.take_asked().is_empty());
-        assert!(!seat.presentation().is_open(), "Escape takes the menu down");
+        assert!(state.take_asked().is_empty());
+        assert!(!state.presentation().is_open(), "Escape takes the menu down");
     }
 
     phase the_shell_taking_the_sheet_down_closes_the_menu;
     {
-        let (mut app, seat) = seated(Offers::default());
+        let (mut app, state) = mounted(Offers::default());
         assert!(!rows(&mut app).is_empty());
-        assert!(!seat.rows().is_empty(), "the seat knows where the rows are");
-        seat.presentation().close();
+        assert!(!state.rows().is_empty(), "the state knows where the rows are");
+        state.presentation().close();
         app.settle();
         assert!(rows(&mut app).is_empty());
-        assert!(seat.rows().is_empty());
+        assert!(state.rows().is_empty());
     }
 
     phase every_scenario_renders;

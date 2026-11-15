@@ -11,8 +11,8 @@
 
 use std::path::PathBuf;
 
-use tilo_sheets::Seat as _;
-use tilo_sheets::add_app::{AddApp, AddAppEffect, AddSeat, MOVE, MOVE_SWITCH, Offer};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::add_app::{AddApp, AddAppEffect, AddState, MOVE, MOVE_SWITCH, Offer};
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
 
@@ -34,14 +34,14 @@ fn appimage() -> Offer {
 }
 
 /// The sheet as the shell lends it, with `offer` asked about.
-fn seated(offer: Offer) -> (HeadlessApp<AddApp>, AddSeat) {
-    let seat = AddSeat::default();
-    seat.show(offer);
-    seat.presentation().open(true);
-    let mut app = HeadlessApp::<AddApp>::for_person_with_lent("person", seat.clone()).unwrap();
+fn mounted(offer: Offer) -> (HeadlessApp<AddApp>, AddState) {
+    let state = AddState::default();
+    state.show(offer);
+    state.presentation().open(true);
+    let mut app = HeadlessApp::<AddApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 fn says(app: &mut HeadlessApp<AddApp>, text: &str) -> bool {
@@ -103,31 +103,31 @@ tilo_test_env::scenario! {
 
     phase adding_asks_the_shell_for_the_program_and_no_move_unless_switched_on;
     {
-        let (mut app, seat) = seated(appimage());
+        let (mut app, state) = mounted(appimage());
         press(&mut app, "add-app.primary");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [AddAppEffect::Add {
                 move_to_applications: None
             }],
             "the switch starts off, and adding where the file is is the default"
         );
 
-        let (mut app, seat) = seated(appimage());
+        let (mut app, state) = mounted(appimage());
         press(&mut app, MOVE_SWITCH);
         press(&mut app, "add-app.primary");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [AddAppEffect::Add {
                 move_to_applications: Some(true)
             }]
         );
 
-        let (mut app, seat) = seated(appimage());
+        let (mut app, state) = mounted(appimage());
         app.harness().key("Enter");
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [AddAppEffect::Add {
                 move_to_applications: None
             }],
@@ -137,24 +137,24 @@ tilo_test_env::scenario! {
 
     phase not_adding_and_closing_both_decline_the_file;
     {
-        let (mut app, seat) = seated(appimage());
+        let (mut app, state) = mounted(appimage());
         press(&mut app, "add-app.secondary");
-        assert_eq!(seat.take_asked(), [AddAppEffect::Decline]);
+        assert_eq!(state.take_asked(), [AddAppEffect::Decline]);
 
-        let (mut app, seat) = seated(appimage());
+        let (mut app, state) = mounted(appimage());
         app.harness().key("Escape");
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [AddAppEffect::Decline],
             "closing it is an answer too: that file is not asked about again"
         );
 
-        let (mut app, seat) = seated(appimage());
+        let (mut app, state) = mounted(appimage());
         app.harness().click_at(10.0, 10.0);
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [AddAppEffect::Decline],
             "and so is a press beside the question"
         );
@@ -162,9 +162,9 @@ tilo_test_env::scenario! {
 
     phase another_program_is_asked_about_with_the_switch_off_again;
     {
-        let (mut app, seat) = seated(appimage());
+        let (mut app, state) = mounted(appimage());
         press(&mut app, MOVE_SWITCH);
-        seat.show(Offer {
+        state.show(Offer {
             file: PathBuf::from("/home/ute/Downloads/inkscape.AppImage"),
             name: "Inkscape".to_owned(),
             ..appimage()
@@ -173,7 +173,7 @@ tilo_test_env::scenario! {
         assert!(says(&mut app, "Add Inkscape to apps?"));
         press(&mut app, "add-app.primary");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [AddAppEffect::Add {
                 move_to_applications: None
             }],

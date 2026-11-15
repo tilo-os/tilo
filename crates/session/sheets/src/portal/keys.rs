@@ -121,7 +121,7 @@ impl Keys {
     }
 
     /// The secret prompt answered or backed out: its answer goes to the
-    /// shell through the seat, never through an effect.
+    /// shell through the state, never through an effect.
     fn settle_prompt(&mut self) {
         fn find(widget: &mut dyn Widget) -> Option<&mut SecretPrompt> {
             if widget.test_id() == Some(PROMPT_ID) {
@@ -135,11 +135,11 @@ impl Keys {
             return;
         };
         if let Some(checked) = prompt.option_checked() {
-            self.parts.seat.option.set(Some(checked));
+            self.parts.state.option.set(Some(checked));
         }
         match prompt.take_outcome() {
             Some(PromptOutcome::Submit(answer)) => {
-                *self.parts.seat.answer.borrow_mut() = Some(answer);
+                *self.parts.state.answer.borrow_mut() = Some(answer);
                 self.parts.submit();
             }
             Some(PromptOutcome::Cancel) => self.parts.cancel(),

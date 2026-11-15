@@ -11,7 +11,7 @@
 )]
 
 use tilo_sheets::displays::{
-    Band, Discovery, DisplaysApp, DisplaysEffect, DisplaysSeat, Layout, LayoutRow, Link, Receiver,
+    Band, Discovery, DisplaysApp, DisplaysEffect, DisplaysState, Layout, LayoutRow, Link, Receiver,
     Sheet,
 };
 use ui::framework::testing::HeadlessApp;
@@ -22,15 +22,16 @@ fn staged(scenario: &str) -> HeadlessApp<DisplaysApp> {
     HeadlessApp::<DisplaysApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
-fn seated(sheet: Sheet) -> (HeadlessApp<DisplaysApp>, DisplaysSeat) {
-    use tilo_sheets::Seat as _;
-    let seat = DisplaysSeat::default();
-    seat.presentation().open(true);
-    seat.show(sheet);
-    let mut app = HeadlessApp::<DisplaysApp>::for_person_with_lent("person", seat.clone()).unwrap();
+fn mounted(sheet: Sheet) -> (HeadlessApp<DisplaysApp>, DisplaysState) {
+    use tilo_sheets::SheetState as _;
+    let state = DisplaysState::default();
+    state.presentation().open(true);
+    state.show(sheet);
+    let mut app =
+        HeadlessApp::<DisplaysApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 fn key(app: &mut HeadlessApp<DisplaysApp>, spec: &str) {
@@ -141,7 +142,7 @@ tilo_test_env::scenario! {
 
     phase a_failed_search_says_what_to_do_and_offers_to_try_again;
     {
-        let (mut app, _seat) = seated(Sheet {
+        let (mut app, _state) = mounted(Sheet {
             discovery: Discovery::Failed {
                 title: "Couldn't look for wireless displays".to_owned(),
                 next_step: "Check that Wi-Fi is on, then try again.".to_owned(),
@@ -168,7 +169,7 @@ tilo_test_env::scenario! {
 
     phase super_p_cycles_through_every_layout_the_displays_allow;
     {
-        let (mut app, seat) = seated(two_displays());
+        let (mut app, state) = mounted(two_displays());
         assert_eq!(highlighted(&mut app).as_deref(), Some("Extend"));
         let mut cycle = Vec::new();
         for _ in 0..4 {
@@ -180,20 +181,20 @@ tilo_test_env::scenario! {
             ["Mirror", "Only this screen", "Only external", "Extend"]
         );
         assert!(
-            seat.take_asked().is_empty(),
+            state.take_asked().is_empty(),
             "moving the highlight chooses nothing"
         );
     }
 
     phase enter_chooses_the_highlighted_layout_and_the_keyboard_goes_to_keep;
     {
-        let (mut app, seat) = seated(two_displays());
+        let (mut app, state) = mounted(two_displays());
         key(&mut app, "ArrowDown");
         assert_eq!(highlighted(&mut app).as_deref(), Some("Mirror"));
         key(&mut app, "Enter");
-        assert_eq!(seat.take_asked(), [DisplaysEffect::Mirror]);
+        assert_eq!(state.take_asked(), [DisplaysEffect::Mirror]);
         // The change is staged: Keep and Revert stand under the layouts.
-        seat.show(Sheet {
+        state.show(Sheet {
             band: Band::Confirm {
                 status: "Reverting in 12 s".to_owned(),
                 answering: false,
@@ -202,19 +203,19 @@ tilo_test_env::scenario! {
         });
         app.settle();
         key(&mut app, "Enter");
-        assert_eq!(seat.take_asked(), [DisplaysEffect::Keep]);
+        assert_eq!(state.take_asked(), [DisplaysEffect::Keep]);
     }
 
     phase number_keys_choose_a_layout_at_once;
     {
-        let (mut app, seat) = seated(two_displays());
+        let (mut app, state) = mounted(two_displays());
         key(&mut app, "3");
-        assert_eq!(seat.take_asked(), [DisplaysEffect::BuiltinOnly]);
+        assert_eq!(state.take_asked(), [DisplaysEffect::BuiltinOnly]);
     }
 
     phase keep_and_revert_wait_for_the_answer_in_flight;
     {
-        let (mut app, seat) = seated(Sheet {
+        let (mut app, state) = mounted(Sheet {
             band: Band::Confirm {
                 status: "Saving the display answer…".to_owned(),
                 answering: true,
@@ -237,15 +238,15 @@ tilo_test_env::scenario! {
         key(&mut app, "ArrowDown");
         key(&mut app, "ArrowDown");
         key(&mut app, "Enter");
-        assert!(seat.take_asked().is_empty(), "no second answer is sent");
+        assert!(state.take_asked().is_empty(), "no second answer is sent");
     }
 
     phase a_receiver_that_asks_for_a_pin_is_chosen_first_and_the_pin_never_enters_an_action;
     {
-        let (mut app, seat) = seated(receivers());
+        let (mut app, state) = mounted(receivers());
         key(&mut app, "Enter");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [DisplaysEffect::Choose {
                 receiver: "airplay:tv".to_owned()
             }]
@@ -253,13 +254,13 @@ tilo_test_env::scenario! {
         let mut chosen = receivers();
         chosen.receivers[0].chosen = true;
         chosen.asks_pin = true;
-        seat.show(chosen);
+        state.show(chosen);
         app.settle();
         app.harness().type_text("4321");
         app.settle();
-        assert_eq!(seat.pin(), "4321");
+        assert_eq!(state.pin(), "4321");
         key(&mut app, "Enter");
-        let asked = seat.take_asked();
+        let asked = state.take_asked();
         assert_eq!(
             asked,
             [DisplaysEffect::Connect {
@@ -267,36 +268,36 @@ tilo_test_env::scenario! {
             }]
         );
         assert!(!format!("{asked:?}").contains("4321"));
-        assert_eq!(seat.pin(), "4321", "the shell connects with the PIN typed");
+        assert_eq!(state.pin(), "4321", "the shell connects with the PIN typed");
     }
 
     phase a_connected_receiver_stops_and_other_receivers_connect;
     {
         let mut sheet = receivers();
         sheet.receivers[0].link = Link::Connected;
-        let (mut app, seat) = seated(sheet);
+        let (mut app, state) = mounted(sheet);
         key(&mut app, "Enter");
-        assert_eq!(seat.take_asked(), [DisplaysEffect::Stop]);
+        assert_eq!(state.take_asked(), [DisplaysEffect::Stop]);
         key(&mut app, "ArrowDown");
         key(&mut app, "Enter");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [DisplaysEffect::Connect {
                 receiver: "cast:hub".to_owned()
             }]
         );
         key(&mut app, "r");
-        assert_eq!(seat.take_asked(), [DisplaysEffect::Search]);
+        assert_eq!(state.take_asked(), [DisplaysEffect::Search]);
     }
 
     phase escape_and_super_shift_p_close;
     {
-        let (mut app, seat) = seated(two_displays());
+        let (mut app, state) = mounted(two_displays());
         key(&mut app, "Escape");
-        assert_eq!(seat.take_asked(), [DisplaysEffect::Close]);
-        let (mut app, seat) = seated(two_displays());
+        assert_eq!(state.take_asked(), [DisplaysEffect::Close]);
+        let (mut app, state) = mounted(two_displays());
         super_key(&mut app, "p", true);
-        assert_eq!(seat.take_asked(), [DisplaysEffect::Close]);
+        assert_eq!(state.take_asked(), [DisplaysEffect::Close]);
     }
 
     phase keeping_a_change_is_the_persons_answer;

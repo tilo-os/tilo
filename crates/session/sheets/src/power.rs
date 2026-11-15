@@ -4,7 +4,7 @@
 //! Each of them is one of the app's effects, so the palette, an agent, a
 //! script and the menu's own rows reach the same door. The menu hangs from
 //! the trailing end of the top bar, over the desktop. What it offers and
-//! where it hangs come from the shell ([`PowerSeat`]); what is chosen goes
+//! where it hangs come from the shell ([`PowerState`]); what is chosen goes
 //! back to it, which alone powers the machine down.
 
 use std::cell::{Cell, RefCell};
@@ -22,7 +22,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{ContextMenu, Element, MenuItem, PanelAlign, TaffyTreeExt, Widget};
 
-use crate::Seat as _;
+use crate::SheetState as _;
 use crate::presentation::{Phase, Presentation};
 use crate::t;
 
@@ -208,7 +208,7 @@ impl Offers {
 /// What the shell lends the menu: whether it is up, what it offers, and
 /// where what the person chose goes.
 #[derive(Clone, Debug, Default)]
-pub struct PowerSeat {
+pub struct PowerState {
     presentation: Presentation,
     offers: Rc<Cell<Offers>>,
     asked: Rc<RefCell<Vec<PowerEffect>>>,
@@ -216,13 +216,13 @@ pub struct PowerSeat {
     panel: Rc<Cell<Rect>>,
 }
 
-impl crate::Seat for PowerSeat {
+impl crate::SheetState for PowerState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl PowerSeat {
+impl PowerState {
     /// What the menu offers from its next opening on.
     pub fn set_offers(&self, offers: Offers) {
         self.offers.set(offers);
@@ -261,7 +261,7 @@ struct Staged(Option<String>);
 struct PowerMenu {
     rect: Rect,
     menu: ContextMenu,
-    seat: Option<PowerSeat>,
+    state: Option<PowerState>,
     /// What the open menu offers, in row order after its title.
     shown: Vec<PowerEffect>,
     offers: Offers,
@@ -281,12 +281,12 @@ struct PowerMenu {
 }
 
 impl PowerMenu {
-    fn new(seat: Option<PowerSeat>, offers: Offers) -> Self {
+    fn new(state: Option<PowerState>, offers: Offers) -> Self {
         Self {
             rect: Rect::ZERO,
             menu: ContextMenu::new(),
-            offers: seat.as_ref().map_or(offers, PowerSeat::offers),
-            seat,
+            offers: state.as_ref().map_or(offers, PowerState::offers),
+            state,
             shown: Vec::new(),
             opening: None,
             margin: f64::from(ui::tokens::Spacing::BASE.s2),
@@ -310,21 +310,21 @@ impl PowerMenu {
             })
             .collect();
         self.dispatch = Some(cx.dispatcher());
-        if let Some(seat) = &self.seat {
-            seat.presentation().wake_with(cx.waker());
+        if let Some(state) = &self.state {
+            state.presentation().wake_with(cx.waker());
         }
     }
 
     /// What the menu offers now: the shell's say, else its own.
     fn offered_now(&self) -> Offers {
-        self.seat.as_ref().map_or(self.offers, PowerSeat::offers)
+        self.state.as_ref().map_or(self.offers, PowerState::offers)
     }
 
     fn effect(&mut self, effect: PowerEffect, _cx: &mut EffectCx<Power>) -> EffectAnswer {
         if !self.offered_now().offers(effect) {
             return Err(format!("{} is not offered here", effect.label()));
         }
-        if self.seat.is_none() {
+        if self.state.is_none() {
             return Err("no session to act on here".to_owned());
         }
         self.choose(effect);
@@ -381,8 +381,8 @@ impl PowerMenu {
     }
 
     fn open(&mut self, by_keyboard: bool) {
-        if let Some(seat) = &self.seat {
-            self.offers = seat.offers();
+        if let Some(state) = &self.state {
+            self.offers = state.offers();
         }
         self.shown = self.offers.offered();
         self.menu.set_items(self.items());
@@ -398,14 +398,14 @@ impl PowerMenu {
     /// sheet down. With no shell (a capture, a test) the menu is up from
     /// the first frame.
     fn follow(&mut self) {
-        let Some(seat) = self.seat.clone() else {
+        let Some(state) = self.state.clone() else {
             if self.opening.is_none() {
                 self.opening = Some(0);
                 self.open(false);
             }
             return;
         };
-        let presentation = seat.presentation();
+        let presentation = state.presentation();
         match presentation.phase() {
             Phase::Open if self.opening != Some(presentation.openings()) => {
                 self.opening = Some(presentation.openings());
@@ -429,23 +429,23 @@ impl PowerMenu {
             }
         }
         if !self.menu.is_open()
-            && let Some(seat) = &self.seat
+            && let Some(state) = &self.state
         {
-            seat.presentation().dismissed();
+            state.presentation().dismissed();
         }
     }
 
     fn choose(&mut self, effect: PowerEffect) {
         self.menu.close();
-        if let Some(seat) = &self.seat {
-            seat.ask(effect);
-            seat.presentation().dismissed();
+        if let Some(state) = &self.state {
+            state.ask(effect);
+            state.presentation().dismissed();
         }
     }
 
     /// Tell the shell where the rows are, and when nothing is drawn.
     fn report(&self) {
-        let Some(seat) = &self.seat else {
+        let Some(state) = &self.state else {
             return;
         };
         let rows = if self.menu.is_open() {
@@ -461,20 +461,20 @@ impl PowerMenu {
         } else {
             Vec::new()
         };
-        *seat.rows.borrow_mut() = rows;
-        seat.panel.set(if self.menu.is_open() {
+        *state.rows.borrow_mut() = rows;
+        state.panel.set(if self.menu.is_open() {
             self.menu.get_rect()
         } else {
             Rect::ZERO
         });
-        if !self.menu.is_drawn() && seat.presentation().phase() == Phase::Leaving {
-            seat.presentation().gone();
+        if !self.menu.is_drawn() && state.presentation().phase() == Phase::Leaving {
+            state.presentation().gone();
         }
     }
 
     fn out_of_step(&self) -> bool {
-        self.seat.as_ref().is_some_and(|seat| {
-            let presentation = seat.presentation();
+        self.state.as_ref().is_some_and(|state| {
+            let presentation = state.presentation();
             match presentation.phase() {
                 Phase::Open => self.opening != Some(presentation.openings()),
                 Phase::Leaving => self.menu.is_open() || !self.menu.is_drawn(),
@@ -712,15 +712,15 @@ impl ResourceApp for PowerApp {
     }
 
     fn view(cx: &mut ViewCx<Power>) -> Element {
-        let seat = cx.take_lent::<PowerSeat>();
+        let state = cx.take_lent::<PowerState>();
         let offers = cx
             .fixture::<Offers>()
             .map(|offers| *offers)
             .unwrap_or_default();
-        let mut menu = PowerMenu::new(seat.clone(), offers);
+        let mut menu = PowerMenu::new(state.clone(), offers);
         menu.attach(cx);
         cx.window_effects(PowerMenu::effect)
-            .status(move || unavailable(seat.as_ref().map_or(offers, PowerSeat::offers)));
+            .status(move || unavailable(state.as_ref().map_or(offers, PowerState::offers)));
         let staged = Rc::clone(&menu.staged);
         cx.on_stage(move |scenario| {
             *staged.borrow_mut() = Some(Staged(scenario.map(str::to_owned)));

@@ -727,7 +727,7 @@ fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
 /// session's own action does.
 #[test]
 fn the_power_menus_lock_starts_the_lock_screen() {
-    use tilo_sheets::Seat as _;
+    use tilo_sheets::SheetState as _;
     use tilo_sheets::power::PowerEffect;
     let _settled = ui::motion::testing::settled();
     let home = private_home();

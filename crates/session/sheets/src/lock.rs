@@ -3,7 +3,7 @@
 //! It is one quiet screen: the time and its date in poster type, whose session this
 //! is, and the one password field that unlocks it. Unlocking is an effect, so a
 //! person, an assistive tool and a headless run reach the same door; the password
-//! never leaves the seat's zeroizing buffer except to the session, which checks it.
+//! never leaves the state's zeroizing buffer except to the session, which checks it.
 //! The screen runs as its own process: the session publishes what it shows as a
 //! resource ([`Shown`]), the app asks through the same actions as any other, and
 //! everything a device says about itself arrives as plain data in [`Shown`], so the
@@ -35,7 +35,7 @@ use ui::widget::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::Seat as _;
+use crate::SheetState as _;
 use crate::presentation::Presentation;
 use crate::t;
 use ui::widget::DrawChild;
@@ -310,7 +310,7 @@ impl Shown {
 /// the screen binds goes out through the channel the app opened with
 /// [`Self::ask_with`].
 #[derive(Clone, Default)]
-pub struct LockSeat {
+pub struct LockState {
     presentation: Presentation,
     shown: Rc<RefCell<Shown>>,
     local: Rc<RefCell<Option<LocalState<Shown>>>>,
@@ -327,25 +327,25 @@ pub struct LockSeat {
     told_gone: Rc<Cell<bool>>,
 }
 
-/// How the app lending the seat reaches the session.
+/// How the app lending the state reaches the session.
 type Reach = Rc<dyn Fn(LocalStateWriter<Shown>)>;
 
-impl std::fmt::Debug for LockSeat {
+impl std::fmt::Debug for LockState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LockSeat")
+        f.debug_struct("LockState")
             .field("presentation", &self.presentation)
             .field("shown", &self.shown.borrow())
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for LockSeat {
+impl crate::SheetState for LockState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl LockSeat {
+impl LockState {
     /// The screens the lock is drawn on within `bounds`: each display the session says it stands
     /// on, else `bounds` itself. The first, the display the person works on, takes the prompt.
     fn screens(&self, bounds: Rect) -> Vec<Rect> {
@@ -395,14 +395,14 @@ impl LockSeat {
         *self.outgoing.borrow_mut() = Some(outgoing);
     }
 
-    /// The app lending this seat reaches the session as `reach` says, handed
+    /// The app lending this state reaches the session as `reach` says, handed
     /// the local its view draws: each reading the session publishes is
     /// written there.
     pub fn reaching_session(&self, reach: impl Fn(LocalStateWriter<Shown>) + 'static) {
         *self.reaching.borrow_mut() = Some(Rc::new(reach));
     }
 
-    /// Hand the app lending the seat its local, once, so what the session
+    /// Hand the app lending the state its local, once, so what the session
     /// publishes reaches the screen.
     pub fn reach(&self, showing: LocalStateWriter<Shown>) {
         if self.reached.replace(true) {
@@ -539,13 +539,13 @@ impl ResourceApp for LockApp {
     }
 
     fn view(cx: &mut ViewCx<LockScreen>) -> Element {
-        let seat = cx.take_lent::<LockSeat>().unwrap_or_default();
-        let shown = cx.local(seat.shown());
+        let state = cx.take_lent::<LockState>().unwrap_or_default();
+        let shown = cx.local(state.shown());
         // What the session publishes is what the screen draws: the worker
         // that watches it writes each reading into the local the view draws.
-        *seat.local.borrow_mut() = Some(shown.clone());
-        seat.reach(shown.writer());
-        seat.presentation().wake_with(cx.waker());
+        *state.local.borrow_mut() = Some(shown.clone());
+        state.reach(shown.writer());
+        state.presentation().wake_with(cx.waker());
         // A capture shows the scene its scenario names, as the session would
         // have published it: no session is there to say it.
         let staged = shown.clone();
@@ -555,7 +555,7 @@ impl ResourceApp for LockApp {
             };
             staged.update(|mine| *mine = staged_shown(name));
         });
-        let acting = seat.clone();
+        let acting = state.clone();
         cx.effects(move |effect: LockEffect, _cx| {
             match effect {
                 LockEffect::TypePassword { password } => {
@@ -577,18 +577,18 @@ impl ResourceApp for LockApp {
             Ok(Effected::done())
         });
         let dispatch = cx.dispatcher();
-        let hosting = seat.clone();
+        let hosting = state.clone();
         let shaken: Rc<Cell<f64>> = Rc::new(Cell::new(0.0));
         let notice: Rc<Cell<f32>> = Rc::new(Cell::new(1.0));
         let posing = Rc::clone(&shaken);
         let fading = Rc::clone(&notice);
         let content = cx.switch(&shown, move |cx, shown| {
-            screen(cx, shown, &seat, &posing, &fading)
+            screen(cx, shown, &state, &posing, &fading)
         });
         Box::new(Stage {
             content,
             dispatch,
-            seat: hosting,
+            state: hosting,
             presence: Presence::closed(),
             shake: Attention::default(),
             shaken,
@@ -715,7 +715,7 @@ fn staged_shown(name: &str) -> Shown {
 fn screen(
     cx: &ViewCx<LockScreen>,
     shown: &Shown,
-    seat: &LockSeat,
+    state: &LockState,
     shaken: &Rc<Cell<f64>>,
     notice_alpha: &Rc<Cell<f32>>,
 ) -> Element {
@@ -746,14 +746,14 @@ fn screen(
     if let Some(person) = person(shown) {
         blocks = blocks.push(person);
     }
-    blocks = blocks.push(field(shown, seat, shaken));
+    blocks = blocks.push(field(shown, state, shaken));
     blocks = blocks.push(notice(shown, notice_alpha));
     if let Some(transport) = transport(cx, shown) {
         blocks = blocks.push(centred(transport));
     }
 
     let status = status_row(cx, shown);
-    let screens = seat.clone();
+    let screens = state.clone();
     Box::new(
         Manual::new(move |layout| {
             let available = layout.available();
@@ -942,11 +942,11 @@ fn person(shown: &Shown) -> Option<Element> {
 
 /// The one password field, with the arrow that submits it, at the width the
 /// greeter's credentials take and no wider than the display allows.
-fn field(shown: &Shown, seat: &LockSeat, shaken: &Rc<Cell<f64>>) -> Element {
+fn field(shown: &Shown, state: &LockState, shaken: &Rc<Cell<f64>>) -> Element {
     // What is typed is the screen's at every keystroke, not at the next
     // frame: a reading of the session's may draw the screen again in
     // between, and the field it draws says what the person has typed so far.
-    let typed = seat.clone();
+    let typed = state.clone();
     let mut field = TextInput::local()
         .with_id(PROMPT_ID)
         .with_secret(true)
@@ -955,8 +955,8 @@ fn field(shown: &Shown, seat: &LockSeat, shaken: &Rc<Cell<f64>>) -> Element {
         .control_size(ControlSize::Large)
         .with_enter_submits(true)
         .with_trailing_accessory(Icon::ArrowRight, &t("lock-unlock"), AccessoryAction::Submit)
-        .with_external_buffer(Arc::clone(&seat.secret))
-        .with_initial_value(&seat.secret_text())
+        .with_external_buffer(Arc::clone(&state.secret))
+        .with_initial_value(&state.secret_text())
         .on_change(move |text| typed.type_password(text))
         .with_read_only(shown.checking);
     // A refused password is the field's own: its edge says so, as the line
@@ -1219,7 +1219,7 @@ fn power_id(effect: &LockEffect) -> &'static str {
 struct Stage {
     content: Element,
     dispatch: Dispatcher<LockScreen>,
-    seat: LockSeat,
+    state: LockState,
     presence: Presence,
     shake: Attention,
     /// The refusal's sideways offset, in px, as the last paint found it.
@@ -1270,7 +1270,7 @@ impl Stage {
     /// Start the motions a change of what is shown asks for, and say when the
     /// screen has finished dissolving.
     fn advance(&mut self, now: ui::time::Instant, motion: EffectiveMotion) {
-        let shown = self.seat.shown();
+        let shown = self.state.shown();
         // A screen drawn is a screen up, whole from its first frame: a locked
         // session never shows the person a screen still on its way in. It
         // leaves with its motion once a password unlocked it.
@@ -1320,7 +1320,7 @@ impl Stage {
             self.ask_until();
         }
         if shown.unlocking && !self.presence.is_moving(now) {
-            self.seat.gone();
+            self.state.gone();
         }
     }
 
@@ -1341,7 +1341,7 @@ impl Stage {
 
     /// When the screen goes quiet unless the person touches it first.
     fn idle_deadline(&self) -> Option<ui::time::Instant> {
-        (self.idle == Idle::Awake && !self.seat.shown().unlocking)
+        (self.idle == Idle::Awake && !self.state.shown().unlocking)
             .then(|| self.last_input.checked_add(IDLE))
             .flatten()
     }
@@ -1358,9 +1358,9 @@ impl Stage {
 
     /// Bring the screen's keyboard up, on the layer it was left on.
     fn show_keyboard(&self) {
-        self.seat.show(Shown {
+        self.state.show(Shown {
             keyboard: true,
-            ..self.seat.shown()
+            ..self.state.shown()
         });
     }
 
@@ -1389,7 +1389,7 @@ impl Stage {
     /// Whether what the field holds can be submitted: something is typed
     /// and no attempt is checking it.
     fn submits(&mut self) -> bool {
-        !self.seat.shown().checking
+        !self.state.shown().checking
             && find_field(self.content.as_mut()).is_some_and(|field| !field.value().is_empty())
     }
 
@@ -1479,7 +1479,7 @@ impl ui::widget::Decorator for Stage {
                 if let Some(text) = key.text.as_deref() {
                     self.caps
                         .observe_text(text, ctx.modifiers.state().shift_key());
-                    self.seat.set_caps(self.caps.on());
+                    self.state.set_caps(self.caps.on());
                 }
                 key.text.clone()
             }
@@ -1514,7 +1514,7 @@ impl ui::widget::Decorator for Stage {
         }
         // The screen's keyboard, where the last paint put it, is above
         // everything else: a press on a key types that key.
-        if self.seat.shown().keyboard
+        if self.state.shown().keyboard
             && press
             && let Some(point) = self.pointer
             && self.press_key(point)
@@ -1538,7 +1538,7 @@ impl ui::widget::Decorator for Stage {
             return;
         }
         self.content.handle_event(event, ctx);
-        let checking = self.seat.shown().checking;
+        let checking = self.state.shown().checking;
         if let Some(field) = find_field(self.content.as_mut()) {
             // Anything typed elsewhere belongs in the one field this screen
             // has: focus follows the keyboard.
@@ -1560,7 +1560,7 @@ impl ui::widget::Decorator for Stage {
         // A press on the screen's own ground brings the keyboard up: a finger
         // is unlocking, and there is no keyboard under it to type on. A press
         // the screen's controls took is theirs.
-        if press && !*ctx.handled && !self.seat.shown().keyboard {
+        if press && !*ctx.handled && !self.state.shown().keyboard {
             self.show_keyboard();
             if let Some(field) = find_field(self.content.as_mut()) {
                 Widget::set_focus(field, true);
@@ -1570,10 +1570,10 @@ impl ui::widget::Decorator for Stage {
         }
         // A letter typed on a real keyboard puts the screen's own away: the
         // one under the hands is what a person is using.
-        if typed.is_some() && self.seat.shown().keyboard {
-            self.seat.show(Shown {
+        if typed.is_some() && self.state.shown().keyboard {
+            self.state.show(Shown {
                 keyboard: false,
-                ..self.seat.shown()
+                ..self.state.shown()
             });
         }
     }
@@ -1594,7 +1594,7 @@ impl ui::widget::Decorator for Stage {
         let motion = theme.motion();
         self.advance(now, motion);
         let bounds = self.content.get_rect();
-        let screens = self.seat.screens(bounds);
+        let screens = self.state.screens(bounds);
         for screen in &screens {
             ui::auth_backdrop::draw(
                 scene,
@@ -1620,7 +1620,7 @@ impl ui::widget::Decorator for Stage {
         let placement = transform;
         // The screen's own keyboard goes up with the screen it belongs to:
         // same arrival, same shake, same fade when it leaves.
-        let showed = self.seat.shown().keyboard;
+        let showed = self.state.shown().keyboard;
         let (key_height, gap) = key_metrics(theme);
         let keyboard = self.keyboard.get();
         let place = keyboard_rect(theme, keyboard, screen);

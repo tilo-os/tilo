@@ -23,15 +23,15 @@ fn own_workspace(session: &Session, members: &[&str]) {
     session.handle().replace_tree(tree);
 }
 
-/// The sheet as a person presses it: the app the session hosts, lent the seat the session lends its
+/// The sheet as a person presses it: the app the session hosts, lent the state the session lends its
 /// own, so a press arrives as the person's own.
 fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
-    let seat = session
+    let state = session
         .workspace_settings()
         .expect("workspace settings")
         .clone();
-    let mut app =
-        HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent(PERSON, seat).expect("the sheet");
+    let mut app = HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent(PERSON, state)
+        .expect("the sheet");
     app.harness().resize((1280, 900)).expect("a screen");
     app.settle();
     app

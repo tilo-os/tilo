@@ -19,6 +19,7 @@ pub mod cli;
 mod daemon;
 #[cfg(target_os = "macos")]
 pub mod device_grants;
+pub mod device_mcp;
 pub mod enter;
 #[cfg(target_os = "macos")]
 mod i18n;
@@ -29,7 +30,6 @@ pub mod mcp_windows;
 pub mod offload;
 mod os_search;
 pub mod profile;
-pub mod remote_door;
 pub mod session_door;
 pub mod standalone;
 pub mod unix;
@@ -163,7 +163,7 @@ pub trait RuntimeServices: Sized {
     /// The MCP servers of the person's other devices, as this host reaches
     /// them from its own endpoint: what a `--connect --device` client is
     /// carried to. `None` for a host that reaches none.
-    fn remote_doors(&self) -> Option<std::sync::Arc<remote_door::Doors>> {
+    fn other_devices(&self) -> Option<std::sync::Arc<device_mcp::OtherDevices>> {
         None
     }
 }

@@ -517,7 +517,7 @@ where
 #[derive(Default)]
 pub struct Beside {
     pub tasks: Option<std::sync::Arc<dyn crate::mcp::TaskHosts>>,
-    pub devices: Option<std::sync::Arc<dyn crate::remote_door::DeviceDirectory>>,
+    pub devices: Option<std::sync::Arc<dyn crate::device_mcp::DeviceDirectory>>,
 }
 
 /// [`serve_after`], with what `beside` holds.

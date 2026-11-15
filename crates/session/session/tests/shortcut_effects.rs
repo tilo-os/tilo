@@ -28,7 +28,7 @@ use tilo_desktop_model::{
 };
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session, SessionConfig, quick_settings};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_test_env::ScopedEnv;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutHome, fixed_shortcut};
 
@@ -287,12 +287,12 @@ fn capture(session: &mut Session, name: &str) {
     .expect("write the frame");
 }
 
-/// Type `text` as the keyboard attached to the seat types it.
+/// Type `text` as the keyboard attached to the state types it.
 fn type_at_the_seat(session: &mut Session, text: &str) {
     for ch in text.chars() {
         assert!(
             session.compositor().type_char(ch).expect("input"),
-            "the seat's layout types {ch:?}"
+            "the state's layout types {ch:?}"
         );
         for _ in 0..2 {
             session.step(Duration::from_millis(12)).expect("step");
@@ -306,7 +306,7 @@ fn type_at_the_seat(session: &mut Session, text: &str) {
 fn guide_up(session: &Session) -> bool {
     session
         .shortcut_guide()
-        .is_some_and(|seat| seat.presentation().is_open())
+        .is_some_and(|state| state.presentation().is_open())
 }
 
 /// Every app the shell shows a window of, or holds a window for while its app arrives.

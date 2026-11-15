@@ -4,8 +4,8 @@
 //! is made as, the workspaces it holds and what joining one gives it — is its [`Host`].
 
 use tilo_desktop_surface::notifications::NotificationIconKind;
-use tilo_sheets::Seat as _;
-use tilo_sheets::directory::{Directory, DirectoryEffect, DirectorySeat, ListingAction};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::directory::{Directory, DirectoryEffect, DirectoryState, ListingAction};
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
 use tilo_workspace_directory::{Held, Person};
 
@@ -34,14 +34,14 @@ pub(crate) fn view(store: &Store, host: &dyn Host) -> Directory {
 
 /// Show the workspaces this host may join or open: the ones it holds, and what the sites'
 /// directories list.
-pub fn open(seat: Option<&DirectorySeat>, store: &Store, host: &dyn Host) {
-    let Some(seat) = seat else {
+pub fn open(state: Option<&DirectoryState>, store: &Store, host: &dyn Host) {
+    let Some(state) = state else {
         return;
     };
-    seat.clear_query();
+    state.clear_query();
     store.set_note(None);
-    seat.show(view(store, host));
-    seat.presentation().open(false);
+    state.show(view(store, host));
+    state.presentation().open(false);
     store.read(host.site(), None);
 }
 
@@ -51,7 +51,12 @@ pub fn open(seat: Option<&DirectorySeat>, store: &Store, host: &dyn Host) {
 /// Choosing Join (or Open) closes the sheet as soon as the choice has started: what became of it
 /// — the workspace opening, or joining it, or a refusal — is shown where the person now is, a
 /// banner, rather than a sheet left behind.
-pub fn follow(seat: Option<&DirectorySeat>, store: &Store, notices: &dyn Notices, host: &dyn Host) {
+pub fn follow(
+    state: Option<&DirectoryState>,
+    store: &Store,
+    notices: &dyn Notices,
+    host: &dyn Host,
+) {
     // A host set up to join one workspace joins it with nobody at the directory: what was granted
     // is taken and added whether or not the sheet is open.
     let answered = store.answered();
@@ -61,11 +66,11 @@ pub fn follow(seat: Option<&DirectorySeat>, store: &Store, notices: &dyn Notices
                 // The person lands in the workspace they joined, once what it holds is here. A join
                 // whose slot is still being admitted leaves the sheet up, saying so, and the "you
                 // joined" note is posted when the host admits it, not before.
-                if let Some(seat) = seat
+                if let Some(state) = state
                     && !store.settling()
                     && store.joining().is_none()
                 {
-                    seat.presentation().close();
+                    state.presentation().close();
                 }
                 if !store.settling() {
                     joined_notice(notices, &joined.name);
@@ -87,8 +92,8 @@ pub fn follow(seat: Option<&DirectorySeat>, store: &Store, notices: &dyn Notices
                 ));
             }
         }
-        if let Some(seat) = seat {
-            seat.show(view(store, host));
+        if let Some(state) = state {
+            state.show(view(store, host));
         }
     }
     // A join the person chose closed the sheet when it started, so one that failed is said where
@@ -96,27 +101,27 @@ pub fn follow(seat: Option<&DirectorySeat>, store: &Store, notices: &dyn Notices
     for said in store.take_failures_to_say() {
         failure_notice(notices, &said);
     }
-    let Some(seat) = seat else {
+    let Some(state) = state else {
         return;
     };
     if answered {
-        seat.show(view(store, host));
+        state.show(view(store, host));
     }
-    for effect in seat.take_asked() {
+    for effect in state.take_asked() {
         match effect {
-            DirectoryEffect::Join { key } => join_listed(seat, store, host, &key),
-            DirectoryEffect::Open { key } => open_listed(seat, store, host, &key),
+            DirectoryEffect::Join { key } => join_listed(state, store, host, &key),
+            DirectoryEffect::Open { key } => open_listed(state, store, host, &key),
             DirectoryEffect::Look { text } => {
                 if let Some(site) = typed_site(&text) {
                     // A site the person typed is asked for what it lists, and the sheet says it is
                     // being read until the worker answers.
                     store.read(host.site(), Some(site));
-                    seat.show(view(store, host));
+                    state.show(view(store, host));
                     continue;
                 }
                 // One workspace answers the search: Enter takes it, opening it when this host
                 // holds it and joining it otherwise.
-                let only: Vec<_> = seat
+                let only: Vec<_> = state
                     .directory()
                     .listings
                     .into_iter()
@@ -127,9 +132,9 @@ pub fn follow(seat: Option<&DirectorySeat>, store: &Store, notices: &dyn Notices
                     continue;
                 };
                 if only.action == ListingAction::Open {
-                    open_listed(seat, store, host, &only.key);
+                    open_listed(state, store, host, &only.key);
                 } else {
-                    join_listed(seat, store, host, &only.key);
+                    join_listed(state, store, host, &only.key);
                 }
             }
             DirectoryEffect::LinkOrCode { text } => {
@@ -138,18 +143,18 @@ pub fn follow(seat: Option<&DirectorySeat>, store: &Store, notices: &dyn Notices
                 if let Err(error) = host.person().and_then(|person| store.take(&text, &person)) {
                     store.set_note(Some(error));
                 }
-                seat.show(view(store, host));
+                state.show(view(store, host));
             }
             DirectoryEffect::Refresh => {
                 store.read(host.site(), None);
-                seat.show(view(store, host));
+                state.show(view(store, host));
             }
             DirectoryEffect::ClearNote => {
                 store.set_note(None);
-                seat.show(view(store, host));
+                state.show(view(store, host));
             }
             DirectoryEffect::Done => {
-                seat.presentation().close();
+                state.presentation().close();
             }
         }
     }
@@ -158,24 +163,24 @@ pub fn follow(seat: Option<&DirectorySeat>, store: &Store, notices: &dyn Notices
 /// Go to the workspace `key` names, which this host holds, and be done with the directory. A
 /// workspace the host no longer admits is said where the person picked it, and the directory stays
 /// up to pick another.
-fn open_listed(seat: &DirectorySeat, store: &Store, host: &dyn Host, key: &str) {
+fn open_listed(state: &DirectoryState, store: &Store, host: &dyn Host, key: &str) {
     if let Err(error) = host.open(key) {
         tracing::warn!(%error, %key, "workspace directory open");
         store.set_note(Some(error));
-        seat.show(view(store, host));
+        state.show(view(store, host));
         return;
     }
-    seat.presentation().close();
+    state.presentation().close();
 }
 
 /// Join the listing `key` names, one join at a time: the row joining says so, and pressing it again
 /// says it is on its way.
-fn join_listed(seat: &DirectorySeat, store: &Store, host: &dyn Host, key: &str) {
+fn join_listed(state: &DirectoryState, store: &Store, host: &dyn Host, key: &str) {
     let Some(listing) = store.listing(key) else {
         // The row was drawn from a list a later read replaced: answer the press, rather than leave
         // the row saying nothing.
         store.set_note(Some(tilo_sheets::word("directory-listing-gone")));
-        seat.show(view(store, host));
+        state.show(view(store, host));
         return;
     };
     match store.joining() {
@@ -206,14 +211,14 @@ fn join_listed(seat: &DirectorySeat, store: &Store, host: &dyn Host, key: &str) 
                 // The join is on its way: the sheet is done with it, and the person is told when it
                 // lands (or why it did not).
                 Ok(()) => {
-                    seat.presentation().close();
+                    state.presentation().close();
                     return;
                 }
                 Err(error) => store.set_note(Some(error)),
             }
         }
     }
-    seat.show(view(store, host));
+    state.show(view(store, host));
 }
 
 /// Say the workspace `name` is theirs now, or no longer, in `words`' own: marked as the

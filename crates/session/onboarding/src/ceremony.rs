@@ -27,7 +27,7 @@ use ui::winit::keyboard::{Key, NamedKey};
 
 use crate::effect::OnboardingEffect;
 use crate::page::{ChooserPurpose, Page, Screen, TourPage};
-use crate::seat::{OnboardingSeat, Secrets, WordMistakes};
+use crate::state::{OnboardingState, Secrets, WordMistakes};
 use crate::{Onboarding, t};
 use ui::widget::DrawChild;
 
@@ -72,8 +72,8 @@ pub(crate) const PROGRESS_HEADER_HEIGHT: f32 = 70.0;
 
 /// Setup's surface.
 pub(crate) struct Ceremony {
-    seat: Option<OnboardingSeat>,
-    /// The revision of the seat's page shown.
+    state: Option<OnboardingState>,
+    /// The revision of the state's page shown.
     seen: u64,
     pub(crate) page: Page,
     pub(crate) secrets: Secrets,
@@ -107,19 +107,19 @@ impl std::task::Wake for Wake {
 
 impl Ceremony {
     pub(crate) fn new(
-        seat: Option<OnboardingSeat>,
+        state: Option<OnboardingState>,
         page: Page,
         dispatch: Dispatcher<Onboarding>,
         wake: Option<ui::WakeHandle>,
     ) -> Self {
-        let secrets = seat
+        let secrets = state
             .as_ref()
-            .map(OnboardingSeat::secrets)
+            .map(OnboardingState::secrets)
             .unwrap_or_default();
-        let mistakes = seat.as_ref().and_then(OnboardingSeat::mistakes);
-        let seen = seat.as_ref().map_or(0, OnboardingSeat::revision);
+        let mistakes = state.as_ref().and_then(OnboardingState::mistakes);
+        let seen = state.as_ref().map_or(0, OnboardingState::revision);
         let mut ceremony = Self {
-            seat,
+            state,
             seen,
             path: LocalState::new(page.connect_path.clone()),
             acknowledged: LocalState::new(page.acknowledged),
@@ -144,18 +144,18 @@ impl Ceremony {
     }
 
     /// Take the page the shell shows now, if it changed.
-    fn follow_seat(&mut self) {
-        let Some(seat) = self.seat.clone() else {
+    fn follow_state(&mut self) {
+        let Some(state) = self.state.clone() else {
             return;
         };
-        if seat.revision() == self.seen {
-            if seat.take_settle() {
+        if state.revision() == self.seen {
+            if state.take_settle() {
                 self.transition = ui::motion::Presence::opened();
             }
             return;
         }
-        self.seen = seat.revision();
-        let page = seat.page();
+        self.seen = state.revision();
+        let page = state.page();
         let before = (&self.page.screen, self.page.tour_page);
         let moved = page.screen != *before.0
             || page.tour_page != before.1
@@ -193,7 +193,7 @@ impl Ceremony {
         if self.skip_acknowledged.get() != page.backup_skip_acknowledged {
             self.skip_acknowledged.set(page.backup_skip_acknowledged);
         }
-        if seat.take_settle() {
+        if state.take_settle() {
             self.transition = ui::motion::Presence::opened();
         }
         self.page = page;
@@ -474,7 +474,7 @@ impl Ceremony {
 
 impl Widget for Ceremony {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.follow_seat();
+        self.follow_state();
         self.follow_chooser_answer();
         if let Some(composed) = &mut self.composed {
             composed.sync(state, path);
@@ -488,10 +488,10 @@ impl Widget for Ceremony {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The frame's theme decides how a page it arrives on moves, so it is read before the
-        // seat is followed: a page moved to under reduced motion is simply there.
+        // state is followed: a page moved to under reduced motion is simply there.
         self.reduce_motion = theme.reduce_motion;
         self.motion = theme.motion();
-        self.follow_seat();
+        self.follow_state();
         if self.chooser.is_some() {
             // The chooser places itself over the whole surface.
             let style = taffy::Style {

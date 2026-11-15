@@ -651,14 +651,14 @@ fn settings_sheet(
         )
         .expect("settings opens on the workspace in front");
     session.frames();
-    let seat = session
+    let state = session
         .session()
         .workspace_settings()
         .expect("the session hosts workspace settings")
         .clone();
     let mut app = tilo_app::framework::testing::HeadlessApp::<
         tilo_sheets::workspace_settings::WorkspaceSettingsApp,
-    >::for_person_with_lent(&session.person, seat)
+    >::for_person_with_lent(&session.person, state)
     .expect("the sheet");
     app.harness().resize((1280, 900)).expect("a screen");
     app.settle();

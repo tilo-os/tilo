@@ -25,7 +25,7 @@ use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::join::Role;
 use tilo_peer_state::owner::{self, NativeWorkspaceOwner, testing};
 use tilo_session::{Options, Session};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::invite::InviteApp;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use ui::a11y::Action as A11yAction;
@@ -344,7 +344,7 @@ struct Hosted {
     /// The identity root and the state directory the session reads from.
     _kept: Vec<tempfile::TempDir>,
     session: Session,
-    seat: tilo_sheets::invite::InviteSeat,
+    state: tilo_sheets::invite::InviteState,
     cert: DeviceCert,
 }
 
@@ -372,26 +372,26 @@ fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
     });
     press(&mut session, place.expect("the bar's Invite"));
     settle(&mut session);
-    let seat = session
+    let sheet = session
         .invite_sheet()
         .expect("the session hosts the invite sheet")
         .clone();
     assert!(
-        seat.presentation().is_open(),
+        sheet.presentation().is_open(),
         "the bar's Invite puts the invite sheet up"
     );
-    assert!(seat.invite().may_invite, "the person may invite here");
+    assert!(sheet.invite().may_invite, "the person may invite here");
     Hosted {
         _kept: vec![identity, state],
         session,
-        seat,
+        state: sheet,
         cert,
     }
 }
 
-/// The sheet for `seat` , drawn on a screen.
-fn sheet_app(seat: &tilo_sheets::invite::InviteSeat) -> HeadlessApp<InviteApp> {
-    let mut app = HeadlessApp::<InviteApp>::for_person_with_lent("person", seat.clone())
+/// The sheet for `state` , drawn on a screen.
+fn sheet_app(state: &tilo_sheets::invite::InviteState) -> HeadlessApp<InviteApp> {
+    let mut app = HeadlessApp::<InviteApp>::for_person_with_lent("person", state.clone())
         .expect("the sheet draws");
     app.harness()
         .resize((WIDTH as u32, HEIGHT as u32))
@@ -412,8 +412,9 @@ fn press_create(app: &mut HeadlessApp<InviteApp>, session: &mut Session) -> Stri
     crate::common::until(session, "the sheet shows the link it made", |session| {
         link = session
             .invite_sheet()
-            .and_then(|seat| {
-                seat.invite()
+            .and_then(|state| {
+                state
+                    .invite()
                     .created
                     .as_ref()
                     .map(|created| created.link.clone())
@@ -445,14 +446,14 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     let Hosted {
         _kept,
         mut session,
-        seat,
+        state,
         cert,
     } = hosted(&mut home);
     let person = hex::encode(cert.user_public_key);
 
     // They make a link at the part the sheet opens on: the sheet asks, the session makes it through
     // the shell, and the sheet shows the link back.
-    let mut app = sheet_app(&seat);
+    let mut app = sheet_app(&state);
     let link = press_create(&mut app, &mut session);
     assert!(
         link.starts_with(&format!("{}/i/", responder.url())),
@@ -468,7 +469,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     // The link is shown as a code to scan: a scanner reads back exactly what the person hands over.
     let made = session
         .invite_sheet()
-        .and_then(|seat| seat.invite().created)
+        .and_then(|state| state.invite().created)
         .expect("the link the sheet made");
     assert_eq!(
         scanned(made.link.as_bytes()).map(|(read, _)| read),
@@ -478,7 +479,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     // Every part the sheet offers makes a link of its own, and every link's code is that link the
     // same way.
     let mut shown = made.link;
-    for part in 0..seat.invite().roles.len() {
+    for part in 0..state.invite().roles.len() {
         app.harness()
             .perform_named(
                 &format!("invite-role:segment:{part}"),
@@ -494,12 +495,12 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         crate::common::until(&mut session, "the sheet shows the part's link", |session| {
             session
                 .invite_sheet()
-                .and_then(|seat| seat.invite().created)
+                .and_then(|state| state.invite().created)
                 .is_some_and(|made| made.link != shown)
         });
         let made = session
             .invite_sheet()
-            .and_then(|seat| seat.invite().created)
+            .and_then(|state| state.invite().created)
             .expect("a link for the part");
         shown.clone_from(&made.link);
         assert_eq!(
@@ -623,13 +624,13 @@ fn a_link_left_on_the_community_site_is_short_and_the_site_never_sees_its_key() 
     let Hosted {
         _kept,
         mut session,
-        seat,
+        state,
         ..
     } = hosted(&mut home);
 
     // They make a link at the part the sheet opens on. What the sheet hands over is where the
     // invitation waits and the key that opens it — not a kilobyte of signed invitation.
-    let mut app = sheet_app(&seat);
+    let mut app = sheet_app(&state);
     let link = press_create(&mut app, &mut session);
     assert!(
         link.starts_with(&format!("{}/i/", responder.url())),
@@ -658,7 +659,7 @@ fn a_link_left_on_the_community_site_is_short_and_the_site_never_sees_its_key() 
     // The code the sheet draws carries exactly that link, and a scanner reads it back: forty-one
     // modules, a version 6 code at medium error correction, not the version 39 the invitation's own
     // kilobytes need.
-    let made = seat.invite().created.expect("the link the sheet made");
+    let made = state.invite().created.expect("the link the sheet made");
     assert_eq!(made.link, link, "the sheet shows the link it hands over");
     capture(&mut app, "invite-sheet-short");
     let (read, version) = scanned(made.link.as_bytes()).expect("a scanner reads the short code");

@@ -471,7 +471,7 @@ tilo_test_env::scenario! {
             reach: Reach::Account,
             granted_ms: 0,
             last_ms: None,
-            runs: Vec::new(),
+            sessions: Vec::new(),
             runs_on: "laptop".into(),
             expires_ms: None,
             browser_pages: true,

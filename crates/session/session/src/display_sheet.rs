@@ -9,7 +9,7 @@
 //! ([`crate::displays::RESOURCE`]), so the person at the sheet passes
 //! the same authority check as an agent or a script; a wireless display goes
 //! to the projector service through [`crate::projection`], and a PIN typed in
-//! the sheet comes to it through the seat, never through an action.
+//! the sheet comes to it through the state, never through an action.
 //!
 //! Nothing counts anything down on a timer of its own: the projector's worker
 //! wakes the loop when it has news, and every pass reads what came back.
@@ -18,9 +18,10 @@ use tilo_compositor::OutputInfo;
 use tilo_projector::{
     DisplayResolutionLimit, ProjectionDevice, ProjectionMode, ProjectionProtocol,
 };
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::displays::{
-    Band, Discovery, DisplaysEffect, DisplaysSeat, Layout, LayoutRow, Link, Receiver, Sheet, Stream,
+    Band, Discovery, DisplaysEffect, DisplaysState, Layout, LayoutRow, Link, Receiver, Sheet,
+    Stream,
 };
 
 use crate::displays::{self, DisplayMode};
@@ -30,8 +31,8 @@ use crate::projection_video::VideoStream;
 
 /// The display sheet as the session drives it.
 pub struct DisplaySheet {
-    /// The sheet's seat; `None` when the sheet did not mount.
-    seat: Option<DisplaysSeat>,
+    /// The sheet's state; `None` when the sheet did not mount.
+    state: Option<DisplaysState>,
     controller: ProjectionController,
     /// Where a live projection's frames are read from.
     video: Option<std::path::PathBuf>,
@@ -46,13 +47,13 @@ impl DisplaySheet {
     /// The sheet, streaming over the projector service on `socket` (`None`: the service's own),
     /// waking the session's loop with `wake` when the service has news.
     pub(crate) fn new(
-        seat: Option<DisplaysSeat>,
+        state: Option<DisplaysState>,
         socket: Option<std::path::PathBuf>,
         wake: &tilo_service::Wake,
     ) -> Self {
         let video = crate::projection::video_socket(socket.as_deref());
         Self {
-            seat,
+            state,
             controller: ProjectionController::new(
                 Box::new(SystemProjectionBackend::new(socket)),
                 wake,
@@ -92,36 +93,38 @@ impl DisplaySheet {
         })
     }
 
-    /// The sheet's seat: whether it is up, what it shows and what it asked;
+    /// The sheet's state: whether it is up, what it shows and what it asked;
     /// `None` when the sheet did not mount.
     #[must_use]
-    pub fn seat(&self) -> Option<&DisplaysSeat> {
-        self.seat.as_ref()
+    pub fn state(&self) -> Option<&DisplaysState> {
+        self.state.as_ref()
     }
 
     /// Its presentation: where it sits and whether it is up, which the sheets over the desktop are
     /// placed by.
     #[must_use]
     pub(crate) fn presentation(&self) -> Option<&tilo_sheets::Presentation> {
-        self.seat.as_ref().map(tilo_sheets::Seat::presentation)
+        self.state
+            .as_ref()
+            .map(tilo_sheets::SheetState::presentation)
     }
 
     /// Put the sheet up, as a key or an action asked: a sheet already up stays as it is.
     pub(crate) fn open(&self) {
-        let Some(seat) = &self.seat else {
+        let Some(state) = &self.state else {
             return;
         };
-        if !seat.presentation().is_open() {
-            seat.presentation().open(true);
+        if !state.presentation().is_open() {
+            state.presentation().open(true);
         }
     }
 
     /// Take the sheet down.
     pub(crate) fn close(&self) {
-        let Some(seat) = &self.seat else {
+        let Some(state) = &self.state else {
             return;
         };
-        seat.presentation().close();
+        state.presentation().close();
     }
 
     /// One pass of the sheet: for a new opening, look for wireless displays again; hear what the
@@ -132,10 +135,10 @@ impl DisplaySheet {
         answering_a_display_change: bool,
         invocations: &Invocations,
     ) {
-        let Some(seat) = &self.seat else {
+        let Some(state) = &self.state else {
             return;
         };
-        let presentation = seat.presentation();
+        let presentation = state.presentation();
         if presentation.is_open() {
             let opening = presentation.openings();
             if self.searched != Some(opening) {
@@ -147,15 +150,15 @@ impl DisplaySheet {
             self.searched = None;
         }
         self.controller.poll();
-        let asked: Vec<DisplaysEffect> = seat.take_asked();
+        let asked: Vec<DisplaysEffect> = state.take_asked();
         let presentation = presentation.clone();
         for effect in asked {
             self.carry_out(effect, invocations);
         }
         if presentation.is_open()
-            && let Some(seat) = &self.seat
+            && let Some(state) = &self.state
         {
-            seat.show(self.sheet(outputs, answering_a_display_change));
+            state.show(self.sheet(outputs, answering_a_display_change));
         }
     }
 
@@ -175,9 +178,9 @@ impl DisplaySheet {
             DisplaysEffect::Choose { receiver } => self.choose_receiver(&receiver),
             DisplaysEffect::Connect { receiver } => {
                 let pin = self
-                    .seat
+                    .state
                     .as_ref()
-                    .map(DisplaysSeat::pin)
+                    .map(DisplaysState::pin)
                     .unwrap_or_default();
                 self.connect(&receiver, &pin);
             }

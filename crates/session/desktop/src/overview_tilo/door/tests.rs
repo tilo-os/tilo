@@ -113,7 +113,7 @@ fn working() -> mcp_server::Grant {
         agent: "Claude Code".into(),
         reach: mcp_server::Reach::Account,
         granted_ms: 1,
-        runs: vec![mcp_server::Run {
+        sessions: vec![mcp_server::AgentSession {
             name: "Claude Code #2".into(),
             started_ms: 2,
         }],
@@ -177,7 +177,7 @@ tilo_test_env::scenario! {
     {
         en();
         let at_rest = mcp_server::Grant {
-            runs: Vec::new(),
+            sessions: Vec::new(),
             reach: mcp_server::Reach::Workspace {
                 id: "ws-build".into(),
                 name: "Build".into(),

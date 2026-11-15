@@ -105,9 +105,9 @@ async fn door_until(
 }
 
 fn stop(grant: &str) -> InvokeArgument {
-    mcp_server::argument(&mcp_server::RunRef {
+    mcp_server::argument(&mcp_server::AgentSessionRef {
         grant: grant.to_owned(),
-        run: "Claude Code".into(),
+        session: "Claude Code".into(),
     })
 }
 
@@ -262,25 +262,33 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     let door = SessionActions::new(&page, workspace, host_key);
     let (read, taken) = ask(&door, mcp_server::SERVER, InvokeArgument::None);
     assert!(taken, "the person reads their own door");
-    let listed = door_until("the door to list the agent's run", &door, &read, |door| {
-        door.run("Claude Code").is_some()
-    })
+    let listed = door_until(
+        "the server to list the agent's session",
+        &door,
+        &read,
+        |door| door.session("Claude Code").is_some(),
+    )
     .await;
     assert_eq!(listed.grants.len(), 1, "the tab is no agent: {listed:?}");
     assert_eq!(listed.grants[0].id, grant);
-    assert_eq!(listed.grants[0].runs.len(), 1);
+    assert_eq!(listed.grants[0].sessions.len(), 1);
     assert_eq!(listed.grants[0].reach, mcp_server::Reach::Account);
 
     nobody_else_reaches(&other, &stopped, computer.cert.device_public_key, host_key).await;
-    assert!(door_now(&door, &read).unwrap().run("Claude Code").is_some());
+    assert!(
+        door_now(&door, &read)
+            .unwrap()
+            .session("Claude Code")
+            .is_some()
+    );
 
-    // Stopping the run ends that session for good: the computer is told, says so, and connects
+    // Stopping the session ends it for good: the computer is told, says so, and connects
     // no more, so nothing of the agent is said from it again.
     assert!(ask(&door, mcp_server::STOP, stop(&grant)).1);
-    door_until("the stopped run to end", &door, &read, |door| {
+    door_until("the stopped session to end", &door, &read, |door| {
         door.grants
             .iter()
-            .any(|g| g.id == grant && g.runs.is_empty())
+            .any(|g| g.id == grant && g.sessions.is_empty())
     })
     .await;
     let agent = comes_back_after_its_stop(&host, &stopped, &computer, &host_device).await;
@@ -288,13 +296,18 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
         agent_says_its_run(&agent).await.then_some(())
     })
     .await;
-    door_until("the agent's new run", &door, &read, |door| {
-        door.run("Claude Code").is_some()
+    door_until("the agent's new session", &door, &read, |door| {
+        door.session("Claude Code").is_some()
     })
     .await;
 
     revoked_by_someone_else(&other, &other_root, &agent, &computer, state.path()).await;
-    assert!(door_now(&door, &read).unwrap().run("Claude Code").is_some());
+    assert!(
+        door_now(&door, &read)
+            .unwrap()
+            .session("Claude Code")
+            .is_some()
+    );
 
     // The root revokes the computer: its session ends at once, it leaves the
     // door, and the host refuses it from then on.

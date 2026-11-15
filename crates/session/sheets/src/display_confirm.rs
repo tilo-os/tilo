@@ -11,7 +11,7 @@
 //!
 //! Keeping a change is the person's answer: whoever acts for them is always
 //! asked first. Reverting is safe for anyone. The shell holds the
-//! transaction and records the answer ([`ConfirmSeat`]).
+//! transaction and records the answer ([`ConfirmState`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -69,7 +69,7 @@ pub struct Question {
 impl Question {
     /// The question as the shell asks it: what made the change, how long it
     /// has left, and whether an answer is being recorded. The displays are
-    /// where the shell stands the sheet ([`ConfirmSeat::covers`]).
+    /// where the shell stands the sheet ([`ConfirmState::covers`]).
     pub fn asking(tool: Option<String>, status: String, answering: bool) -> Self {
         Self {
             tool,
@@ -120,7 +120,7 @@ struct Shown {
 /// What the shell lends the question: whether it is up, what it asks, and
 /// where the answer goes.
 #[derive(Clone, Default)]
-pub struct ConfirmSeat {
+pub struct ConfirmState {
     presentation: Presentation,
     question: Rc<RefCell<Question>>,
     /// The displays the shell spans the sheet over, in its own coordinates.
@@ -129,16 +129,16 @@ pub struct ConfirmSeat {
     asked: Rc<RefCell<Vec<ConfirmEffect>>>,
 }
 
-impl std::fmt::Debug for ConfirmSeat {
+impl std::fmt::Debug for ConfirmState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConfirmSeat")
+        f.debug_struct("ConfirmState")
             .field("presentation", &self.presentation)
             .field("question", &self.question.borrow())
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for ConfirmSeat {
+impl crate::SheetState for ConfirmState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
@@ -148,7 +148,7 @@ impl crate::Seat for ConfirmSeat {
     }
 }
 
-impl ConfirmSeat {
+impl ConfirmState {
     /// Show `question`, or the same question as it stands now.
     pub fn ask(&self, question: Question) {
         if *self.question.borrow() == question {
@@ -217,22 +217,22 @@ impl ResourceApp for DisplayConfirmApp {
     }
 
     fn view(cx: &mut ViewCx<DisplayConfirm>) -> Element {
-        let seat = cx.take_lent::<ConfirmSeat>();
-        let initial = match &seat {
-            Some(seat) => seat.question.borrow().clone(),
+        let state = cx.take_lent::<ConfirmState>();
+        let initial = match &state {
+            Some(state) => state.question.borrow().clone(),
             None => cx
                 .fixture::<Question>()
                 .map(|question| (*question).clone())
                 .unwrap_or_default(),
         };
         let shown = cx.local(Shown { question: initial });
-        if let Some(seat) = &seat {
-            *seat.shown.borrow_mut() = Some(shown.clone());
+        if let Some(state) = &state {
+            *state.shown.borrow_mut() = Some(shown.clone());
         }
-        let answering = seat;
+        let answering = state;
         cx.effects(move |effect: ConfirmEffect, _cx| match &answering {
-            Some(seat) => {
-                seat.answer(effect);
+            Some(state) => {
+                state.answer(effect);
                 Ok(Effected::done())
             }
             None => Err("no display change is waiting here".to_owned()),

@@ -4,12 +4,12 @@
 //! The service holds the request and its one answer and decides where the
 //! chooser may go ([`FileRequest`]: where it starts, the folders it may
 //! reach); the sheet shows the toolkit's [`FilePicker`] for it and gives the
-//! answer back through the seat ([`FilePickerSeat::take_answer`]). Every
+//! answer back through the state ([`FilePickerState::take_answer`]). Every
 //! step a person takes in it is a published action
 //! ([`FilePickerEffect`]), each naming the request it is taken in, so a
 //! step that arrives after another request opened is refused; what the
 //! chooser lists, where it is and why it last refused reaches the service
-//! as plain data ([`FilePickerSeat::listing`]). Giving the app files needs
+//! as plain data ([`FilePickerState::listing`]). Giving the app files needs
 //! the person: agents may look around and cancel, but never confirm.
 
 use std::cell::RefCell;
@@ -280,27 +280,27 @@ struct Held {
 /// What the session lends the chooser: whether it is up, what it is asked,
 /// what it lists and what it answered.
 #[derive(Clone, Default)]
-pub struct FilePickerSeat {
+pub struct FilePickerState {
     presentation: Presentation,
     held: Rc<RefCell<Held>>,
 }
 
-impl std::fmt::Debug for FilePickerSeat {
+impl std::fmt::Debug for FilePickerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FilePickerSeat")
+        f.debug_struct("FilePickerState")
             .field("presentation", &self.presentation)
             .field("request", &self.held.borrow().request)
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for FilePickerSeat {
+impl crate::SheetState for FilePickerState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl FilePickerSeat {
+impl FilePickerState {
     /// Ask `request`, or nothing. Another request starts the chooser
     /// afresh and forgets the last one's answer.
     pub fn ask(&self, request: Option<FileRequest>) {
@@ -342,7 +342,7 @@ impl FilePickerSeat {
         self.held.borrow_mut().answer.take()
     }
 
-    /// Whether `other` is this same seat, lent again.
+    /// Whether `other` is this same state, lent again.
     pub fn is(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.held, &other.held)
     }
@@ -537,20 +537,20 @@ fn listing_of(picker: &FilePicker, refused: Option<String>) -> Listing {
 }
 
 /// The toolkit's picker, taking the steps asked through the door and
-/// handing what it answers to the seat.
+/// handing what it answers to the state.
 struct Chooser {
     picker: FilePicker,
-    seat: FilePickerSeat,
+    state: FilePickerState,
 }
 
 impl Chooser {
     /// Take the steps waiting, take what the worker read, and tell the
-    /// seat what the chooser shows and answered. `true` when anything
+    /// state what the chooser shows and answered. `true` when anything
     /// changed.
     fn serve(&mut self) -> bool {
         let mut changed = self.picker.poll_lookups();
         let mut refused = None;
-        let steps = self.seat.take_steps();
+        let steps = self.state.take_steps();
         let stepped = !steps.is_empty();
         for step in steps {
             changed = true;
@@ -570,16 +570,16 @@ impl Chooser {
         }
         changed |= self.picker.poll_lookups();
         if let Some(outcome) = self.picker.take_outcome() {
-            self.seat.answered(outcome);
+            self.state.answered(outcome);
             changed = true;
         }
         let refused = if stepped {
             refused
         } else {
-            self.seat.held.borrow().listing.refused.clone()
+            self.state.held.borrow().listing.refused.clone()
         };
         let listing = listing_of(&self.picker, refused);
-        let mut held = self.seat.held.borrow_mut();
+        let mut held = self.state.held.borrow_mut();
         if held.listing != listing {
             held.listing = listing;
             changed = true;
@@ -648,19 +648,19 @@ impl ResourceApp for FilePickerApp {
     }
 
     fn view(cx: &mut ViewCx<FileChooser>) -> Element {
-        let seat = cx.take_lent::<FilePickerSeat>().unwrap_or_else(|| {
+        let state = cx.take_lent::<FilePickerState>().unwrap_or_else(|| {
             // Headless, a scenario stands in for the service.
-            let seat = FilePickerSeat::default();
+            let state = FilePickerState::default();
             if let Some(request) = cx.fixture::<FileRequest>() {
-                seat.ask(Some((*request).clone()));
+                state.ask(Some((*request).clone()));
             }
-            seat
+            state
         });
-        let opened = cx.local(seat.request());
-        seat.held.borrow_mut().opened = Some(opened.clone());
+        let opened = cx.local(state.request());
+        state.held.borrow_mut().opened = Some(opened.clone());
         let wake = cx.waker();
-        seat.presentation.wake_with(wake.clone());
-        let stepping = seat.clone();
+        state.presentation.wake_with(wake.clone());
+        let stepping = state.clone();
         cx.effects(move |effect: FilePickerEffect, _cx| {
             stepping.step(effect)?;
             Ok(Effected::done())
@@ -670,7 +670,7 @@ impl ResourceApp for FilePickerApp {
                 let waker = std::task::Waker::from(Arc::new(Wake(wake.clone())));
                 let mut chooser = Chooser {
                     picker: picker(request, Some(waker)),
-                    seat: seat.clone(),
+                    state: state.clone(),
                 };
                 chooser.serve();
                 Box::new(chooser) as Element

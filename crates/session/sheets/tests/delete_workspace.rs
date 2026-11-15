@@ -8,9 +8,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::delete_workspace::{
-    Asked, DeleteWorkspaceApp, DeleteWorkspaceEffect, DeleteWorkspaceSeat,
+    Asked, DeleteWorkspaceApp, DeleteWorkspaceEffect, DeleteWorkspaceState,
 };
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
@@ -19,15 +19,15 @@ const VIEWPORT: (u32, u32) = (1280, 800);
 
 /// The sheet as the shell lends it, asking about the workspace called
 /// `name`.
-fn seated(name: &str) -> (HeadlessApp<DeleteWorkspaceApp>, DeleteWorkspaceSeat) {
-    let seat = DeleteWorkspaceSeat::default();
-    seat.show(name.to_owned());
-    seat.presentation().open(true);
+fn mounted(name: &str) -> (HeadlessApp<DeleteWorkspaceApp>, DeleteWorkspaceState) {
+    let state = DeleteWorkspaceState::default();
+    state.show(name.to_owned());
+    state.presentation().open(true);
     let mut app =
-        HeadlessApp::<DeleteWorkspaceApp>::for_person_with_lent("person", seat.clone()).unwrap();
+        HeadlessApp::<DeleteWorkspaceApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 fn says(app: &mut HeadlessApp<DeleteWorkspaceApp>, text: &str) -> bool {
@@ -51,7 +51,7 @@ tilo_test_env::scenario! {
 
     phase the_question_names_the_workspace_and_what_goes_with_it;
     {
-        let (mut app, _seat) = seated("Design studio");
+        let (mut app, _state) = mounted("Design studio");
         for text in [
             "Delete Design studio?",
             "Everything in this workspace goes with it",
@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
             ),
         ];
         for (way, answer) in ways {
-            let (mut app, seat) = seated("Design studio");
+            let (mut app, state) = mounted("Design studio");
             match way {
                 Way::Key(key) => {
                     app.harness().key(key);
@@ -93,17 +93,17 @@ tilo_test_env::scenario! {
                     app.settle();
                 }
             }
-            assert_eq!(seat.take_answers(), [answer], "{way:?}");
+            assert_eq!(state.take_answers(), [answer], "{way:?}");
         }
     }
 
     phase a_new_question_replaces_the_one_before_it;
     {
-        let (mut app, seat) = seated("Design studio");
-        seat.show("Notes".to_owned());
+        let (mut app, state) = mounted("Design studio");
+        state.show("Notes".to_owned());
         app.settle();
         assert_eq!(
-            seat.asked(),
+            state.asked(),
             Asked {
                 name: "Notes".to_owned()
             }

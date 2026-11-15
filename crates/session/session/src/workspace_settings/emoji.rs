@@ -5,7 +5,7 @@
 //! actions, decided by the workspace's grants on Chat's node — the decision the app windows and the
 //! action broker take — so the tab, the apps and the person's other devices hold the one record,
 //! and the tab decides nothing of its own.
-//! The picture is chosen in the session's own file chooser ([`FilePickerSeat`]) and added from what
+//! The picture is chosen in the session's own file chooser ([`FilePickerState`]) and added from what
 //! it answers, as a window's emoji picker adds one.
 
 use std::cell::{Cell, RefCell};
@@ -21,8 +21,8 @@ use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, emoji_pane};
 use tilo_desktop_model::{Layout, UserId, Workspace};
 use tilo_desktop_surface::i18n::{t, t_args};
-use tilo_sheets::Seat as _;
-use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerSeat, FileRequest, FileType};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerState, FileRequest, FileType};
 use tilo_sheets::workspace_settings as sheet;
 use ui::permissions::{LivePermissions, PermissionContext};
 use ui::workspace_emoji::{CustomEmoji, Small, WorkspaceEmoji, make_small, wake_when_tools_are_in};
@@ -294,7 +294,7 @@ impl Emoji {
         effect: &sheet::WorkspaceSettingsEffect,
         tree: &Layout,
         person: &UserId,
-        picker: Option<&FilePickerSeat>,
+        picker: Option<&FilePickerState>,
     ) {
         let workspace = tree.active_workspace();
         match effect {
@@ -313,7 +313,7 @@ impl Emoji {
         &self,
         workspace: Option<&Workspace>,
         person: &UserId,
-        picker: Option<&FilePickerSeat>,
+        picker: Option<&FilePickerState>,
     ) {
         let (Some(workspace), Some(picker)) = (workspace, picker) else {
             return;
@@ -380,7 +380,7 @@ impl Emoji {
 
     /// Take up what came of the chooser, and the pictures that waited for the image tools: each one
     /// added, or the tab saying why not.
-    pub(crate) fn settle(&self, tree: &Layout, person: &UserId, picker: Option<&FilePickerSeat>) {
+    pub(crate) fn settle(&self, tree: &Layout, person: &UserId, picker: Option<&FilePickerState>) {
         let workspace = tree.active_workspace();
         self.answer(workspace, person, picker);
         self.retry(workspace, person);
@@ -391,7 +391,7 @@ impl Emoji {
         &self,
         workspace: Option<&Workspace>,
         person: &UserId,
-        picker: Option<&FilePickerSeat>,
+        picker: Option<&FilePickerState>,
     ) {
         let Some(handle) = self.choosing.borrow().clone() else {
             return;

@@ -5,17 +5,17 @@
 //! the same view itself ([`LockView`]), so a lock never lifts itself.
 
 use tilo_compositor::Error;
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 
 use crate::lock_service;
 use crate::unlock;
 use crate::{LOCK_SCREEN_TRIES, SessionAction};
 
 /// The lock screen drawn in the session's own process, for the locks its app cannot show: the same
-/// sheet the lock screen's app is, lent the same seat. What it asks goes to the session over a
+/// sheet the lock screen's app is, lent the same state. What it asks goes to the session over a
 /// channel of this process, and what the session publishes is written into the view it draws.
 pub(crate) struct LockView {
-    seat: tilo_sheets::lock::LockSeat,
+    state: tilo_sheets::lock::LockState,
     effects: std::sync::mpsc::Receiver<tilo_sheets::lock::LockEffect>,
     /// The person typed into this view while it stood in for the app: it keeps the lock until the
     /// lock ends, so what they type is never split between two fields.
@@ -26,12 +26,12 @@ pub(crate) struct LockView {
 }
 
 impl LockView {
-    /// The view of `seat` , taking what it asks here.
-    pub(crate) fn new(seat: tilo_sheets::lock::LockSeat) -> Self {
+    /// The view of `state` , taking what it asks here.
+    pub(crate) fn new(state: tilo_sheets::lock::LockState) -> Self {
         let (outgoing, effects) = std::sync::mpsc::channel();
-        seat.ask_with(outgoing);
+        state.ask_with(outgoing);
         Self {
-            seat,
+            state,
             effects,
             typed: std::cell::Cell::new(false),
             app_shown: std::cell::Cell::new(false),
@@ -50,13 +50,13 @@ impl LockView {
     /// Put the view up on every display and show it `shown` , keeping what only the view can know —
     /// whether Caps Lock is on, and whether it draws its touch keyboard.
     fn open(&self, shown: tilo_sheets::lock::Shown) {
-        let presentation = self.seat.presentation();
+        let presentation = self.state.presentation();
         if !presentation.is_open() {
             presentation.open(false);
         }
-        self.seat.show(tilo_sheets::lock::Shown {
-            caps_lock: self.seat.shown().caps_lock,
-            keyboard: self.seat.shown().keyboard,
+        self.state.show(tilo_sheets::lock::Shown {
+            caps_lock: self.state.shown().caps_lock,
+            keyboard: self.state.shown().keyboard,
             ..shown
         });
     }
@@ -64,8 +64,8 @@ impl LockView {
     /// The view has left the screen: nothing of it is drawn.
     fn close(&self) {
         self.typed.set(false);
-        if self.seat.presentation().is_drawn() {
-            self.seat.presentation().gone();
+        if self.state.presentation().is_drawn() {
+            self.state.presentation().gone();
         }
     }
 }
@@ -212,7 +212,7 @@ impl crate::Session {
             let locked = self.compositor.session_locked();
             let app_shown = locked && (view.app_shown.get() || self.compositor.lock_client_drawn());
             view.app_shown.set(app_shown);
-            let typed = view.typed.get() || view.seat.holds_typing();
+            let typed = view.typed.get() || view.state.holds_typing();
             view.typed.set(locked && typed);
             if locked && (self.lock_shown == LockShown::View || !app_shown || typed) {
                 view.open(lock.shown());

@@ -92,19 +92,19 @@ pub(crate) struct Seen {
 }
 
 impl Seen {
-    /// The door's open run `run` is, with the grant it came in by: History names a run as
-    /// the door does ("Claude Code #2").
-    pub(crate) fn open(&self, run: &wire::AgentRun) -> Option<mcp_server::RunRef> {
+    /// The door's open agent session `run` is, with the grant it came in by: History names a
+    /// session as the door does ("Claude Code #2").
+    pub(crate) fn open(&self, run: &wire::AgentRun) -> Option<mcp_server::AgentSessionRef> {
         self.door
-            .run(&run.agent.name)
-            .map(|(grant, open)| mcp_server::RunRef {
+            .session(&run.agent.name)
+            .map(|(grant, session)| mcp_server::AgentSessionRef {
                 grant: grant.id.clone(),
-                run: open.name.clone(),
+                session: session.name.clone(),
             })
     }
 
-    /// Whether `run` is working now: its session through the door is open and it is that
-    /// session's newest run.
+    /// Whether `run` is working now: its agent session through the door is open and it is that
+    /// session's newest work.
     pub(crate) fn working(&self, run: &wire::AgentRun) -> bool {
         self.open(run).is_some()
             && self

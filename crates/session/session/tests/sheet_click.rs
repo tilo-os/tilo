@@ -137,7 +137,7 @@ fn a_click_on_allow_once_at_its_reported_place_allows_the_step() {
     crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()
-            .and_then(tilo_sheets::portal::PortalSeat::dialog)
+            .and_then(tilo_sheets::portal::PortalState::dialog)
             .map(|_| ())
     });
     settled(&mut session);
@@ -168,7 +168,7 @@ fn a_press_with_no_pointer_over_the_sheet_answers_nothing() {
     crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()
-            .and_then(tilo_sheets::portal::PortalSeat::dialog)
+            .and_then(tilo_sheets::portal::PortalState::dialog)
             .map(|_| ())
     });
     settled(&mut session);
@@ -199,7 +199,7 @@ fn a_press_beside_the_card_does_not_decline_the_step() {
     crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()
-            .and_then(tilo_sheets::portal::PortalSeat::dialog)
+            .and_then(tilo_sheets::portal::PortalState::dialog)
             .map(|_| ())
     });
     settled(&mut session);
@@ -213,7 +213,7 @@ fn a_press_beside_the_card_does_not_decline_the_step() {
     assert!(
         session
             .portal()
-            .and_then(tilo_sheets::portal::PortalSeat::dialog)
+            .and_then(tilo_sheets::portal::PortalState::dialog)
             .is_some(),
         "the ask is still up on its sheet"
     );
@@ -231,7 +231,7 @@ fn a_click_on_allow_once_answers_at_a_scaled_display() {
     crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()
-            .and_then(tilo_sheets::portal::PortalSeat::dialog)
+            .and_then(tilo_sheets::portal::PortalState::dialog)
             .map(|_| ())
     });
     settled(&mut session);

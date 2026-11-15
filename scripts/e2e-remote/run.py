@@ -10,15 +10,15 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    (`tilo-vm vm branch`, which boots B once beside A to have it taken in), which comes up as
    a new device of the same person. Box C is another person's. The boxes meet only on the
    network tilo-vm gives the VMs of one host (`tilolan0`, 198.18.0.0/16).
-2. On A, `tilo agent connect claude --device B` registers B's door with Claude Code; the
+2. On A, `tilo agent connect claude --device B` registers B's server with Claude Code; the
    scripted client (guest/agent.py, clientInfo `claude-code`) runs exactly the command it
    registered.
-3. A's own door lists B as reachable (`tilo_devices`).
+3. A's own server lists B as reachable (`tilo_devices`).
 4. With B's "Accept agents from my other devices" off and nobody at B, the agent is not
    admitted; the person approving B's sheet admits it; their Stop on B ends A's connection.
 5. With the setting on (turned on through its own action), the agent is let in on B without a
    question: it lists B's apps, opens Notes and makes a note there, seated on B's shell with
-   A's device beside its name (its whole key and its label as the door caps it) and with no
+   A's device beside its name (its whole key and its label as the server caps it) and with no
    environment. Its step `terminal#run`, which asks first, is still put to B's person on the
    run's sheet, who allows it once, and the command then runs.
 6. With B's second setting "Let them act without asking" on as well, a new connection of the
@@ -26,7 +26,7 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    with no sheet ever up on B. That the step is asked with the second setting off is step 5,
    in the same run, just before.
 7. Two agents on two machines work in one Browser tab on B at once: B's person opens the
-   Browser from the shell's apps, the agent on A, through B's door, sends its tab to a form B
+   Browser from the shell's apps, the agent on A, through B's server, sends its tab to a form B
    serves on its loopback, and an agent on B itself joins it. Each answers its part of the
    form with `fill-page-form` in the same moment; B's second setting is off again, and B's
    person allows each agent on B's sheet.
@@ -34,12 +34,12 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    (`read-page-fields`) and what was done in the tab, in order (`read-page-record`): both
    agents, each under its own name.
 8. Three machines work in that one tab: A is branched once more into D, a third device of the
-   person, and the agents on A and on D, both through B's door, and the agent on B each answer
+   person, and the agents on A and on D, both through B's server, and the agent on B each answer
    a part of the form in the same moment. B's person reads three names in the tab's record and
-   which of them set each field. The agent on D names B by its device id, which a door takes
+   which of them set each field. The agent on D names B by its device id, which a server takes
    as well as a name: D does not list B (step 10).
 9. In B's tab, each agent that came from another machine is recorded with its device beside
-   its name: the device B's door verified it came from, by its whole key and its name, in the
+   its name: the device B's server verified it came from, by its whole key and its name, in the
    tab's record and in who set each field. B's own agent is recorded with none. B's shell seats
    each of them the same way: an agent from another machine with that machine's key and label,
    B's own with neither, and none of them with an environment.
@@ -52,7 +52,7 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
 12. The same the other way round: A, the machine that hosts the workspace, opens a Browser of
     its own on the form, served on A's loopback as B serves it, and A's person shares that
     window. B's shell holds it as a window that runs on A and shows the form's text.
-13. C, another person's device, is refused at B's door.
+13. C, another person's device, is refused at B's server.
 
 Every step is a result in report.json / report.md under --out; any failure fails the run.
 """
@@ -83,7 +83,7 @@ GUEST_DIR = ".cache/e2e-remote"
 MARK = "E2E-MCP "
 SLOT = "me"
 # What the boxes' sessions log of the MCP server, its remote side and the questions it asks.
-DOOR_LOG = ("info,tilo_session::mcp_server=debug,tilo_session::remote_door=debug,"
+SERVER_LOG = ("info,tilo_session::mcp_server=debug,tilo_session::device_mcp=debug,"
             "tilo_session::questions=debug,tilo_session::agent_sessions=debug")
 # Each box: guest memory and CPUs. Three fit beside each other in the micro-VM.
 # A, B and D run side by side; C runs beside B once A and D have stopped. A box takes 3 GiB: with less its
@@ -110,7 +110,7 @@ CLIENT_SHOWN = "claude-code"
 ALLOW_ONCE = "Allow once"
 ALLOW = "Allow"
 DENY = "Deny"
-# The choice only the door's own sheet offers: a sheet with "Allow once" and without it asks
+# The choice only the server's own sheet offers: a sheet with "Allow once" and without it asks
 # about one step of an agent that is in already (crates/session/session/src/step_questions.rs).
 ALLOW_SESSION = "Allow for this session"
 # The Browser, as the shell names the app.
@@ -153,7 +153,7 @@ THREE_B = {"Passport number": "FX4410972", "Refused before?": "No", "Arrival": "
 
 
 def capped(label: str) -> str:
-    """A device's label as B's door says it beside an agent that came from that device: trimmed,
+    """A device's label as B's server says it beside an agent that came from that device: trimmed,
     without control characters, its first 64 characters (tilo_actions::InvokerDevice::certified).
     Empty for a device whose certificate names none."""
     return "".join(c for c in (label or "").strip() if unicodedata.category(c) != "Cc")[:64]
@@ -187,7 +187,7 @@ class Box:
 
 @dataclass
 class Party:
-    """An agent working in the tab: the box it runs on, the door it comes through, what it
+    """An agent working in the tab: the box it runs on, the server it comes through, what it
     answers, a value only it writes, the questions reviewed as set by it, whether it is the
     one that sends the tab to the form, and whether it comes from another device."""
     box: Box
@@ -366,7 +366,7 @@ class Run:
         kept = [l for l in text.splitlines() if not any(n in l for n in noise)]
         self.write(f"logs-{box.letter}.txt", "\n".join(kept))
         # A failed run keeps no outputs: what matters of it goes to the log.
-        telling = ("MCP server", "mcp_server", "remote_door", "questions", "lan:", "onboarding",
+        telling = ("MCP server", "mcp_server", "device_mcp", "questions", "lan:", "onboarding",
                    "identity", "personal", "ERROR", "WARN", "panicked", "refused", "branch")
         excerpt = ([l for l in kept if any(t in l for t in telling)][-200:]
                    + ["  (its last lines)"] + kept[-40:])
@@ -521,9 +521,9 @@ class Run:
                       lambda res: self.branch(a, b, res), "E01")
             self.step("E03", "B is a new device of A's person: its own key, certified by the same root",
                       lambda res: self.same_person(a, b, res), "E02")
-            self.step("E04", "`tilo agent connect claude --device B` on A registers B's door",
+            self.step("E04", "`tilo agent connect claude --device B` on A registers B's server",
                       lambda res: self.register(a, b, res, facts), "E03")
-            self.step("E05", "A's door lists B as reachable (tilo_devices)",
+            self.step("E05", "A's server lists B as reachable (tilo_devices)",
                       lambda res: self.reachable(a, b, res), "E04")
             self.step("E06", "With B's setting off and nobody at B, the agent is not admitted",
                       lambda res: self.unanswered(a, b, res, facts), "E05")
@@ -559,7 +559,7 @@ class Run:
             self.step("E15", "B's person watches the Browser window A shares: the machine that "
                              "hosts the workspace shares, and its copy's shell shows the form",
                       lambda res: self.host_window_watched(a, b, res), "E03")
-            self.step("E09", "A device of another person is refused at B's door",
+            self.step("E09", "A device of another person is refused at B's server",
                       lambda res: self.stranger(b, c, res), "E03")
         finally:
             ok = self.report()
@@ -585,7 +585,7 @@ class Run:
                     timeout=900)
         a.vm.vm_cmd("start", a.name, timeout=900)
         self.running.add("a")
-        self.log_door(a)
+        self.log_server(a)
         self.make_person(a, res)
         self.ready(a, 300)
         status = self.identity(a)
@@ -593,12 +593,12 @@ class Run:
         if not (status.get("this_device") or {}).get("device"):
             raise Failed(f"A's person has no certified device after onboarding: {status}")
 
-    def log_door(self, box: Box) -> None:
+    def log_server(self, box: Box) -> None:
         """Have `box` 's session log its MCP server and questions at debug from its next start
         on; B, branched from A, inherits it. Read back only when a step fails."""
         box.vm.root_exec(
             f"d=/etc/systemd/system/tilo-vm-session@{SLOT}.service.d; mkdir -p $d && "
-            f"printf '[Service]\\nEnvironment=RUST_LOG={DOOR_LOG}\\n' > $d/90-e2e-door-log.conf && "
+            f"printf '[Service]\\nEnvironment=RUST_LOG={SERVER_LOG}\\n' > $d/90-e2e-server-log.conf && "
             "systemctl daemon-reload", timeout=60, check=False)
 
     def make_person(self, box: Box, res: Result) -> None:
@@ -702,13 +702,13 @@ class Run:
         facts["command"] = command
         self.put_agent(a)
 
-    def door(self, a: Box) -> list[str]:
-        """The command `tilo agent connect claude` registers for this desktop's own door."""
+    def server(self, a: Box) -> list[str]:
+        """The command `tilo agent connect claude` registers for this desktop's own server."""
         return ["tilo-runtime-mcp", "--connect"]
 
     def reachable(self, a: Box, b: Box, res: Result) -> None:
         key = (b.identity.get("this_device") or {}).get("device")
-        thread, holder = self.agent_beside(a, "devices", self.door(a), E2E_DEVICE=key,
+        thread, holder = self.agent_beside(a, "devices", self.server(a), E2E_DEVICE=key,
                                            E2E_WAIT_S=str(FIND_S))
         # A local client is asked about on A: its person allows it, as for any program of theirs.
         self.answer_when_asked(a, res, thread)
@@ -780,7 +780,7 @@ class Run:
 
     def unasked(self, res: Result, names: list[str]) -> None:
         """Nobody sits at B and both its settings are on, so no sheet may be up on it: neither
-        the door's, which the first setting answers, nor a question about a step, which the
+        the server's, which the first setting answers, nor a question about a step, which the
         second answers. One was up all the same and offered `names`: the failure says which of
         the two it was, by what it offered."""
         res.facts["sheet"] = [n for n in names if "llow" in n or n == DENY]
@@ -913,7 +913,7 @@ class Run:
 
     def check_work(self, a: Box, b: Box, res: Result, t: dict, sessions: list, title: str) -> dict:
         """What the agent from A did on B, and how B's shell seats it: under a name, with A's
-        whole key and A's label as the door caps it beside the name, and with no environment.
+        whole key and A's label as the server caps it beside the name, and with no environment.
         Its session."""
         for key in ("initialize", "devices", "apps", "open_notes", "run_command", "new_note",
                     "found_note"):
@@ -923,7 +923,7 @@ class Run:
         opened = t.get("open_notes")
         if not (isinstance(opened, dict) and (opened.get("result") or {}).get("isError") is False):
             raise Failed(f"the agent's notes#open did not go through on B: {opened}")
-        # The door answers a job that did not succeed (still pending, failed, cancelled) as an
+        # The server answers a job that did not succeed (still pending, failed, cancelled) as an
         # error: only a command that ran is answered without one.
         ran = t.get("run_command")
         if not (isinstance(ran, dict) and (ran.get("result") or {}).get("isError") is False):
@@ -931,9 +931,9 @@ class Run:
         if not sessions:
             raise Failed("B seats no agent")
         # B's shell seats the agent under the name it shows the client by (its clientInfo name, then
-        # its number) and says beside the name the device it came from, as B's door verified it:
-        # A's whole key and A's label as the door caps it. The session's key names the agent
-        # session, which says nothing of a device. It came in by B's door, by no environment.
+        # its number) and says beside the name the device it came from, as B's server verified it:
+        # A's whole key and A's label as the server caps it. The session's key names the agent
+        # session, which says nothing of a device. It came in by B's server, by no environment.
         session, this = sessions[0], a.identity.get("this_device") or {}
         res.facts["session"] = session
         for field_name in ("device", "device_name", "environment", "environment_id"):
@@ -955,7 +955,7 @@ class Run:
         if "so.tilo.notes" not in json.dumps(windows):
             raise Failed(f"Notes did not open on B: {json.dumps(windows)[:800]}")
         made, found = text_of(t.get("new_note")), text_of(t.get("found_note"))
-        # An action the door could not run answers in words, and so does a search that finds
+        # An action the server could not run answers in words, and so does a search that finds
         # nothing, which names the title it looked for: neither is the note.
         if not made or made.startswith(("pending ", "failed")) or "did not open" in made:
             raise Failed(f"the agent could not make its note on B: {t.get('open_notes')} / {t.get('new_note')}")
@@ -1229,7 +1229,7 @@ class Run:
     def devices_named(self, res: Result) -> None:
         """Each agent that worked in B's tab from another machine is recorded there with its
         device beside its name, and who set each field it set is reviewed with it: the device's
-        whole key, as that machine's own identity names it, and its label as B's door caps it.
+        whole key, as that machine's own identity names it, and its label as B's server caps it.
         B's own agent is recorded and reviewed with no device. The record's device is the one
         the change it made was invoked with (`/invoker/device`): the tab takes no entry whose
         device is not that (apps/browser/src/page_record.rs). B's shell seats them the same way
@@ -1311,7 +1311,7 @@ class Run:
         self.in_one_tab(b, [
             Party(a, facts["command"], ANSWERS_A, "Maria Elena",
                   ("Given names", "Family name", "Nationality", "Which country?"), leads=True),
-            Party(b, self.door(b), ANSWERS_B, "P7K290XB4", ("Passport number", "Arrival"),
+            Party(b, self.server(b), ANSWERS_B, "P7K290XB4", ("Passport number", "Arrival"),
                   remote=False),
         ], SITE_URL, res)
 
@@ -1345,7 +1345,7 @@ class Run:
         self.third_device(a, d, res)
         self.third_made = True
         # The first device finds B again on their network. The third does not list B, which a
-        # step of its own asks: its agent comes through B's door by B's device id, which a door
+        # step of its own asks: its agent comes through B's server by B's device id, which a server
         # takes as well as a name.
         self.reachable(a, b, res)
         by_id = list(facts["command"])
@@ -1357,7 +1357,7 @@ class Run:
             Party(a, facts["command"], THREE_A, "Joao Pedro", ("Given names", "Family name"),
                   leads=True),
             Party(d, by_id, THREE_D, "Brazil", ("Nationality", "Which country?")),
-            Party(b, self.door(b), THREE_B, "FX4410972", ("Passport number", "Arrival"),
+            Party(b, self.server(b), THREE_B, "FX4410972", ("Passport number", "Arrival"),
                   remote=False),
         ], THREE_URL, res)
 
@@ -2325,10 +2325,10 @@ class Run:
         res.facts["transcript"] = t
         init = t.get("initialize")
         if isinstance(init, dict) and "result" in init:
-            raise Failed(f"B's door admitted another person's device: {init}")
+            raise Failed(f"B's server admitted another person's device: {init}")
         said = json.dumps(t)
         if "someone else" not in said and "refus" not in said.lower():
-            raise Failed(f"C was not told B's door refused it: {said[:1500]}")
+            raise Failed(f"C was not told B's server refused it: {said[:1500]}")
         # B's shell says of each agent it seats which device it came from: none came from C's.
         from_c = (sc.get("this_device") or {}).get("device", "")
         if len(from_c) != 64:
@@ -2339,7 +2339,7 @@ class Run:
 
 def _found(value, key: str) -> list:
     """Every list held under `key` anywhere in `value`: what an action answered is wrapped
-    differently by each door that carries it."""
+    differently by each server that carries it."""
     found = []
     if isinstance(value, dict):
         for name, inner in value.items():

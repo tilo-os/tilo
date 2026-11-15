@@ -78,7 +78,7 @@ const FAILED_SHOWN: Duration = Duration::from_millis(12_000);
 
 /// The capture studio as the session runs it, and what it is doing.
 pub(crate) struct CaptureStudio {
-    seat: Studio,
+    state: Studio,
     /// The folder screenshots and recordings are written to.
     directory: PathBuf,
     /// The one worker that encodes a recording and writes every capture's file.
@@ -237,22 +237,22 @@ pub(crate) fn mount(
     board: &Arc<runtime_collab::LiveActivities>,
 ) -> Option<CaptureStudio> {
     let who = (options.device.as_str(), options.person.as_str());
-    let seat = Studio::new();
+    let state = Studio::new();
     match Sheet::mount(
         tilo_capture_studio::definition(),
-        seat,
+        state,
         who,
         (options.presentation)(),
         options.scale,
     ) {
         Ok(sheet) => {
             let sheet = sheet.always_serving();
-            let seat = sheet.seat().clone();
+            let state = sheet.state().clone();
             let sheet = sheet.layer();
             compositor.add_host(sheet.clone());
             doors.add(sheet);
             Some(CaptureStudio {
-                seat,
+                state,
                 directory: options.pictures.clone().unwrap_or_else(screenshots),
                 io,
                 notes,
@@ -302,13 +302,13 @@ fn screenshots() -> PathBuf {
 impl CaptureStudio {
     /// The studio sheet's presentation: where the sheet sits.
     pub(crate) fn presentation(&self) -> &tilo_sheets::Presentation {
-        tilo_sheets::Seat::presentation(&self.seat)
+        tilo_sheets::SheetState::presentation(&self.state)
     }
 
     /// Open the studio on what an app asked for, as the person's own shortcut opens it: the bar
     /// comes up choosing that kind of capture.
     pub(crate) fn open_asked(&self, mode: ui::floating_surface::CaptureStudioProtocolMode) {
-        self.seat.link().open_on(mode.into());
+        self.state.link().open_on(mode.into());
         self.presentation().open(false);
     }
 
@@ -323,7 +323,7 @@ impl CaptureStudio {
         self.take_shots(compositor);
         self.take_copies(compositor);
         self.take_clips();
-        for ask in self.seat.link().take_asks() {
+        for ask in self.state.link().take_asks() {
             self.answer(ask, compositor);
         }
         // Asked after what the person took, so a screenshot that settled an app's request is an
@@ -1051,7 +1051,7 @@ impl CaptureStudio {
             replay_saves: self.replay_saves,
             ..Scene::default()
         };
-        self.seat.link().publish(scene);
+        self.state.link().publish(scene);
     }
 
     /// What the person pressed on the floating layer's card, as the ask the button it stands for
@@ -1690,7 +1690,7 @@ mod tests {
         .expect("the worker says what became of the recording");
         studio.serve(&mut compositor);
         assert_eq!(
-            studio.seat.link().scene().finished,
+            studio.state.link().scene().finished,
             Some(Finished {
                 path: Some(path),
                 skipped: 4,
@@ -1699,7 +1699,7 @@ mod tests {
             "the studio is handed the file it kept and what went wrong"
         );
         assert!(
-            studio.seat.link().scene().recording.is_none(),
+            studio.state.link().scene().recording.is_none(),
             "nothing is recording any more"
         );
 
@@ -1716,7 +1716,7 @@ mod tests {
         .expect("the worker says what became of the recording");
         studio.serve(&mut compositor);
         assert_eq!(
-            studio.seat.link().scene().finished,
+            studio.state.link().scene().finished,
             Some(Finished {
                 path: None,
                 skipped: 0,
@@ -1921,7 +1921,7 @@ mod tests {
 
         // The bar says it in the person's words.
         let failed = studio
-            .seat
+            .state
             .link()
             .scene()
             .failed

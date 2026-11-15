@@ -1671,7 +1671,7 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
     capture_to(&mut session, "device-shell-question");
     let handle = session
         .portal()
-        .and_then(tilo_sheets::portal::PortalSeat::dialog)
+        .and_then(tilo_sheets::portal::PortalState::dialog)
         .expect("a question is up")
         .handle;
     answer_on_the_sheet(&mut session, &handle, PortalEffect::CONFIRM.id);

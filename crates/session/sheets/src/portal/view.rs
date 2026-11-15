@@ -12,7 +12,7 @@ use ui::widget::{
 };
 
 use super::{
-    Ask, Body, Device, Dialog, DraftRow, DraftValue, Field, Focus, PortalEffect, PortalSeat,
+    Ask, Body, Device, Dialog, DraftRow, DraftValue, Field, Focus, PortalEffect, PortalState,
     Prompt, PromptKind, Shortcut, Shown,
 };
 use crate::presentation::presented;
@@ -33,11 +33,11 @@ const PICTURE_RADIUS: f32 = 8.0;
 /// What every part of the view acts through.
 #[derive(Clone)]
 pub(super) struct Parts {
-    /// Where every press goes: the app's door, or the seat of a host that
+    /// Where every press goes: the app's door, or the state of a host that
     /// draws the sheet itself.
     pub(super) ask: Ask,
     pub(super) shown: LocalState<Shown>,
-    pub(super) seat: PortalSeat,
+    pub(super) state: PortalState,
 }
 
 impl Parts {
@@ -238,7 +238,7 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
     // modal — but it is no answer, so a question somebody waits on is never
     // refused by a press that missed.
     let sheet = sheet.dismiss_on_scrim(false);
-    Box::new(presented(Some(&parts.seat.presentation), sheet))
+    Box::new(presented(Some(&parts.state.presentation), sheet))
 }
 
 /// The rows a review weighs: each label in one column, aligned to the
@@ -514,15 +514,15 @@ fn draft_row(row: &DraftRow, focus: Focus, invalid: bool, parts: &Parts) -> Elem
     }
 }
 
-/// A typed field of the sheet: it starts from what the seat holds for it
-/// (or `initial`), and everything typed goes to the seat, never to an
+/// A typed field of the sheet: it starts from what the state holds for it
+/// (or `initial`), and everything typed goes to the state, never to an
 /// effect.
 fn text_field(field: Field, initial: &str, parts: &Parts) -> TextInput {
-    let typed = parts.seat.clone();
-    let held = parts.seat.texts.borrow().get(&field).cloned();
+    let typed = parts.state.clone();
+    let held = parts.state.texts.borrow().get(&field).cloned();
     if held.is_none() {
         parts
-            .seat
+            .state
             .texts
             .borrow_mut()
             .insert(field, zeroize::Zeroizing::new(initial.to_owned()));
@@ -551,19 +551,19 @@ pub(super) fn field_id(field: Field) -> String {
 }
 
 /// A secret prompt: the toolkit's own, as a dialog, its fields kept in the
-/// seat's buffers so nothing typed is lost when the shell says more.
+/// state's buffers so nothing typed is lost when the shell says more.
 fn secret(dialog: &Dialog, prompt: &Prompt, parts: &Parts) -> Element {
-    let mut built = secret_prompt(dialog, prompt, &parts.seat);
+    let mut built = secret_prompt(dialog, prompt, &parts.state);
     Widget::set_focus(&mut built, true);
     Box::new(presented(
-        Some(&parts.seat.presentation),
+        Some(&parts.state.presentation),
         built.into_dialog().with_test_id(DIALOG_ID),
     ))
 }
 
-/// The toolkit's secret prompt for `prompt`, holding what the seat's
+/// The toolkit's secret prompt for `prompt`, holding what the state's
 /// buffers hold.
-pub(super) fn secret_prompt(dialog: &Dialog, prompt: &Prompt, seat: &PortalSeat) -> SecretPrompt {
+pub(super) fn secret_prompt(dialog: &Dialog, prompt: &Prompt, state: &PortalState) -> SecretPrompt {
     let built = match prompt.kind {
         PromptKind::Fields => SecretPrompt::with_fields(
             prompt
@@ -604,7 +604,7 @@ pub(super) fn secret_prompt(dialog: &Dialog, prompt: &Prompt, seat: &PortalSeat)
         .with_resource(prompt.resource.clone())
         .with_primary_label(prompt.primary_label.clone())
         .with_cancel_label(dialog.cancel_label.clone())
-        .with_field_buffers(seat.secrets())
+        .with_field_buffers(state.secrets())
         .with_busy(prompt.busy.clone());
     if let Some(icon) = prompt.icon {
         built = built.with_icon(icon);
@@ -613,7 +613,7 @@ pub(super) fn secret_prompt(dialog: &Dialog, prompt: &Prompt, seat: &PortalSeat)
         built = built.with_choices(label.clone(), choices.clone(), dialog.selected);
     }
     if let Some((label, on)) = &prompt.option {
-        built = built.with_option(label.clone(), seat.option().unwrap_or(*on));
+        built = built.with_option(label.clone(), state.option().unwrap_or(*on));
     }
     if let Some((at, error)) = &prompt.error {
         built = built.with_error_at(*at, Some(error.clone()));

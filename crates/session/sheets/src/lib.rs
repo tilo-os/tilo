@@ -25,7 +25,7 @@ pub mod shortcut_guide;
 pub mod uninstall;
 pub mod workspace_settings;
 
-pub use presentation::{Phase, Presentation, Seat};
+pub use presentation::{Phase, Presentation, SheetState};
 
 ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 

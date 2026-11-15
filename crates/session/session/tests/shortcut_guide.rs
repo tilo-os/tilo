@@ -23,7 +23,7 @@ use tilo_actions::ResourceSpec;
 use tilo_compositor::{InputEvent, OutputConfig, Screenshot};
 use tilo_desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND, SEARCH_RESOURCE};
 use tilo_session::{Options, Session, SessionConfig};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{Guide, Pair};
 use ui::input::{KeyLegend, KeyboardBinding, KeyboardModifier};
 
@@ -135,7 +135,7 @@ fn guide(session: &Session) -> Guide {
 fn up(session: &Session) -> bool {
     session
         .shortcut_guide()
-        .is_some_and(|seat| seat.presentation().is_open())
+        .is_some_and(|state| state.presentation().is_open())
 }
 
 /// The displays the shell publishes, in reading order.
@@ -169,7 +169,7 @@ fn focus(session: &mut Session, index: usize) {
     until(session, |session| {
         session
             .shortcut_guide()
-            .and_then(|seat| seat.presentation().place())
+            .and_then(|state| state.presentation().place())
             == Some(place)
     });
 }
@@ -301,7 +301,7 @@ tilo_test_env::scenario! {
         assert!(
             session
                 .shortcut_guide()
-                .is_some_and(|seat| seat.presentation().is_drawn()),
+                .is_some_and(|state| state.presentation().is_drawn()),
             "something of the guide is on screen"
         );
 
@@ -418,7 +418,7 @@ tilo_test_env::scenario! {
         until(&mut session, |session| {
             session
                 .shortcut_guide()
-                .is_some_and(|seat| seat.presentation().is_drawn())
+                .is_some_and(|state| state.presentation().is_drawn())
         });
         let after_left = shot(&mut session, "HEADLESS-1");
         let after_right = shot(&mut session, "HEADLESS-2");
@@ -438,7 +438,7 @@ tilo_test_env::scenario! {
         until(&mut session, |session| {
             session
                 .shortcut_guide()
-                .is_some_and(|seat| !seat.presentation().is_drawn())
+                .is_some_and(|state| !state.presentation().is_drawn())
         });
         let closed = shot(&mut session, "HEADLESS-2");
         assert_eq!(
@@ -458,7 +458,7 @@ tilo_test_env::scenario! {
         assert!(
             session
                 .shortcut_guide()
-                .is_some_and(|seat| seat.presentation().is_open())
+                .is_some_and(|state| state.presentation().is_open())
         );
         chord(&mut session, &[KEY_LEFT_META, KEY_LEFT_SHIFT, KEY_SLASH]);
         until(&mut session, |session| !up(session));

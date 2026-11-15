@@ -37,7 +37,7 @@ use tilo_portal::file_chooser::{
 use tilo_portal::screenshot::ScreenshotQuestion;
 use tilo_service::{Answer, Asked, Question, Questions, Service, Started, decode, offer};
 use tilo_session::{ActionPlane, Options, Session};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::{FileMode, FilePickerEffect};
 use tilo_sheets::portal::{Body, Dialog, Field, PortalEffect, Prompt, PromptKind};
 
@@ -118,12 +118,12 @@ fn press(session: &mut Session, effect: &str, args: Value) {
     let mut args = arguments(args);
     let handle = session
         .portal()
-        .and_then(tilo_sheets::portal::PortalSeat::dialog)
+        .and_then(tilo_sheets::portal::PortalState::dialog)
         .map(|dialog| dialog.handle)
         .or_else(|| {
             session
                 .file_picker()
-                .and_then(tilo_sheets::file_picker::FilePickerSeat::request)
+                .and_then(tilo_sheets::file_picker::FilePickerState::request)
                 .map(|request| request.handle)
         });
     if let Some(handle) = handle
@@ -1041,7 +1041,7 @@ fn agents_tab(session: &mut Session) -> (bool, Vec<String>) {
 }
 
 /// A program of this login at the door: it says who it is, and asks what the session has for it.
-/// What it read comes back, however far it got; `hold` keeps its seat at the door until the test
+/// What it read comes back, however far it got; `hold` keeps its state at the door until the test
 /// lets it go.
 fn door_client(
     socket: &std::path::Path,
@@ -1103,8 +1103,8 @@ fn door_answers(
         .expect("the program at the door is served")
 }
 
-/// The agents the shell shows as seated at the person's door: the ones whose work the bar carries as
-/// a presence of its own.
+/// The agents the shell shows at the person's MCP server: the ones whose work the bar carries as a
+/// presence of its own.
 fn seated_agents(session: &Session) -> Vec<String> {
     session
         .read("session:agents")

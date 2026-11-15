@@ -28,9 +28,9 @@ use tilo_actions::remote::{
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::{PersonalStore, PersonalSync};
+use tilo_runtime::device_mcp::PersonalDevices;
 use tilo_runtime::enter::Entered;
 use tilo_runtime::key_runs::{KeyRuns, RunHost, Runs};
-use tilo_runtime::remote_door::PersonalDevices;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
@@ -219,7 +219,7 @@ impl Runs for DeviceRuns {
         }
         self.opened.lock().unwrap().push(key.clone());
         let caller = Caller::local_person("ada")
-            .delegated_to(tilo_runtime::remote_door::agent_id("agent", key));
+            .delegated_to(tilo_runtime::device_mcp::agent_id("agent", key));
         Ok((Arc::new(self.broker.clone()), caller))
     }
 }

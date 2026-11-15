@@ -3,7 +3,7 @@
 //!
 //! The sheet shows the link as a code, as text to open or paste, and a button that copies it, with
 //! the minutes it still works and where Tilo on another computer takes it. The session makes the
-//! link and hands it here ([`AddDeviceSeat::show`]): one invite is open at a time, so a link left
+//! link and hands it here ([`AddDeviceState::show`]): one invite is open at a time, so a link left
 //! on screen still admits the device, and the code is replaced only once it stopped working.
 
 use std::cell::RefCell;
@@ -17,7 +17,7 @@ use ui::widget::{
     Button, ButtonRole, Column, Element, ModalDialog, QrWidget, Row, Section, Text, TextInput,
 };
 
-use crate::presentation::{Presentation, Seat, presented};
+use crate::presentation::{Presentation, SheetState, presented};
 use crate::{caption, word};
 
 /// The app the shell mounts the sheet as.
@@ -71,7 +71,7 @@ pub struct AddDevice {
 
 impl AddDevice {
     /// The sheet showing `link`, whose invite works for `minutes` more, in the person's language:
-    /// what the session hands the seat each time the link or its minutes change.
+    /// what the session hands the state each time the link or its minutes change.
     #[must_use]
     pub fn of(link: &str, minutes: u32) -> Self {
         let minutes = ui::i18n::ArgValue::Number(f64::from(minutes));
@@ -186,28 +186,28 @@ pub type Ask = Rc<dyn Fn(PairDeviceEffect)>;
 
 /// What the shell lends the sheet: whether it is up, what it shows, and where its requests go.
 #[derive(Clone, Default)]
-pub struct AddDeviceSeat {
+pub struct AddDeviceState {
     presentation: Presentation,
     shown: Rc<RefCell<AddDevice>>,
     lent: Rc<RefCell<Option<LocalState<AddDevice>>>>,
     asked: Rc<RefCell<Vec<PairDeviceEffect>>>,
 }
 
-impl std::fmt::Debug for AddDeviceSeat {
+impl std::fmt::Debug for AddDeviceState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AddDeviceSeat")
+        f.debug_struct("AddDeviceState")
             .field("presentation", &self.presentation)
             .finish_non_exhaustive()
     }
 }
 
-impl Seat for AddDeviceSeat {
+impl SheetState for AddDeviceState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl AddDeviceSeat {
+impl AddDeviceState {
     /// Show `device`: the link as it stands now.
     pub fn show(&self, device: AddDevice) {
         if *self.shown.borrow() == device {
@@ -253,9 +253,9 @@ impl ResourceApp for AddDeviceApp {
     }
 
     fn view(cx: &mut ViewCx<AddDeviceLink>) -> Element {
-        let seat = cx.take_lent::<AddDeviceSeat>();
-        let initial = match &seat {
-            Some(seat) => seat.device(),
+        let state = cx.take_lent::<AddDeviceState>();
+        let initial = match &state {
+            Some(state) => state.device(),
             None => cx
                 .fixture::<AddDevice>()
                 .map(|device| (*device).clone())
@@ -263,22 +263,22 @@ impl ResourceApp for AddDeviceApp {
         };
         let shown = cx.local(initial);
         let link = cx.local(String::new());
-        if let Some(seat) = &seat {
-            *seat.lent.borrow_mut() = Some(shown.clone());
+        if let Some(state) = &state {
+            *state.lent.borrow_mut() = Some(shown.clone());
             // The sheet follows what the shell says of its presentation: being opened, taken down,
             // put on another display.
-            seat.presentation.wake_with(cx.waker());
+            state.presentation.wake_with(cx.waker());
         }
-        let asking = seat.clone();
-        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
+        let asking = state.clone();
+        let presentation = state.as_ref().map(|state| state.presentation().clone());
         cx.effects(move |effect: PairDeviceEffect, _cx| match &asking {
-            Some(seat) => {
+            Some(state) => {
                 if effect == PairDeviceEffect::Done {
                     // Its own close: the card leaves the screen, and the shell tells it gone once
                     // nothing of it is drawn.
-                    seat.presentation.close();
+                    state.presentation.close();
                 }
-                seat.asked.borrow_mut().push(effect);
+                state.asked.borrow_mut().push(effect);
                 Ok(Effected::done())
             }
             None => Err("no session to add a device of".to_owned()),
@@ -353,10 +353,10 @@ mod tests {
             const LATER: &str = "https://tilo.coffee/#/@eu1.tilo.coffee/w/\
                              0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c?pair=fefefefefefefefefefefefefefefefe\
                              fefefefefefefefefefefefefefefefedcba9876543210fedcba9876543210";
-            let seat = AddDeviceSeat::default();
-            seat.show(AddDevice::of(SAMPLE_LINK, 9));
-            seat.show(AddDevice::of(LATER, 10));
-            let code = code_of(&seat.device());
+            let state = AddDeviceState::default();
+            state.show(AddDevice::of(SAMPLE_LINK, 9));
+            state.show(AddDevice::of(LATER, 10));
+            let code = code_of(&state.device());
             assert!(code.carries(LATER.as_bytes()));
             assert!(!code.carries(SAMPLE_LINK.as_bytes()));
         }

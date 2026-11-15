@@ -17,9 +17,9 @@
 //!
 //! On A the connection is opened by A's host — the desktop session or a
 //! standalone runtime, whichever holds A's device key and endpoint
-//! ([`Doors`]). A `--connect --device NAME` client asks it with one
-//! [`Forward`] line on its local door ([`ask_forward`]), reads whether B's door
-//! opened, and from then on its stdio is B's door.
+//! ([`OtherDevices`]). A `--connect --device NAME` client asks it with one
+//! [`Forward`] line on its local server ([`ask_forward`]), reads whether B's server
+//! opened, and from then on its stdio is B's server.
 //!
 //! The wire is newline-delimited JSON on one bi-directional stream: the
 //! dialer's [`Hello`], B's [`Answer`], then MCP JSON-RPC both ways until either
@@ -67,37 +67,37 @@ struct Hello {
     /// person when it names none, or none they may grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace: Option<String>,
-    /// Only ask whether this door would open for the dialing device: nothing
-    /// is admitted and nobody is asked.
+    /// Only ask whether the server would admit the dialing device: nothing is
+    /// admitted and nobody is asked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     probe: bool,
-    /// Only read the person's workspace list, as this door's device holds
-    /// it: nothing is admitted and nobody is asked.
+    /// Only read the person's workspace list, as this device holds it: nothing
+    /// is admitted and nobody is asked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     list: bool,
 }
 
-/// What a door answers a hello, and a host a local [`Forward`].
+/// What a device's server answers a hello with, and a host a local [`Forward`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "door", rename_all = "snake_case")]
+#[serde(tag = "answer", rename_all = "snake_case")]
 pub enum Answer {
-    /// The door is open: MCP follows.
+    /// The connection is admitted: MCP follows.
     Open,
-    /// The door would open for this device; a probe ends here.
+    /// It would admit this device; a probe ends here.
     Here,
     /// The person's workspaces, as this device holds them, for a hello that
     /// asked only for them.
     List {
         list: tilo_relay_session::workspaces::PersonalList,
     },
-    /// The door does not open, and why.
+    /// It refuses, and why.
     Refused { reason: String },
 }
 
-/// Why a device's door refused a connection before anyone was asked.
+/// Why a server refused a connection before anyone was asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// It said nothing this door reads.
+    /// It said nothing this server reads.
     Unreadable,
     /// The certificate it showed names another device than the one that
     /// connected.
@@ -121,13 +121,13 @@ impl Refusal {
     pub fn reason(&self) -> String {
         match self {
             Self::Unreadable => {
-                "the device door opens with the dialing device's certificate".to_owned()
+                "the server first reads the dialing device's certificate".to_owned()
             }
             Self::NotTheDialer => {
                 "the certificate shown names another device than the one that connected".to_owned()
             }
             Self::OtherPerson => {
-                "that device belongs to someone else; this door serves only its person's own \
+                "that device belongs to someone else; this server serves only its person's own \
                  devices"
                     .to_owned()
             }
@@ -248,7 +248,7 @@ fn holds(root: [u8; 32], certificate: &DeviceCert, now: SystemTime) -> Result<()
         .map_err(|error| Refusal::NotCertified(error.to_string()))
 }
 
-/// What a hello asks of a door.
+/// What a hello asks of a server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Asked {
     /// Open, and carry the agent's MCP.
@@ -332,14 +332,14 @@ pub fn agent_id(client: &str, device: &DeviceCert) -> String {
     }
 }
 
-/// One connection the door admitted to be asked about: where it comes from,
+/// One connection the server admitted to be asked about: where it comes from,
 /// and the local end of its stream, which carries the agent's MCP lines.
 pub struct Arrival {
     pub origin: Origin,
     pub stream: UnixStream,
 }
 
-/// Where a door hands the connections it opened: the host's MCP server.
+/// Where a server hands the connections it opened: the host's MCP server.
 pub trait Arrivals: Send + Sync {
     /// Take `arrival` to be asked about and served.
     ///
@@ -348,35 +348,35 @@ pub trait Arrivals: Send + Sync {
     fn arrive(&self, arrival: Arrival) -> Result<(), String>;
 
     /// The person's workspaces as this device holds them, each with its
-    /// host's signed address: what a key of theirs that dials this door reads
+    /// host's signed address: what a key of theirs that dials this server reads
     /// to find where to enter. `None` while this device holds no list.
     fn listed(&self) -> Option<tilo_relay_session::workspaces::PersonalList> {
         None
     }
 }
 
-/// The door one device answers the person's other devices' agents at.
+/// The server one device answers the person's other devices' agents at.
 #[derive(Clone)]
-pub struct RemoteDoor {
+pub struct DeviceServer {
     devices: Arc<dyn PersonsDevices>,
     arrivals: Arc<dyn Arrivals>,
 }
 
-impl std::fmt::Debug for RemoteDoor {
+impl std::fmt::Debug for DeviceServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RemoteDoor").finish_non_exhaustive()
+        f.debug_struct("DeviceServer").finish_non_exhaustive()
     }
 }
 
-impl RemoteDoor {
-    /// A door admitting the devices `devices` says are the person's, handing
+impl DeviceServer {
+    /// A server admitting the devices `devices` says are the person's, handing
     /// what it opens to `arrivals`.
     #[must_use]
     pub fn new(devices: Arc<dyn PersonsDevices>, arrivals: Arc<dyn Arrivals>) -> Self {
         Self { devices, arrivals }
     }
 
-    /// What this door says to a hello from `dialer`: whom it admits, or why
+    /// What this server says to a hello from `dialer`: whom it admits, or why
     /// not.
     fn decide(&self, dialer: [u8; 32], line: &[u8]) -> Result<(Origin, Asked), Refusal> {
         let hello: Hello = serde_json::from_slice(line).map_err(|_| Refusal::Unreadable)?;
@@ -471,7 +471,7 @@ impl RemoteDoor {
         let _ = tokio::time::timeout(CLOSE_GRACE, connection.closed()).await;
     }
 
-    /// Hand `origin`'s connection to the host's door: the local end of the
+    /// Hand `origin`'s connection to the host's server: the local end of the
     /// stream the agent's lines are carried on, or why it serves none.
     fn open(&self, origin: Origin) -> Result<tokio::net::UnixStream, String> {
         let (ours, theirs) = UnixStream::pair().map_err(|error| error.to_string())?;
@@ -489,7 +489,7 @@ impl RemoteDoor {
     }
 }
 
-impl ProtocolHandler for RemoteDoor {
+impl ProtocolHandler for DeviceServer {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         // Everything a dialer is told is said on its stream.
         self.answer(&connection).await;
@@ -542,7 +542,7 @@ async fn write_line(send: &mut SendStream, value: &(impl Serialize + Sync)) -> i
 
 /// Carry bytes both ways between `send`/`recv` and `local` until both ends
 /// are done: whatever ends on one side ends on the other, so a client that
-/// leaves, a door that closes, or a connection that drops ends the whole
+/// leaves, a server that closes, or a connection that drops ends the whole
 /// connection.
 async fn splice(mut send: SendStream, mut recv: RecvStream, local: tokio::net::UnixStream) {
     let (mut from_local, mut to_local) = local.into_split();
@@ -582,14 +582,14 @@ async fn splice(mut send: SendStream, mut recv: RecvStream, local: tokio::net::U
     tokio::join!(inbound, outbound);
 }
 
-/// A connection to another device's door, open.
+/// A connection to another device's server, open.
 pub struct Dialed {
     connection: Connection,
     send: SendStream,
     recv: RecvStream,
 }
 
-/// Open the door of the device at `addr` from `endpoint`, as the device
+/// Open the server of the device at `addr` from `endpoint`, as the device
 /// `own` certifies, asking to work in `workspace`; with `probe`, only ask
 /// whether it would open.
 pub async fn open(
@@ -620,9 +620,9 @@ pub async fn open(
             .map_err(|error| format!("it does not answer: {error}"))?;
         let line = read_line(&mut recv)
             .await
-            .map_err(|error| format!("its door does not answer: {error}"))?;
+            .map_err(|error| format!("its server does not answer: {error}"))?;
         let answer: Answer = serde_json::from_slice(&line)
-            .map_err(|_| "its door answers in a way this device does not read".to_owned())?;
+            .map_err(|_| "its server answers in a way this device does not read".to_owned())?;
         match answer {
             Answer::Open | Answer::Here => Ok(Dialed {
                 connection,
@@ -635,7 +635,7 @@ pub async fn open(
             }
             Answer::List { .. } => {
                 connection.close(0_u32.into(), b"unasked");
-                Err("its door answered something it was not asked".to_owned())
+                Err("its server answered something it was not asked".to_owned())
             }
         }
     };
@@ -646,7 +646,7 @@ pub async fn open(
 }
 
 /// The person's workspace list as the device at `addr` holds it, read from
-/// its door by `endpoint` as the device `own` certifies: each workspace with
+/// its server by `endpoint` as the device `own` certifies: each workspace with
 /// its host's signed address, those a key for one workspace reaches alone.
 ///
 /// # Errors
@@ -677,13 +677,13 @@ pub async fn read_list(
             .map_err(|error| format!("it does not answer: {error}"))?;
         let line = read_line(&mut recv)
             .await
-            .map_err(|error| format!("its door does not answer: {error}"))?;
+            .map_err(|error| format!("its server does not answer: {error}"))?;
         connection.close(0_u32.into(), b"read");
         match serde_json::from_slice::<Answer>(&line) {
             Ok(Answer::List { list }) => Ok(list),
             Ok(Answer::Refused { reason }) => Err(reason),
             Ok(Answer::Open | Answer::Here) | Err(_) => {
-                Err("its door answers in a way this device does not read".to_owned())
+                Err("its server answers in a way this device does not read".to_owned())
             }
         }
     };
@@ -693,7 +693,7 @@ pub async fn read_list(
 }
 
 impl Dialed {
-    /// Carry the open door's stream to and from `local` until either side
+    /// Carry the open server's stream to and from `local` until either side
     /// ends, then close the connection.
     pub async fn carry(self, local: tokio::net::UnixStream) {
         let Self {
@@ -705,7 +705,7 @@ impl Dialed {
         connection.close(0_u32.into(), b"the agent left");
     }
 
-    /// The open door's stream as MCP lines this process reads and writes
+    /// The open server's stream as MCP lines this process reads and writes
     /// itself, rather than carries to a local client.
     #[must_use]
     pub fn into_lines(self) -> Lines {
@@ -722,7 +722,7 @@ impl Dialed {
     }
 }
 
-/// An open door's MCP, one JSON-RPC message a line each way.
+/// An open server's MCP, one JSON-RPC message a line each way.
 pub struct Lines {
     connection: Connection,
     send: SendStream,
@@ -733,15 +733,15 @@ impl Lines {
     /// Send `message` as one line.
     ///
     /// # Errors
-    /// The door closed.
+    /// The server closed.
     pub async fn send(&mut self, message: &serde_json::Value) -> io::Result<()> {
         write_line(&mut self.send, message).await
     }
 
-    /// The next message the door sends.
+    /// The next message the server sends.
     ///
     /// # Errors
-    /// The door closed, or sent what is no JSON.
+    /// The server closed, or sent what is no JSON.
     pub async fn next(&mut self) -> io::Result<serde_json::Value> {
         let line = read_line(&mut self.recv).await?;
         serde_json::from_slice(&line).map_err(io::Error::other)
@@ -781,9 +781,9 @@ pub fn forward_request(line: &[u8]) -> Option<Forward> {
         .map(|line| line.forward)
 }
 
-/// Ask the host at the other end of `stream` to carry it to the door
-/// `forward` names, and read whether that door opened. From `Ok` on, the
-/// stream is that door's.
+/// Ask the host at the other end of `stream` to carry it to the server
+/// `forward` names, and read whether that server opened. From `Ok` on, the
+/// stream is that server's.
 pub fn ask_forward(stream: &mut UnixStream, forward: &Forward) -> io::Result<()> {
     let mut line = serde_json::to_vec(&ForwardLine {
         forward: forward.clone(),
@@ -831,13 +831,13 @@ pub fn ask_forward(stream: &mut UnixStream, forward: &Forward) -> io::Result<()>
     }
 }
 
-/// One of the person's devices, and whether its door answers this one now.
+/// One of the person's devices, and whether its server answers this one now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reach {
     pub device: DeviceCert,
     /// It is the device asking.
     pub this: bool,
-    /// Whether its door would open for this device now, or why not.
+    /// Whether its server would open for this device now, or why not.
     pub answer: Result<(), String>,
 }
 
@@ -885,9 +885,9 @@ pub fn listing(reach: &[Reach]) -> String {
     lines.join("\n")
 }
 
-/// The doors of the person's other devices, as this device's host reaches
+/// The servers of the person's other devices, as this device's host reaches
 /// them: dialed from its endpoint, as the device its store certifies.
-pub struct Doors {
+pub struct OtherDevices {
     endpoint: Endpoint,
     devices: Arc<dyn PersonsDevices>,
     /// The runtime `endpoint` was bound on, where every dial runs.
@@ -896,7 +896,7 @@ pub struct Doors {
     addresses: Mutex<HashMap<[u8; 32], EndpointAddr>>,
 }
 
-impl Doors {
+impl OtherDevices {
     /// Dial from `endpoint`, bound on `runtime`, as the device `devices`
     /// names this one.
     #[must_use]
@@ -973,7 +973,7 @@ impl Doors {
     }
 
     /// Every device of the person this one knows, and whether each one's
-    /// door answers now: all are asked at once, and one that has not answered
+    /// server answers now: all are asked at once, and one that has not answered
     /// within [`PROBE_WITHIN`] is not reachable.
     pub async fn reach_now(&self) -> Vec<Reach> {
         let own = self.devices.this_device();
@@ -1012,7 +1012,7 @@ impl Doors {
     }
 
     /// Carry `local`, whose client asked for `forward`, to that device's
-    /// door, telling the client whether it opened, until either side ends.
+    /// server, telling the client whether it opened, until either side ends.
     /// Blocks the calling thread, which must not be one of the runtime's.
     pub fn serve_forward(&self, local: UnixStream, forward: &Forward) {
         let addr = match self.resolve(&forward.device).and_then(|key| self.addr(key)) {
@@ -1060,13 +1060,13 @@ impl Doors {
     }
 }
 
-impl DeviceDirectory for Doors {
+impl DeviceDirectory for OtherDevices {
     fn reach(&self) -> std::pin::Pin<Box<dyn Future<Output = Vec<Reach>> + Send + '_>> {
         Box::pin(self.reach_now())
     }
 }
 
-/// Tell a forwarding client its device's door does not open, and why.
+/// Tell a forwarding client its device's server does not open, and why.
 pub fn refuse_forward(mut local: UnixStream, reason: String) {
     let answer = Answer::Refused { reason };
     if let Ok(mut line) = serde_json::to_vec(&answer) {

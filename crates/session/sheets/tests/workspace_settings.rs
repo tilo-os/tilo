@@ -9,9 +9,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings::{
-    Settings, WorkspaceSettingsApp, WorkspaceSettingsEffect, WorkspaceSettingsSeat, scenario,
+    Settings, WorkspaceSettingsApp, WorkspaceSettingsEffect, WorkspaceSettingsState, scenario,
 };
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
@@ -39,22 +39,22 @@ fn enabled(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) -> bool {
         .is_some_and(|(_, node)| !node.is_disabled())
 }
 
-/// The settings a scenario stages, shown through a seat as the shell lends
+/// The settings a scenario stages, shown through a state as the shell lends
 /// it.
-fn seated(scenario: &str) -> (HeadlessApp<WorkspaceSettingsApp>, WorkspaceSettingsSeat) {
-    seated_with(staged_settings(scenario))
+fn mounted(scenario: &str) -> (HeadlessApp<WorkspaceSettingsApp>, WorkspaceSettingsState) {
+    mounted_with(staged_settings(scenario))
 }
 
-/// `settings` shown through a seat, as the shell lends it.
-fn seated_with(settings: Settings) -> (HeadlessApp<WorkspaceSettingsApp>, WorkspaceSettingsSeat) {
-    let seat = WorkspaceSettingsSeat::default();
-    seat.show(settings);
-    seat.presentation().open(false);
+/// `settings` shown through a state, as the shell lends it.
+fn mounted_with(settings: Settings) -> (HeadlessApp<WorkspaceSettingsApp>, WorkspaceSettingsState) {
+    let state = WorkspaceSettingsState::default();
+    state.show(settings);
+    state.presentation().open(false);
     let mut app =
-        HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", seat.clone()).unwrap();
+        HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 fn staged_settings(name: &str) -> Settings {
@@ -92,7 +92,7 @@ tilo_test_env::scenario! {
         let mut settings = staged_settings("general");
         settings.general.device_rows.truncate(1);
         settings.general.move_labels = ["Move earlier".to_owned(), "Move later".to_owned()];
-        let (mut app, _seat) = seated_with(settings);
+        let (mut app, _state) = mounted_with(settings);
 
         assert!(!says(&mut app, "Move earlier"));
         assert!(!says(&mut app, "Move later"));
@@ -104,12 +104,12 @@ tilo_test_env::scenario! {
 
     phase general_controls_ask_the_shell_by_what_they_name;
     {
-        let (mut app, seat) = seated("general");
+        let (mut app, state) = mounted("general");
         press(&mut app, "ws-general-device-tablet");
         press(&mut app, "ws-general-move-down");
         press(&mut app, "ws-general-invite");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 WorkspaceSettingsEffect::ToggleDevice {
                     device: "tablet".to_owned()
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
 
     phase a_typed_name_is_saved_with_enter_and_taken_back_with_escape;
     {
-        let (mut app, seat) = seated("general");
+        let (mut app, state) = mounted("general");
         app.harness()
             .perform_named(
                 "ws-general-name",
@@ -130,12 +130,12 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         app.settle();
-        assert_eq!(seat.typed_name(), "Atelier");
+        assert_eq!(state.typed_name(), "Atelier");
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.typed_name(), "Studio", "Escape takes the name back");
-        assert!(seat.take_asked().is_empty(), "and closes nothing");
-        assert!(seat.presentation().is_open());
+        assert_eq!(state.typed_name(), "Studio", "Escape takes the name back");
+        assert!(state.take_asked().is_empty(), "and closes nothing");
+        assert!(state.presentation().is_open());
 
         app.harness()
             .perform_named(
@@ -150,7 +150,7 @@ tilo_test_env::scenario! {
         app.harness().key("Enter");
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::Rename {
                 name: "Atelier".to_owned()
             }]
@@ -159,7 +159,7 @@ tilo_test_env::scenario! {
 
     phase closing_saves_a_typed_name_first;
     {
-        let (mut app, seat) = seated("general");
+        let (mut app, state) = mounted("general");
         app.harness()
             .perform_named(
                 "ws-general-name",
@@ -169,7 +169,7 @@ tilo_test_env::scenario! {
         app.settle();
         press(&mut app, "ws-settings.secondary");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 WorkspaceSettingsEffect::Rename {
                     name: "Atelier".to_owned()
@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
             ]
         );
         assert_eq!(
-            seat.presentation().phase(),
+            state.presentation().phase(),
             tilo_sheets::Phase::Leaving,
             "the card leaves the screen; the shell hears it is gone once it has"
         );
@@ -186,56 +186,56 @@ tilo_test_env::scenario! {
 
     phase escape_with_nothing_typed_closes;
     {
-        let (mut app, seat) = seated("general");
+        let (mut app, state) = mounted("general");
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.take_asked(), [WorkspaceSettingsEffect::Close]);
+        assert_eq!(state.take_asked(), [WorkspaceSettingsEffect::Close]);
     }
 
     phase a_viewer_cannot_rename;
     {
-        let (mut app, seat) = seated("general-viewer");
+        let (mut app, state) = mounted("general-viewer");
         app.harness()
             .perform_named("ws-general-name", &A11yAction::SetValue("Mine".to_owned()))
             .ok();
         app.settle();
         press(&mut app, "ws-settings.secondary");
-        assert_eq!(seat.take_asked(), [WorkspaceSettingsEffect::Close]);
+        assert_eq!(state.take_asked(), [WorkspaceSettingsEffect::Close]);
     }
 
     phase a_name_the_person_has_not_touched_follows_the_workspace;
     {
-        let (mut app, seat) = seated("general");
-        let mut renamed = seat.settings();
+        let (mut app, state) = mounted("general");
+        let mut renamed = state.settings();
         renamed.name = "Atelier".to_owned();
-        seat.show(renamed);
+        state.show(renamed);
         app.settle();
-        assert_eq!(seat.typed_name(), "Atelier");
+        assert_eq!(state.typed_name(), "Atelier");
         assert!(says(&mut app, "Atelier"));
     }
 
     phase an_agent_changes_the_workspace_through_the_same_door;
     {
-        let (mut app, seat) = seated("general");
+        let (mut app, state) = mounted("general");
         app.effect(&WorkspaceSettingsEffect::Move { step: -1 })
             .unwrap();
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::Move { step: -1 }]
         );
     }
 
     phase switching_tabs_asks_the_shell;
     {
-        let (mut app, seat) = seated("general");
+        let (mut app, state) = mounted("general");
         app.effect(&WorkspaceSettingsEffect::ShowTab {
             tab: "people".to_owned(),
         })
         .unwrap();
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::ShowTab {
                 tab: "people".to_owned()
             }]
@@ -244,28 +244,28 @@ tilo_test_env::scenario! {
 
     phase deleting_the_workspace_asks_first_and_keep_changes_nothing;
     {
-        let (mut app, seat) = seated("general");
+        let (mut app, state) = mounted("general");
         press(&mut app, "ws-general-delete");
         assert!(says(&mut app, "Delete Design studio?"));
         assert!(says(&mut app, "Everything in this workspace goes with it"));
         assert!(
-            seat.take_asked().is_empty(),
+            state.take_asked().is_empty(),
             "nothing is asked of the shell yet"
         );
         app.harness().key("Escape");
         app.settle();
-        assert!(seat.take_asked().is_empty(), "keeping changes nothing");
+        assert!(state.take_asked().is_empty(), "keeping changes nothing");
         assert!(says(&mut app, "At a glance"), "the tab is back");
-        assert!(seat.presentation().is_open());
+        assert!(state.presentation().is_open());
     }
 
     phase a_confirmed_delete_asks_the_shell_for_the_workspace;
     {
-        let (mut app, seat) = seated("general");
+        let (mut app, state) = mounted("general");
         press(&mut app, "ws-general-delete");
         press(&mut app, "ws-settings-decision.primary");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::DeleteWorkspace]
         );
     }
@@ -302,28 +302,28 @@ tilo_test_env::scenario! {
 
     phase removing_someone_asks_first_and_keep_changes_nothing;
     {
-        let (mut app, seat) = seated("people");
+        let (mut app, state) = mounted("people");
         press(&mut app, "ws-people-remove-ada");
         assert!(says(&mut app, "Remove this person?"));
         assert!(says(&mut app, "Ada Lovelace-Byron"));
         assert!(
-            seat.take_asked().is_empty(),
+            state.take_asked().is_empty(),
             "nothing is asked of the shell yet"
         );
         app.harness().key("Escape");
         app.settle();
-        assert!(seat.take_asked().is_empty(), "keeping changes nothing");
+        assert!(state.take_asked().is_empty(), "keeping changes nothing");
         assert!(says(&mut app, "3 members"), "the tab is back");
-        assert!(seat.presentation().is_open());
+        assert!(state.presentation().is_open());
     }
 
     phase a_confirmed_removal_asks_the_shell_for_that_member;
     {
-        let (mut app, seat) = seated("people");
+        let (mut app, state) = mounted("people");
         press(&mut app, "ws-people-remove-bo");
         press(&mut app, "ws-settings-decision.primary");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::RemoveMember {
                 member: "bo".to_owned()
             }]
@@ -332,10 +332,10 @@ tilo_test_env::scenario! {
 
     phase the_question_leads_to_the_activity_instead;
     {
-        let (mut app, seat) = seated("people");
+        let (mut app, state) = mounted("people");
         press(&mut app, "ws-people-remove-bo");
         press(&mut app, "ws-settings-decision.tertiary");
-        assert_eq!(seat.take_asked(), [WorkspaceSettingsEffect::ReviewActivity]);
+        assert_eq!(state.take_asked(), [WorkspaceSettingsEffect::ReviewActivity]);
     }
 
     phase the_removal_question_renders_for_captures;
@@ -347,7 +347,7 @@ tilo_test_env::scenario! {
 
     phase an_agent_changing_a_role_goes_through_the_door;
     {
-        let (mut app, seat) = seated("people");
+        let (mut app, state) = mounted("people");
         app.effect(&WorkspaceSettingsEffect::SetRole {
             member: "bo".to_owned(),
             role: "editor".to_owned(),
@@ -355,7 +355,7 @@ tilo_test_env::scenario! {
         .unwrap();
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::SetRole {
                 member: "bo".to_owned(),
                 role: "editor".to_owned(),
@@ -391,13 +391,13 @@ tilo_test_env::scenario! {
 
     phase agent_and_bot_controls_name_what_they_act_on;
     {
-        let (mut app, seat) = seated("agents");
+        let (mut app, state) = mounted("agents");
         press(&mut app, "ws-agents-review-claude");
         // One button opens the form; a press with no name in it asks nothing.
         press(&mut app, "ws-agents-new");
         press(&mut app, "ws-agents-create");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::ReviewAgent {
                 agent: "claude".to_owned()
             }],
@@ -421,7 +421,7 @@ tilo_test_env::scenario! {
         press(&mut app, "ws-agents-create");
         press(&mut app, "ws-bots-add");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 WorkspaceSettingsEffect::AddAgent {
                     name: "Analyst".to_owned(),
@@ -437,7 +437,7 @@ tilo_test_env::scenario! {
     // Remove takes back a bot a member asked for, and the tab offers no Remove
     // for one the workspace's host runs from its own choice.
     {
-        let (mut app, seat) = seated("agents");
+        let (mut app, state) = mounted("agents");
         let removes = app
             .harness()
             .a11y_nodes()
@@ -451,7 +451,7 @@ tilo_test_env::scenario! {
         );
         press(&mut app, "ws-bots-remove-so.tilo.bots.standup");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::RemoveBot {
                 bot: "so.tilo.bots.standup".to_owned()
             }]
@@ -500,16 +500,16 @@ tilo_test_env::scenario! {
 
     phase in_a_review_escape_goes_back_to_the_agents;
     {
-        let (mut app, seat) = seated("agent-review");
+        let (mut app, state) = mounted("agent-review");
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.take_asked(), [WorkspaceSettingsEffect::EndReview]);
-        assert!(seat.presentation().is_open(), "the sheet stays up");
+        assert_eq!(state.take_asked(), [WorkspaceSettingsEffect::EndReview]);
+        assert!(state.presentation().is_open(), "the sheet stays up");
     }
 
     phase a_review_asks_for_answers_models_and_resets_by_key;
     {
-        let (mut app, seat) = seated("agent-review");
+        let (mut app, state) = mounted("agent-review");
         press(&mut app, "ws-agent-reset-so.tilo.notes");
         press(
             &mut app,
@@ -518,7 +518,7 @@ tilo_test_env::scenario! {
         press(&mut app, "ws-agent-use-");
         press(&mut app, "ws-agent-retire");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 WorkspaceSettingsEffect::ResetAgentApp {
                     agent: "claude".to_owned(),
@@ -545,7 +545,7 @@ tilo_test_env::scenario! {
     // What an agent spends and may spend reads on its row; its keeper sets the
     // day from its review, where a typed amount is taken by Set and by Enter.
     {
-        let (mut app, _) = seated("agents");
+        let (mut app, _) = mounted("agents");
         assert!(
             says(&mut app, "$0.42 of $5 today"),
             "the row counts the day on its line under the name, under who keeps it"
@@ -555,7 +555,7 @@ tilo_test_env::scenario! {
             "an unmetered agent says what it spent on that line too"
         );
 
-        let (mut app, seat) = seated("agent-review");
+        let (mut app, state) = mounted("agent-review");
         assert!(
             says(&mut app, "$5 a day"),
             "the review says the day's limit"
@@ -587,7 +587,7 @@ tilo_test_env::scenario! {
         app.settle();
         press(&mut app, "ws-agent-limit-set");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::SetAgentSpendLimit {
                 agent: "claude".to_owned(),
                 dollars: "12.50".to_owned(),
@@ -605,7 +605,7 @@ tilo_test_env::scenario! {
         app.harness().key("Enter");
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::SetAgentSpendLimit {
                 agent: "claude".to_owned(),
                 dollars: String::new(),
@@ -628,11 +628,11 @@ tilo_test_env::scenario! {
             .expect("the agent's day");
         limit.can_choose = false;
         limit.note = "Only Ada sets what it may spend a day.".to_owned();
-        let seat = WorkspaceSettingsSeat::default();
-        seat.show(settings);
-        seat.presentation().open(false);
+        let state = WorkspaceSettingsState::default();
+        state.show(settings);
+        state.presentation().open(false);
         let mut app =
-            HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", seat).unwrap();
+            HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state).unwrap();
         app.harness().resize(VIEWPORT).unwrap();
         app.settle();
 
@@ -660,11 +660,11 @@ tilo_test_env::scenario! {
             .expect("the agent's models");
         models.can_choose = false;
         models.note = Some("Only Ada chooses the model it runs on".to_owned());
-        let seat = WorkspaceSettingsSeat::default();
-        seat.show(settings);
-        seat.presentation().open(false);
+        let state = WorkspaceSettingsState::default();
+        state.show(settings);
+        state.presentation().open(false);
         let mut app =
-            HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", seat).unwrap();
+            HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state).unwrap();
         app.harness().resize(VIEWPORT).unwrap();
         app.settle();
 
@@ -683,7 +683,7 @@ tilo_test_env::scenario! {
 
     phase an_agent_is_answered_through_the_door_too;
     {
-        let (mut app, seat) = seated("agent-review");
+        let (mut app, state) = mounted("agent-review");
         app.effect(&WorkspaceSettingsEffect::SetAgentAnswer {
             agent: "claude".to_owned(),
             scope: "so.tilo.calendar".to_owned(),
@@ -692,7 +692,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.settle();
-        assert_eq!(seat.take_asked().len(), 1);
+        assert_eq!(state.take_asked().len(), 1);
     }
 }
 
@@ -717,10 +717,10 @@ tilo_test_env::scenario! {
 
     phase granting_names_who_what_and_for_how_long;
     {
-        let (mut app, seat) = seated("permissions");
+        let (mut app, state) = mounted("permissions");
         press(&mut app, "ws-grant");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::Grant {
                 subject: "member:ada".to_owned(),
                 permission: "camera".to_owned(),
@@ -731,13 +731,13 @@ tilo_test_env::scenario! {
 
     phase revoking_asks_first;
     {
-        let (mut app, seat) = seated("permissions");
+        let (mut app, state) = mounted("permissions");
         press(&mut app, "ws-permission-revoke-grant-2");
         assert!(says(&mut app, "Revoke this permission?"));
-        assert!(seat.take_asked().is_empty());
+        assert!(state.take_asked().is_empty());
         press(&mut app, "ws-settings-decision.primary");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [WorkspaceSettingsEffect::Revoke {
                 grant: "grant-2".to_owned()
             }]
@@ -766,11 +766,11 @@ tilo_test_env::scenario! {
 
     phase each_choice_moves_on_by_the_kind_it_is_for;
     {
-        let (mut app, seat) = seated("apps");
+        let (mut app, state) = mounted("apps");
         press(&mut app, "ws-apps-workspace-ext:md");
         press(&mut app, "ws-apps-yours-scheme:mailto");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 WorkspaceSettingsEffect::NextWorkspaceDefault {
                     resource: "ext:md".to_owned()
@@ -802,11 +802,11 @@ tilo_test_env::scenario! {
 
     phase emoji_controls_ask_by_name;
     {
-        let (mut app, seat) = seated("emoji");
+        let (mut app, state) = mounted("emoji");
         press(&mut app, "ws-emoji-add");
         press(&mut app, "ws-emoji-remove-party-parrot");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 WorkspaceSettingsEffect::AddEmoji,
                 WorkspaceSettingsEffect::RemoveEmoji {

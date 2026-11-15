@@ -66,7 +66,7 @@ fn an_agents_run_at_the_door_finds_the_workspaces_tasks() {
     until(&mut session, "the door's question", |session| {
         session
             .portal()
-            .and_then(tilo_sheets::portal::PortalSeat::dialog)
+            .and_then(tilo_sheets::portal::PortalState::dialog)
             .is_some()
     });
     press_sheet(&mut session, PortalEffect::SELECT.id, &json!({"index": 0}));

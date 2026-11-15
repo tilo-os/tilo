@@ -5,7 +5,7 @@
 //! the identity work, the crash journal, nearby pairing, the prepared setup
 //! and its transfers, the media codecs install and every secret's custody.
 //! The app shows the page this view projects ([`tilo_onboarding::Page`]) and
-//! asks through the seat this view lends it; secrets are typed into buffers
+//! asks through the state this view lends it; secrets are typed into buffers
 //! this view owns and zeroizes, never carried by what the app asks.
 //!
 //! Setup stays trusted chrome: the app is mounted in the shell's own
@@ -2587,9 +2587,9 @@ impl Widget for OnboardingView {
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         // The app's pump runs its handlers: what its person asked lands in
-        // the seat, for the next `sync`.
+        // the state, for the next `sync`.
         let shown = self.app.update(state, path);
-        let asked = self.app.seat().has_asked();
+        let asked = self.app.state().has_asked();
         // Background work (nearby pairing, the codecs worker) changes the
         // page from `sync` with no input behind it. The compositor presents
         // only what `update` reports, so a page that is not yet laid out is
@@ -4736,7 +4736,7 @@ mod tests {
             );
 
             view.app
-                .seat()
+                .state()
                 .ask(tilo_onboarding::OnboardingEffect::CloseChooser);
             view.sync(&doc, &automerge::ROOT);
             assert!(view.chooser.is_none());
@@ -4745,7 +4745,7 @@ mod tests {
             press(&view, &mut doc, KEY_CONNECT_BROWSE);
             view.sync(&doc, &automerge::ROOT);
             view.app
-                .seat()
+                .state()
                 .ask(tilo_onboarding::OnboardingEffect::Pick {
                     path: "/home/person/backup.tilo-identity".into(),
                 });
@@ -5386,7 +5386,7 @@ mod tests {
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
             sync_journaled(&mut view, &doc);
             view.app
-                .seat()
+                .state()
                 .ask(tilo_onboarding::OnboardingEffect::CloseChooser);
             sync_journaled(&mut view, &doc);
             assert!(view.chooser.is_none());
@@ -5395,7 +5395,7 @@ mod tests {
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
             sync_journaled(&mut view, &doc);
             view.app
-                .seat()
+                .state()
                 .ask(tilo_onboarding::OnboardingEffect::Pick {
                     path: progress
                         .path()

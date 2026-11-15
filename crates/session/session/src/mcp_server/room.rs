@@ -4,7 +4,7 @@
 //! A connection takes a [`Place`] before the door serves it and gives it back when it ends. A
 //! program of this login, and one inside an environment, takes it as the door accepts it. A
 //! connection from another of the person's devices takes it as it arrives, on its endpoint's
-//! thread, before the session's pass serves it ([`crate::remote_door`]): it waits for that pass
+//! thread, before the session's pass serves it ([`crate::device_mcp`]): it waits for that pass
 //! in the place it will be served in, so no more of them wait than the door serves, and one
 //! there is no place for is refused in the answer that would have said the door opened.
 //!

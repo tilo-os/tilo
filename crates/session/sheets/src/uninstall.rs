@@ -11,7 +11,7 @@
 //! only leaves their apps. The compositor draws it, so no app can answer it
 //! for the person. The shell carries the answer out through the app's own
 //! registry ([`tilo_app_launch::downloaded`]) and keeps the sheet current
-//! through [`UninstallSeat`].
+//! through [`UninstallState`].
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -21,7 +21,7 @@ use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
 use ui::prelude::*;
 use ui::widget::{Column, Element, ListRow, ModalDialog, Text, Toggle};
 
-use crate::presentation::{Presentation, Seat, presented};
+use crate::presentation::{Presentation, SheetState, presented};
 use crate::t;
 
 /// The app the shell mounts the sheet as.
@@ -121,7 +121,7 @@ pub enum UninstallEffect {
 /// What the shell lends the sheet: which app is asked about, whether its
 /// data goes with it, and what the person answered.
 #[derive(Clone, Default)]
-pub struct UninstallSeat {
+pub struct UninstallState {
     presentation: Presentation,
     app: Rc<RefCell<Option<App>>>,
     shown: Rc<RefCell<Option<LocalState<App>>>>,
@@ -129,21 +129,21 @@ pub struct UninstallSeat {
     asked: Rc<RefCell<Vec<UninstallEffect>>>,
 }
 
-impl std::fmt::Debug for UninstallSeat {
+impl std::fmt::Debug for UninstallState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UninstallSeat")
+        f.debug_struct("UninstallState")
             .field("app", &self.app.borrow())
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for UninstallSeat {
+impl crate::SheetState for UninstallState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl UninstallSeat {
+impl UninstallState {
     /// Ask about `app`, as a new question: what the app saved goes with it
     /// until the person says otherwise, whether or not this app was asked
     /// about before.
@@ -209,22 +209,22 @@ impl ResourceApp for UninstallApp {
     }
 
     fn view(cx: &mut ViewCx<Uninstall>) -> Element {
-        let seat = cx.take_lent::<UninstallSeat>();
-        let initial = match &seat {
-            Some(seat) => seat.app(),
+        let state = cx.take_lent::<UninstallState>();
+        let initial = match &state {
+            Some(state) => state.app(),
             None => cx.fixture::<App>().map(|app| (*app).clone()),
         };
         let shown = cx.local(initial.unwrap_or_default());
         let remove_data = cx.local(true);
-        if let Some(seat) = &seat {
-            *seat.shown.borrow_mut() = Some(shown.clone());
-            *seat.remove_data.borrow_mut() = Some(remove_data.clone());
+        if let Some(state) = &state {
+            *state.shown.borrow_mut() = Some(shown.clone());
+            *state.remove_data.borrow_mut() = Some(remove_data.clone());
         }
-        let answering = seat.clone();
-        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
+        let answering = state.clone();
+        let presentation = state.as_ref().map(|state| state.presentation().clone());
         cx.effects(move |effect: UninstallEffect, _cx| match &answering {
-            Some(seat) => {
-                seat.asked.borrow_mut().push(effect);
+            Some(state) => {
+                state.asked.borrow_mut().push(effect);
                 Ok(Effected::done())
             }
             None => Err("no apps to uninstall here".to_owned()),

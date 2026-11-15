@@ -8,7 +8,7 @@
 //! types; Enter hands what was typed to the shell, which looks a site up or
 //! takes a link or an invitation code to the join field. The shell reads
 //! the directories and joins; it keeps the sheet current through
-//! [`DirectorySeat`].
+//! [`DirectoryState`].
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,7 +23,7 @@ use ui::widget::{
     ListRow, ModalDialog, Row, SearchField, Section, Text, Widget,
 };
 
-use crate::presentation::{Presentation, Seat, presented};
+use crate::presentation::{Presentation, SheetState, presented};
 use crate::t;
 
 /// The app the shell mounts the sheet as.
@@ -155,7 +155,7 @@ pub struct Directory {
 /// What the shell lends the sheet: whether it is up, what it lists, and
 /// where its requests go.
 #[derive(Clone, Default)]
-pub struct DirectorySeat {
+pub struct DirectoryState {
     presentation: Presentation,
     directory: Rc<RefCell<Directory>>,
     shown: Rc<RefCell<Option<LocalState<Directory>>>>,
@@ -163,21 +163,21 @@ pub struct DirectorySeat {
     asked: Rc<RefCell<Vec<DirectoryEffect>>>,
 }
 
-impl std::fmt::Debug for DirectorySeat {
+impl std::fmt::Debug for DirectoryState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DirectorySeat")
+        f.debug_struct("DirectoryState")
             .field("presentation", &self.presentation)
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for DirectorySeat {
+impl crate::SheetState for DirectoryState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl DirectorySeat {
+impl DirectoryState {
     /// Show `directory`, or the same directory as it stands now.
     pub fn show(&self, directory: Directory) {
         if *self.directory.borrow() == directory {
@@ -216,7 +216,7 @@ impl DirectorySeat {
     }
 
     /// The sheet as a host that draws it itself shows it: what it lists now, with the search kept
-    /// in the seat and every press asked of it. Built again when the listing or
+    /// in the state and every press asked of it. Built again when the listing or
     /// [`Self::query_revision`] moved.
     pub fn sheet(&self) -> Element {
         let query = self
@@ -229,7 +229,7 @@ impl DirectorySeat {
         sheet(&self.directory(), &query, &ask, None)
     }
 
-    /// How far the search moved since the seat was made.
+    /// How far the search moved since the state was made.
     pub fn query_revision(&self) -> u64 {
         self.query.borrow().as_ref().map_or(0, LocalState::revision)
     }
@@ -237,7 +237,7 @@ impl DirectorySeat {
 
 /// How the sheet asks its host for something: an effect the person pressed,
 /// carried out by whoever shows the sheet. The session's window pushes it
-/// into the seat its shell reads; a page's host hands it to the page.
+/// into the state its shell reads; a page's host hands it to the page.
 pub type Ask = Rc<dyn Fn(DirectoryEffect)>;
 
 /// The sheet as its hosts draw it, from the [`Directory`] they keep current:
@@ -300,9 +300,9 @@ impl ResourceApp for DirectoryApp {
     }
 
     fn view(cx: &mut ViewCx<WorkspaceDirectory>) -> Element {
-        let seat = cx.take_lent::<DirectorySeat>();
-        let initial = match &seat {
-            Some(seat) => seat.directory(),
+        let state = cx.take_lent::<DirectoryState>();
+        let initial = match &state {
+            Some(state) => state.directory(),
             None => cx
                 .fixture::<Directory>()
                 .map(|directory| (*directory).clone())
@@ -310,20 +310,20 @@ impl ResourceApp for DirectoryApp {
         };
         let shown = cx.local(initial);
         let query = cx.local(String::new());
-        if let Some(seat) = &seat {
-            *seat.shown.borrow_mut() = Some(shown.clone());
-            *seat.query.borrow_mut() = Some(query.clone());
+        if let Some(state) = &state {
+            *state.shown.borrow_mut() = Some(shown.clone());
+            *state.query.borrow_mut() = Some(query.clone());
         }
-        let asking = seat.clone();
-        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
+        let asking = state.clone();
+        let presentation = state.as_ref().map(|state| state.presentation().clone());
         cx.effects(move |effect: DirectoryEffect, _cx| match &asking {
-            Some(seat) => {
+            Some(state) => {
                 if effect == DirectoryEffect::Done {
                     // Its own close: the card leaves the screen, and the shell tells it gone
                     // once nothing of it is drawn.
-                    seat.presentation.close();
+                    state.presentation.close();
                 }
-                seat.asked.borrow_mut().push(effect);
+                state.asked.borrow_mut().push(effect);
                 Ok(Effected::done())
             }
             None => Err("no network to join through here".to_owned()),

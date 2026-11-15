@@ -1,9 +1,10 @@
 //! The sheets the session shows over the desktop (the power menu, the questions it asks for an app
 //! or a service, workspace settings), each an app of [`tilo_sheets`] on a layer of its own covering
-//! a display, up while its seat's presentation says so. The seat is how the session and the
+//! a display, up while its state's presentation says so. The state is how the session and the
 //! services behind it talk to the sheet: what it shows in, what the person chose out. Its actions
 //! are published through its door while it is up. Which display each sheet covers is placed here
-//! too, from the one the person is working on.
+//! too, from the one the person is working on. Each sheet is the session's: it keeps its state
+//! current and puts it up, and whoever asks reaches that state through the session.
 
 pub(crate) mod mount;
 
@@ -13,7 +14,17 @@ use tilo_session_core::surface::{HostKey, KeyClaim};
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_session_core::door::Published;
-use tilo_sheets::Seat;
+use tilo_sheets::SheetState;
+use tilo_sheets::delete_workspace::DeleteWorkspaceState;
+use tilo_sheets::directory::DirectoryState;
+use tilo_sheets::display_confirm::ConfirmState;
+use tilo_sheets::file_picker::FilePickerState;
+use tilo_sheets::invite::InviteState;
+use tilo_sheets::portal::PortalState;
+use tilo_sheets::power::PowerState;
+use tilo_sheets::shortcut_guide::GuideState;
+use tilo_sheets::uninstall::UninstallState;
+use tilo_sheets::workspace_settings::WorkspaceSettingsState;
 use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
 use ui::host_operation::ResourceOperationStart;
 use ui::vello::kurbo::Rect;
@@ -51,7 +62,7 @@ trait Themed {
     fn set_theme(&mut self, theme: ui::Theme);
 }
 
-impl<S: Seat> Themed for Sheet<S> {
+impl<S: SheetState> Themed for Sheet<S> {
     fn set_theme(&mut self, theme: ui::Theme) {
         self.host.app_mut().set_theme(theme);
     }
@@ -71,27 +82,27 @@ pub(crate) fn set_theme(theme: &ui::Theme) {
 }
 
 /// One sheet's app on its layer.
-pub(crate) struct Sheet<S: Seat> {
+pub(crate) struct Sheet<S: SheetState> {
     host: AppHost,
-    seat: S,
+    state: S,
     /// The displays as the compositor last said they are.
     outputs: Vec<tilo_session_core::surface::HostedOutput>,
     role: Role,
 }
 
-impl<S: Seat> Sheet<S> {
-    /// Mount `definition` lent `seat` , as `person` on `device` .
+impl<S: SheetState> Sheet<S> {
+    /// Mount `definition` lent `state` , as `person` on `device` .
     pub(crate) fn mount(
         definition: &'static ApplicationDefinition,
-        seat: S,
+        state: S,
         (device, person): (&str, &str),
         presentation: ComponentRunnerInputs,
         scale: f64,
     ) -> Result<Self, ui::launch::LaunchError> {
         // The card's arrival and leaving move on the person's motion setting: the shell is where it
         // is known, before any frame of the sheet reads its theme.
-        seat.presentation().set_motion(presentation.theme.motion());
-        let lent = seat.clone();
+        state.presentation().set_motion(presentation.theme.motion());
+        let lent = state.clone();
         let component =
             prepare_private_surface(definition, device, person, "desktop", 0, |context| {
                 context.lend(lent);
@@ -104,7 +115,7 @@ impl<S: Seat> Sheet<S> {
         };
         Ok(Self {
             host: AppHost::new(app, placement).named(definition.title()),
-            seat,
+            state,
             outputs: Vec::new(),
             role: Role::Presented,
         })
@@ -143,23 +154,23 @@ impl<S: Seat> Sheet<S> {
         self
     }
 
-    pub(crate) fn seat(&self) -> &S {
-        &self.seat
+    pub(crate) fn state(&self) -> &S {
+        &self.state
     }
 
     fn open(&self) -> bool {
-        self.seat.presentation().is_open()
+        self.state.presentation().is_open()
     }
 
     fn drawn(&self) -> bool {
-        self.seat.presentation().is_drawn()
+        self.state.presentation().is_drawn()
     }
 
     /// The sheet covers the display the session placed it on, or the first one while it named none;
     /// a sheet that stands on every display at once covers all of them and is told where each one
     /// is.
     fn follow_place(&mut self) {
-        let presentation = self.seat.presentation();
+        let presentation = self.state.presentation();
         let every = presentation.covers_every_display();
         let named = presentation.place();
         let Some((x, y, w, h)) = covering(named, &self.outputs, every) else {
@@ -192,7 +203,7 @@ impl<S: Seat> Sheet<S> {
                     )
                 })
                 .collect();
-            self.seat.covers(displays);
+            self.state.covers(displays);
         }
     }
 }
@@ -235,7 +246,7 @@ fn covering(
         .or_else(|| shown().min_by_key(|(x, y, _, _)| (*x, *y)))
 }
 
-impl<S: Seat> Published for Sheet<S> {
+impl<S: SheetState> Published for Sheet<S> {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         self.host.resources()
     }
@@ -319,7 +330,7 @@ impl<S: Seat> Published for Sheet<S> {
     }
 }
 
-impl<S: Seat> SurfaceHost for Sheet<S> {
+impl<S: SheetState> SurfaceHost for Sheet<S> {
     /// What the person typed into a secret field of the sheet's card: a capture draws such a sheet
     /// as the placeholder, the display keeps showing it.
     fn withholds_captures(&self) -> bool {
@@ -406,7 +417,7 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         // A sheet on its way out draws its card leaving until nothing of it is left; only then does
         // the presentation say so, and the sheet stands drawn taking no input no longer. A sheet
         // that draws its own leave (the power menu) presents no modal and keeps its way out.
-        let presentation = self.seat.presentation();
+        let presentation = self.state.presentation();
         if presentation.phase() == tilo_sheets::Phase::Leaving
             && !self.host.app_mut().presents_modal()
         {
@@ -458,26 +469,35 @@ impl Session {
     fn sheet_presentations(&self) -> impl Iterator<Item = &tilo_sheets::Presentation> {
         let shared = &self.shared;
         [
-            shared.power.as_ref().map(tilo_sheets::Seat::presentation),
+            shared
+                .power
+                .as_ref()
+                .map(tilo_sheets::SheetState::presentation),
             shared
                 .workspace_settings
                 .as_ref()
-                .map(tilo_sheets::Seat::presentation),
+                .map(tilo_sheets::SheetState::presentation),
             shared
                 .directory
                 .as_ref()
-                .map(tilo_sheets::Seat::presentation),
-            shared.invite.as_ref().map(tilo_sheets::Seat::presentation),
-            shared.portal.as_ref().map(tilo_sheets::Seat::presentation),
+                .map(tilo_sheets::SheetState::presentation),
+            shared
+                .invite
+                .as_ref()
+                .map(tilo_sheets::SheetState::presentation),
+            shared
+                .portal
+                .as_ref()
+                .map(tilo_sheets::SheetState::presentation),
             shared
                 .file_picker
                 .as_ref()
-                .map(tilo_sheets::Seat::presentation),
+                .map(tilo_sheets::SheetState::presentation),
             shared.shortcut_guide.presentation(),
             shared
                 .display_confirm
                 .as_ref()
-                .map(tilo_sheets::Seat::presentation),
+                .map(tilo_sheets::SheetState::presentation),
             self.display_sheet.presentation(),
             self.capture_studio
                 .as_ref()
@@ -486,6 +506,98 @@ impl Session {
         ]
         .into_iter()
         .flatten()
+    }
+
+    /// The power menu's state: the session puts it up.
+    #[must_use]
+    pub fn power_menu(&self) -> Option<&PowerState> {
+        self.shared.power.as_ref()
+    }
+
+    /// The add sheet's state: the program the person is asked about, when one is; `None` when the
+    /// sheet did not mount.
+    #[must_use]
+    pub fn add_app_sheet(&self) -> Option<&tilo_sheets::add_app::AddState> {
+        self.shared.app_sheets.add()
+    }
+
+    /// The uninstall sheet's state: the app the person is asked about, when one is; `None` when the
+    /// sheet did not mount.
+    #[must_use]
+    pub fn uninstall_sheet(&self) -> Option<&UninstallState> {
+        self.shared.app_sheets.uninstall()
+    }
+
+    /// Ask the person whether to uninstall `app` , by its entry's id in the downloaded programs'
+    /// registry or by the name they know it by.
+    pub fn ask_uninstall(&self, app: &str) {
+        self.shared.ask_uninstall(app);
+    }
+
+    /// Workspace settings' state: what it shows, kept current by whoever knows the workspace.
+    #[must_use]
+    pub fn workspace_settings(&self) -> Option<&WorkspaceSettingsState> {
+        self.shared.workspace_settings.as_ref()
+    }
+
+    /// The invite sheet's state: the link into the workspace in front, kept current while it is up.
+    #[must_use]
+    pub fn invite_sheet(&self) -> Option<&InviteState> {
+        self.shared.invite.as_ref()
+    }
+
+    /// The delete question's state: the workspace it is asking about, shown when the person asks to
+    /// delete one.
+    #[must_use]
+    pub fn delete_workspace_sheet(&self) -> Option<&DeleteWorkspaceState> {
+        self.shared.delete_workspace.as_ref()
+    }
+
+    /// The workspace directory's state: the workspaces this computer may join or open, shown when
+    /// the person asks for them.
+    #[must_use]
+    pub fn workspace_directory(&self) -> Option<&DirectoryState> {
+        self.shared.directory.as_ref()
+    }
+
+    /// The portal sheet's state: the portal, authentication and network-secret services ask through
+    /// it and read the answers.
+    #[must_use]
+    pub fn portal(&self) -> Option<&PortalState> {
+        self.shared.portal.as_ref()
+    }
+
+    /// The file chooser's state: the portal service asks it for files and reads the answer.
+    #[must_use]
+    pub fn file_picker(&self) -> Option<&FilePickerState> {
+        self.shared.file_picker.as_ref()
+    }
+
+    /// The keys a held Super reaches, as the chrome draws them over the shell.
+    #[must_use]
+    pub fn super_peek(&self) -> &tilo_desktop::super_peek::SuperPeek {
+        &self.shared.super_peek
+    }
+
+    /// The shortcut guide's state: the session puts it up with F1, and it shows the chords the
+    /// session answers.
+    #[must_use]
+    pub fn shortcut_guide(&self) -> Option<&GuideState> {
+        self.shared.shortcut_guide.sheet()
+    }
+
+    /// The state of the question about a display change: what it asks now,
+    /// and where it stands.
+    #[must_use]
+    pub fn display_confirm(&self) -> Option<&ConfirmState> {
+        self.shared.display_confirm.as_ref()
+    }
+
+    /// The display sheet: the layouts the attached displays allow and the wireless displays the
+    /// desktop can be streamed to, as it shows them.
+    #[must_use]
+    pub fn display_sheet(&self) -> Option<&tilo_sheets::displays::DisplaysState> {
+        self.display_sheet.state()
     }
 }
 

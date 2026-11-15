@@ -2,7 +2,7 @@ use tilo_actions::remote::host_account::{
     Entitlement, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, Standing, Usage,
     WorkspaceUsage,
 };
-use tilo_actions::remote::mcp_server::{Grant, Run, Server};
+use tilo_actions::remote::mcp_server::{AgentSession, Grant, Server};
 
 use super::*;
 
@@ -190,7 +190,7 @@ tilo_test_env::scenario! {
                 grants: vec![Grant {
                     id: "g1".into(),
                     agent: "Claude Code".into(),
-                    runs: vec![Run {
+                    sessions: vec![AgentSession {
                         name: "Claude Code #2".into(),
                         started_ms: 1,
                     }],

@@ -11,9 +11,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::directory::{
-    self, Directory, DirectoryApp, DirectoryEffect, DirectorySeat, Listing, ListingAction, Status,
+    self, Directory, DirectoryApp, DirectoryEffect, DirectoryState, Listing, ListingAction, Status,
 };
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
@@ -61,15 +61,15 @@ fn directory() -> Directory {
     }
 }
 
-fn seated(directory: Directory) -> (HeadlessApp<DirectoryApp>, DirectorySeat) {
-    let seat = DirectorySeat::default();
-    seat.show(directory);
-    seat.presentation().open(false);
+fn mounted(directory: Directory) -> (HeadlessApp<DirectoryApp>, DirectoryState) {
+    let state = DirectoryState::default();
+    state.show(directory);
+    state.presentation().open(false);
     let mut app =
-        HeadlessApp::<DirectoryApp>::for_person_with_lent("person", seat.clone()).unwrap();
+        HeadlessApp::<DirectoryApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 /// Whether the sheet alone, built from `listings` and nothing else, says `text`.
@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
 
     phase join_and_open_ask_the_shell_for_the_listing;
     {
-        let (mut app, seat) = seated(directory());
+        let (mut app, state) = mounted(directory());
         app.harness()
             .perform_named("directory-row-garden", &A11yAction::Activate)
             .unwrap();
@@ -121,7 +121,7 @@ tilo_test_env::scenario! {
             .unwrap();
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [
                 DirectoryEffect::Join {
                     key: "garden".to_owned()
@@ -135,7 +135,7 @@ tilo_test_env::scenario! {
 
     phase search_narrows_the_list_and_enter_looks_up_what_was_typed;
     {
-        let (mut app, seat) = seated(directory());
+        let (mut app, state) = mounted(directory());
         app.harness()
             .perform_named(
                 "directory-search",
@@ -143,13 +143,13 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         app.settle();
-        assert_eq!(seat.query(), "chess");
+        assert_eq!(state.query(), "chess");
         assert!(says(&mut app, "Chess club"));
         assert!(!says(&mut app, "Gardeners"), "search narrows the list");
         app.harness().key("Enter");
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [DirectoryEffect::Look {
                 text: "chess".to_owned()
             }]
@@ -158,20 +158,20 @@ tilo_test_env::scenario! {
 
     phase escape_clears_the_search_first_then_closes;
     {
-        let (mut app, seat) = seated(directory());
+        let (mut app, state) = mounted(directory());
         app.harness()
             .perform_named("directory-search", &A11yAction::SetValue("x".to_owned()))
             .unwrap();
         app.settle();
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.query(), "");
-        assert!(seat.take_asked().is_empty());
+        assert_eq!(state.query(), "");
+        assert!(state.take_asked().is_empty());
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.take_asked(), [DirectoryEffect::Done]);
+        assert_eq!(state.take_asked(), [DirectoryEffect::Done]);
         assert_eq!(
-            seat.presentation().phase(),
+            state.presentation().phase(),
             tilo_sheets::Phase::Leaving,
             "the card leaves the screen; the shell hears it is gone once it has"
         );
@@ -179,14 +179,14 @@ tilo_test_env::scenario! {
 
     phase an_agent_joins_through_the_same_door;
     {
-        let (mut app, seat) = seated(directory());
+        let (mut app, state) = mounted(directory());
         app.effect(&DirectoryEffect::Join {
             key: "garden".to_owned(),
         })
         .unwrap();
         app.settle();
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             [DirectoryEffect::Join {
                 key: "garden".to_owned()
             }]

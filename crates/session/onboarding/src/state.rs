@@ -3,7 +3,7 @@
 //!
 //! The shell owns the ceremony: the identity work, the journal, the helpers
 //! and every decision. Setup only shows the page and asks; the shell takes
-//! what was asked on its next frame ([`OnboardingSeat::take_asked`]).
+//! what was asked on its next frame ([`OnboardingState::take_asked`]).
 
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
@@ -76,7 +76,7 @@ impl std::fmt::Debug for Secrets {
 
 /// What the shell lends setup.
 #[derive(Clone, Default)]
-pub struct OnboardingSeat {
+pub struct OnboardingState {
     inner: Rc<Inner>,
 }
 
@@ -93,24 +93,24 @@ struct Inner {
     wake: RefCell<Option<ui::WakeHandle>>,
 }
 
-impl std::fmt::Debug for OnboardingSeat {
+impl std::fmt::Debug for OnboardingState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OnboardingSeat")
+        f.debug_struct("OnboardingState")
             .field("page", &self.inner.page.borrow())
             .field("revision", &self.inner.revision.get())
             .finish_non_exhaustive()
     }
 }
 
-impl OnboardingSeat {
-    /// A seat whose secret fields are the shell's `secrets`; `mistakes`
+impl OnboardingState {
+    /// A state whose secret fields are the shell's `secrets`; `mistakes`
     /// marks what in a typed recovery key is not part of one.
     #[must_use]
     pub fn new(secrets: Secrets, mistakes: Option<WordMistakes>) -> Self {
-        let seat = Self::default();
-        *seat.inner.secrets.borrow_mut() = secrets;
-        seat.inner.mistakes.set(mistakes);
-        seat
+        let state = Self::default();
+        *state.inner.secrets.borrow_mut() = secrets;
+        state.inner.mistakes.set(mistakes);
+        state
     }
 
     /// Show `page`, unless it shows already.

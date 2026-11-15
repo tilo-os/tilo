@@ -17,9 +17,9 @@ use serde_json::{Map, Value};
 use tilo_actions::remote::downloaded_apps::{self as wire, DownloadedApps, DownloadedDoing};
 use tilo_app_launch::downloaded;
 use tilo_service::Services;
-use tilo_sheets::Seat as _;
-use tilo_sheets::add_app::{AddAppEffect, AddSeat, Offer};
-use tilo_sheets::uninstall::{App, Going, Removal, UninstallEffect, UninstallSeat};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::add_app::{AddAppEffect, AddState, Offer};
+use tilo_sheets::uninstall::{App, Going, Removal, UninstallEffect, UninstallState};
 
 use crate::Shared;
 use crate::i18n::{t, t_args};
@@ -29,10 +29,10 @@ use ui::i18n::ArgValue;
 
 /// The two app sheets, and what they were answered.
 pub(crate) struct AppSheets {
-    /// The add sheet's seat; `None` when the sheet did not mount.
-    add: Option<AddSeat>,
-    /// The uninstall sheet's seat; `None` when the sheet did not mount.
-    uninstall: Option<UninstallSeat>,
+    /// The add sheet's state; `None` when the sheet did not mount.
+    add: Option<AddState>,
+    /// The uninstall sheet's state; `None` when the sheet did not mount.
+    uninstall: Option<UninstallState>,
     /// The registry's actions and reading, as the session publishes them.
     services: Rc<RefCell<Services>>,
     /// The person's notices: what an answer did.
@@ -65,8 +65,8 @@ struct Uninstalling {
 
 impl AppSheets {
     pub(crate) fn new(
-        add: Option<AddSeat>,
-        uninstall: Option<UninstallSeat>,
+        add: Option<AddState>,
+        uninstall: Option<UninstallState>,
         services: Rc<RefCell<Services>>,
         notices: Rc<dyn Notices>,
     ) -> Self {
@@ -83,14 +83,14 @@ impl AppSheets {
         }
     }
 
-    /// The add sheet's seat: whether it is up and what it asks; `None` when the sheet did not
+    /// The add sheet's state: whether it is up and what it asks; `None` when the sheet did not
     /// mount.
-    pub(crate) fn add(&self) -> Option<&AddSeat> {
+    pub(crate) fn add(&self) -> Option<&AddState> {
         self.add.as_ref()
     }
 
-    /// The uninstall sheet's seat; `None` when the sheet did not mount.
-    pub(crate) fn uninstall(&self) -> Option<&UninstallSeat> {
+    /// The uninstall sheet's state; `None` when the sheet did not mount.
+    pub(crate) fn uninstall(&self) -> Option<&UninstallState> {
         self.uninstall.as_ref()
     }
 
@@ -120,17 +120,17 @@ impl AppSheets {
     fn standing(&self) -> bool {
         self.add
             .as_ref()
-            .is_some_and(|seat| seat.presentation().is_open())
+            .is_some_and(|state| state.presentation().is_open())
             || self
                 .uninstall
                 .as_ref()
-                .is_some_and(|seat| seat.presentation().is_open())
+                .is_some_and(|state| state.presentation().is_open())
     }
 
     /// Add programs: the answer to the add sheet, then the next program the registry offers that
     /// the person has not been asked about.
     fn follow_add(&self, reading: Option<&DownloadedApps>) {
-        let Some(seat) = &self.add else {
+        let Some(state) = &self.add else {
             return;
         };
         let offers: &[wire::DownloadedOffer] = reading.map_or(&[], |reading| &reading.offers);
@@ -139,13 +139,13 @@ impl AppSheets {
         self.asked
             .borrow_mut()
             .retain(|file| offers.iter().any(|offer| offer.file == *file));
-        for effect in seat.take_asked() {
+        for effect in state.take_asked() {
             // The answer is about the program the sheet showed.
-            let Some(offer) = seat.offer() else {
+            let Some(offer) = state.offer() else {
                 continue;
             };
             let file = offer.file.to_string_lossy().into_owned();
-            seat.presentation().close();
+            state.presentation().close();
             self.asked.borrow_mut().insert(file.clone());
             let mut arguments = Map::new();
             arguments.insert(wire::FILE_PARAM.to_owned(), Value::from(file));
@@ -172,21 +172,21 @@ impl AppSheets {
         else {
             return;
         };
-        seat.show(offer_of(offer));
-        seat.presentation().open(false);
+        state.show(offer_of(offer));
+        state.presentation().open(false);
     }
 
     /// Uninstall an app: the answer to the uninstall sheet, what the reading says came of an
     /// earlier one, then the next app the person asked about.
     fn follow_uninstall(&self, reading: Option<&DownloadedApps>) {
-        let Some(seat) = &self.uninstall else {
+        let Some(state) = &self.uninstall else {
             return;
         };
-        for effect in seat.take_asked() {
-            let Some(app) = seat.app() else {
+        for effect in state.take_asked() {
+            let Some(app) = state.app() else {
                 continue;
             };
-            seat.presentation().close();
+            state.presentation().close();
             if let UninstallEffect::Confirm { .. } = effect {
                 let (action, confirmed) = match app.removal {
                     Removal::Uninstall => (wire::UNINSTALL, true),
@@ -225,8 +225,8 @@ impl AppSheets {
         };
         match question(reading, &asked) {
             Some(app) => {
-                seat.show(app);
-                seat.presentation().open(false);
+                state.show(app);
+                state.presentation().open(false);
             }
             None => {
                 self.notices.show(
@@ -434,8 +434,8 @@ mod tests {
         sheets: AppSheets,
         services: Rc<RefCell<Services>>,
         notices: crate::notifications::told::Told,
-        add: AddSeat,
-        uninstall: UninstallSeat,
+        add: AddState,
+        uninstall: UninstallState,
         home: TestHome,
     }
 
@@ -468,8 +468,8 @@ mod tests {
         services.add(Box::new(registry));
         let services = Rc::new(RefCell::new(services));
         let notices = crate::notifications::told::Told::default();
-        let add = AddSeat::default();
-        let uninstall = UninstallSeat::default();
+        let add = AddState::default();
+        let uninstall = UninstallState::default();
         let sheets = AppSheets::new(
             Some(add.clone()),
             Some(uninstall.clone()),

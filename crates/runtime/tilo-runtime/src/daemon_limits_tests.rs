@@ -45,7 +45,7 @@ fn endpoint() -> (tempfile::TempDir, PathBuf, GatedHost) {
             tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
         )),
         media: None,
-        remote: None,
+        other_devices: None,
     };
     std::thread::spawn(move || endpoint.accept(&listener));
     (directory, socket, host)

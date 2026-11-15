@@ -11,7 +11,7 @@
 //! field for the search the session draws itself.
 //!
 //! Nothing here answers consent. The card's buttons answer the sheet's own
-//! seat ([`DictationSeat`]), and the service refuses an answer that names
+//! state ([`DictationState`]), and the service refuses an answer that names
 //! another dictation than the one it is waiting for.
 
 use std::cell::{Cell, RefCell};
@@ -26,8 +26,8 @@ use tilo_dictation::{
     DictationError, DictationLink, DictationService, DictationStatus, Field, FieldRefusal,
     Insertion, Request, SessionId, Target,
 };
-use tilo_sheets::Seat as _;
-use tilo_sheets::dictation::{Answer, DictationSeat, Failure, Prompt, RecoveryReason, Stage};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::dictation::{Answer, DictationState, Failure, Prompt, RecoveryReason, Stage};
 
 use crate::Options;
 use crate::clipboard::Clipboard;
@@ -40,8 +40,8 @@ const PREVIEW_SCALARS: usize = 160;
 /// Dictation as the session has it: the service's handle, and the sheet the person is asked on.
 pub(crate) struct Dictation {
     link: DictationLink,
-    /// The card's seat; `None` when the sheet did not mount.
-    seat: Option<DictationSeat>,
+    /// The card's state; `None` when the sheet did not mount.
+    state: Option<DictationState>,
     /// The card is up.
     up: Cell<bool>,
     /// The person asked to be taken where the speech models are set up.
@@ -60,10 +60,10 @@ impl Dictation {
     ) -> Self {
         let (service, link) = DictationService::start();
         services.borrow_mut().add(Box::new(service));
-        let seat = mount_sheet(compositor, doors, options);
+        let state = mount_sheet(compositor, doors, options);
         Self {
             link,
-            seat,
+            state,
             up: Cell::new(false),
             model_setup: Cell::new(false),
             shown: RefCell::new(None),
@@ -78,7 +78,9 @@ impl Dictation {
 
     /// The card's presentation: where it sits; `None` when the sheet did not mount.
     pub(crate) fn presentation(&self) -> Option<&tilo_sheets::Presentation> {
-        self.seat.as_ref().map(tilo_sheets::Seat::presentation)
+        self.state
+            .as_ref()
+            .map(tilo_sheets::SheetState::presentation)
     }
 
     /// A key the person pressed asked for dictation.
@@ -121,7 +123,7 @@ impl Dictation {
     fn ask(&self, request: Request, now: Instant) {
         match request {
             // The dictation key stops what is listening and starts nothing while a dictation or its
-            // transcript still owns the seat.
+            // transcript still owns the state.
             Request::Toggle => match self.link.status() {
                 DictationStatus::Listening => {
                     if let Some(id) = self.link.id() {
@@ -178,10 +180,10 @@ impl Dictation {
         locked: bool,
         now: Instant,
     ) {
-        let Some(seat) = &self.seat else {
+        let Some(state) = &self.state else {
             return;
         };
-        for answer in seat.take_answers() {
+        for answer in state.take_answers() {
             if locked {
                 continue;
             }
@@ -226,21 +228,21 @@ impl Dictation {
     /// Put the card up with where the dictation stands, and take it down when there is nothing left
     /// to answer.
     fn show(&self) {
-        let Some(seat) = &self.seat else {
+        let Some(state) = &self.state else {
             return;
         };
         let prompt = self.prompt();
         if *self.shown.borrow() != prompt {
-            seat.show(prompt.clone());
+            state.show(prompt.clone());
             self.shown.borrow_mut().clone_from(&prompt);
         }
         match (&prompt, self.up.get()) {
             (Some(_), false) => {
-                seat.presentation().open(true);
+                state.presentation().open(true);
                 self.up.set(true);
             }
             (None, true) => {
-                seat.presentation().close();
+                state.presentation().close();
                 self.up.set(false);
             }
             _ => {}
@@ -472,21 +474,21 @@ fn mount_sheet(
     compositor: &mut Compositor,
     doors: &mut tilo_session_core::door::Doors,
     options: &Options,
-) -> Option<DictationSeat> {
+) -> Option<DictationState> {
     let who = (options.device.as_str(), options.person.as_str());
     match Sheet::mount(
         tilo_sheets::dictation::definition(),
-        DictationSeat::default(),
+        DictationState::default(),
         who,
         (options.presentation)(),
         options.scale,
     ) {
         Ok(sheet) => {
-            let seat = sheet.seat().clone();
+            let state = sheet.state().clone();
             let sheet = sheet.typing_through().layer();
             compositor.add_host(sheet.clone());
             doors.add(sheet);
-            Some(seat)
+            Some(state)
         }
         Err(error) => {
             tracing::warn!(%error, "dictation sheet not mounted");

@@ -306,9 +306,9 @@ pub(super) fn answer_door_requests(
         open(stream, request, pid, serving.clone());
         return None;
     }
-    if *entrance != Origin::Host && tilo_runtime::remote_door::forward_request(first).is_some() {
+    if *entrance != Origin::Host && tilo_runtime::device_mcp::forward_request(first).is_some() {
         // A program in an environment works in that environment's workspace, on this device.
-        tilo_runtime::remote_door::refuse_forward(stream, word("mcp-server-environment-workspace"));
+        tilo_runtime::device_mcp::refuse_forward(stream, word("mcp-server-environment-workspace"));
         return None;
     }
     Some(stream)

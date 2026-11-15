@@ -25,8 +25,8 @@ use tilo_compositor::{InputEvent, OutputConfig, Screenshot};
 use tilo_projector::control::{self, ConnectStage, ProjectorEvent, ProjectorRequest};
 use tilo_projector::{ProjectionDevice, ProjectionMode, ProjectionProtocol};
 use tilo_session::{Options, Session};
-use tilo_sheets::Seat as _;
-use tilo_sheets::displays::{DisplaysSeat, Layout, Link, Sheet};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::displays::{DisplaysState, Layout, Link, Sheet};
 
 const WIDTH: i32 = 1000;
 const HEIGHT: i32 = 700;
@@ -101,20 +101,20 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     });
 }
 
-/// The sheet's seat: whether it is up and what it shows.
-fn seat(session: &Session) -> &DisplaysSeat {
+/// The sheet's state: whether it is up and what it shows.
+fn state(session: &Session) -> &DisplaysState {
     session.display_sheet().expect("the display sheet mounted")
 }
 
 /// What the sheet shows now.
 fn shown(session: &Session) -> Sheet {
-    seat(session).sheet()
+    state(session).sheet()
 }
 
 fn up(session: &Session) -> bool {
     session
         .display_sheet()
-        .is_some_and(|seat| seat.presentation().is_open())
+        .is_some_and(|state| state.presentation().is_open())
 }
 
 /// A stand-in for the projector service on a real socket: it answers the one connection the session
@@ -219,7 +219,7 @@ fn super_p_opens_the_wireless_display_sheet() {
     assert!(
         session
             .display_sheet()
-            .is_some_and(|seat| seat.presentation().is_drawn()),
+            .is_some_and(|state| state.presentation().is_drawn()),
         "the sheet is on screen"
     );
 
@@ -248,7 +248,7 @@ fn super_p_opens_the_wireless_display_sheet() {
     assert!(
         !session
             .display_sheet()
-            .is_some_and(|seat| seat.presentation().is_drawn()),
+            .is_some_and(|state| state.presentation().is_drawn()),
         "nothing of the sheet is left on screen"
     );
 }
@@ -298,7 +298,7 @@ fn a_chosen_receiver_is_asked_for_its_pin_and_projected_to() {
     for digit in [KEY_4, KEY_8, KEY_2, KEY_1] {
         tap(&mut session, digit);
     }
-    assert_eq!(seat(&session).pin(), "4821");
+    assert_eq!(state(&session).pin(), "4821");
     tap(&mut session, KEY_ENTER);
 
     until(&mut session, |session| {
@@ -397,7 +397,7 @@ fn a_capture_of_the_pin_sheet_withholds_the_pin_and_the_display_shows_it() {
     for digit in [KEY_4, KEY_8, KEY_2, KEY_1] {
         tap(&mut session, digit);
     }
-    assert_eq!(seat(&session).pin(), "4821");
+    assert_eq!(state(&session).pin(), "4821");
 
     let copy = copied(&mut session);
     let display = displayed(&mut session);
@@ -427,7 +427,7 @@ fn a_capture_of_the_pin_sheet_withholds_the_pin_and_the_display_shows_it() {
     assert!(
         session
             .display_sheet()
-            .is_some_and(|seat| seat.presentation().is_drawn()),
+            .is_some_and(|state| state.presentation().is_drawn()),
         "the sheet is still up for the person"
     );
 }

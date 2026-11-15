@@ -32,7 +32,7 @@ impl crate::key_runs::Runs for HostRuns {
         let (run, caller, _) = self
             .host
             .agent_run(workspace, &self.actor, &self.policy_time, |_| {
-                crate::remote_door::agent_id("agent", key)
+                crate::device_mcp::agent_id("agent", key)
             })
             .map_err(|error| error.to_string())?;
         Ok((Arc::new(run), caller))

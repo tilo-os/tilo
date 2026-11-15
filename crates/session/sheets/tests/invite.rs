@@ -10,8 +10,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_sheets::Seat as _;
-use tilo_sheets::invite::{Invite, InviteApp, InviteEffect, InviteSeat, sample};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::invite::{Invite, InviteApp, InviteEffect, InviteState, sample};
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
 
@@ -20,16 +20,16 @@ const VIEWPORT: (u32, u32) = (1280, 900);
 /// code carries too.
 const LINK: &str = "https://tilo.sh/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGGHHHIIIJJJKKKLLLMMMNNNO";
 
-/// The sheet shown through a seat as the shell lends it, which is where its
+/// The sheet shown through a state as the shell lends it, which is where its
 /// asks arrive.
-fn seated(invite: Invite) -> (HeadlessApp<InviteApp>, InviteSeat) {
-    let seat = InviteSeat::default();
-    seat.show(invite);
-    seat.presentation().open(false);
-    let mut app = HeadlessApp::<InviteApp>::for_person_with_lent("person", seat.clone()).unwrap();
+fn mounted(invite: Invite) -> (HeadlessApp<InviteApp>, InviteState) {
+    let state = InviteState::default();
+    state.show(invite);
+    state.presentation().open(false);
+    let mut app = HeadlessApp::<InviteApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 fn press(app: &mut HeadlessApp<InviteApp>, id: &str) {
@@ -103,13 +103,13 @@ tilo_test_env::scenario! {
     // The link made is shown as text and as a code, with what it brings and how
     // long it works, and its button hands it to the clipboard.
     {
-        let (mut app, seat) = seated(sample(Some("made")));
+        let (mut app, state) = mounted(sample(Some("made")));
         for text in [LINK, "Works for the next hour."] {
             assert!(says(&mut app, text), "{text:?} is shown");
         }
         press(&mut app, "invite-copy-link");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             vec![InviteEffect::Copy {
                 link: LINK.to_owned(),
             }],
@@ -141,7 +141,7 @@ tilo_test_env::scenario! {
     // What the part picked brings whoever joins with it, in a line under the
     // choice, and it follows the pick.
     {
-        let (mut app, _seat) = seated(sample(Some("made")));
+        let (mut app, _state) = mounted(sample(Some("made")));
         assert!(
             says(&mut app, "Can view, comment on, and edit shared work."),
             "the part the sheet opens on says what it brings"
@@ -158,7 +158,7 @@ tilo_test_env::scenario! {
     // them; picking another part or person puts that link away among those that still work and
     // offers to make one at the new choice, and picking back shows it again.
     {
-        let (mut app, _seat) = seated(sample(Some("made")));
+        let (mut app, _state) = mounted(sample(Some("made")));
         let segments = ["Viewer", "Editor", "Anyone with the link", "Ada Lovelace-Byron"];
         assert_eq!(chosen(&mut app, &segments), ["Editor", "Ada Lovelace-Byron"]);
         assert!(drawn(&mut app, "invite-link"));
@@ -182,7 +182,7 @@ tilo_test_env::scenario! {
     // centred as Add a device draws its own, then the links that still work. At 720 by 900 all of
     // it stands above the Close button, with nothing to scroll.
     {
-        let (mut app, _seat) = seated(sample(Some("made")));
+        let (mut app, _state) = mounted(sample(Some("made")));
         app.harness().resize((720, 900)).unwrap();
         app.settle();
         let segments = ["Editor", "Viewer", "Anyone with the link", "Ada Lovelace-Byron"];
@@ -227,7 +227,7 @@ tilo_test_env::scenario! {
     phase on_a_phone_nothing_is_wider_than_the_screen;
     {
         const PHONE: (u32, u32) = (390, 844);
-        let (mut app, _seat) = seated(sample(Some("made")));
+        let (mut app, _state) = mounted(sample(Some("made")));
         app.harness().resize(PHONE).unwrap();
         app.settle();
         let width = f64::from(PHONE.0);
@@ -243,7 +243,7 @@ tilo_test_env::scenario! {
     phase with_a_link_made_the_button_makes_another;
     // With a link made, making another is the secondary press, and says so.
     {
-        let (mut app, _seat) = seated(sample(Some("made")));
+        let (mut app, _state) = mounted(sample(Some("made")));
         assert!(enabled(&mut app, "Create another link"));
         assert!(
             app.harness()
@@ -264,10 +264,10 @@ tilo_test_env::scenario! {
     // create button asks for the link they picked at: the sheet's own choices
     // reach the shell, and what they did not change stays as the link shown.
     {
-        let (mut app, seat) = seated(sample(Some("made")));
+        let (mut app, state) = mounted(sample(Some("made")));
         press(&mut app, "invite-role:segment:0");
         press(&mut app, "invite-create");
-        let asked = seat.take_asked();
+        let asked = state.take_asked();
         assert!(
             asked.contains(&InviteEffect::Create {
                 role: "viewer".to_owned(),
@@ -279,12 +279,12 @@ tilo_test_env::scenario! {
 
     phase the_create_button_asks_for_an_editor_for_whoever_holds_it;
     {
-        let (mut app, seat) = seated(sample(Some("made")));
+        let (mut app, state) = mounted(sample(Some("made")));
         // The first chip is anyone holding the link, the next the person listed.
         press(&mut app, "invite-for:segment:0");
         press(&mut app, "invite-create");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             vec![InviteEffect::Create {
                 role: "editor".to_owned(),
                 recipient: String::new(),
@@ -295,10 +295,10 @@ tilo_test_env::scenario! {
 
     phase taking_a_link_back_asks_for_that_invitation;
     {
-        let (mut app, seat) = seated(sample(Some("made")));
+        let (mut app, state) = mounted(sample(Some("made")));
         press(&mut app, "invite-revoke-3b9d");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             vec![InviteEffect::Revoke {
                 invite: "3b9d".to_owned(),
             }],
@@ -309,10 +309,10 @@ tilo_test_env::scenario! {
     phase taking_back_the_link_just_made_asks_for_that_invitation;
     // The link made is taken back beside the button that copies it.
     {
-        let (mut app, seat) = seated(sample(Some("made")));
+        let (mut app, state) = mounted(sample(Some("made")));
         press(&mut app, "invite-revoke-made");
         assert_eq!(
-            seat.take_asked(),
+            state.take_asked(),
             vec![InviteEffect::Revoke {
                 invite: "8f2c".to_owned(),
             }],

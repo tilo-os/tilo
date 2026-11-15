@@ -11,8 +11,8 @@
 
 use std::sync::mpsc::Receiver;
 
-use tilo_sheets::Seat as _;
-use tilo_sheets::lock::{Battery, LockApp, LockEffect, LockSeat, Media, Shown, Status};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::lock::{Battery, LockApp, LockEffect, LockState, Media, Shown, Status};
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
 use ui::passcode_keyboard::{PasscodeKey, PasscodeKeyboard};
@@ -21,25 +21,25 @@ use ui::vello::kurbo::{Point, Rect};
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-/// A locked session's screen, showing `shown` on the seat the app reports
+/// A locked session's screen, showing `shown` on the state the app reports
 /// to, and what it asks the session.
 ///
 /// Every reading of it is at rest: the screen the shell puts up arrives
 /// growing and fading from nothing, so a frame taken while it comes up says
 /// how it moves, not what it says.
-fn locked(shown: Shown) -> (HeadlessApp<LockApp>, LockSeat, Receiver<LockEffect>) {
+fn locked(shown: Shown) -> (HeadlessApp<LockApp>, LockState, Receiver<LockEffect>) {
     let _settled = ui::motion::testing::settled();
-    let seat = LockSeat::default();
+    let state = LockState::default();
     // What the screen asks goes to the session through the connection its
     // app opens; the test stands in for it here.
     let (outgoing, asked) = std::sync::mpsc::channel();
-    seat.ask_with(outgoing);
-    seat.show(shown);
-    seat.presentation().open(false);
-    let mut app = HeadlessApp::<LockApp>::for_person_with_lent("person", seat.clone()).unwrap();
+    state.ask_with(outgoing);
+    state.show(shown);
+    state.presentation().open(false);
+    let mut app = HeadlessApp::<LockApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat, asked)
+    (app, state, asked)
 }
 
 /// Everything the screen has asked the session since the last look.
@@ -115,7 +115,7 @@ tilo_test_env::scenario! {
 
     phase the_screen_says_the_time_whose_session_it_is_and_what_unlocks_it;
     {
-        let (mut app, _seat, _asked) = locked(screen());
+        let (mut app, _state, _asked) = locked(screen());
         let labels = labels(&mut app);
         for spoken in ["10:42", "Monday, 27 October", "Ada Lovelace", "Unlock"] {
             assert!(
@@ -131,7 +131,7 @@ tilo_test_env::scenario! {
     {
         let mut waiting = screen();
         waiting.status.notifications = 3;
-        let (mut app, _seat, _asked) = locked(waiting);
+        let (mut app, _state, _asked) = locked(waiting);
         let said = labels(&mut app);
         assert!(
             said.iter().any(|label| label == "3 notifications"),
@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
             percent: Some(3),
             charging: false,
         });
-        let (mut app, _seat, _asked) = locked(failing);
+        let (mut app, _state, _asked) = locked(failing);
         let said = labels(&mut app);
         assert!(
             said.iter().any(|label| label.starts_with("Battery at 3%")),
@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
             percent: Some(3),
             charging: true,
         });
-        let (mut app, _seat, _asked) = locked(charging);
+        let (mut app, _state, _asked) = locked(charging);
         assert!(
             !labels(&mut app)
                 .iter()
@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
         // A lock surface covers one output; its content has to fit the output it
         // lands on, a small one and one turned upright included.
         for size in [(1920, 1080), (1080, 1920), (1024, 600)] {
-            let (mut app, _seat, _asked) = locked(screen());
+            let (mut app, _state, _asked) = locked(screen());
             app.harness().resize(size).unwrap();
             app.settle();
             let labels = labels(&mut app);
@@ -201,7 +201,7 @@ tilo_test_env::scenario! {
             width: 640,
             height: 800,
         };
-        let (mut app, _seat, _asked) = locked(Shown {
+        let (mut app, _state, _asked) = locked(Shown {
             screens: vec![half(640), half(0)],
             ..screen()
         });
@@ -216,7 +216,7 @@ tilo_test_env::scenario! {
 
     phase nothing_tells_a_person_what_the_keyboard_already_does;
     {
-        let (mut app, _seat, _asked) = locked(screen());
+        let (mut app, _state, _asked) = locked(screen());
         let spoken: Vec<String> = labels(&mut app)
             .into_iter()
             .map(|label| label.to_lowercase())
@@ -260,7 +260,7 @@ fn clock_style() -> ui::text_render::TextStyle {
 
 #[test]
 fn the_clock_sets_each_character_one_figure_advance_from_the_last() {
-    let (mut app, _seat, _asked) = locked(screen());
+    let (mut app, _state, _asked) = locked(screen());
     let clock = place(&mut app, "10:42");
     let frame = app.harness().frame_output();
     let scale = f64::from(frame.device_size.0) / f64::from(frame.logical_size.0);
@@ -328,7 +328,7 @@ fn with_link(link: Option<ui::widget::LinkStatus>) -> Shown {
 
 /// The frame the screen paints for `shown`: what two runs compare.
 fn painted(shown: Shown) -> ui::vello::Scene {
-    let (mut app, _seat, _asked) = locked(shown);
+    let (mut app, _state, _asked) = locked(shown);
     app.harness().frame_output().scene.clone()
 }
 
@@ -402,7 +402,7 @@ tilo_test_env::scenario! {
     {
         use ui::widget::LinkKind;
 
-        let (mut app, _seat, _asked) = locked(with_link(Some(connection(
+        let (mut app, _state, _asked) = locked(with_link(Some(connection(
             LinkKind::Wifi,
             Some("Café WiFi"),
         ))));
@@ -427,7 +427,7 @@ tilo_test_env::scenario! {
 
     phase the_screen_shows_what_plays_and_a_press_asks_the_player;
     {
-        let (mut app, _seat, asked) = locked(Shown {
+        let (mut app, _state, asked) = locked(Shown {
             media: Some(song()),
             ..screen()
         });
@@ -469,7 +469,7 @@ tilo_test_env::scenario! {
 
     phase a_player_that_cannot_skip_offers_only_what_it_can_do;
     {
-        let (mut app, _seat, _asked) = locked(Shown {
+        let (mut app, _state, _asked) = locked(Shown {
             media: Some(Media {
                 playing: false,
                 can_toggle: true,
@@ -492,7 +492,7 @@ tilo_test_env::scenario! {
 
     phase an_agent_asking_for_the_same_thing_reaches_the_same_door;
     {
-        let (mut app, _seat, asked) = locked(Shown {
+        let (mut app, _state, asked) = locked(Shown {
             media: Some(song()),
             ..screen()
         });
@@ -508,7 +508,7 @@ tilo_test_env::scenario! {
 
     phase nothing_shows_while_nothing_plays;
     {
-        let (mut app, _seat, _asked) = locked(screen());
+        let (mut app, _state, _asked) = locked(screen());
         let names: Vec<String> = controls(&mut app)
             .into_iter()
             .map(|(name, _)| name)
@@ -585,12 +585,12 @@ tilo_test_env::scenario! {
 
     phase a_press_on_the_screen_brings_up_a_keyboard_that_types_the_password;
     {
-        let (mut app, seat, asked) = locked(screen());
-        assert!(!seat.shown().keyboard, "no keyboard until one is asked for");
+        let (mut app, state, asked) = locked(screen());
+        assert!(!state.shown().keyboard, "no keyboard until one is asked for");
 
         // A finger on the screen itself, away from the field and the controls.
         touch_screen(&mut app, Point::new(120.0, 200.0));
-        assert!(seat.shown().keyboard, "the press brought it up");
+        assert!(state.shown().keyboard, "the press brought it up");
 
         let mut touch = Touch::new();
         for key in ['s', 'e', 's', 'a', 'm', 'e'] {
@@ -603,17 +603,17 @@ tilo_test_env::scenario! {
             "the keys typed the password and Enter asked to unlock"
         );
         assert!(
-            !seat.shown().keyboard,
+            !state.shown().keyboard,
             "the keyboard is down again once what was typed is in the field's hands"
         );
     }
 
     phase the_shift_and_symbols_keys_reach_the_other_layers;
     {
-        let (mut app, seat, asked) = locked(screen());
+        let (mut app, state, asked) = locked(screen());
         app.effect(&LockEffect::ShowKeyboard).unwrap();
         app.settle();
-        assert!(seat.shown().keyboard, "an agent can ask for it too");
+        assert!(state.shown().keyboard, "an agent can ask for it too");
 
         let mut touch = Touch::new();
         touch.tap(&mut app, PasscodeKey::Shift);
@@ -630,14 +630,14 @@ tilo_test_env::scenario! {
 
     phase a_key_typed_on_a_real_keyboard_puts_the_screens_own_away;
     {
-        let (mut app, seat, _asked) = locked(screen());
+        let (mut app, state, _asked) = locked(screen());
         app.effect(&LockEffect::ShowKeyboard).unwrap();
         app.settle();
-        assert!(seat.shown().keyboard);
+        assert!(state.shown().keyboard);
         app.harness().key("x");
         app.settle();
         assert!(
-            !seat.shown().keyboard,
+            !state.shown().keyboard,
             "a keyboard is at hand: the drawn one steps aside"
         );
     }
@@ -682,7 +682,7 @@ tilo_test_env::scenario! {
 
     phase the_field_holds_the_keyboard_as_the_screen_comes_up;
     {
-        let (mut app, _seat, _asked) = locked(screen());
+        let (mut app, _state, _asked) = locked(screen());
         assert_eq!(
             holds_keyboard(&mut app).as_deref(),
             Some("Password"),
@@ -692,7 +692,7 @@ tilo_test_env::scenario! {
 
     phase enter_unlocks_and_so_does_the_arrow_inside_the_field;
     {
-        let (mut app, seat, asked) = locked(screen());
+        let (mut app, state, asked) = locked(screen());
         app.harness().type_text("sesame");
         app.settle();
         app.harness().key("Enter");
@@ -700,9 +700,9 @@ tilo_test_env::scenario! {
         assert_eq!(unlocks(&asked), 1, "the Enter key is a submit, not a hint");
 
         // The session answers: the field is the person's again.
-        seat.show(Shown {
+        state.show(Shown {
             checking: false,
-            ..seat.shown()
+            ..state.shown()
         });
         app.settle();
         app.harness().type_text("sesame");
@@ -723,7 +723,7 @@ tilo_test_env::scenario! {
 
     phase an_empty_field_has_nothing_to_hand_over;
     {
-        let (mut app, _seat, asked) = locked(screen());
+        let (mut app, _state, asked) = locked(screen());
         let (arrow, disabled) = placed(&mut app, "Unlock");
         assert!(disabled, "nothing typed is nothing to unlock with");
         app.harness().click_at(arrow.center().x, arrow.center().y);
@@ -745,7 +745,7 @@ tilo_test_env::scenario! {
     phase a_refused_password_says_why_below_the_field;
     {
         let reason = "That password did not unlock. Try again.";
-        let (mut app, _seat, asked) = locked(Shown {
+        let (mut app, _state, asked) = locked(Shown {
             error: Some(reason.to_owned()),
             ..screen()
         });
@@ -768,7 +768,7 @@ tilo_test_env::scenario! {
 
     phase the_field_stays_put_whatever_the_line_under_it_says;
     {
-        let (mut app, seat, _asked) = locked(screen());
+        let (mut app, state, _asked) = locked(screen());
         let (quiet, _) = placed(&mut app, "Password");
         let reason = "That password did not unlock. Try again.";
         for said in [
@@ -790,7 +790,7 @@ tilo_test_env::scenario! {
                 ..screen()
             },
         ] {
-            seat.show(said);
+            state.show(said);
             app.settle();
             let (field, _) = placed(&mut app, "Password");
             assert!(
@@ -802,7 +802,7 @@ tilo_test_env::scenario! {
 
     phase the_field_is_a_prompt_wide_line_with_the_arrow_at_its_right_end;
     {
-        let (mut app, _seat, _asked) = locked(screen());
+        let (mut app, _state, _asked) = locked(screen());
         let (field, _) = placed(&mut app, "Password");
         let (arrow, _) = placed(&mut app, "Unlock");
         let (eye, _) = placed(&mut app, "Show password");
@@ -836,7 +836,7 @@ fn the_screen_reads_in_the_persons_language() {
     settings_store::appearance::LANGUAGE
         .set(Some("de-DE".to_owned()))
         .expect("the person's language is saved");
-    let (mut app, _seat, _asked) = locked(screen());
+    let (mut app, _state, _asked) = locked(screen());
     let said = labels(&mut app);
     let field = holds_keyboard(&mut app);
     settings_store::appearance::LANGUAGE
@@ -859,10 +859,10 @@ fn the_screen_reads_in_the_persons_language() {
 #[ignore = "timing: the numbers are the report, run by hand"]
 fn the_unlock_dissolve_paints_its_frames_within_a_frame() {
     use ui::framework::testing::perf;
-    let (mut app, seat, _asked) = locked(screen());
-    seat.show(Shown {
+    let (mut app, state, _asked) = locked(screen());
+    state.show(Shown {
         unlocking: true,
-        ..seat.shown()
+        ..state.shown()
     });
     let report = perf::measure(&mut app, "lock-unlock", (1, 1), |app, _| {
         for _ in 0..24 {

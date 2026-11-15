@@ -1,6 +1,6 @@
 //! The file chooser as a person, a screen reader and an agent meet it:
 //! every step a published action, what it lists and answers reaching the
-//! service through the seat, and giving files left to the person.
+//! service through the state, and giving files left to the person.
 
 #![allow(
     clippy::unwrap_used,
@@ -11,9 +11,9 @@
 
 use std::path::{Path, PathBuf};
 
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::{
-    FileAnswer, FileMode, FilePickerApp, FilePickerEffect, FilePickerSeat, FileRequest, FileType,
+    FileAnswer, FileMode, FilePickerApp, FilePickerEffect, FilePickerState, FileRequest, FileType,
     Showing,
 };
 use ui::framework::testing::HeadlessApp;
@@ -51,41 +51,43 @@ fn request_1() -> String {
     "request-1".to_owned()
 }
 
-fn seated(request: FileRequest) -> (HeadlessApp<FilePickerApp>, FilePickerSeat) {
-    let seat = FilePickerSeat::default();
-    seat.presentation().open(true);
-    seat.ask(Some(request));
+fn mounted(request: FileRequest) -> (HeadlessApp<FilePickerApp>, FilePickerState) {
+    let state = FilePickerState::default();
+    state.presentation().open(true);
+    state.ask(Some(request));
     let mut app =
-        HeadlessApp::<FilePickerApp>::for_person_with_lent("person", seat.clone()).unwrap();
+        HeadlessApp::<FilePickerApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
-    settled(&mut app, &seat);
-    (app, seat)
+    settled(&mut app, &state);
+    (app, state)
 }
 
 /// Settle until the chooser has read what it was asked to.
-fn settled(app: &mut HeadlessApp<FilePickerApp>, seat: &FilePickerSeat) {
+fn settled(app: &mut HeadlessApp<FilePickerApp>, state: &FilePickerState) {
     app.settle();
     tilo_test_env::wait_until("the chooser to read the folder", || {
         app.settle();
-        !seat.listing().reading
+        !state.listing().reading
     });
 }
 
-fn step(app: &mut HeadlessApp<FilePickerApp>, seat: &FilePickerSeat, effect: &FilePickerEffect) {
+fn step(app: &mut HeadlessApp<FilePickerApp>, state: &FilePickerState, effect: &FilePickerEffect) {
     app.effect(effect).unwrap();
-    settled(app, seat);
+    settled(app, state);
 }
 
-fn names(seat: &FilePickerSeat) -> Vec<String> {
-    seat.listing()
+fn names(state: &FilePickerState) -> Vec<String> {
+    state
+        .listing()
         .entries
         .into_iter()
         .map(|entry| entry.name)
         .collect()
 }
 
-fn path(seat: &FilePickerSeat, name: &str) -> String {
-    seat.listing()
+fn path(state: &FilePickerState, name: &str) -> String {
+    state
+        .listing()
         .entries
         .into_iter()
         .find(|entry| entry.name == name)
@@ -102,41 +104,41 @@ tilo_test_env::scenario! {
     phase opening_a_file_lists_the_folder_and_answers_with_the_choice;
     {
         let home = home();
-        let (mut app, seat) = seated(request(home.path(), FileMode::Open));
-        let listing = seat.listing();
+        let (mut app, state) = mounted(request(home.path(), FileMode::Open));
+        let listing = state.listing();
         assert_eq!(listing.folder, home.path().join("Pictures"));
         assert_eq!(listing.showing, Showing::Folder);
         for name in ["Trips", "beach.png", "forest.jpg", "notes.txt"] {
-            assert!(names(&seat).contains(&name.to_owned()), "{name} is listed");
+            assert!(names(&state).contains(&name.to_owned()), "{name} is listed");
         }
         assert!(!listing.can_confirm, "nothing is chosen yet");
         // A reader meets the chooser and its files.
         assert!(app.harness().a11y_node_named("beach.png").is_some());
 
-        let beach = path(&seat, "beach.png");
+        let beach = path(&state, "beach.png");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Select {
                 handle: request_1(),
                 path: beach.clone(),
             },
         );
-        assert!(seat.listing().can_confirm);
-        assert!(seat.take_answer().is_none(), "choosing is not answering");
+        assert!(state.listing().can_confirm);
+        assert!(state.take_answer().is_none(), "choosing is not answering");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Confirm {
                 handle: request_1(),
             },
         );
         assert_eq!(
-            seat.take_answer(),
+            state.take_answer(),
             Some(FileAnswer::Chosen(vec![PathBuf::from(beach)]))
         );
         assert!(
-            !seat.presentation().is_open(),
+            !state.presentation().is_open(),
             "answering puts the sheet away"
         );
     }
@@ -144,42 +146,42 @@ tilo_test_env::scenario! {
     phase folders_open_through_the_list_up_and_any_folder_in_reach;
     {
         let home = home();
-        let (mut app, seat) = seated(request(home.path(), FileMode::Open));
-        let trips = path(&seat, "Trips");
+        let (mut app, state) = mounted(request(home.path(), FileMode::Open));
+        let trips = path(&state, "Trips");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Navigate {
                 handle: request_1(),
                 path: trips,
             },
         );
-        assert_eq!(names(&seat), ["alps.png"]);
+        assert_eq!(names(&state), ["alps.png"]);
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Up {
                 handle: request_1(),
             },
         );
-        assert_eq!(seat.listing().folder, home.path().join("Pictures"));
+        assert_eq!(state.listing().folder, home.path().join("Pictures"));
         let documents = home.path().join("Documents");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Navigate {
                 handle: request_1(),
                 path: documents.to_string_lossy().into_owned(),
             },
         );
-        assert_eq!(seat.listing().folder, documents);
-        assert!(seat.listing().entries.is_empty());
+        assert_eq!(state.listing().folder, documents);
+        assert!(state.listing().entries.is_empty());
     }
 
     phase nothing_outside_the_folders_in_reach_is_opened_or_chosen;
     {
         let home = home();
-        let (mut app, seat) = seated(request(home.path(), FileMode::Open));
+        let (mut app, state) = mounted(request(home.path(), FileMode::Open));
         assert!(
             app.effect(&FilePickerEffect::Navigate {
                 handle: request_1(),
@@ -195,7 +197,7 @@ tilo_test_env::scenario! {
             .is_err(),
             "only what is listed can be chosen"
         );
-        let notes = path(&seat, "notes.txt");
+        let notes = path(&state, "notes.txt");
         assert!(
             app.effect(&FilePickerEffect::Navigate {
                 handle: request_1(),
@@ -207,28 +209,28 @@ tilo_test_env::scenario! {
         // At the top of what it may reach, there is no Up.
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Navigate {
                 handle: request_1(),
                 path: home.path().to_string_lossy().into_owned(),
             },
         );
-        assert!(!seat.listing().can_up);
+        assert!(!state.listing().can_up);
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Up {
                 handle: request_1(),
             },
         );
-        assert!(seat.listing().refused.is_some(), "the refusal is said");
-        assert_eq!(seat.listing().folder, home.path());
+        assert!(state.listing().refused.is_some(), "the refusal is said");
+        assert_eq!(state.listing().folder, home.path());
     }
 
     phase a_type_narrows_the_list_and_all_files_widens_it;
     {
         let home = home();
-        let (mut app, seat) = seated(FileRequest {
+        let (mut app, state) = mounted(FileRequest {
             filters: vec![
                 FileType {
                     label: "PNG".to_owned(),
@@ -241,61 +243,61 @@ tilo_test_env::scenario! {
             ],
             ..request(home.path(), FileMode::Open)
         });
-        let listing = seat.listing();
+        let listing = state.listing();
         assert_eq!(
             listing.filters.len(),
             3,
             "the app's two types, then all files"
         );
         assert_eq!(listing.filter, 0);
-        assert!(names(&seat).contains(&"beach.png".to_owned()));
-        assert!(!names(&seat).contains(&"forest.jpg".to_owned()));
+        assert!(names(&state).contains(&"beach.png".to_owned()));
+        assert!(!names(&state).contains(&"forest.jpg".to_owned()));
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Filter {
                 handle: request_1(),
                 index: 1,
             },
         );
-        assert!(names(&seat).contains(&"forest.jpg".to_owned()));
-        assert!(!names(&seat).contains(&"beach.png".to_owned()));
+        assert!(names(&state).contains(&"forest.jpg".to_owned()));
+        assert!(!names(&state).contains(&"beach.png".to_owned()));
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Filter {
                 handle: request_1(),
                 index: 2,
             },
         );
-        assert!(names(&seat).contains(&"notes.txt".to_owned()));
+        assert!(names(&state).contains(&"notes.txt".to_owned()));
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Filter {
                 handle: request_1(),
                 index: 9,
             },
         );
-        assert!(seat.listing().refused.is_some());
+        assert!(state.listing().refused.is_some());
     }
 
     phase recent_shows_what_the_app_was_given_before;
     {
         let home = home();
         let alps = home.path().join("Pictures").join("Trips").join("alps.png");
-        let (mut app, seat) = seated(FileRequest {
+        let (mut app, state) = mounted(FileRequest {
             recent: vec![alps.clone()],
             ..request(home.path(), FileMode::Open)
         });
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Recent {
                 handle: request_1(),
             },
         );
-        let listing = seat.listing();
+        let listing = state.listing();
         assert_eq!(listing.showing, Showing::Recent);
         assert_eq!(
             listing
@@ -315,15 +317,15 @@ tilo_test_env::scenario! {
     phase several_files_are_chosen_one_by_one_when_the_app_takes_several;
     {
         let home = home();
-        let (mut app, seat) = seated(FileRequest {
+        let (mut app, state) = mounted(FileRequest {
             multiple: true,
             ..request(home.path(), FileMode::Open)
         });
-        let beach = path(&seat, "beach.png");
-        let forest = path(&seat, "forest.jpg");
+        let beach = path(&state, "beach.png");
+        let forest = path(&state, "forest.jpg");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Select {
                 handle: request_1(),
                 path: beach.clone(),
@@ -331,13 +333,13 @@ tilo_test_env::scenario! {
         );
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::AlsoSelect {
                 handle: request_1(),
                 path: forest.clone(),
             },
         );
-        let chosen: Vec<String> = seat
+        let chosen: Vec<String> = state
             .listing()
             .entries
             .into_iter()
@@ -347,12 +349,12 @@ tilo_test_env::scenario! {
         assert_eq!(chosen, ["beach.png", "forest.jpg"]);
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Confirm {
                 handle: request_1(),
             },
         );
-        let Some(FileAnswer::Chosen(mut paths)) = seat.take_answer() else {
+        let Some(FileAnswer::Chosen(mut paths)) = state.take_answer() else {
             panic!("the chooser answers with the files")
         };
         paths.sort();
@@ -362,12 +364,12 @@ tilo_test_env::scenario! {
     phase one_file_is_the_answer_when_the_app_takes_one;
     {
         let home = home();
-        let (mut app, seat) = seated(request(home.path(), FileMode::Open));
-        let beach = path(&seat, "beach.png");
-        let forest = path(&seat, "forest.jpg");
+        let (mut app, state) = mounted(request(home.path(), FileMode::Open));
+        let beach = path(&state, "beach.png");
+        let forest = path(&state, "forest.jpg");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Select {
                 handle: request_1(),
                 path: beach,
@@ -375,7 +377,7 @@ tilo_test_env::scenario! {
         );
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::AlsoSelect {
                 handle: request_1(),
                 path: forest.clone(),
@@ -383,13 +385,13 @@ tilo_test_env::scenario! {
         );
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Confirm {
                 handle: request_1(),
             },
         );
         assert_eq!(
-            seat.take_answer(),
+            state.take_answer(),
             Some(FileAnswer::Chosen(vec![PathBuf::from(forest)]))
         );
     }
@@ -397,14 +399,14 @@ tilo_test_env::scenario! {
     phase saving_names_the_file_and_asks_before_replacing_one;
     {
         let home = home();
-        let (mut app, seat) = seated(FileRequest {
+        let (mut app, state) = mounted(FileRequest {
             suggested_name: Some("Holiday.png".to_owned()),
             ..request(home.path(), FileMode::Save)
         });
-        assert_eq!(seat.listing().filename, "Holiday.png");
+        assert_eq!(state.listing().filename, "Holiday.png");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::SetFilename {
                 handle: request_1(),
                 name: "beach.png".to_owned(),
@@ -412,25 +414,25 @@ tilo_test_env::scenario! {
         );
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Confirm {
                 handle: request_1(),
             },
         );
         let existing = home.path().join("Pictures").join("beach.png");
-        assert_eq!(seat.listing().replace.as_deref(), Some(existing.as_path()));
-        assert!(seat.take_answer().is_none(), "the person is asked first");
+        assert_eq!(state.listing().replace.as_deref(), Some(existing.as_path()));
+        assert!(state.take_answer().is_none(), "the person is asked first");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::KeepExisting {
                 handle: request_1(),
             },
         );
-        assert!(seat.listing().replace.is_none());
+        assert!(state.listing().replace.is_none());
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::SetFilename {
                 handle: request_1(),
                 name: "sunset.png".to_owned(),
@@ -438,13 +440,13 @@ tilo_test_env::scenario! {
         );
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Confirm {
                 handle: request_1(),
             },
         );
         assert_eq!(
-            seat.take_answer(),
+            state.take_answer(),
             Some(FileAnswer::Chosen(vec![
                 home.path().join("Pictures").join("sunset.png")
             ]))
@@ -454,27 +456,27 @@ tilo_test_env::scenario! {
     phase replacing_answers_with_the_existing_file;
     {
         let home = home();
-        let (mut app, seat) = seated(FileRequest {
+        let (mut app, state) = mounted(FileRequest {
             suggested_name: Some("beach.png".to_owned()),
             ..request(home.path(), FileMode::Save)
         });
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Confirm {
                 handle: request_1(),
             },
         );
-        assert!(seat.listing().replace.is_some());
+        assert!(state.listing().replace.is_some());
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Replace {
                 handle: request_1(),
             },
         );
         assert_eq!(
-            seat.take_answer(),
+            state.take_answer(),
             Some(FileAnswer::Chosen(vec![
                 home.path().join("Pictures").join("beach.png")
             ]))
@@ -484,12 +486,12 @@ tilo_test_env::scenario! {
     phase a_folder_is_chosen_without_opening_it;
     {
         let home = home();
-        let (mut app, seat) = seated(request(home.path(), FileMode::Folder));
-        assert_eq!(names(&seat), ["Trips"], "only folders are listed");
-        let trips = path(&seat, "Trips");
+        let (mut app, state) = mounted(request(home.path(), FileMode::Folder));
+        assert_eq!(names(&state), ["Trips"], "only folders are listed");
+        let trips = path(&state, "Trips");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Select {
                 handle: request_1(),
                 path: trips.clone(),
@@ -497,13 +499,13 @@ tilo_test_env::scenario! {
         );
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Confirm {
                 handle: request_1(),
             },
         );
         assert_eq!(
-            seat.take_answer(),
+            state.take_answer(),
             Some(FileAnswer::Chosen(vec![PathBuf::from(trips)]))
         );
     }
@@ -516,11 +518,11 @@ tilo_test_env::scenario! {
     phase cancelling_answers_nothing_and_a_new_request_starts_afresh;
     {
         let home = home();
-        let (mut app, seat) = seated(request(home.path(), FileMode::Open));
-        let trips = path(&seat, "Trips");
+        let (mut app, state) = mounted(request(home.path(), FileMode::Open));
+        let trips = path(&state, "Trips");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Navigate {
                 handle: request_1(),
                 path: trips,
@@ -528,38 +530,38 @@ tilo_test_env::scenario! {
         );
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Cancel {
                 handle: request_1(),
             },
         );
-        assert_eq!(seat.take_answer(), Some(FileAnswer::Cancelled));
+        assert_eq!(state.take_answer(), Some(FileAnswer::Cancelled));
         assert!(
             app.effect(&FilePickerEffect::Up {
                 handle: request_1()
             })
             .is_err()
-                || seat.take_answer().is_none(),
+                || state.take_answer().is_none(),
             "an answered request takes no more steps"
         );
-        seat.presentation().gone();
-        seat.presentation().open(true);
-        seat.ask(Some(FileRequest {
+        state.presentation().gone();
+        state.presentation().open(true);
+        state.ask(Some(FileRequest {
             handle: "request-2".to_owned(),
             ..request(home.path(), FileMode::Open)
         }));
-        settled(&mut app, &seat);
-        assert_eq!(seat.listing().folder, home.path().join("Pictures"));
-        assert!(seat.take_answer().is_none());
+        settled(&mut app, &state);
+        assert_eq!(state.listing().folder, home.path().join("Pictures"));
+        assert!(state.take_answer().is_none());
     }
 
     phase escape_cancels_as_the_person_backs_out;
     {
         let home = home();
-        let (mut app, seat) = seated(request(home.path(), FileMode::Open));
+        let (mut app, state) = mounted(request(home.path(), FileMode::Open));
         app.harness().key("Escape");
-        settled(&mut app, &seat);
-        assert_eq!(seat.take_answer(), Some(FileAnswer::Cancelled));
+        settled(&mut app, &state);
+        assert_eq!(state.take_answer(), Some(FileAnswer::Cancelled));
     }
 
     phase only_the_person_gives_files_but_anyone_may_look_and_cancel;
@@ -578,7 +580,7 @@ tilo_test_env::scenario! {
     phase every_step_is_published;
     {
         let home = home();
-        let (mut app, _seat) = seated(request(home.path(), FileMode::Open));
+        let (mut app, _state) = mounted(request(home.path(), FileMode::Open));
         let published: Vec<String> = app
             .actions()
             .unwrap()
@@ -609,11 +611,11 @@ tilo_test_env::scenario! {
     phase a_step_for_a_chooser_that_is_no_longer_showing_is_refused;
     {
         let home = home();
-        let (mut app, seat) = seated(request(home.path(), FileMode::Open));
-        let beach = path(&seat, "beach.png");
+        let (mut app, state) = mounted(request(home.path(), FileMode::Open));
+        let beach = path(&state, "beach.png");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Select {
                 handle: request_1(),
                 path: beach,
@@ -623,7 +625,7 @@ tilo_test_env::scenario! {
             handle: request_1(),
         };
         // The next request opens before that step reaches the chooser.
-        seat.ask(Some(FileRequest {
+        state.ask(Some(FileRequest {
             handle: "request-2".to_owned(),
             title: "Choose where to import from".to_owned(),
             mode: FileMode::Folder,
@@ -631,7 +633,7 @@ tilo_test_env::scenario! {
             roots: vec![home.path().to_path_buf()],
             ..FileRequest::default()
         }));
-        settled(&mut app, &seat);
+        settled(&mut app, &state);
         let refused = app
             .effect(&for_the_first)
             .expect_err("a step for the chooser that is gone is refused");
@@ -640,14 +642,14 @@ tilo_test_env::scenario! {
             "the refusal says the chooser is gone: {refused:?}"
         );
         assert!(
-            seat.take_answer().is_none(),
+            state.take_answer().is_none(),
             "the chooser that is up was not answered"
         );
         // The chooser that is up answers itself, naming itself.
-        let documents = path(&seat, "Documents");
+        let documents = path(&state, "Documents");
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Select {
                 handle: "request-2".to_owned(),
                 path: documents.clone(),
@@ -655,13 +657,13 @@ tilo_test_env::scenario! {
         );
         step(
             &mut app,
-            &seat,
+            &state,
             &FilePickerEffect::Confirm {
                 handle: "request-2".to_owned(),
             },
         );
         assert_eq!(
-            seat.take_answer(),
+            state.take_answer(),
             Some(FileAnswer::Chosen(vec![PathBuf::from(documents)]))
         );
     }

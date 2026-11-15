@@ -24,7 +24,7 @@ use settings_store::hardware::{
 };
 use tilo_compositor::{InputEvent, OutputConfig as CompositorOutput, Screenshot};
 use tilo_session::{Options, Session, SessionConfig};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::display_confirm::{self, Question};
 use wayland_client::protocol::{wl_registry, wl_registry::WlRegistry};
 use wayland_client::{
@@ -119,8 +119,8 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
 fn asking(session: &Session) -> Option<Question> {
     session
         .display_confirm()
-        .filter(|seat| seat.presentation().is_drawn())
-        .map(tilo_sheets::display_confirm::ConfirmSeat::question)
+        .filter(|state| state.presentation().is_drawn())
+        .map(tilo_sheets::display_confirm::ConfirmState::question)
 }
 
 /// Press and release `keycode` on the session's keyboard.
@@ -791,7 +791,7 @@ fn the_keyboard_types_in_the_next_input_source_and_keeps_the_choice() {
     assert_eq!(
         session.compositor().keyboard_layout().as_deref(),
         Some("German"),
-        "the seat types in German now"
+        "the state types in German now"
     );
     assert_eq!(
         settings_store::load_section(settings_store::hardware::INPUT_SECTION)

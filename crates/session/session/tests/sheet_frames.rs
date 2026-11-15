@@ -21,7 +21,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings::Tab;
 
 /// A headless session on one display, its control socket at `socket` .
@@ -94,12 +94,12 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
 
     let shell = snapshot(&mut session, &socket, &root.path().join("shell.png"));
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
-    let seat = session
+    let state = session
         .workspace_settings()
         .expect("the session hosts the workspace settings sheet")
         .clone();
     assert!(
-        seat.presentation().is_open(),
+        state.presentation().is_open(),
         "the sheet the person opened is up"
     );
 
@@ -143,7 +143,7 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
         |session| {
             session
                 .workspace_settings()
-                .is_some_and(|seat| seat.settings().tab == Tab::Agents)
+                .is_some_and(|state| state.settings().tab == Tab::Agents)
         },
     );
 }
@@ -168,12 +168,12 @@ fn the_invite_sheet_the_launchpad_opens_is_drawn_and_listed() {
     session
         .step(std::time::Duration::from_millis(1))
         .expect("a frame");
-    let seat = session
+    let state = session
         .invite_sheet()
         .expect("the session hosts the invite sheet")
         .clone();
     assert!(
-        seat.presentation().is_open(),
+        state.presentation().is_open(),
         "the launchpad's invite card puts the sheet up"
     );
 

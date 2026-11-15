@@ -4,7 +4,7 @@
 
 use crate::platform::surfaces::WidgetHost;
 use tilo_session_core::presence::{Place, Step, Target};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 
 use crate::{Shared, workspace_settings};
 use tilo_session_core::layout;

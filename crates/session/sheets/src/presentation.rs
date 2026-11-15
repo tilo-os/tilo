@@ -22,9 +22,9 @@ pub enum Phase {
     Leaving,
 }
 
-/// What the shell lends a sheet's app: its presentation, and whatever else
-/// that sheet takes from the shell and gives back.
-pub trait Seat: Clone + Default + 'static {
+/// What the shell lends a sheet's app: the state it keeps current, and the
+/// presentation both read.
+pub trait SheetState: Clone + Default + 'static {
     fn presentation(&self) -> &Presentation;
 
     /// Where the displays are that the sheet stands on, in the sheet's own
@@ -175,7 +175,7 @@ impl Presentation {
     }
 
     /// The sheet stands on every display at once: the shell spans it over
-    /// all of them and says where each one is ([`Seat::covers`]). A
+    /// all of them and says where each one is ([`SheetState::covers`]). A
     /// question that has to be seen may be about the display it would
     /// otherwise be put on.
     pub fn cover_every_display(&self) {

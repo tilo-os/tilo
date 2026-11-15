@@ -85,6 +85,8 @@ mod desktop_services;
 mod dev_session_apps;
 #[path = "device_branch.rs"]
 mod device_branch;
+#[path = "device_mcp.rs"]
+mod device_mcp;
 #[path = "device_record.rs"]
 mod device_record;
 #[path = "devices.rs"]
@@ -193,8 +195,6 @@ mod questions;
 mod refused_writes;
 #[path = "region_formats.rs"]
 mod region_formats;
-#[path = "remote_door.rs"]
-mod remote_door;
 #[path = "repl_door.rs"]
 mod repl_door;
 #[path = "rotation.rs"]

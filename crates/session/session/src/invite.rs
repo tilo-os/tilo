@@ -15,7 +15,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::invite as sheet;
 use tilo_sheets::{word, words};
 use tilo_workspace_directory::Store;
@@ -228,12 +228,12 @@ fn say_refused(made: &RefCell<sheet::Making>, key: &str, refused: Refused) {
 impl Shared {
     /// Open the invite sheet on the workspace in front.
     pub(crate) fn open_invite(&self) {
-        let Some(seat) = self.invite.as_ref() else {
+        let Some(state) = self.invite.as_ref() else {
             return;
         };
         self.inviting.opening();
         self.show_invite();
-        seat.presentation().open(false);
+        state.presentation().open(false);
     }
 
     /// Answer for the surfaces that offer inviting whether the person may, every pass: the bar
@@ -247,20 +247,20 @@ impl Shared {
     /// is in the workspace, the parts this person may hand out and the links that still work all
     /// move under it.
     pub(crate) fn follow_invite(&self) {
-        let Some(seat) = self.invite.as_ref() else {
+        let Some(state) = self.invite.as_ref() else {
             return;
         };
-        sheet::answer(&seat.take_asked(), &self.inviting);
+        sheet::answer(&state.take_asked(), &self.inviting);
         self.inviting.follow_shelf();
-        if seat.presentation().is_open() {
+        if state.presentation().is_open() {
             self.show_invite();
         }
     }
 
     /// Show the sheet what the workspace stands as, for the person asking.
     fn show_invite(&self) {
-        if let Some(seat) = self.invite.as_ref() {
-            seat.show(sheet::view(&self.inviting));
+        if let Some(state) = self.invite.as_ref() {
+            state.show(sheet::view(&self.inviting));
         }
     }
 }

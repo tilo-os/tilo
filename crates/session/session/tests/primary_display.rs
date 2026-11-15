@@ -22,7 +22,7 @@ use settings_store::hardware::{
 };
 use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 
 const WIDTH: i32 = 1000;
 const HEIGHT: i32 = 700;

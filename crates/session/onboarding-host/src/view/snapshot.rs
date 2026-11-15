@@ -50,7 +50,7 @@ impl OnboardingView {
     #[doc(hidden)]
     pub fn settle_motion_for_snapshot(&mut self) {
         self.show_page();
-        self.app.seat().settle_motion();
+        self.app.state().settle_motion();
     }
 
     #[doc(hidden)]

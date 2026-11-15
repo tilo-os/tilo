@@ -404,7 +404,7 @@ pub(crate) fn access_fixture(
     use crate::device_fleet::DeviceView;
     use crate::panes::devices_access::{AccessSample, Asking};
     use ui::tilo_actions::remote::identity_admin::KeyKind;
-    use ui::tilo_actions::remote::mcp_server::{Grant, Reach, Run, Server};
+    use ui::tilo_actions::remote::mcp_server::{AgentSession, Grant, Reach, Server};
     const MINUTE: i64 = 60_000;
     const DAY: i64 = 86_400_000;
     const NOW: i64 = 1_794_400_000_000;
@@ -461,7 +461,7 @@ pub(crate) fn access_fixture(
                     },
                     granted_ms: NOW - 2 * DAY,
                     last_ms: Some(NOW - DAY),
-                    runs: Vec::new(),
+                    sessions: Vec::new(),
                     runs_on: String::new(),
                     expires_ms: Some(NOW + 28 * DAY),
                     browser_pages: false,
@@ -473,7 +473,7 @@ pub(crate) fn access_fixture(
                     reach: Reach::Account,
                     granted_ms: NOW - 30 * DAY,
                     last_ms: Some(NOW - 7 * 60 * MINUTE),
-                    runs: vec![Run {
+                    sessions: vec![AgentSession {
                         name: "Nightly export #12".into(),
                         started_ms: NOW - 2 * MINUTE,
                     }],

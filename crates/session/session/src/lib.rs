@@ -163,6 +163,8 @@ mod device_actions;
 mod device_inbox;
 #[cfg(target_os = "linux")]
 mod device_lists;
+#[cfg(target_os = "linux")]
+mod device_mcp;
 mod device_state;
 #[cfg(target_os = "linux")]
 mod devices;
@@ -319,8 +321,6 @@ mod record_index;
 #[cfg(target_os = "linux")]
 pub mod recovery;
 #[cfg(target_os = "linux")]
-mod remote_door;
-#[cfg(target_os = "linux")]
 mod render;
 #[cfg(target_os = "linux")]
 mod renewal;
@@ -333,7 +333,6 @@ pub mod run;
 #[cfg(target_os = "linux")]
 mod seams;
 #[cfg(target_os = "linux")]
-mod seats;
 #[cfg(target_os = "linux")]
 pub mod seeded_apps;
 #[cfg(target_os = "linux")]

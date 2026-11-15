@@ -9,7 +9,7 @@
 
 use std::sync::mpsc::Receiver;
 
-use tilo_sheets::lock::{LockEffect, LockSeat, Shown};
+use tilo_sheets::lock::{LockEffect, LockState, Shown};
 use ui::LocalStateWriter;
 use ui::collaboration::SessionResource;
 use ui::tilo_resource::Effect as _;
@@ -19,14 +19,14 @@ const LOCK: &str = "lock";
 
 /// Follow the session's lock: each reading it publishes is drawn, and what
 /// the screen asks is taken as actions on it.
-pub fn serve(seat: &LockSeat) {
+pub fn serve(state: &LockState) {
     let (outgoing, effects) = std::sync::mpsc::channel();
-    seat.ask_with(outgoing);
+    state.ask_with(outgoing);
     // The view hands over the local it draws once the screen is built: from
     // then on the worker takes what the screen asks, and writes each reading
     // into that local.
     let effects = std::sync::Mutex::new(Some(effects));
-    seat.reaching_session(move |showing| {
+    state.reaching_session(move |showing| {
         let Some(effects) = effects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

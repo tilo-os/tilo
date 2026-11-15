@@ -12,39 +12,39 @@ mod lock_session;
 
 use std::cell::RefCell;
 
-use tilo_sheets::lock::{self, LockSeat, Shown};
+use tilo_sheets::lock::{self, LockState, Shown};
 use ui::application::{
     ApplicationDefinition, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
 };
 use ui::launch::{LaunchArgs, LaunchError};
 
 thread_local! {
-    /// What the app is lent: the seat the lock screen shows in and takes
+    /// What the app is lent: the state the lock screen shows in and takes
     /// the person's password through.
-    static SEAT: RefCell<Option<LockSeat>> = const { RefCell::new(None) };
+    static SEAT: RefCell<Option<LockState>> = const { RefCell::new(None) };
 }
 
 fn main() {
-    let seat = LockSeat::default();
-    seat.show(shown());
-    lock_session::serve(&seat);
-    SEAT.with(|slot| *slot.borrow_mut() = Some(seat));
+    let state = LockState::default();
+    state.show(shown());
+    lock_session::serve(&state);
+    SEAT.with(|slot| *slot.borrow_mut() = Some(state));
     // The standard launch of any app — its record, its capture scenarios and
     // its launch modes — with this process's host in place of the usual one,
-    // because the seat is lent per process.
+    // because the state is lent per process.
     let spec = ui::framework::launch_spec::<lock::LockApp>().component_host(prepared);
     ui::launch::run_or_exit(&spec);
 }
 
-/// The lock screen's app on this process's own host, lent its seat.
+/// The lock screen's app on this process's own host, lent its state.
 fn prepared(
     definition: &ApplicationDefinition,
     _args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
     let mut prepared = NativeProcessHost::prepare_window(definition, None, inputs)?;
-    if let Some(seat) = SEAT.with(|slot| slot.borrow_mut().take()) {
-        prepared.context.lend(seat);
+    if let Some(state) = SEAT.with(|slot| slot.borrow_mut().take()) {
+        prepared.context.lend(state);
     }
     Ok(prepared)
 }

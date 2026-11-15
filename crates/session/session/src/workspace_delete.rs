@@ -9,7 +9,7 @@
 
 use serde_json::{Map, Value};
 use tilo_desktop_model::WorkspaceId;
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 use tilo_sheets::delete_workspace::DeleteWorkspaceEffect;
 
 use crate::Shared;
@@ -19,7 +19,7 @@ impl Shared {
     /// the question stands in its own dialog over what they are looking at,
     /// and nothing of the workspace goes until they say yes.
     pub(crate) fn ask_to_delete_workspace(&self, workspace: WorkspaceId, name: &str) {
-        let Some(seat) = self.delete_workspace.as_ref() else {
+        let Some(state) = self.delete_workspace.as_ref() else {
             tracing::warn!(
                 %workspace,
                 "no delete question is mounted: nothing is deleted"
@@ -27,8 +27,8 @@ impl Shared {
             return;
         };
         *self.delete_workspace_ask.borrow_mut() = Some(workspace);
-        seat.show(name.to_owned());
-        seat.presentation().open(false);
+        state.show(name.to_owned());
+        state.presentation().open(false);
     }
 
     /// Ask the shell to delete the workspace in front: the shell asks the person first, and only
@@ -42,15 +42,15 @@ impl Shared {
     /// Carry out the person's answer on the delete question: on yes the shell deletes the workspace,
     /// which is the only thing that deletes, and on keep nothing happens at all.
     pub(crate) fn follow_delete_workspace(&self) {
-        let Some(seat) = self.delete_workspace.as_ref() else {
+        let Some(state) = self.delete_workspace.as_ref() else {
             return;
         };
-        for effect in seat.take_answers() {
+        for effect in state.take_answers() {
             let Some(workspace) = self.delete_workspace_ask.borrow_mut().take() else {
                 continue;
             };
-            seat.presentation().close();
-            seat.presentation().gone();
+            state.presentation().close();
+            state.presentation().gone();
             if effect == DeleteWorkspaceEffect::Delete {
                 self.delete_workspace(workspace);
             }
@@ -79,9 +79,9 @@ impl Shared {
     /// it — the menu, the settings, an agent invoking the action — so a workspace deleted anywhere
     /// is deleted everywhere it was this device's.
     pub(crate) fn deleted_workspace(&self, workspace: WorkspaceId, name: &str) {
-        if let Some(seat) = &self.delete_workspace {
-            seat.presentation().close();
-            seat.presentation().gone();
+        if let Some(state) = &self.delete_workspace {
+            state.presentation().close();
+            state.presentation().gone();
         }
         self.delete_workspace_ask.borrow_mut().take();
         self.forget_deleted(workspace);

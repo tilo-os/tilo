@@ -267,7 +267,7 @@ fn chord(session: &mut Session) {
     }
 }
 
-/// Type one key of the keyboard, as the compositor takes it from the seat.
+/// Type one key of the keyboard, as the compositor takes it from the state.
 fn type_key(session: &mut Session, keycode: u32) {
     for pressed in [true, false] {
         session
@@ -285,7 +285,7 @@ fn query(session: &Session) -> Option<String> {
 
 /// A session with key repeat pushed past the test's own steps: a held key repeats, and a step of a
 /// headless session can take longer than a repeat waits, so these keys are tapped instead.
-fn seated() -> Session {
+fn with_slow_keys() -> Session {
     let mut session = session(Rc::new(Host::default()));
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(60),
@@ -296,7 +296,7 @@ fn seated() -> Session {
 }
 
 /// Open the shell's search: by its own action, or by the chord the person presses, Super+Space
-/// through the seat.
+/// through the state.
 fn open(session: &mut Session, by_chord: bool) {
     if by_chord {
         chord(session);
@@ -316,7 +316,7 @@ fn open(session: &mut Session, by_chord: bool) {
 fn typing_reaches_the_searches_query_however_it_was_opened() {
     let _settled = ui::motion::testing::settled();
     for (by_chord, waited) in [(false, false), (true, false), (true, true)] {
-        let mut session = seated();
+        let mut session = with_slow_keys();
         open(&mut session, by_chord);
         if waited {
             // The field keeps the keyboard while the shell redraws under it,
@@ -337,7 +337,7 @@ fn typing_reaches_the_searches_query_however_it_was_opened() {
 #[test]
 fn typing_letters_in_one_batch_reaches_the_query() {
     let _settled = ui::motion::testing::settled();
-    let mut session = seated();
+    let mut session = with_slow_keys();
     open(&mut session, true);
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).expect("step");
@@ -366,7 +366,7 @@ fn typing_letters_in_one_batch_reaches_the_query() {
 #[test]
 fn typing_after_deleting_the_whole_query_reaches_it_again() {
     let _settled = ui::motion::testing::settled();
-    let mut session = seated();
+    let mut session = with_slow_keys();
     open(&mut session, true);
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).expect("step");
@@ -602,7 +602,7 @@ fn the_empty_search_offers_the_shells_welcome_verbs_and_typing_finds_them_all() 
 /// inviting opens the workspace's settings, where people are added.
 #[test]
 fn a_welcome_card_does_what_its_published_action_does() {
-    use tilo_sheets::Seat as _;
+    use tilo_sheets::SheetState as _;
     use ui::window_targets::TargetAction;
 
     let _settled = ui::motion::testing::settled();
@@ -669,7 +669,7 @@ fn a_welcome_card_does_what_its_published_action_does() {
     until(&mut session, |session| {
         session
             .invite_sheet()
-            .is_some_and(|seat| seat.presentation().is_open())
+            .is_some_and(|state| state.presentation().is_open())
     });
 }
 
@@ -1612,13 +1612,13 @@ fn host_app_lists() -> AppLists {
     }
 }
 
-/// Type `text` as the keyboard attached to the seat types it: each character by the key this seat's
+/// Type `text` as the keyboard attached to the state types it: each character by the key this state's
 /// layout puts it on, as `tilo-control type` does.
 fn type_at_the_seat(session: &mut Session, text: &str) {
     for ch in text.chars() {
         assert!(
             session.compositor().type_char(ch).expect("input"),
-            "the seat's layout types {ch:?}"
+            "the state's layout types {ch:?}"
         );
         for _ in 0..2 {
             session.step(Duration::from_millis(12)).expect("step");

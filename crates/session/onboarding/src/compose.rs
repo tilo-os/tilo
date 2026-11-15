@@ -22,7 +22,7 @@ use crate::copy::{
 };
 use crate::effect::OnboardingEffect;
 use crate::page::{KeyCopy, OnboardingContext, Screen, TourPage, Transfer, WordsCheck};
-use crate::seat::SecretBuffer;
+use crate::state::SecretBuffer;
 use crate::{t, t_args};
 
 // Keep this copy beside the tour rather than duplicating a second conceptual

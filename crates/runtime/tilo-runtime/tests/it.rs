@@ -13,8 +13,8 @@ tilo_automerge_isolate::test_worker!();
 mod admission;
 #[path = "device_host.rs"]
 mod device_host;
-#[path = "remote_door.rs"]
-mod remote_door;
+#[path = "device_mcp.rs"]
+mod device_mcp;
 #[path = "runtime_daemon_process.rs"]
 mod runtime_daemon_process;
 #[path = "session_door_connect.rs"]

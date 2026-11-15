@@ -158,13 +158,13 @@ fn a_workspace_the_person_makes_here_is_listed_for_their_other_devices() {
 }
 
 /// The control the person uses: the sheet they open from the workspace menu,
-/// lent the seat the session lends its own, so a press arrives as theirs.
+/// lent the state the session lends its own, so a press arrives as theirs.
 fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
-    let seat = session
+    let state = session
         .workspace_settings()
         .expect("the session hosts workspace settings")
         .clone();
-    let mut app = HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", seat)
+    let mut app = HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state)
         .expect("the sheet");
     app.harness().resize((1280, 900)).expect("a screen");
     app.settle();

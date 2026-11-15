@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-use tilo_actions::remote::mcp_server::{Grant, Reach, Run, Server};
+use tilo_actions::remote::mcp_server::{AgentSession, Grant, Reach, Server};
 
 use super::{DesktopAsk, DesktopChrome};
 use crate::about::{AboutLinks, AboutSheet, AboutVariant};
@@ -82,7 +82,7 @@ fn chrome_with_an_agent() -> DesktopChrome {
                 id: "g1".into(),
                 agent: "Claude Code".into(),
                 reach: Reach::Account,
-                runs: vec![Run {
+                sessions: vec![AgentSession {
                     name: "Claude Code #2".into(),
                     started_ms: 1,
                 }],

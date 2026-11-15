@@ -127,7 +127,7 @@ fn the_door() -> mcp_server::Server {
         grants: vec![mcp_server::Grant {
             id: "g1".into(),
             agent: "Claude Code".into(),
-            runs: Vec::new(),
+            sessions: Vec::new(),
             ..mcp_server::Grant::default()
         }],
         workspaces: Vec::new(),

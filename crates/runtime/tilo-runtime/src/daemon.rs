@@ -63,9 +63,9 @@ pub struct Args {
     /// the desktop's MCP server ([`crate::session_door`]).
     pub standalone: bool,
     /// `--device NAME [--workspace ID]`, for `--connect` only: carry the
-    /// client to that device of the person's MCP server instead of this
-    /// one's ([`crate::remote_door`]).
-    pub forward: Option<crate::remote_door::Forward>,
+    /// client to that device's MCP server instead of this one's
+    /// ([`crate::device_mcp`]).
+    pub forward: Option<crate::device_mcp::Forward>,
     /// `--workspace ID` without `--device`, for `--connect` only: the
     /// workspace the client asks this desktop's MCP server to let it work in,
     /// rather than the one in front of the person. The person decides; it is
@@ -212,13 +212,13 @@ fn forward_of(
     mode: &Mode,
     device: Option<String>,
     workspace: Option<String>,
-) -> io::Result<Option<crate::remote_door::Forward>> {
+) -> io::Result<Option<crate::device_mcp::Forward>> {
     if (device.is_some() || workspace.is_some()) && *mode != Mode::Connect {
         return Err(invalid(
             "--device and --workspace choose where --connect goes: use them with --connect",
         ));
     }
-    Ok(device.map(|device| crate::remote_door::Forward { device, workspace }))
+    Ok(device.map(|device| crate::device_mcp::Forward { device, workspace }))
 }
 
 /// The device `--device` names, by its name or its endpoint id.
@@ -833,7 +833,7 @@ fn serve_profile<S: RuntimeServices + Send + Sync + 'static>(
         joiner: session.joiner(),
         search,
         media: session.media(),
-        remote: session.remote_doors(),
+        other_devices: session.other_devices(),
     };
     endpoint.accept(&listener)
 }
@@ -848,7 +848,7 @@ struct Endpoint<H> {
     /// Where answers read the content actions produced.
     media: Option<Arc<dyn crate::MediaReader>>,
     /// The person's other devices' MCP servers, as this runtime reaches them.
-    remote: Option<Arc<crate::remote_door::Doors>>,
+    other_devices: Option<Arc<crate::device_mcp::OtherDevices>>,
 }
 
 /// The longest first line a native connection is read for before it is
@@ -893,7 +893,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
             let joiner = self.joiner.clone();
             let search = Arc::clone(&self.search);
             let media = self.media.clone();
-            let remote = self.remote.clone();
+            let other_devices = self.other_devices.clone();
             let active = Arc::clone(&active);
             active.fetch_add(1, Ordering::Relaxed);
             let slot = ConnectionSlot(active);
@@ -919,19 +919,19 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                     }
                     if let Some(forward) = first
                         .strip_suffix(b"\n")
-                        .and_then(crate::remote_door::forward_request)
+                        .and_then(crate::device_mcp::forward_request)
                     {
-                        match &remote {
+                        match &other_devices {
                             // A client asks for nothing more before it is told
-                            // whether the door opened.
-                            Some(remote) if reader.buffer().is_empty() => {
-                                remote.serve_forward(stream, &forward);
+                            // whether the connection opened.
+                            Some(other_devices) if reader.buffer().is_empty() => {
+                                other_devices.serve_forward(stream, &forward);
                             }
-                            Some(_) => crate::remote_door::refuse_forward(
+                            Some(_) => crate::device_mcp::refuse_forward(
                                 stream,
                                 "a forward is the only line before its answer".into(),
                             ),
-                            None => crate::remote_door::refuse_forward(
+                            None => crate::device_mcp::refuse_forward(
                                 stream,
                                 "this runtime reaches none of your other devices".into(),
                             ),
@@ -940,11 +940,11 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                     }
                     let input = io::Cursor::new(first).chain(reader);
                     let server = match factory() {
-                        Ok(server) => {
-                            Arc::new(server.with_media(media).with_devices(remote.map(|remote| {
-                                remote as Arc<dyn crate::remote_door::DeviceDirectory>
-                            })))
-                        }
+                        Ok(server) => Arc::new(server.with_media(media).with_devices(
+                            other_devices.map(|other_devices| {
+                                other_devices as Arc<dyn crate::device_mcp::DeviceDirectory>
+                            }),
+                        )),
                         Err(error) => {
                             tracing::debug!(%error, "native MCP session admission unavailable");
                             return;
@@ -1101,13 +1101,13 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
 ///
 /// With `forward`, the host this process belongs to carries the connection on
 /// to the MCP server of the device it names, and this process's stdio is that
-/// door's once it opened ([`crate::remote_door::ask_forward`]). `workspace` is
-/// the workspace the client asks this desktop's door for, written into its
-/// `initialize`.
+/// server's once it opened ([`crate::device_mcp::ask_forward`]). `workspace` is
+/// the workspace the client asks this desktop's MCP server for, written into
+/// its `initialize`.
 pub fn connect(
     profile: &Path,
     standalone: bool,
-    forward: Option<&crate::remote_door::Forward>,
+    forward: Option<&crate::device_mcp::Forward>,
     workspace: Option<&str>,
 ) -> io::Result<()> {
     let route = crate::session_door::route(
@@ -1136,7 +1136,7 @@ pub fn connect(
         }
     };
     if let Some(forward) = forward {
-        crate::remote_door::ask_forward(&mut stream, forward)?;
+        crate::device_mcp::ask_forward(&mut stream, forward)?;
     }
     bridge_stdio(
         stream,

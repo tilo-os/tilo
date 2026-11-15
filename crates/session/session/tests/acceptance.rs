@@ -306,7 +306,7 @@ fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
     until(&mut session, "the door's question", |session| {
         session
             .portal()
-            .and_then(tilo_sheets::portal::PortalSeat::dialog)
+            .and_then(tilo_sheets::portal::PortalState::dialog)
             .is_some()
     });
     press_sheet(

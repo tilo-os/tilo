@@ -12,7 +12,7 @@ use crate::page::{
     Codecs, IdentityProblem, KeyCopy, Migration, Nearby, OnboardingContext, PackState, Page,
     Prepared, Screen, SecretText, TourPage, Transfer, WordsCheck,
 };
-use crate::seat::OnboardingSeat;
+use crate::state::OnboardingState;
 
 /// The app the shell mounts setup as.
 pub const APP_ID: &str = "so.tilo.onboarding";
@@ -51,28 +51,28 @@ impl ResourceApp for OnboardingApp {
     }
 
     fn view(cx: &mut ViewCx<Onboarding>) -> Element {
-        let seat = cx.take_lent::<OnboardingSeat>();
-        let page = match &seat {
-            Some(seat) => seat.page(),
+        let state = cx.take_lent::<OnboardingState>();
+        let page = match &state {
+            Some(state) => state.page(),
             None => cx
                 .fixture::<Page>()
                 .map(|page| (*page).clone())
                 .unwrap_or_default(),
         };
         let wake = cx.waker();
-        if let Some(seat) = &seat {
-            seat.wake_with(wake.clone());
+        if let Some(state) = &state {
+            state.wake_with(wake.clone());
         }
-        let asking = seat.clone();
+        let asking = state.clone();
         cx.effects(move |mut effect: OnboardingEffect, _cx| {
-            let Some(seat) = &asking else {
+            let Some(state) = &asking else {
                 effect.forget_secret();
                 return Err("setup is not running here".to_owned());
             };
             if let OnboardingEffect::EnterSecret { field, value } = &effect {
                 // Straight into the shell's buffer; the secret never joins
                 // the queue the shell reads, and nothing echoes it back.
-                let entered = seat.secrets().enter(field, value);
+                let entered = state.secrets().enter(field, value);
                 effect.forget_secret();
                 return if entered {
                     Ok(Effected::done())
@@ -80,10 +80,10 @@ impl ResourceApp for OnboardingApp {
                     Err("no such secret field".to_owned())
                 };
             }
-            seat.ask(effect);
+            state.ask(effect);
             Ok(Effected::done())
         });
-        Box::new(Ceremony::new(seat, page, cx.dispatcher(), Some(wake)))
+        Box::new(Ceremony::new(state, page, cx.dispatcher(), Some(wake)))
     }
 
     fn scenarios() -> &'static [&'static str] {

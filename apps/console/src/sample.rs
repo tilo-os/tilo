@@ -328,7 +328,7 @@ fn the_door() -> mcp_server::Server {
                 reach: mcp_server::Reach::Account,
                 granted_ms: minutes_ago_ms(9 * 24 * 60),
                 last_ms: Some(minutes_ago_ms(1)),
-                runs: vec![mcp_server::Run {
+                sessions: vec![mcp_server::AgentSession {
                     name: CLAUDE_RUN.to_owned(),
                     started_ms: minutes_ago_ms(14),
                 }],
@@ -344,7 +344,7 @@ fn the_door() -> mcp_server::Server {
                 },
                 granted_ms: minutes_ago_ms(3 * 24 * 60),
                 last_ms: Some(minutes_ago_ms(80)),
-                runs: Vec::new(),
+                sessions: Vec::new(),
                 browser_pages: false,
                 ..mcp_server::Grant::default()
             },

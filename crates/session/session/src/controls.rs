@@ -21,7 +21,7 @@ use tilo_desktop_search::providers::downloaded::{APP_PARAM, APPS_RESOURCE, ASK_U
 use tilo_service::{Service, Started};
 
 use crate::displays::DisplayMode;
-use tilo_sheets::Seat as _;
+use tilo_sheets::SheetState as _;
 
 use crate::i18n::t;
 use crate::{displays, input_sources};
@@ -106,7 +106,7 @@ pub enum SessionCommand {
     /// Switch the machine to virtual terminal `vt` , numbered from 1, as `Ctrl+Alt+F1..F12` asks:
     /// the way out to a text console when the desktop cannot give the machine back.
     SwitchVt { vt: i32 },
-    /// Stop a remote person driving this machine's seat, as `Super+Escape` asks: everything stays
+    /// Stop a remote person driving this machine's state, as `Super+Escape` asks: everything stays
     /// as it is, and their input stops.
     CutRemoteInput,
 }

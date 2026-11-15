@@ -1055,16 +1055,16 @@ impl Workspaces {
                     return Err(ActionHostError::UnknownAction);
                 }
                 let InvokeArgument::Json(argument) = &request.argument else {
-                    return Err(invalid("a stop names its grant and run"));
+                    return Err(invalid("a stop names its grant and session"));
                 };
-                let run: mcp_server::RunRef =
+                let stop: mcp_server::AgentSessionRef =
                     serde_json::from_value(Value::Object(argument.clone()))
                         .map_err(|error| invalid(error.to_string()))?;
-                if self.inner.mcp_server.stop(&run.grant, &run.run) {
+                if self.inner.mcp_server.stop(&stop.grant, &stop.session) {
                     Ok(Value::Null)
                 } else {
                     Err(ActionHostError::Refused {
-                        reason: "That run has ended already".into(),
+                        reason: "That agent session has ended already".into(),
                     })
                 }
             }
@@ -1927,7 +1927,7 @@ const DOOR_WAKE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The MCP server as its read answers it.
 fn door_value(workspaces: &Workspaces) -> Value {
-    serde_json::to_value(workspaces.inner.mcp_server.door()).unwrap_or(Value::Null)
+    serde_json::to_value(workspaces.inner.mcp_server.server()).unwrap_or(Value::Null)
 }
 
 /// The providers a relay that governs workspaces answers itself.

@@ -25,7 +25,7 @@ use ui::widget::{
 };
 
 use crate::keyboard_shortcuts::chord_text;
-use crate::presentation::{Presentation, Seat, presented};
+use crate::presentation::{Presentation, SheetState, presented};
 use crate::{caption, t};
 
 /// The app the shell mounts the guide as.
@@ -140,28 +140,28 @@ pub struct Guide {
 /// What the shell lends the guide: whether it is up, what it shows, and
 /// where its requests go.
 #[derive(Clone, Default)]
-pub struct GuideSeat {
+pub struct GuideState {
     presentation: Presentation,
     guide: Rc<RefCell<Guide>>,
     shown: Rc<RefCell<Option<LocalState<Guide>>>>,
     asked: Rc<RefCell<Vec<GuideEffect>>>,
 }
 
-impl std::fmt::Debug for GuideSeat {
+impl std::fmt::Debug for GuideState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GuideSeat")
+        f.debug_struct("GuideState")
             .field("presentation", &self.presentation)
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for GuideSeat {
+impl crate::SheetState for GuideState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl GuideSeat {
+impl GuideState {
     /// Show `guide`, or the same guide as it stands now.
     pub fn show(&self, guide: Guide) {
         if *self.guide.borrow() == guide {
@@ -536,28 +536,28 @@ impl ResourceApp for ShortcutGuideApp {
     }
 
     fn view(cx: &mut ViewCx<ShortcutGuide>) -> Element {
-        let seat = cx.take_lent::<GuideSeat>();
-        let initial = match &seat {
-            Some(seat) => seat.guide(),
+        let state = cx.take_lent::<GuideState>();
+        let initial = match &state {
+            Some(state) => state.guide(),
             None => cx
                 .fixture::<Guide>()
                 .map(|guide| (*guide).clone())
                 .unwrap_or_default(),
         };
         let shown = cx.local(initial);
-        if let Some(seat) = &seat {
-            *seat.shown.borrow_mut() = Some(shown.clone());
+        if let Some(state) = &state {
+            *state.shown.borrow_mut() = Some(shown.clone());
         }
-        let asking = seat.clone();
-        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
+        let asking = state.clone();
+        let presentation = state.as_ref().map(|state| state.presentation().clone());
         cx.effects(move |effect: GuideEffect, _cx| match &asking {
-            Some(seat) => {
+            Some(state) => {
                 if effect == GuideEffect::Done {
                     // Its own close: the card leaves the screen, and the shell tells it gone
                     // once nothing of it is drawn.
-                    seat.presentation.close();
+                    state.presentation.close();
                 }
-                seat.asked.borrow_mut().push(effect);
+                state.asked.borrow_mut().push(effect);
                 Ok(Effected::done())
             }
             None => Err("no desktop to change here".to_owned()),

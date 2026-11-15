@@ -1,7 +1,7 @@
 //! The dictation sheet as a person, a screen reader and the session meet
 //! it: the microphone allowed by a press on the card alone, what is heard
 //! shown while it is heard, and every answer going back to the session's
-//! seat.
+//! state.
 
 #![allow(
     clippy::unwrap_used,
@@ -11,7 +11,7 @@
 )]
 
 use tilo_sheets::dictation::{
-    Answer, Dictation, DictationApp, DictationSeat, Failure, Prompt, RecoveryReason, Stage,
+    Answer, Dictation, DictationApp, DictationState, Failure, Prompt, RecoveryReason, Stage,
 };
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
@@ -81,14 +81,14 @@ fn recovery(id: u64) -> Prompt {
     }
 }
 
-fn seated(prompt: Prompt) -> (HeadlessApp<DictationApp>, DictationSeat) {
-    let seat = DictationSeat::default();
-    seat.show(Some(prompt));
+fn mounted(prompt: Prompt) -> (HeadlessApp<DictationApp>, DictationState) {
+    let state = DictationState::default();
+    state.show(Some(prompt));
     let mut app =
-        HeadlessApp::<DictationApp>::for_person_with_lent("person", seat.clone()).unwrap();
+        HeadlessApp::<DictationApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, state)
 }
 
 tilo_test_env::scenario! {
@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
 
     phase the_draft_follows_the_session_without_reopening_the_sheet;
     {
-        let (mut app, seat) = seated(Prompt {
+        let (mut app, state) = mounted(Prompt {
             id: 3,
             stage: Stage::Listening,
             draft: String::new(),
@@ -191,7 +191,7 @@ tilo_test_env::scenario! {
             told(&mut app).contains("Microphone on. Speak, then finish to insert."),
             "nothing heard yet"
         );
-        seat.show(Some(Prompt {
+        state.show(Some(Prompt {
             id: 3,
             stage: Stage::Listening,
             draft: "the first few words".to_owned(),
@@ -206,9 +206,9 @@ tilo_test_env::scenario! {
 
     phase nothing_is_shown_once_the_dictation_is_gone;
     {
-        let (mut app, seat) = seated(asking(1));
+        let (mut app, state) = mounted(asking(1));
         assert!(!buttons(&mut app).is_empty());
-        seat.show(None);
+        state.show(None);
         app.settle();
         assert!(buttons(&mut app).is_empty(), "no answer is left to give");
         let dialogs = app
@@ -242,7 +242,7 @@ tilo_test_env::scenario! {
 
     phase the_sheet_publishes_no_action_that_could_answer_it;
     {
-        let (mut app, _seat) = seated(asking(7));
+        let (mut app, _state) = mounted(asking(7));
         let published = dictation_resource(&app.harness().resources()).expect("the sheet is published");
         // The framework's own verbs stand beside every resource; the sheet adds
         // none. An effect is what the session's action door invokes, and a remote
@@ -279,12 +279,12 @@ tilo_test_env::scenario! {
 
     phase enter_allows_the_microphone_once_for_the_prompt_shown;
     {
-        let (mut app, seat) = seated(asking(7));
+        let (mut app, state) = mounted(asking(7));
         app.harness().key("Enter");
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::Allow(7)]);
+        assert_eq!(state.take_answers(), [Answer::Allow(7)]);
         assert_eq!(
-            seat.take_answers(),
+            state.take_answers(),
             [],
             "an answer is taken once, not read twice"
         );
@@ -292,7 +292,7 @@ tilo_test_env::scenario! {
 
     phase a_press_on_not_now_refuses_the_microphone;
     {
-        let (mut app, seat) = seated(asking(7));
+        let (mut app, state) = mounted(asking(7));
         let deny = buttons(&mut app)
             .into_iter()
             .find(|(label, _)| label == "Not now")
@@ -300,21 +300,21 @@ tilo_test_env::scenario! {
             .1;
         app.harness().click_at(deny.center().x, deny.center().y);
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::Deny(7)]);
+        assert_eq!(state.take_answers(), [Answer::Deny(7)]);
     }
 
     phase escape_says_no_and_keeps_nothing_of_a_transcript;
     {
-        let (mut app, seat) = seated(asking(7));
+        let (mut app, state) = mounted(asking(7));
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::Deny(7)]);
+        assert_eq!(state.take_answers(), [Answer::Deny(7)]);
 
-        seat.show(Some(recovery(8)));
+        state.show(Some(recovery(8)));
         app.settle();
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::Discard(8)]);
+        assert_eq!(state.take_answers(), [Answer::Discard(8)]);
     }
 
     phase escape_cancels_while_the_dictation_runs_or_cannot_run;
@@ -328,7 +328,7 @@ tilo_test_env::scenario! {
             (25, Stage::Stopping),
         ];
         for (id, stage) in stages {
-            let (mut app, seat) = seated(Prompt {
+            let (mut app, state) = mounted(Prompt {
                 id,
                 stage,
                 draft: String::new(),
@@ -339,9 +339,9 @@ tilo_test_env::scenario! {
             });
             app.harness().key("Escape");
             app.settle();
-            assert_eq!(seat.take_answers(), [Answer::Cancel(id)], "{stage:?}");
+            assert_eq!(state.take_answers(), [Answer::Cancel(id)], "{stage:?}");
         }
-        let (mut app, seat) = seated(Prompt {
+        let (mut app, state) = mounted(Prompt {
             id: 30,
             stage: Stage::Unavailable,
             draft: String::new(),
@@ -357,18 +357,18 @@ tilo_test_env::scenario! {
         app.harness().key("Enter");
         app.settle();
         assert_eq!(
-            seat.take_answers(),
+            state.take_answers(),
             [Answer::Cancel(30)],
             "Close is the primary"
         );
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::Cancel(30)]);
+        assert_eq!(state.take_answers(), [Answer::Cancel(30)]);
     }
 
     phase a_missing_model_takes_the_person_to_its_setup;
     {
-        let (mut app, seat) = seated(Prompt {
+        let (mut app, state) = mounted(Prompt {
             id: 31,
             stage: Stage::Unavailable,
             draft: String::new(),
@@ -384,21 +384,21 @@ tilo_test_env::scenario! {
             .1;
         app.harness().click_at(setup.center().x, setup.center().y);
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::SetUp(31)]);
+        assert_eq!(state.take_answers(), [Answer::SetUp(31)]);
 
         // Enter gives the primary answer, which is the way there while no model
         // is set up; Escape still gives the dictation up.
         app.harness().key("Enter");
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::SetUp(31)]);
+        assert_eq!(state.take_answers(), [Answer::SetUp(31)]);
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::Cancel(31)]);
+        assert_eq!(state.take_answers(), [Answer::Cancel(31)]);
     }
 
     phase while_listening_enter_inserts_and_copy_is_the_cards_own_word;
     {
-        let (mut app, seat) = seated(Prompt {
+        let (mut app, state) = mounted(Prompt {
             id: 4,
             stage: Stage::Listening,
             draft: "Hello".to_owned(),
@@ -409,9 +409,9 @@ tilo_test_env::scenario! {
         });
         app.harness().key("Enter");
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::Finish(4)]);
+        assert_eq!(state.take_answers(), [Answer::Finish(4)]);
 
-        seat.show(Some(recovery(5)));
+        state.show(Some(recovery(5)));
         app.settle();
         let copy = buttons(&mut app)
             .into_iter()
@@ -420,12 +420,12 @@ tilo_test_env::scenario! {
             .1;
         app.harness().click_at(copy.center().x, copy.center().y);
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::Copy(5)]);
+        assert_eq!(state.take_answers(), [Answer::Copy(5)]);
         assert!(
             !told(&mut app).contains("Copied."),
             "the card does not claim a copy the session has not made"
         );
-        seat.show(Some(Prompt {
+        state.show(Some(Prompt {
             copied: true,
             ..recovery(5)
         }));
@@ -438,22 +438,22 @@ tilo_test_env::scenario! {
 
     phase an_assistive_press_is_the_persons_own_answer;
     {
-        let (mut app, seat) = seated(asking(7));
+        let (mut app, state) = mounted(asking(7));
         app.harness()
             .perform_named("dictation-allow", &A11yAction::Activate)
             .ok();
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::Allow(7)]);
+        assert_eq!(state.take_answers(), [Answer::Allow(7)]);
     }
 
     phase tab_walks_the_answers_and_enter_gives_the_one_reached;
     {
-        let (mut app, seat) = seated(asking(7));
+        let (mut app, state) = mounted(asking(7));
         app.harness().key("Tab");
         app.settle();
         app.harness().key("Enter");
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::Deny(7)]);
+        assert_eq!(state.take_answers(), [Answer::Deny(7)]);
     }
 }
 

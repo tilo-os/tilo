@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use serde::Deserialize;
-use tilo_sheets::Seat as _;
-use tilo_sheets::directory::{Directory, DirectorySeat, Status};
+use tilo_sheets::SheetState as _;
+use tilo_sheets::directory::{Directory, DirectoryState, Status};
 use tilo_workspace_directory::{Held, Joined, Person, Store};
 
 use crate::over_page::{OverSheet, PageSheet};
@@ -107,7 +107,7 @@ pub(crate) fn make(
 struct PageDirectory {
     host: PageHost,
     store: Store,
-    seat: DirectorySeat,
+    state: DirectoryState,
     /// What the built sheet shows and the search it was built with, so it is
     /// built again only when either moved.
     built: (Directory, u64),
@@ -138,7 +138,7 @@ impl PageDirectory {
                 held: config.map(|config| config.held.clone()).unwrap_or_default(),
             },
             store,
-            seat: DirectorySeat::default(),
+            state: DirectoryState::default(),
             built: (Directory::default(), u64::MAX),
         }
     }
@@ -147,11 +147,11 @@ impl PageDirectory {
 impl PageSheet for PageDirectory {
     /// Put the sheet up, as the session's shell does.
     fn open(&self) {
-        tilo_session::directory::open(Some(&self.seat), &self.store, &self.host);
+        tilo_session::directory::open(Some(&self.state), &self.store, &self.host);
     }
 
     fn is_open(&self) -> bool {
-        self.seat.presentation().is_open()
+        self.state.presentation().is_open()
     }
 }
 
@@ -161,17 +161,17 @@ impl OverSheet for PageDirectory {
         show: &mut dyn FnMut(Option<ui::widget::Element>),
         missing: bool,
     ) -> bool {
-        let before = (self.seat.directory(), self.is_open());
+        let before = (self.state.directory(), self.is_open());
         tilo_session::directory::follow(
-            Some(&self.seat),
+            Some(&self.state),
             &self.store,
             &*crate::host_services::notices(),
             &self.host,
         );
-        let mut changed = before != (self.seat.directory(), self.is_open());
+        let mut changed = before != (self.state.directory(), self.is_open());
         if self.is_open() {
-            let shown = self.seat.directory();
-            let revision = self.seat.query_revision();
+            let shown = self.state.directory();
+            let revision = self.state.query_revision();
             if missing || shown != self.built.0 || revision != self.built.1 {
                 // A page keeps no log of its own: a site that could not be
                 // read says why here, where its people's consoles keep it.
@@ -179,7 +179,7 @@ impl OverSheet for PageDirectory {
                     web_sys::console::warn_1(&format!("workspace directory: {error}").into());
                 }
                 self.built = (shown, revision);
-                show(Some(self.seat.sheet()));
+                show(Some(self.state.sheet()));
                 changed = true;
             }
         } else {
@@ -189,7 +189,7 @@ impl OverSheet for PageDirectory {
     }
 
     fn drawn(&self) -> bool {
-        self.seat.presentation().is_drawn()
+        self.state.presentation().is_drawn()
     }
 
     fn sheet_name(&self) -> &'static str {

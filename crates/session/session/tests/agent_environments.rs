@@ -370,7 +370,7 @@ fn press(session: &mut Session, effect: &str, args: Value) {
     };
     if let Some(handle) = session
         .portal()
-        .and_then(tilo_sheets::portal::PortalSeat::dialog)
+        .and_then(tilo_sheets::portal::PortalState::dialog)
         .map(|dialog| dialog.handle)
         && !args.contains_key("handle")
     {
@@ -389,7 +389,7 @@ fn asked(session: &mut Session, questions: &Questions) -> Dialog {
             .then(|| {
                 session
                     .portal()
-                    .and_then(tilo_sheets::portal::PortalSeat::dialog)
+                    .and_then(tilo_sheets::portal::PortalState::dialog)
             })
             .flatten()
     })
@@ -404,7 +404,7 @@ fn allow(session: &mut Session, choice: usize) {
 
 /// The agent sessions at the person's MCP servers, as their shell lists them: each one's id, how
 /// the shell names it, and the workspace it works in.
-fn seated(session: &Session) -> Vec<(String, String, String)> {
+fn agent_sessions(session: &Session) -> Vec<(String, String, String)> {
     session
         .read("session:agents")
         .and_then(|agents| agents.get("sessions").and_then(Value::as_array).cloned())
@@ -422,7 +422,7 @@ fn seated(session: &Session) -> Vec<(String, String, String)> {
 #[track_caller]
 fn seated_as(session: &mut Session, name: &str) -> (String, String, String) {
     crate::common::wait_for(session, format!("{name} at the shell"), |session| {
-        seated(session)
+        agent_sessions(session)
             .into_iter()
             .find(|(_, shown, _)| shown == name)
     })
@@ -548,8 +548,11 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
 
     dev.end();
     crate::common::wait_for(&mut session, "the environment's door to go", |session| {
-        (!path.exists() && !seated(session).iter().any(|(key, ..)| *key == dev_session))
-            .then_some(())
+        (!path.exists()
+            && !agent_sessions(session)
+                .iter()
+                .any(|(key, ..)| *key == dev_session))
+        .then_some(())
     });
 }
 
@@ -688,7 +691,10 @@ fn two_programs_of_one_name_are_two_agents() {
         .invoke("session:agents", "stop-agent", &stop)
         .expect("the person's Stop");
     crate::common::wait_for(&mut session, "the first agent to stop", |session| {
-        let keys: Vec<String> = seated(session).into_iter().map(|(key, ..)| key).collect();
+        let keys: Vec<String> = agent_sessions(session)
+            .into_iter()
+            .map(|(key, ..)| key)
+            .collect();
         (keys == [second_session.clone()]).then_some(())
     });
     first.end();

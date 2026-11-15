@@ -631,7 +631,7 @@ fn listing_row(session: &Session, key: &str) -> tilo_sheets::directory::Listing 
                 "the sheet lists {key}: {:?}",
                 session
                     .workspace_directory()
-                    .map(tilo_sheets::directory::DirectorySeat::directory)
+                    .map(tilo_sheets::directory::DirectoryState::directory)
             )
         })
 }
@@ -914,7 +914,7 @@ fn a_computer_joins_the_lounge_through_its_workspace_services_own_door() {
         "the door refused the uninvited person: {:?}",
         session
             .workspace_directory()
-            .map(tilo_sheets::directory::DirectorySeat::directory)
+            .map(tilo_sheets::directory::DirectoryState::directory)
     );
     wait_until(
         &mut session,

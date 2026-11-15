@@ -76,7 +76,7 @@ fn grant_row(doors: &Doors, index: usize, grant: &mcp_server::Grant) -> Element 
         relation: wire::Relation::Software,
         ..wire::Author::default()
     };
-    let status = if grant.runs.is_empty() {
+    let status = if grant.sessions.is_empty() {
         grant.last_ms.map_or_else(
             || {
                 trf(
@@ -89,7 +89,7 @@ fn grant_row(doors: &Doors, index: usize, grant: &mcp_server::Grant) -> Element 
     } else {
         trf(
             "console-grant-running",
-            &[("count", grant.runs.len().into())],
+            &[("count", grant.sessions.len().into())],
         )
     };
     let revoke = {
@@ -122,7 +122,7 @@ fn grant_row(doors: &Doors, index: usize, grant: &mcp_server::Grant) -> Element 
             ChipStyle::Neutral,
         )]);
     }
-    if !grant.runs.is_empty() {
+    if !grant.sessions.is_empty() {
         row = row.active();
     }
     Box::new(row)

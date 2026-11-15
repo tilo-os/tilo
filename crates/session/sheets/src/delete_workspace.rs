@@ -61,28 +61,28 @@ pub enum DeleteWorkspaceEffect {
 /// What the shell lends the sheet: which workspace is asked about, and what
 /// the person answered.
 #[derive(Clone, Default)]
-pub struct DeleteWorkspaceSeat {
+pub struct DeleteWorkspaceState {
     presentation: Presentation,
     asked: Rc<RefCell<Asked>>,
     shown: Rc<RefCell<Option<LocalState<Asked>>>>,
     answers: Rc<RefCell<Vec<DeleteWorkspaceEffect>>>,
 }
 
-impl std::fmt::Debug for DeleteWorkspaceSeat {
+impl std::fmt::Debug for DeleteWorkspaceState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DeleteWorkspaceSeat")
+        f.debug_struct("DeleteWorkspaceState")
             .field("asked", &self.asked.borrow())
             .finish_non_exhaustive()
     }
 }
 
-impl crate::Seat for DeleteWorkspaceSeat {
+impl crate::SheetState for DeleteWorkspaceState {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
 }
 
-impl DeleteWorkspaceSeat {
+impl DeleteWorkspaceState {
     /// Ask about the workspace called `name`.
     pub fn show(&self, name: String) {
         if let Some(shown) = self.shown.borrow().as_ref() {
@@ -131,19 +131,19 @@ impl ResourceApp for DeleteWorkspaceApp {
     }
 
     fn view(cx: &mut ViewCx<DeleteWorkspace>) -> Element {
-        let seat = cx.take_lent::<DeleteWorkspaceSeat>();
-        let initial = match &seat {
-            Some(seat) => Some(seat.asked()),
+        let state = cx.take_lent::<DeleteWorkspaceState>();
+        let initial = match &state {
+            Some(state) => Some(state.asked()),
             None => cx.fixture::<Asked>().map(|asked| (*asked).clone()),
         };
         let shown = cx.local(initial.unwrap_or_default());
-        if let Some(seat) = &seat {
-            *seat.shown.borrow_mut() = Some(shown.clone());
+        if let Some(state) = &state {
+            *state.shown.borrow_mut() = Some(shown.clone());
         }
-        let answering = seat;
+        let answering = state;
         cx.effects(move |effect: DeleteWorkspaceEffect, _cx| match &answering {
-            Some(seat) => {
-                seat.answers.borrow_mut().push(effect);
+            Some(state) => {
+                state.answers.borrow_mut().push(effect);
                 Ok(Effected::done())
             }
             None => Err("there is no workspace to delete here".to_owned()),

@@ -6,16 +6,16 @@
 //! the person's workspaces over MCP at [`Server::endpoint`]. The person grants
 //! it once, and the grant names the workspaces it may work in. Every change
 //! it makes there is attributed to it in the workspace's history
-//! ([`super::workspace_activity`]), where its runs are read and undone.
+//! ([`super::workspace_activity`]), where its work is read and undone.
 //!
 //! The model is the API server's (`crates/hosting/tilo-api`): a
 //! grant reaches every workspace of the person or exactly one, and each MCP
-//! session through it is one run, named for the person ("Claude Code #2") as
-//! History names it. Whoever runs the server serves [`PROVIDER`]; a host
-//! without one leaves the reads unanswered, and a view that follows them
-//! says so. Revoking a grant ([`REVOKE`]) ends every run it carries and lets
-//! none in again; stopping a run ([`STOP`]) ends that one session and keeps
-//! the grant, so the agent can come back.
+//! session through it is one agent session, named for the person ("Claude
+//! Code #2") as History names it. Whoever serves the server serves
+//! [`PROVIDER`]; a host without one leaves the reads unanswered, and a view
+//! that follows them says so. Revoking a grant ([`REVOKE`]) ends every session
+//! it carries and lets none in again; stopping a session ([`STOP`]) ends that
+//! one connection and keeps the grant, so the agent can come back.
 
 use serde::{Deserialize, Serialize};
 
@@ -30,9 +30,9 @@ pub const RESOURCE: &str = "mcp.server";
 /// Live: the server and what it let in; answers [`Server`].
 pub const SERVER: &str = "server";
 /// Take back a grant ([`Grant`] by [`Grant::id`], as [`GrantRef`]): its
-/// runs end now and it lets none in again.
+/// sessions end now and it lets none in again.
 pub const REVOKE: &str = "revoke";
-/// End one run now, keeping its grant ([`RunRef`]).
+/// End one agent session now, keeping its grant ([`AgentSessionRef`]).
 pub const STOP: &str = "stop";
 
 /// The target of action `action` of [`RESOURCE`].
@@ -92,13 +92,13 @@ pub enum Reach {
     },
 }
 
-/// One run of an agent through the server: one MCP session, open now.
+/// One agent session through the server: one MCP connection, open now.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Run {
-    /// The run's name, the client's and a number of the person's own runs
-    /// ("Claude Code #2"): the name History gives the run, which is what
-    /// ties a run in [`super::workspace_activity::RUNS`] to its grant.
+pub struct AgentSession {
+    /// The session's name, the client's and a number of the person's own
+    /// sessions ("Claude Code #2"): the name History gives it, which is what
+    /// ties it to its grant.
     pub name: String,
     /// When it connected, Unix milliseconds.
     pub started_ms: i64,
@@ -119,8 +119,8 @@ pub struct Grant {
     /// When it last acted; `None` before it ever did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_ms: Option<i64>,
-    /// Its runs open now, oldest first.
-    pub runs: Vec<Run>,
+    /// Its agent sessions open now, oldest first.
+    pub sessions: Vec<AgentSession>,
     /// The key operates web pages in Browser without asking the person each
     /// time, as its certificate carries it
     /// ([`tilo_user_identity::DeviceCapabilities::browser_pages`]): what it
@@ -143,10 +143,10 @@ pub struct Grant {
 }
 
 impl Grant {
-    /// Its open run History names `name`.
+    /// Its open session History names `name`.
     #[must_use]
-    pub fn run(&self, name: &str) -> Option<&Run> {
-        self.runs.iter().find(|run| run.name == name)
+    pub fn session(&self, name: &str) -> Option<&AgentSession> {
+        self.sessions.iter().find(|session| session.name == name)
     }
 }
 
@@ -163,7 +163,7 @@ pub enum Maker {
 /// One of the person's workspaces the server reaches.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
-    /// The workspace's id, as a run's history names it.
+    /// The workspace's id, as a session's history names it.
     pub id: String,
     pub name: String,
     /// Who made it, when the server knows: it knows the workspaces an agent
@@ -189,12 +189,12 @@ pub struct Server {
 }
 
 impl Server {
-    /// The grant whose open run History names `name`, and that run.
+    /// The grant whose open session History names `name`, and that session.
     #[must_use]
-    pub fn run(&self, name: &str) -> Option<(&Grant, &Run)> {
+    pub fn session(&self, name: &str) -> Option<(&Grant, &AgentSession)> {
         self.grants
             .iter()
-            .find_map(|grant| grant.run(name).map(|run| (grant, run)))
+            .find_map(|grant| grant.session(name).map(|session| (grant, session)))
     }
 }
 
@@ -205,13 +205,13 @@ pub struct GrantRef {
     pub grant: String,
 }
 
-/// Which run [`STOP`] ends: the grant it came in by, and its name.
+/// Which agent session [`STOP`] ends: the grant it came in by, and its name.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct RunRef {
+pub struct AgentSessionRef {
     pub grant: String,
-    /// The run's [`Run::name`].
-    pub run: String,
+    /// The session's [`AgentSession::name`].
+    pub session: String,
 }
 
 #[cfg(test)]
@@ -238,12 +238,12 @@ mod tests {
             assert_eq!(other["mcpServers"]["tilo"]["url"], endpoint);
         }
 
-        phase a_run_in_history_finds_its_grant_by_the_name_history_gives_it;
+        phase a_session_in_history_finds_its_grant_by_the_name_history_gives_it;
         {
             let server = Server {
                 grants: vec![Grant {
                     id: "g1".into(),
-                    runs: vec![Run {
+                    sessions: vec![AgentSession {
                         name: "Claude Code #2".into(),
                         started_ms: 1,
                     }],
@@ -252,13 +252,13 @@ mod tests {
                 ..Server::default()
             };
             assert_eq!(
-                server.run("Claude Code #2")
+                server.session("Claude Code #2")
                     .map(|(grant, _)| grant.id.as_str()),
                 Some("g1")
             );
             assert!(
-                server.run("Claude Code #1").is_none(),
-                "a run that ended is no longer open"
+                server.session("Claude Code #1").is_none(),
+                "a session that ended is no longer open"
             );
         }
 

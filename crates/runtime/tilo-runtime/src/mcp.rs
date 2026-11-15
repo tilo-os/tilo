@@ -98,9 +98,9 @@ pub struct McpServer<H> {
     /// The program connection to the task's host, once its first program started it.
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
     /// The person's other devices as the host reaches them, which
-    /// [`crate::remote_door::DEVICES_TOOL`] lists; `None` for a host that
+    /// [`crate::device_mcp::DEVICES_TOOL`] lists; `None` for a host that
     /// reaches none.
-    devices: Option<std::sync::Arc<dyn crate::remote_door::DeviceDirectory>>,
+    devices: Option<std::sync::Arc<dyn crate::device_mcp::DeviceDirectory>>,
     /// The record this session's last agent call worked in
     /// ([`ActedRecord`]): where its agent is, for the presence its door
     /// shows the person.
@@ -710,11 +710,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self
     }
     /// List the person's devices as `devices` reaches them, with
-    /// [`crate::remote_door::DEVICES_TOOL`].
+    /// [`crate::device_mcp::DEVICES_TOOL`].
     #[must_use]
     pub fn with_devices(
         mut self,
-        devices: Option<std::sync::Arc<dyn crate::remote_door::DeviceDirectory>>,
+        devices: Option<std::sync::Arc<dyn crate::device_mcp::DeviceDirectory>>,
     ) -> Self {
         self.devices = devices;
         self
@@ -1436,11 +1436,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(call) if get::is_get_tool(&call.name) => {
                 Ok(self.get_call(&call.name, call.arguments, structured).await)
             }
-            Ok(call) if call.name == crate::remote_door::DEVICES_TOOL => match &self.devices {
+            Ok(call) if call.name == crate::device_mcp::DEVICES_TOOL => match &self.devices {
                 Some(devices) => {
                     let reach = devices.reach().await;
                     Ok(json!({
-                        "content": [{"type": "text", "text": crate::remote_door::listing(&reach)}],
+                        "content": [{"type": "text", "text": crate::device_mcp::listing(&reach)}],
                         "isError": false
                     }))
                 }
@@ -3419,7 +3419,7 @@ fn definitions(
         tools.extend(get::tool_definitions());
     }
     if devices {
-        tools.push(crate::remote_door::tool_definition());
+        tools.push(crate::device_mcp::tool_definition());
     }
     tools
 }
