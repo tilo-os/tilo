@@ -320,6 +320,48 @@ fn a_form_is_drawn_with_what_the_engines_theme_paints_of_it_in_any_theme() {
     );
 }
 
+/// What a device is sent is not always a payload. Bytes that are none change nothing: a viewer
+/// holds no frame before its publisher's first, and keeps the one it holds after.
+#[test]
+fn bytes_that_are_no_payload_leave_a_viewer_the_page_it_holds() {
+    use ui::webview::paint::stream::wire::MAX_PAYLOAD_BYTES;
+
+    let objects = payloads(&engine());
+    let (_, cut) = objects
+        .last()
+        .and_then(|whole| whole.split_last())
+        .expect("the page has an object, and it has bytes");
+    let none: &[u8] = &[];
+    let noise = [0xff_u8; 64];
+    let oversized = vec![0_u8; MAX_PAYLOAD_BYTES.saturating_add(1)];
+    let refused: [(&[u8], &str); 4] = [
+        (none, "no bytes"),
+        (&noise[..], "noise"),
+        (cut, "a payload cut short by a byte"),
+        (&oversized[..], "more bytes than a payload may be"),
+    ];
+    let mut stream = PageStream::new();
+    for (bytes, case) in refused {
+        assert!(!stream.apply(bytes), "{case}: nothing to show changed");
+        assert!(stream.frame().is_none(), "{case}: made no frame");
+    }
+    for object in &objects {
+        stream.apply(object);
+    }
+    let held = stream
+        .frame()
+        .cloned()
+        .expect("the publisher's whole frame");
+    for (bytes, case) in refused {
+        assert!(!stream.apply(bytes), "{case}: the frame shown is the same");
+        assert_eq!(
+            stream.frame(),
+            Some(&held),
+            "{case}: the viewer keeps its frame"
+        );
+    }
+}
+
 #[test]
 fn a_page_stream_takes_the_tab_of_its_window_and_lets_it_go_when_it_ends() {
     let mut minter = IdMinter::new(7);
