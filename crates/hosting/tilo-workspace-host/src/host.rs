@@ -217,6 +217,7 @@ impl HostSessions {
                 .member_limits
                 .map(|limits| Arc::new(crate::member_limits::MemberLimits::new(limits))),
             arrivals: crate::attach::Arrivals::default(),
+            holds_for_others: cfg.work.from.takes_others(),
         };
         let sessions = Self {
             endpoint: endpoint.clone(),
@@ -1071,6 +1072,12 @@ pub struct RelayProtocol {
     /// Told each device whose session here authenticated
     /// ([`crate::attach::Arrivals`]).
     pub(crate) arrivals: crate::attach::Arrivals,
+    /// Whether this host's work setting takes workspaces of people other
+    /// than its own to hold ([`tilo_relay_protocol::WorkFrom::takes_others`]):
+    /// their governing hosts, whom nothing here admits yet, then open a
+    /// session to hand them over. Every workspace such a session reaches
+    /// still asks the live policy, which admits none of theirs.
+    pub(crate) holds_for_others: bool,
 }
 
 impl RelayProtocol {
@@ -1265,7 +1272,11 @@ where
     let (client_peer, entered) = match ctx
         .identity
         .authenticate_or_enter(
-            EndpointTrust::Live(&ctx.trust_policy),
+            if ctx.holds_for_others {
+                EndpointTrust::Fixed(crate::auth::HandshakeTrust::AnyCertifiedDevice)
+            } else {
+                EndpointTrust::Live(&ctx.trust_policy)
+            },
             &mut recv,
             &mut send,
             MAX_FRAME_BYTES,

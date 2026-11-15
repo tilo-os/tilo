@@ -16,6 +16,11 @@
 //! ([`HostOperation::KeepPersonalList`]). The workspace is governed here like any other; the
 //! person administers it.
 //!
+//! Which hosts hold a workspace is asked of anyone too, and decided by the
+//! handler: the workspace's owner or the person it is kept for chooses the
+//! hosts of a workspace governed here, and a host takes one another host
+//! governs as its work setting says ([`crate::hosted`]).
+//!
 //! An agent's grant (a key the person certified for a service that acts for
 //! an agent they approved, [`tilo_user_identity::AgentScope`]) is the person
 //! too, within its scope: it makes workspaces when it reaches all of them,
@@ -46,15 +51,18 @@ pub enum HostOperation {
     AuthorApplications,
     /// Drive the host's personal compute over its control stream.
     ComputeControl,
-    /// Serve a workspace a device of the host's person governs, as its governor
-    /// asks ([`crate::hosted`]).
+    /// Hold a workspace another host governs, as its governor asks
+    /// ([`crate::hosted`]): anyone's to ask, and the host's work setting
+    /// decides whose it takes.
     HostWorkspace,
-    /// Stop serving a workspace for its governor.
+    /// Stop holding a workspace for its governor: the host's person's, or the
+    /// governor's person's, which the handler checks.
     UnhostWorkspace,
-    /// Have a host of the person serve a workspace governed here as well. Which
-    /// hosts serve a workspace is its owner's decision.
+    /// Have another host hold a workspace governed here as well. Which hosts
+    /// hold a workspace is its owner's decision, or the person's it is kept
+    /// for, which the handler checks.
     AttachHost,
-    /// Stop having a host of the person serve a workspace governed here.
+    /// Stop having another host hold a workspace governed here.
     DetachHost,
     /// Read the revocations of the host's person this host enforces: the
     /// devices their root revoked, as the person's devices announced them.
@@ -130,6 +138,10 @@ impl HostOperation {
                     | Self::KeepPersonalList
                     | Self::ReadPersonalList
                     | Self::NamePersonalDevice
+                    | Self::HostWorkspace
+                    | Self::UnhostWorkspace
+                    | Self::AttachHost
+                    | Self::DetachHost
             )
         {
             return false;
@@ -215,6 +227,10 @@ mod tests {
                     | HostOperation::ListWorkspaces
                     | HostOperation::KeepPersonalList
                     | HostOperation::ReadPersonalList
+                    | HostOperation::HostWorkspace
+                    | HostOperation::UnhostWorkspace
+                    | HostOperation::AttachHost
+                    | HostOperation::DetachHost
             );
             assert!(
                 operation.permits(&host, &device(host, DeviceCapabilities::member())),

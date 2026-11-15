@@ -63,6 +63,27 @@ A host is not a different kind of node. "Workspace hosting" is a device with
 a large appetite, usually always on. Anyone can run it, with the same
 software and the same protocol as every other device.
 
+**The hosts that hold a workspace.** A workspace lives on the devices that
+hold it. Its governor (the host whose root owns it) holds it first; its
+governance names every other host holding it beside the governor, each by
+an address that host signed. Being named there is what lets a host in
+everywhere the workspace is held: its device holds the workspace, and its
+person may reach the hosts that do. Another host of the governor's own person
+is also admitted as one of the owner's devices; a host of another person, a
+hosted relay such as tilo.sh, is named and nothing more, so the workspace's
+members and roles stay as they were. Whom a workspace is held by is the
+owner's decision and the keeper's: a device of the governor's person, or of
+the person the workspace is kept for, asks its governor to have another host
+hold it (`workspace.attach-host`, an operator's `hold`), and the governor
+hands that host the workspace and names it. The other host takes it only when
+its own operator's work setting takes that work: by default only its own
+person's, and another person's only for the workspaces its operator names or
+for anyone when it says so, so a relay never holds strangers' workspaces
+unasked. From then on both hold it: each carries what is written through it
+to the other, signed by the device that wrote it, so its history and
+authors are the same on both, and each picks up again after a restart.
+Detached, the other host lets the workspace go and keeps its files.
+
 ### A machine copied from another
 
 A person sets up one machine and branches others off it by copying its disk

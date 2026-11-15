@@ -75,6 +75,16 @@ pub enum WorkFrom {
 }
 
 impl WorkFrom {
+    /// Whether it takes work of anyone but the device's own person.
+    #[must_use]
+    pub fn takes_others(&self) -> bool {
+        match self {
+            Self::Nobody | Self::OwnDevices => false,
+            Self::Workspaces(named) => !named.is_empty(),
+            Self::Anyone => true,
+        }
+    }
+
     /// Whether this device takes the work `whose` describes from whom asked.
     #[must_use]
     pub fn admits(&self, whose: &Whose) -> bool {

@@ -113,15 +113,18 @@ pub struct StateSource {
     pub(super) session_live: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 impl StateSource {
-    /// The source of an outbound lease to a host attached to the workspace.
-    /// Its trust is this host's own user only — not the live handshake policy,
-    /// which may admit members' roots — and it carries no agent
-    /// delegations: a host carrying this one's changes is never an agent.
+    /// The source of an outbound lease to a host attached to the workspace,
+    /// trusted as this host's sessions are: by `policy`, the live handshake
+    /// policy, which admits this host's person, the workspace's members and
+    /// the hosts holding it, so what the attached host carries reaches every
+    /// member here. It carries no agent delegations: a host carrying this
+    /// one's changes is never an agent.
     pub fn leased(
         peer: AuthenticatedPeer,
         tx: mpsc::Sender<Envelope>,
         disconnect: mpsc::Sender<()>,
         revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
+        policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
         own_user: [u8; 32],
         lease: Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
@@ -130,9 +133,7 @@ impl StateSource {
             tx,
             disconnect,
             revocations,
-            policy: Arc::new(std::sync::RwLock::new(
-                crate::policy::TrustPolicy::AllowMatchingUser,
-            )),
+            policy,
             own_user,
             agents: AgentRegistry::default(),
             environments: crate::environment::EnvironmentRegistry::default(),

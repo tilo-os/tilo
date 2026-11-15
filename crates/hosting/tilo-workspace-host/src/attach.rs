@@ -1,6 +1,7 @@
 //! The dialing side of host attachment: a host keeps a session to an
-//! upstream host of its own person and holds the workspaces both host in
-//! step with it.
+//! upstream host holding a workspace with it, its own person's or the host of
+//! another person the workspace's governance names, and holds the workspaces
+//! both host in step with it.
 //!
 //! The session dials through the same handshake and client every device
 //! uses, says which workspaces it carries (`PeerRelayHello`), and subscribes
@@ -19,7 +20,7 @@
 //! arrives: no timer runs while it is connected.
 //!
 //! A session carries changes one way, from the host dialed to the host
-//! dialing. A device governing a workspace another host of its person serves
+//! dialing. A device governing a workspace another host serves
 //! dials nothing on its own: when that host's session arrives, the device
 //! answers it with one back ([`HostDialer::answer`]) that lasts as long
 //! as it does.
@@ -42,36 +43,15 @@ use crate::peer::WorkspaceRegistry;
 use crate::transport::Envelope;
 use tilo_relay_protocol::WorkspaceId;
 
-/// Which host an attach session dials, and how its identity is pinned.
+/// Which host an attach session dials: the device `device` of the person
+/// `person`, at `addr`, both pinned by the handshake. The governor of a
+/// workspace this host also serves, or a host serving a workspace this
+/// device governs.
 #[derive(Clone, Debug)]
-pub enum Upstream {
-    /// The device `device` of this host's own person, hosting its workspaces at
-    /// `addr`: the governor of a workspace this host also serves.
-    OwnDevice {
-        addr: EndpointAddr,
-        device: [u8; 32],
-    },
-    /// The certified host `device` of this host's own person, at `addr`:
-    /// a host serving a workspace this device governs.
-    OwnHost {
-        addr: EndpointAddr,
-        device: [u8; 32],
-    },
-}
-
-impl Upstream {
-    const fn addr(&self) -> &EndpointAddr {
-        match self {
-            Self::OwnDevice { addr, .. } | Self::OwnHost { addr, .. } => addr,
-        }
-    }
-
-    /// The device the session pins.
-    const fn device(&self) -> [u8; 32] {
-        match self {
-            Self::OwnDevice { device, .. } | Self::OwnHost { device, .. } => *device,
-        }
-    }
+pub struct Upstream {
+    pub addr: EndpointAddr,
+    pub device: [u8; 32],
+    pub person: [u8; 32],
 }
 
 /// The devices whose sessions to this host authenticated, as they do.
@@ -126,6 +106,9 @@ async fn arrival(arrivals: &mut tokio::sync::broadcast::Receiver<[u8; 32]>, devi
 pub struct HostDialer {
     pub endpoint: Endpoint,
     pub identity: LiveIdentity,
+    /// The live handshake policy, which what the session carries is
+    /// trusted by ([`crate::peer::StateSource::leased`]).
+    pub trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     pub workspaces: WorkspaceRegistry,
     pub metrics: Arc<Metrics>,
     pub scope: Option<Vec<WorkspaceId>>,
@@ -153,7 +136,7 @@ impl HostDialer {
         label: String,
         mut arrivals: tokio::sync::broadcast::Receiver<[u8; 32]>,
     ) {
-        let device = upstream.device();
+        let device = upstream.device;
         let mut backoff_ms: u64 = 1_000;
         loop {
             let dialed = tokio::select! {
@@ -192,34 +175,17 @@ impl HostDialer {
     async fn dial(&self, upstream: &Upstream) -> Result<RelayClient, String> {
         let identity = &self.identity;
         let revocations = identity.revocations.read_recover().clone();
-        let addr = upstream.addr().clone();
-        let client = match upstream {
-            Upstream::OwnDevice { device, .. } => {
-                RelayClient::connect_v2_to_own_device(
-                    self.endpoint.clone(),
-                    addr,
-                    identity.user_public_key,
-                    *device,
-                    identity.cert.clone(),
-                    identity.signing_key.clone(),
-                    revocations,
-                )
-                .await
-            }
-            Upstream::OwnHost { device, .. } => {
-                RelayClient::connect_v2_to_enrolled_home_peer(
-                    self.endpoint.clone(),
-                    addr,
-                    identity.user_public_key,
-                    *device,
-                    identity.cert.clone(),
-                    identity.signing_key.clone(),
-                    revocations,
-                )
-                .await
-            }
-        };
-        client.map_err(|error| error.to_string())
+        RelayClient::connect_v2_to_enrolled_home_peer(
+            self.endpoint.clone(),
+            upstream.addr.clone(),
+            upstream.person,
+            upstream.device,
+            identity.cert.clone(),
+            identity.signing_key.clone(),
+            revocations,
+        )
+        .await
+        .map_err(|error| error.to_string())
     }
 
     /// Answer the host that opened `inbound` here, a host serving a workspace
@@ -285,6 +251,7 @@ impl HostDialer {
             client.outbound.clone(),
             failed,
             self.identity.revocations.clone(),
+            self.trust_policy.clone(),
             self.identity.user_public_key,
             lease.0.clone(),
         );

@@ -69,6 +69,7 @@ impl PeerGovernance<'_> {
     /// once per document state: a page in a workspace of hundreds of people
     /// lists its member devices for every frame its channels take in.
     pub fn governed_access(self, now: SystemTime) -> Result<GovernedAccess, String> {
+        let hosts = self.workspace_hosts();
         let doc = self
             .peer
             .core
@@ -124,6 +125,18 @@ impl PeerGovernance<'_> {
                     )
                 }),
         );
+        // A host the governance names holds the workspace: its device is let
+        // in wherever the workspace is held, and its person, whose host holds
+        // all of it already, is let reach the hosts holding it.
+        for hint in hosts {
+            let cert = &hint.host;
+            if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
+                && !self.peer.core.revocations.refuses(cert)
+            {
+                member_devices.push(cert.device_public_key);
+                member_user_roots.push(cert.user_public_key);
+            }
+        }
         member_devices.sort_unstable();
         member_devices.dedup();
         member_user_roots.sort_unstable();

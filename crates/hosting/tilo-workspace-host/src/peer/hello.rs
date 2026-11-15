@@ -11,32 +11,48 @@ pub(super) async fn handle_host_hello(
     session: &SessionCtx<'_>,
     hosted_workspaces: Vec<WorkspaceId>,
 ) -> Result<Option<Envelope>, PeerError> {
-    // Only a host of this host's own person attaches: a device of another
-    // person never does.
-    if peer.user_public_key != *session.own_user_public_key {
-        return Ok(None);
-    }
-    // Compute the intersection with what this host hosts and record the
-    // dialer as a host attached to each shared workspace. On its next
-    // `Subscribe` (which it is about to send for each intersection id), the
-    // existing subscriber path enrols it and the fan-out filter takes care
-    // of the rest.
+    // A host of this host's own person attaches to every workspace both hold;
+    // another person's host only to a workspace governed here whose governance
+    // names it among its hosts. A device that is neither attaches nowhere.
+    let own = peer.user_public_key == *session.own_user_public_key;
     let mut hosted_here: Vec<WorkspaceId> = Vec::new();
     let mut governed = Vec::new();
-    let wsmap = session.workspaces.lock().await;
-    for id in &hosted_workspaces {
-        if let Some(ws) = wsmap.get(id).cloned() {
-            let mut runtime = ws.lock().await;
-            runtime.note_attached_host(peer.device_public_key);
-            runtime
-                .attach_sessions
-                .insert(peer.device_public_key, session.disconnect.clone());
-            governed.extend(runtime.workspace_authority.clone());
-            drop(runtime);
-            hosted_here.push(*id);
+    let held: Vec<_> = {
+        let wsmap = session.workspaces.lock().await;
+        hosted_workspaces
+            .iter()
+            .filter_map(|id| Some((*id, wsmap.get(id).cloned()?)))
+            .collect()
+    };
+    for (id, ws) in held {
+        let authority = ws.lock().await.workspace_authority.clone();
+        if !own {
+            let named = match authority.as_ref().and_then(|authority| {
+                Some((authority.workspaces()?, authority.workspace().to_owned()))
+            }) {
+                Some((workspaces, workspace)) => {
+                    workspaces
+                        .names_host(&workspace, peer.device_public_key)
+                        .await
+                }
+                None => false,
+            };
+            if !named {
+                continue;
+            }
         }
+        let mut runtime = ws.lock().await;
+        runtime.note_attached_host(peer.device_public_key);
+        runtime
+            .attach_sessions
+            .insert(peer.device_public_key, session.disconnect.clone());
+        drop(runtime);
+        governed.extend(authority);
+        hosted_here.push(id);
     }
-    drop(wsmap);
+    if !own && hosted_here.is_empty() {
+        return Ok(None);
+    }
     // A host serving a workspace governed here is answered with a session back
     // to it, for what its members change there.
     for authority in governed {

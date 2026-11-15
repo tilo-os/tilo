@@ -354,8 +354,14 @@ pub(super) fn handle_host_action(
         }
     };
     let refused = |error: ActionHostError| host_action_envelope(refuse(&request.message, error)?);
-    if !super::session_peer_authorized(peer, session) {
-        return refused(ActionHostError::NotPermitted);
+    // A host whose work setting takes other people's workspaces is handed
+    // one by its governing host, whose person nothing here trusts yet: that
+    // one operation is asked of it, and the setting decides
+    // ([`crate::hosted`]). Every other one needs a device the host trusts.
+    match session.trust().cert(peer, tilo_clock::unix_now_ns()) {
+        Ok(()) => {}
+        Err(crate::workspace_access::DenyReason::NotTrusted) if asks_to_hold(&request.message) => {}
+        Err(_) => return refused(ActionHostError::NotPermitted),
     }
     let Some(plane) = session.app_serving else {
         return refused(ActionHostError::Unavailable {
@@ -575,6 +581,17 @@ fn serve_locally(
 /// Who `peer` acts as: the person on their own device, the agent that
 /// device handed this session to ([`SessionCtx::agent`]), or the agent or bot
 /// whose live delegation that device carries.
+/// Whether `message` asks this host to hold a workspace another host governs.
+fn asks_to_hold(message: &tilo_actions::remote::RemoteActionMessage) -> bool {
+    matches!(
+        message,
+        tilo_actions::remote::RemoteActionMessage::Invoke(invoke)
+            if invoke.target.provider == tilo_relay_session::workspaces::HOST_ACTIONS_PROVIDER
+                && invoke.target.address.action
+                    == tilo_relay_session::workspaces::HOST_WORKSPACE
+    )
+}
+
 pub(super) fn session_caller(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,

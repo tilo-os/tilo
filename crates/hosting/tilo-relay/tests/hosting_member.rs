@@ -301,3 +301,209 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     member.stop().await;
     governor.stop().await;
 }
+
+/// A session of `device` to `host`, a host of `person`.
+async fn session_at(
+    device: &crate::common::TestDevice,
+    person: &TestUser,
+    host_device: &crate::common::TestDevice,
+    host: &crate::common::Hosted,
+) -> RelayClient {
+    RelayClient::connect_v2_to_enrolled_home_peer(
+        crate::common::device_endpoint(device).await,
+        host.host.node_addr(),
+        person.user_pk,
+        host_device.device_pubkey(),
+        device.cert.clone(),
+        device.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap()
+}
+
+/// The device that authored the change `body` once `client` receives it;
+/// the workspace's own changes before it are passed over.
+async fn change_author(client: &RelayClient, body: &[u8]) -> [u8; 32] {
+    tilo_test_env::within("the change arrives", async {
+        loop {
+            if let Envelope::Delta {
+                author_device_public_key,
+                delta,
+                ..
+            } = client.recv().await.expect("the session stays open")
+                && delta == body
+            {
+                break author_device_public_key;
+            }
+        }
+    })
+    .await
+}
+
+/// `author`'s change `body` to `workspace_id`, sent on `client`.
+fn send_change(
+    client: &RelayClient,
+    workspace_id: WorkspaceId,
+    author: &crate::common::TestDevice,
+    body: &[u8],
+) {
+    client
+        .send(Envelope::Delta {
+            workspace_id,
+            author_device_public_key: author.device_pubkey(),
+            authored_at_ns: 1,
+            delta: body.to_vec(),
+            signature: [0; 64],
+        })
+        .unwrap();
+}
+
+/// Another person's host takes a workspace only when its own operator's work
+/// setting takes it: one taking only its own person's work refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each host after the assertions; the suggested earlier drop would use a moved value"
+)]
+async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let site = TestUser::fresh("Site");
+    let relay = site.enrol("relay", DeviceCapabilities::member());
+    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = governor.host.workspaces();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    let refusing = host_on(&site, &relay, WorkSetting::own_person()).await;
+    let refused = workspaces
+        .attach_host(
+            &workspace.workspace,
+            &laptop.cert,
+            relay.device_pubkey(),
+            refusing.host.node_addr(),
+        )
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(
+        workspaces.hosts(&workspace.workspace).await.unwrap().len(),
+        1
+    );
+    refusing.stop().await;
+    governor.stop().await;
+}
+
+/// A host of another person whose operator takes the workspace holds it once
+/// its governor grants it custody: from then on a change made through either
+/// host reaches the other with its author, also after that host restarts, and
+/// detached it lets the workspace go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each host after the assertions; the suggested earlier drop would use a moved value"
+)]
+async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("phone", DeviceCapabilities::primary());
+    let site = TestUser::fresh("Site");
+    let relay = site.enrol("relay", DeviceCapabilities::member());
+    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = governor.host.workspaces();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    workspaces
+        .enter(&workspace.workspace, &phone.cert)
+        .await
+        .unwrap();
+    let mut takes = WorkSetting::own_person();
+    takes.from =
+        tilo_relay_protocol::WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());
+    let holder = host_on(&site, &relay, takes.clone()).await;
+    let hint = workspaces
+        .attach_host(
+            &workspace.workspace,
+            &laptop.cert,
+            relay.device_pubkey(),
+            holder.host.node_addr(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hint.host, relay.cert);
+    let hosts = workspaces.hosts(&workspace.workspace).await.unwrap();
+    assert_eq!(hosts.len(), 2, "the governor and the other person's host");
+
+    let local = governor
+        .host
+        .connect_local(
+            laptop.cert.clone(),
+            laptop.sk.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap();
+    assert!(admitted(&local, workspace.workspace_id).await);
+    let on_holder = session_at(&phone, &site, &relay, &holder).await;
+    tilo_test_env::within(
+        "the holder admits the member its governor admitted",
+        async {
+            while !admitted(&on_holder, workspace.workspace_id).await {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+
+    // A change made through the holder reaches the governor, and one made on
+    // the governor reaches the holder, each with its author.
+    send_change(
+        &on_holder,
+        workspace.workspace_id,
+        &phone,
+        b"from the phone",
+    );
+    assert_eq!(
+        change_author(&local, b"from the phone").await,
+        phone.device_pubkey()
+    );
+    send_change(&local, workspace.workspace_id, &laptop, b"from the laptop");
+    assert_eq!(
+        change_author(&on_holder, b"from the laptop").await,
+        laptop.device_pubkey()
+    );
+
+    // The holder restarts and holds the workspace again from its own record.
+    drop(on_holder);
+    let state = holder.stop_keeping().await;
+    let holder = crate::common::host_in(&site, &relay, takes, state).await;
+    let again = session_at(&phone, &site, &relay, &holder).await;
+    tilo_test_env::within("the restarted holder admits the member", async {
+        while !admitted(&again, workspace.workspace_id).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    send_change(&again, workspace.workspace_id, &phone, b"after the restart");
+    assert_eq!(
+        change_author(&local, b"after the restart").await,
+        phone.device_pubkey()
+    );
+
+    // Detached, the holder lets the workspace go.
+    assert!(
+        workspaces
+            .detach_host(
+                &workspace.workspace,
+                &laptop.cert,
+                relay.device_pubkey(),
+                None
+            )
+            .await
+            .unwrap(),
+        "the holder confirms it stopped"
+    );
+    let gone = session_at(&phone, &site, &relay, &holder).await;
+    assert!(!admitted(&gone, workspace.workspace_id).await);
+
+    drop((again, gone, local));
+    holder.stop().await;
+    governor.stop().await;
+}

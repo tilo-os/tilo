@@ -1,5 +1,6 @@
-//! Workspaces this host serves for the device of its own person that governs
-//! them: a hosting member.
+//! Workspaces this host holds for the host that governs them: a hosting
+//! member, of the governor's own person or, where this host's operator takes
+//! that work ([`tilo_relay_protocol::WorkSetting`]), of another person's.
 //!
 //! The governor asks with [`HOST_WORKSPACE`](tilo_relay_session::workspaces::HOST_WORKSPACE)
 //! after admitting this host's device to the workspace, handing it the workspace as a
@@ -19,13 +20,14 @@
 //! - answers the governor with its own signed address, which the workspace's
 //!   join answers carry beside the governor's.
 //!
-//! It stops serving the workspace when the governor's devices ask
+//! It stops serving the workspace when the governor's person asks
 //! ([`UNHOST_WORKSPACE`](tilo_relay_session::workspaces::UNHOST_WORKSPACE)) or when the
-//! workspace's governance no longer admits this host's device. The workspace's files
+//! workspace's governance no longer names this host. The workspace's files
 //! stay on disk either way.
 //!
-//! Only a certified host serves workspaces for its person this way: a device
-//! hosts the workspaces placed on it, and runs nothing for anyone else's.
+//! A host serves a workspace this way only when its work setting takes it:
+//! by default its own person's, and another person's only for the workspaces
+//! its operator names, or anyone's when the operator says so.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -44,7 +46,7 @@ use web_time::SystemTime;
 use crate::attach::{HostDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::workspaces::WorkspaceServices;
-use tilo_relay_protocol::{Whose, WorkspaceId};
+use tilo_relay_protocol::{Whose, WorkSetting, WorkspaceId};
 
 /// Governance changes the follower of one workspace has yet to take in.
 const NOTICES: usize = 256;
@@ -153,7 +155,7 @@ impl Hosting {
                 let record: HostedRecord =
                     serde_json::from_str(&text).map_err(|error| error.to_string())?;
                 let request = record.request()?;
-                self.serve(&request, true).await.map(drop)
+                self.serve(None, &request, true).await.map(drop)
             }
             .await;
             if let Err(error) = resumed {
@@ -175,16 +177,7 @@ impl Hosting {
         caller: &DeviceCert,
         request: &HostWorkspaceRequest,
     ) -> Result<TransportHint, String> {
-        let own = &self.services.cert;
-        if !self.services.work.from.admits(&Whose::of_roots(
-            caller.user_public_key,
-            own.user_public_key,
-        )) {
-            return Err(
-                "a device serves a workspace placed on it only when it takes that work".into(),
-            );
-        }
-        let hint = self.serve(request, false).await?;
+        let hint = self.serve(Some(caller), request, false).await?;
         let record = HostedRecord::of(request)?;
         let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
         write_durably(&self.dir, &self.record_path(&request.workspace), &bytes)?;
@@ -205,22 +198,17 @@ impl Hosting {
         caller: &DeviceCert,
         workspace: &str,
     ) -> Result<bool, String> {
-        if caller.user_public_key != self.services.cert.user_public_key {
-            return Err(
-                "only its own person's devices ask a host to stop serving a workspace".into(),
-            );
-        }
         let path = self.record_path(workspace);
         // No record: the workspace was not hosted here. One that does not read
         // is an error, never "not hosted": that would forget the workspace while
         // it went on being served.
-        let workspace_id = match std::fs::read_to_string(&path) {
+        let record = match std::fs::read_to_string(&path) {
             Ok(text) => Some(
                 serde_json::from_str::<HostedRecord>(&text)
                     .map_err(|error| {
                         format!("the workspace's hosting record does not read: {error}")
                     })?
-                    .workspace_id,
+                    .request()?,
             ),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
@@ -229,6 +217,20 @@ impl Hosting {
                 ));
             }
         };
+        // This host's own person, or the person of the host governing the
+        // workspace, asks it to stop.
+        let governor = record
+            .as_ref()
+            .map(|request| request.governor_hint.host.user_public_key);
+        if caller.user_public_key != self.services.cert.user_public_key
+            && governor != Some(caller.user_public_key)
+        {
+            return Err(
+                "only its own person or the workspace's governor asks a host to stop serving it"
+                    .into(),
+            );
+        }
+        let workspace_id = record.map(|request| request.workspace_id);
         let served = self.served.lock_recover().remove(workspace).is_some();
         if let Some(workspace_id) = workspace_id {
             stop_serving(&self.services, workspace_id).await?;
@@ -244,11 +246,13 @@ impl Hosting {
         Ok(served || workspace_id.is_some())
     }
 
-    /// Check `request`, admit what its governance admits, and start
-    /// following the workspace and attaching it to its governor. `resumed` takes
-    /// in what this host retained of the workspace since it was handed over.
+    /// Check `request`, `caller`'s when a device asks, admit what its
+    /// governance admits, and start following the workspace and attaching it to
+    /// its governor. `resumed` takes in what this host retained of the
+    /// workspace since it was handed over.
     async fn serve(
         &self,
+        caller: Option<&DeviceCert>,
         request: &HostWorkspaceRequest,
         resumed: bool,
     ) -> Result<TransportHint, String> {
@@ -262,11 +266,17 @@ impl Hosting {
         // The owner device serving the workspace, whose own address the hint is.
         let authority = governor.device_certificate.clone();
         // The hint names the workspace this host is asked to serve, by the same
-        // uuid and shard, from a device of this host's own person.
-        let asked_shard = request.workspace_id;
-        if governor.workspace_id != asked_shard || authority.user_public_key != own.user_public_key
-        {
-            return Err("the workspace is not served by a device of this host's person".into());
+        // uuid and shard, and the device asking is of the governor's person.
+        if governor.workspace_id != request.workspace_id {
+            return Err("the governor's address names another workspace".into());
+        }
+        if caller.is_some_and(|caller| caller.user_public_key != authority.user_public_key) {
+            return Err("only the workspace's governor hands it to a host".into());
+        }
+        if !takes(&services.work, &authority, own, request.workspace_id) {
+            return Err(
+                "a device serves a workspace placed on it only when it takes that work".into(),
+            );
         }
         let now = tilo_clock::wall();
         let mut peer = replica(&request.bootstrap, now)?;
@@ -281,7 +291,15 @@ impl Hosting {
                 }
             }
         }
-        admit(services, request.workspace_id, &peer, now).await?;
+        // A host of the governor's person is admitted as one of its devices
+        // before it is handed the workspace; another person's host is named
+        // among the workspace's hosts once it answered its address, so the
+        // first hand-over to it does not name it yet.
+        let named = admit(services, request.workspace_id, &peer, now).await?;
+        if !named && (resumed || authority.user_public_key == own.user_public_key) {
+            stop_serving(services, request.workspace_id).await?;
+            return Err("the workspace's governance does not admit this host".into());
+        }
         let workspace = services
             .workspaces
             .lock()
@@ -318,14 +336,16 @@ impl Hosting {
         let dialer = HostDialer {
             endpoint: services.endpoint.clone(),
             identity,
+            trust_policy: services.trust_policy.clone(),
             workspaces: services.workspaces.clone(),
             metrics: services.metrics.clone(),
             scope: Some(vec![request.workspace_id]),
         }
         .spawn_woken(
-            Upstream::OwnDevice {
+            Upstream {
                 addr: governor.endpoint_addr.clone(),
                 device: authority.device_public_key,
+                person: authority.user_public_key,
             },
             format!("governor of {}", request.workspace),
             &services.arrivals,
@@ -338,6 +358,7 @@ impl Hosting {
             record: self.record_path(&request.workspace),
             peer,
             replica,
+            named,
         };
         let task = tokio::spawn(follower.run(notices, AbortOnDrop(dialer)));
         self.served
@@ -345,6 +366,19 @@ impl Hosting {
             .insert(request.workspace.clone(), AbortOnDrop(task));
         own_hint(services, &governor)
     }
+}
+
+/// Whether `work` takes the workspace `workspace_id` that the host `authority`
+/// governs, for this host `own`.
+fn takes(
+    work: &WorkSetting,
+    authority: &DeviceCert,
+    own: &DeviceCert,
+    workspace_id: WorkspaceId,
+) -> bool {
+    let mut whose = Whose::of_roots(authority.user_public_key, own.user_public_key);
+    whose.workspace = Some(workspace_id);
+    work.from.admits(&whose)
 }
 
 /// This host's own signed address for the workspace `governor` addresses.
@@ -424,31 +458,28 @@ fn follow(peer: &mut StatePeer, governor: [u8; 32], body: &[u8], now: SystemTime
 }
 
 /// Admit to the workspace exactly the members `peer`'s governance
-/// admits, opening the workspace when it is not yet.
+/// admits, opening the workspace when it is not yet. Whether that governance
+/// admits this host's own device.
 ///
 /// # Errors
 ///
-/// The governance does not admit this host's device, or the access could not
-/// be written.
+/// The access could not be written.
 async fn admit(
     services: &WorkspaceServices,
     workspace_id: WorkspaceId,
     peer: &StatePeer,
     now: SystemTime,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let access: GovernedAccess = peer.governance().governed_access(now)?;
-    if !access
+    let named = access
         .member_devices
-        .contains(&services.cert.device_public_key)
-    {
-        return Err("the workspace's governance does not admit this host".into());
-    }
+        .contains(&services.cert.device_public_key);
     services
         .access
         .replace(workspace_id, true, access)
         .await
-        .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    Ok(named)
 }
 
 /// Stop handing `workspace_id`'s changes to a follower.
@@ -523,6 +554,9 @@ struct Follower {
     peer: StatePeer,
     /// What subscribing devices are answered from.
     replica: Arc<HostedReplica>,
+    /// Whether the workspace's governance has admitted this host yet: one
+    /// that named it and no longer does has let it go.
+    named: bool,
 }
 
 impl Follower {
@@ -543,18 +577,19 @@ impl Follower {
             }
             *self.replica.peer.lock_recover() = self.peer.clone();
             match admit(&self.services, self.workspace_id, &self.peer, now).await {
-                Ok(()) => {}
-                Err(error) if self.dropped(now) => {
-                    tracing::info!(workspace = %self.workspace, %error, "the workspace's governance no longer admits this host");
+                Ok(true) => self.named = true,
+                Ok(false) if self.named => {
+                    tracing::info!(workspace = %self.workspace, "the workspace's governance no longer admits this host");
                     break;
                 }
+                Ok(false) => {}
                 Err(error) => {
                     tracing::warn!(workspace = %self.workspace, %error, "a hosted workspace's access was not updated");
                 }
             }
         }
         drop(dialer);
-        if self.dropped(tilo_clock::wall()) {
+        if self.named && self.dropped(tilo_clock::wall()) {
             if let Err(error) = stop_serving(&self.services, self.workspace_id).await {
                 tracing::warn!(workspace = %self.workspace, %error, "a workspace no longer hosted here was not closed");
             }

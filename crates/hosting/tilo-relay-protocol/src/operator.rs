@@ -15,11 +15,13 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
 ///
-/// 11 dropped the command that took in the people an earlier release kept; 10
+/// 12 has the operator have another host hold a workspace governed here
+/// ([`OperatorCommand::Hold`]); 11 dropped the command that took in the
+/// people an earlier release kept; 10
 /// is the operator's declaration of a workspace's owner carrying the name that
 /// person goes by ([`OperatorCommand::DeclareOwner`]), so a reader of that one
 /// decodes no line of this.
-pub const VERSION: u16 = 11;
+pub const VERSION: u16 = 12;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -132,6 +134,19 @@ pub enum OperatorCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// Have the host at `host`, a site's or a relay's origin
+    /// (`https://eu1.tilo.sh`), hold `workspace`, governed here, as well: it
+    /// is handed the workspace and named among its hosts, so both hold it
+    /// from then on and a change on either reaches the other. The host takes
+    /// it only when its own operator's work setting does. The child answers
+    /// [`OperatorEvent::Held`] or [`OperatorEvent::HoldRefused`] for the
+    /// same workspace.
+    Hold {
+        /// The workspace, as listing workspaces names it.
+        workspace: String,
+        /// The other host's origin.
+        host: String,
+    },
 }
 
 /// What the workspace relay reports to the workspace service.
@@ -173,6 +188,18 @@ pub enum OperatorEvent {
         /// The key the operator named, as given.
         user_public_key: String,
         /// Why it declared nobody.
+        reason: String,
+    },
+    /// The host the operator named holds the workspace as well.
+    Held {
+        workspace: String,
+        /// The device key (hex) of the host holding it now.
+        host_device: String,
+    },
+    /// The host the operator named does not hold the workspace.
+    HoldRefused {
+        workspace: String,
+        /// Why not.
         reason: String,
     },
     /// An admitted pairing code certified nobody.
@@ -527,6 +554,14 @@ mod tests {
             OperatorEvent::DeploymentRoutes {
                 origin: "http://127.0.0.1:8790".into(),
             },
+            OperatorEvent::Held {
+                workspace: "w".into(),
+                host_device: "ab".repeat(32),
+            },
+            OperatorEvent::HoldRefused {
+                workspace: "w".into(),
+                reason: "it takes no workspace of another person".into(),
+            },
             OperatorEvent::OwnerDeclared {
                 user_public_key: "ef".repeat(32),
             },
@@ -540,9 +575,9 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_operator_protocol_round_trips_pins_and_refuses_its_lines;
 
-        phase protocol_eleven_round_trips_and_pins_its_wire_form;
+        phase protocol_twelve_round_trips_and_pins_its_wire_form;
         {
-            assert_eq!(VERSION, 11);
+            assert_eq!(VERSION, 12);
             let wait = OperatorCommand::WaitList {
                 request: "12".repeat(32),
                 contact: "Ada@example.org".into(),
@@ -616,6 +651,15 @@ mod tests {
                 )
             );
             assert_eq!(OperatorCommand::from_line(&named.to_line()).unwrap(), named);
+            let hold = OperatorCommand::Hold {
+                workspace: "w".into(),
+                host: "https://eu1.tilo.sh".into(),
+            };
+            assert_eq!(
+                hold.to_line(),
+                "{\"op\":\"hold\",\"workspace\":\"w\",\"host\":\"https://eu1.tilo.sh\"}\n"
+            );
+            assert_eq!(OperatorCommand::from_line(&hold.to_line()).unwrap(), hold);
         }
 
         phase wait_list_confirmations_and_standings_round_trip_and_name_no_address_in_a_log;

@@ -71,6 +71,14 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          an invite link to WORKSPACE (the Lounge when none),
                          made by the operator: tilo members invite with ARGS,
                          e.g. -- --role editor
+  stack.sh hold WORKSPACE ORIGIN
+                         have the stack at ORIGIN (its site's origin, e.g.
+                         http://127.0.0.1:34000) hold WORKSPACE, a workspace
+                         this stack governs, as well: from then on both hold
+                         it and a change on either reaches the other. That
+                         stack takes it only when it was brought up with
+                         TILO_SH_HOLD_FOR naming the workspace's id (or
+                         anyone), as production's TILO_WORKSPACES_HOLD_FOR
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
   stack.sh check
                          bring the stack up and run the end-to-end check on it
@@ -411,6 +419,11 @@ relay_env() {
     open) env+=(TILO_WORKSPACES_ADMISSION=open) ;;
     *) die "TILO_SH_ADMISSION is invite (production's) or open, not $admission" ;;
   esac
+  # The workspaces another stack governs that this one holds when that stack
+  # hands one over (stack.sh hold there): TILO_SH_HOLD_FOR=anyone, or their
+  # ids, comma-separated. Kept in the state, as the door is.
+  local hold_for=${TILO_SH_HOLD_FOR:-$(cat "$state/hold-for" 2>/dev/null || true)}
+  [[ -z $hold_for ]] || env+=("TILO_WORKSPACES_HOLD_FOR=$hold_for")
   # Not here: the moderation and summary model keys (no model is asked
   # locally), and the Discord bridge's real server unless --discord.
   if [[ -n ${discord_api:-} ]]; then
@@ -654,6 +667,30 @@ declare_owner_by_link() {
   kill "$pid" 2>/dev/null || true
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'the owner page handed over no user public key'
   declare_owner_at_lounge "$key"
+}
+
+# hold WORKSPACE ORIGIN: the running relay has the stack at ORIGIN hold
+# WORKSPACE as well, through its operator socket, as production's operator
+# asks it.
+hold_workspace() {
+  [[ $# -eq 2 ]] || die 'hold WORKSPACE ORIGIN: the workspace this stack governs, and the other stack'"'"'s origin'
+  local socket=$state/relay/lounge/operator.sock
+  [[ -S $socket ]] || die "the Lounge is not running ($socket); stack.sh up first"
+  python3 -I - "$socket" "$1" "$2" <<'PY' || die "the stack at $2 does not hold $1"
+import json, socket, sys
+path, workspace, host = sys.argv[1:4]
+connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+connection.connect(path)
+connection.sendall((json.dumps({"op": "hold", "workspace": workspace, "host": host}) + "\n").encode())
+answer = b""
+while chunk := connection.recv(4096):
+    answer += chunk
+event = json.loads(answer.decode().removeprefix("tilo-workspace-operator ").strip())
+if event.get("event") != "held":
+    print(event.get("reason") or event, file=sys.stderr)
+    sys.exit(1)
+print(f"{host} holds {workspace} as well (its host {event['host_device']})")
+PY
 }
 
 # The mails the door sent, oldest first: who to, the subject and the links in
@@ -1472,6 +1509,7 @@ up_native() {
   echo native > "$state/mode"
   use_mode native
   echo "${TILO_SH_ADMISSION:-invite}" > "$state/admission"
+  printf '%s\n' "${TILO_SH_HOLD_FOR:-}" > "$state/hold-for"
   make_secrets
   # The stack's own TLS first: the VM host's member device joins the workspace
   # at the relay, whose home relay is that TLS origin, so the host is given the
@@ -1646,6 +1684,7 @@ up_images() {
   echo images > "$state/mode"
   use_mode images
   echo "${TILO_SH_ADMISSION:-invite}" > "$state/admission"
+  printf '%s\n' "${TILO_SH_HOLD_FOR:-}" > "$state/hold-for"
   make_secrets
   # The relay's own device, which its VM host's member takes the workspaces'
   # runs from: made here, before either starts, so the relay starts once with
@@ -1782,7 +1821,7 @@ down() {
     # account's user namespace: only that namespace removes them.
     podman_ unshare rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/owner" 2>/dev/null \
       || rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/owner"
-    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission" "$state/operator.env" "$state/operator"
+    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission" "$state/hold-for" "$state/operator.env" "$state/operator"
     say "stopped, and its state is gone (builds kept in $native, images in $state/images)"
   else
     say "stopped; its state stays in $state (stack.sh down --wipe deletes it)"
@@ -1867,6 +1906,7 @@ case $cmd in
   mail) list_mail ;;
   owner) declare_owner "$@" ;;
   invite) invite_link "$@" ;;
+  hold) hold_workspace "$@" ;;
   browser) browser "$@" ;;
   check)
     exec bash "$here/check.sh" "$@" ;;

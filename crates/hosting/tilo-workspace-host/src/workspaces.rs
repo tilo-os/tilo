@@ -883,12 +883,8 @@ pub(crate) struct WorkspaceServices {
     pub(crate) metrics: Arc<crate::metrics::Metrics>,
     /// Pre-admissions each workspace keeps, spent ones included.
     pub(crate) max_pre_admissions: usize,
-    /// The live handshake trust policy, for [`crate::workspace_access::decide`],
-    /// which a host with agents of its own decides with.
-    #[cfg_attr(
-        not(feature = "agents"),
-        expect(dead_code, reason = "only a host with agents of its own decides")
-    )]
+    /// The live handshake trust policy, for [`crate::workspace_access::decide`]
+    /// and for what a host holding a workspace with this one carries.
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// Agent delegations, for [`crate::workspace_access::decide`] and for
     /// refusing an agent the administration only a person holds.
