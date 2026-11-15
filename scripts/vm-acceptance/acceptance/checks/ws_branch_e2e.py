@@ -777,6 +777,8 @@ def branch(ctx, res):
     res.metrics["timings"] = {k: {x: v for x, v in t.items() if x not in ("shell_during_s", "answer")}
                               for k, t in timings.items()}
     scene["branches"] = branches
+    if problems:
+        problems.append(session_told(ctx))
     problems.judge()
 
 
@@ -909,17 +911,16 @@ def post_chat(ctx, ws: dict, text: str) -> None:
                 "--since @$((t-20)) --until @$((t+2)) 2>/dev/null | grep -aE 'Started app-|launch|segfault|core' "
                 "| tail -n 30 | cut -c1-300", timeout=120, check=False)
         running = app_processes(ctx, CHAT) + "\n== the crashed drawing threads' processes\n" + crashed_threads(ctx)
-        # The launcher drops an app's own output: keep it from the session's next start on (WB05
-        # restarts it), so Chat says itself why it shows nothing.
+        # The session started with the launcher keeping its apps' own output (run.py's drop-in), so
+        # Chat says itself why it shows nothing.
         evidence = chat_evidence(ctx, ctx.facts.get("wsb:since", 0))
-        evidence += "\n== keeping Chat's output from the session's next start\n" + keep_debug_output(ctx)[-1200:]
         # The report prints a data file's last 4 KiB: the evidence goes last.
         said = crash + "\n" + running + "\n" + said + "\n" + evidence
         ctx.write("WB01-chat-said.txt", said)
         raise Unobservable(f"Chat in {ws.get('name')} shows no {COMPOSER!r} and offers no post; {evidence}; it offers "
                            f"{offered(ctx, CHAT)}; Chat's crash: {crash[-3000:]}; "
                            f"its processes: {running[-3000:]}; its drawing: {gpu[-2500:]}; "
-                           f"{app_evidence(ctx, CHAT)}")
+                           f"{app_evidence(ctx, CHAT)}; {session_told(ctx)}")
     press(ctx, COMPOSER)
     ctx.vm.input("type", text)
     ctx.vm.key("Return")
@@ -1064,36 +1065,48 @@ def chat_processes(ctx) -> str:
         f"b[k], substr(c[k], 10, 300)}}' {CHAT_PS} 2>/dev/null | sort | head -n 30", timeout=60, check=False)
 
 
-def debug_dropin(ctx) -> str:
-    """The slot session's own drop-in this check writes, beside tilo-vmd's (an instance drop-in,
-    as e2e-branch writes its log level, which tilo-vmd leaves in place)."""
-    return f"/etc/systemd/system/tilo-vm-session@{ctx.vm.slot}.service.d/90-e2e-ws-branch.conf"
+def session_dropin(ctx) -> str:
+    """The slot session's drop-in run.py writes before the session first starts, from
+    `TILO_ACCEPTANCE_SESSION_ENV` (tools/ci/vm-acceptance.sh sets it for this check): the
+    launcher's debug output and the log level, as e2e-remote and e2e-branch set theirs."""
+    return f"/etc/systemd/system/tilo-vm-session@{ctx.vm.slot}.service.d/90-acceptance-session.conf"
 
 
-def keep_debug_output(ctx) -> str:
-    """From the slot session's next start on (WB05 restarts it), its launchers keep each app's own
-    stdout and stderr in the app's data home (`launcher-debug-output.log`,
-    `TILO_LAUNCHER_DEBUG_STDERR`): an instance drop-in, as e2e-branch sets its sessions' log
-    level. Says what it wrote, or why it could not."""
-    dropin = debug_dropin(ctx)
-    said = ctx.vm.root_exec(
-        f"id -un; mkdir -p \"$(dirname {dropin})\" && "
-        f"printf '[Service]\\nEnvironment=TILO_LAUNCHER_DEBUG_STDERR=1\\n' > {dropin} && "
-        f"systemctl daemon-reload && systemctl show -p Environment,DropInPaths {shlex.quote(dropin.split('/')[-2][:-2])} "
-        "2>&1 | cut -c1-600; ls -la \"$(dirname " + dropin + ")\" 2>&1", timeout=60, check=False)
-    ctx.facts["wsb:debug-output"] = said
-    return said
+# What the session logs of an app that did not open and a branch that is not complete: Chat's
+# launches, the launch refusals, an app that ended, and each part a branch missed.
+TOLD = (r"so\.tilo\.chat|not complete|could not open|launch was refused|launch did not start|"
+        r"an app stopped|an app closed|a branch of a workspace|did not reach|did not come|keys did not")
 
 
-def session_said(ctx, pattern: str, lines: int = 40, since: int = 0) -> str:
-    """What the slot session logged lately that matches `pattern`: its lines are in the slot user's
-    journal. Read over the last 20 minutes (or since `since`), which keeps the read quick on a
-    journal a long session filled."""
-    when = f"--since @{since} " if since else "--since -20min "
+def session_log(ctx, pattern: str, lines: int = 40) -> str:
+    """The lines of the slot session's own log that match `pattern`: `events.log`, the session's log
+    events alone that the measurement stream does not push out, then the full record
+    `core.SESSION_LOG` names, each line once."""
+    logs = core.SESSION_LOG.rsplit("/", 1)[0]
     return ctx.vm.exec(
-        f"journalctl --user -m {when}--no-pager -o short-iso 2>/dev/null "
+        f"cat \"{logs}/events.log\" \"{core.SESSION_LOG}\" 2>/dev/null | awk '!seen[$0]++' "
         "| sed 's/\\x1b\\[[0-9;]*m//g' | grep -av 'FRAME-LIFECYCLE\\|paint-stats\\|HEAP-MILESTONE' "
-        f"| grep -aiE {shlex.quote(pattern)} | tail -n {lines} | cut -c1-400", timeout=180, check=False)
+        f"| grep -aiE {shlex.quote(pattern)} | tail -n {lines} | cut -c1-500", timeout=180, check=False)
+
+
+def session_said(ctx, pattern: str, lines: int = 40, since: int = 0) -> str:  # noqa: ARG001
+    """What the slot session logged that matches `pattern`, from its own log files."""
+    return session_log(ctx, pattern, lines)
+
+
+def session_told(ctx, lines: int = 60) -> str:
+    """What the session said of the apps that did not open and the branches not complete
+    ([`TOLD`]): for a WB01, WB02 or WB05 failure, last in its message."""
+    return "the session log said: " + (session_log(ctx, TOLD, lines).strip() or "(nothing of it)")
+
+
+def debug_switch(ctx) -> str:
+    """Whether the running session got the drop-in: the file, and its processes' environment."""
+    return ctx.vm.root_exec(
+        f"cat {session_dropin(ctx)} 2>&1 | tail -n 3; for p in $(pgrep '^tilo-session'); do "
+        "echo \"$p $(cat /proc/$p/comm) $(tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null "
+        "| grep -aE '^(TILO_LAUNCHER_DEBUG_STDERR|RUST_LOG)=' | tr '\\n' ' ')\"; done",
+        timeout=60, check=False)
 
 
 def chat_evidence(ctx, since: int) -> str:
@@ -1103,18 +1116,12 @@ def chat_evidence(ctx, since: int) -> str:
     def part(title: str, text: str, keep: int = 1500) -> str:
         return f"== {title}\n{(text or '(nothing)').strip()[-keep:]}"
     return "\n".join([
-        part("the session's debug switch", ctx.vm.root_exec(
-            f"cat {debug_dropin(ctx)} 2>&1 | tail -n 3; for p in $(pgrep '^tilo-session'); do "
-            "echo \"$p $(cat /proc/$p/comm) $(tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null "
-            "| grep -c TILO_LAUNCHER_DEBUG_STDERR)\"; done",
-            timeout=60, check=False), 400),
+        part("the session's debug switch", debug_switch(ctx), 600),
         part("Chat's own output", ctx.vm.root_exec(
             "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
             "-path '*so.tilo.chat*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
             "tail -c 3000 \"$f\"; done", timeout=300, check=False), 3000),
-        part("the session of Chat's launches", session_said(
-            ctx, "so.tilo.chat|launch was refused|launch did not start|an app stopped|an app closed", 25, since),
-            2500),
+        part("the session of Chat's launches", session_log(ctx, TOLD, 30), 3000),
         part("Chat's processes as they came and went", chat_processes(ctx), 2500),
         part("core dumps", ctx.vm.root_exec("coredumpctl --no-pager list 2>&1 | tail -n 5", timeout=60,
                                             check=False), 600),
@@ -1130,10 +1137,7 @@ def app_output(ctx, ws: dict, app: str) -> str:
     except (CheckFailed, Unobservable, VmError) as exc:
         return f"(it did not open: {exc})"
     time.sleep(60)
-    return "kept: " + ctx.facts.get("wsb:debug-output", "(not asked)")[-600:] + "\n" + ctx.vm.root_exec(
-        "for p in $(pgrep '^tilo-session'); do echo \"session $p $(cat /proc/$p/comm): $(tr '\\0' '\\n' "
-        "< /proc/$p/environ | grep -c TILO_LAUNCHER_DEBUG_STDERR) debug switch\"; done; "
-        f"grep -c TILO_LAUNCHER_DEBUG_STDERR {debug_dropin(ctx)} 2>&1; "
+    return "switch: " + debug_switch(ctx)[-600:] + "\n" + ctx.vm.root_exec(
         "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
         f"-path '*{app}*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
         "tail -c 5000 \"$f\"; done", timeout=300, check=False) + "\n" + app_processes(ctx, app)[-3000:]
@@ -1395,8 +1399,8 @@ def after_restart(ctx, res):
     # takes a line of its own, and its records' history is not held back; the source keeps its chat.
     first = scene["branches"][0]
     if not scene["chat"]:
-        # The session restarted with the launcher keeping its apps' own output (WB01 asked for it):
-        # Chat opened once more says, in its data home, why it shows no window.
+        # The session runs with the launcher keeping its apps' own output (run.py's drop-in): Chat
+        # opened once more says, in its data home, why it shows no window.
         problems.append("Chat after the restart is unobservable: the source's chat was never set up (WB01); "
                         f"what Chat itself said, opened again: {app_output(ctx, scene['source'], CHAT)[-4000:]}; "
                         f"the drawing threads that crashed: {crashed_threads(ctx)}")
@@ -1419,6 +1423,8 @@ def after_restart(ctx, res):
             f"journalctl --no-pager -o cat --since @{since or 0} | grep -a 'so.tilo.chat' "
             "| grep -a 'does not match its binding' | tail -n 3 | cut -c1-400", timeout=180, check=False).strip()
         problems.want(not blocked, f"after the restart Chat's history is held back: {blocked}")
+    if problems:
+        problems.append(session_told(ctx))
     problems.judge()
 
 

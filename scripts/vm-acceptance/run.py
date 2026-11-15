@@ -248,6 +248,26 @@ def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
     vm.run(*args, timeout=300, slot=False)
 
 
+# Where the slot session's environment for a run goes: an instance drop-in, written as root before
+# the slot's session first starts, as scripts/e2e-remote/run.py writes its log level.
+SESSION_DROPIN = "/etc/systemd/system/tilo-vm-session@{slot}.service.d/90-acceptance-session.conf"
+
+
+def session_environment(vm: TiloVm) -> None:
+    """Start the slot's session with what `TILO_ACCEPTANCE_SESSION_ENV` asks (`KEY=VALUE` words: its
+    log level, the launcher's debug output), from its first start on. A run without it writes
+    nothing."""
+    # Each word goes into the drop-in as it is: one a shell would have to quote is left out.
+    pairs = [w for w in os.environ.get("TILO_ACCEPTANCE_SESSION_ENV", "").split()
+             if "=" in w and shlex.quote(w) == w]
+    if not pairs:
+        return
+    dropin = SESSION_DROPIN.format(slot=vm.slot)
+    lines = "".join(f"Environment={p}\\n" for p in pairs)
+    vm.root_exec(f"mkdir -p \"$(dirname {dropin})\" && printf '[Service]\\n{lines}' > {dropin} && "
+                 "systemctl daemon-reload", timeout=60, check=False)
+
+
 def keep_slot_logs(vm: TiloVm, out: Path) -> Path | None:
     """What the slot's compositor and tilo-vmd said, for a run that could not set up its
     session: `tilo-vm logs <slot>`, which the throwaway VM takes with it when it goes."""
@@ -562,6 +582,7 @@ def main() -> int:
         if management:
             facts["provenance"]["swap"] = management
         meta["provenance"] = facts["provenance"]
+        session_environment(vm)
         try:
             slot_create(vm, outputs, None)
         except VmError:

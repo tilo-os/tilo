@@ -144,6 +144,9 @@ if [[ $mode == e2e-agents ]]; then
 elif [[ $mode == e2e-ws-branch ]]; then
   only=ws-branch-e2e
   swap=""
+  # The slot session starts with the launcher keeping each app's own output and with its branches
+  # and launches logged in full, in the session log the check reads when a step fails.
+  export TILO_ACCEPTANCE_SESSION_ENV="TILO_LAUNCHER_DEBUG_STDERR=1 RUST_LOG=info,tilo_session::workspace_branch=debug,tilo_session::apps=debug"
   # `--test hold` keeps a failed run's VM up for an hour, to reach it with `t vm ssh`.
   # `--test hold`, or `t dispatch e2e-ws-branch --input hold=SECONDS`, keeps a failed run's VM up
   # for `t vm ssh`.
