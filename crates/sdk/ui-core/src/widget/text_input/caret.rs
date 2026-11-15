@@ -4,9 +4,6 @@
 use super::TextInput;
 use crate::text_render::TextRenderer;
 
-/// The room a caret field keeps past its words for the caret itself, in logical pixels.
-const CARET_ROOM: f32 = 2.0;
-
 impl TextInput {
     /// A caret standing on a surface rather than a field in a form: it draws no well and no
     /// fill — the caret and the words are all there is of it — and it is only as wide as what
@@ -48,8 +45,15 @@ impl TextInput {
     ) -> taffy::Size<f32> {
         let shown = self.caret_shown().to_owned();
         let scale = self.scale_for(text_renderer.text_scale());
-        let (words, _) = text_renderer.measure(&shown, self.effective_font_size() * scale, None);
-        let width = (words + CARET_ROOM).ceil();
+        let style = self.line_style(scale);
+        let (words, _) = text_renderer.measure_style(&shown, None, &style);
+        // The room past the words is the caret's own width, as the theme draws it.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a caret's width is a few logical pixels"
+        )]
+        let room = self.last_caret_width as f32;
+        let width = (words + room).ceil();
         self.caret_measured = Some(shown);
         let width = match available {
             taffy::AvailableSpace::Definite(room) => width.min(room),

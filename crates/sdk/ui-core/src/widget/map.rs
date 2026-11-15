@@ -322,13 +322,13 @@ impl EdgeDrag {
 }
 
 /// How close to a pin's trailing or bottom edge, in logical pixels, a press grabs that edge.
-const EDGE_GRAB: f64 = 6.0;
+const EDGE_GRAB: f64 = crate::tokens::Layout::BASE.resize_grip as f64;
 /// The least side a resized place keeps, in logical pixels.
-const LEAST_SIDE: f64 = 120.0;
+const LEAST_SIDE: f64 = crate::tokens::Layout::BASE.place_min_side as f64;
 /// The least height a hugging view's own measure must come to, in canvas pixels, for the map to
 /// take it as the view's height: under it, the view said no height of its own (a list that
 /// scrolls measures as nothing), and it fills its most instead.
-const LEAST_NATURAL: f64 = 8.0;
+const LEAST_NATURAL: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
 /// See the module docs.
 pub struct Map {
@@ -1305,7 +1305,7 @@ impl Map {
 const GRAIN_PITCH: f64 = crate::tokens::Spacing::BASE.rhythm.group as f64;
 /// The closest the ground's dots stand on screen, in logical pixels: zoomed out further, every
 /// other one is left out, so the ground reads as a surface and never as a texture.
-const GRAIN_LEAST: f64 = 16.0;
+const GRAIN_LEAST: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
 /// How wide a dot of the ground is on screen, in logical pixels, at any zoom.
 const GRAIN_DOT: f64 = 1.5;
 

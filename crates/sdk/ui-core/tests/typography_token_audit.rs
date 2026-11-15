@@ -42,6 +42,8 @@ fn not_a_content_size(c: &Captures<'_>) -> bool {
 /// measurement two (child, constraints); neither carries a pixel text size.
 /// A call closed on its line is the text API only with three arguments; an
 /// incomplete/multiline call stays counted unless four arguments are visible.
+/// `Widget::measure` takes three too, and its arguments are the layout's own
+/// (known, available, text): that is no text size either.
 fn is_pixel_text_call(line: &str, c: &Captures<'_>) -> bool {
     if &c[1] != "measure" {
         return true;
@@ -53,6 +55,12 @@ fn is_pixel_text_call(line: &str, c: &Captures<'_>) -> bool {
     let mut last = None;
     let mut closed = false;
     let end = c.get(0).expect("matched call").end();
+    if line[end..]
+        .trim_start()
+        .starts_with("known, available, text)")
+    {
+        return false;
+    }
     for ch in line[end..].chars() {
         if quoted {
             if escaped {

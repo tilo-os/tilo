@@ -1,6 +1,7 @@
-//! Reference geometry for the shell's hand-composed chrome. These are the sizes and
-//! distances that are not a control height, a panel width or a spacing step: a resize
-//! grip, a pinned avatar, a strip switcher card.
+//! Reference geometry for the shell's hand-composed chrome and the content widgets that
+//! paint their own. These are the sizes and distances that are not a control height, a
+//! panel width or a spacing step: a resize grip, a pinned avatar, a strip switcher card,
+//! the least side a canvas place keeps.
 
 use super::Metrics;
 
@@ -36,6 +37,11 @@ pub struct Layout {
     pub sheet_footer: f32,
     pub field_label_height: f32,
     pub field_prose_height: f32,
+    /// The least side a canvas place keeps when it is dragged smaller.
+    pub place_min_side: f32,
+    /// The tallest a list that fills its parent reports its rows coming to where the
+    /// parent gives it no height: a tall screen's height, past which it scrolls.
+    pub natural_most: f32,
 }
 
 impl Layout {
@@ -69,6 +75,8 @@ impl Layout {
         sheet_footer: 84.0,
         field_label_height: 22.0,
         field_prose_height: 88.0,
+        place_min_side: 120.0,
+        natural_most: 2160.0,
     };
 }
 

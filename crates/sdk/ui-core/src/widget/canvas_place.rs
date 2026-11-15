@@ -61,7 +61,7 @@ pub struct PlaceProps {
 /// How tall the band a place keeps over its view for its handle stands, in logical pixels: a
 /// control's row in a floating surface, a tight step above the view. The canvas stands a place's
 /// pin this much over the point it was put at, so the view's own top is at the point.
-pub const PLACE_BAND: f64 = 44.0;
+pub const PLACE_BAND: f64 = crate::tokens::Metrics::BASE.panel_row_height as f64;
 
 /// See the module docs.
 pub struct CanvasPlace {

@@ -77,7 +77,7 @@ const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
 /// to give ([`VirtualList::natural_style`]), in logical pixels: a tall screen's height. Past it the
 /// list scrolls in whatever room it is given, and a list never says a height that would have every
 /// one of thousands of rows mounted.
-const NATURAL_MOST: f64 = 2160.0;
+const NATURAL_MOST: f64 = crate::tokens::Layout::BASE.natural_most as f64;
 const END_SLACK: f64 = 0.5;
 
 fn fit_needs_layout(box_height: f64, rows: f64, viewport: f64) -> bool {
