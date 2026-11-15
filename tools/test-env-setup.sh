@@ -59,7 +59,10 @@
 #          fixture generator revision and cached below TILO_TEST_CACHE_DIR.
 #          An existing TILO_NTFS_FIXTURES is kept. nextest runs this step only
 #          when the run selects a tilo-ntfs-helper test, as only those read
-#          the images, which take minutes to build.
+#          the images, which take a minute to build. A job that finds no set
+#          makes one in a directory of its own and places it with one rename,
+#          so no job waits on another's generation, and a set a job raced to
+#          make is dropped whole rather than written over the one that landed.
 # root     TILO_TEST_AS_ROOT=1: the few tests that need root say so with this
 #          step, and keep it where the others run as the test user
 #          (tools/as-test-user.sh). In a container's own cgroup root, its
@@ -263,28 +266,30 @@ ntfs() {
         "$crate/source_artifact.py" "$crate/tests/fixture_builder.c" | sha256sum | cut -c1-16)
     root="$cache_dir/ntfs-fixtures"
     dir="$root/$key"
-    mkdir -p "$root"
-    exec 9>"$root/.lock"
-    flock 9
     if [[ ! -e $dir/manifest.json ]]; then
+        mkdir -p "$root"
         echo "test-env: generating native NTFS fixtures in $dir" >&2
         stage=$(mktemp -d "$root/.stage.XXXXXX")
         if python3 "$crate/tests/build_native_fixtures.py" \
             --output "$stage/fixtures" --tools-output "$stage/tools" \
             >"$stage/log" 2>&1; then
-            rm -rf -- "$dir"
-            mv -- "$stage/fixtures" "$dir"
+            # The rename fails when another job placed the set first; the
+            # images are the same either way, so its set is the one read.
+            mv -- "$stage/fixtures" "$dir" 2>/dev/null || true
         else
             status=$?
             cat "$stage/log" >&2
         fi
         rm -rf -- "$stage"
+        if [[ $status -eq 0 && ! -e $dir/manifest.json ]]; then
+            echo "test-env: the native NTFS fixtures did not land in $dir" >&2
+            status=1
+        fi
         if [[ $status -ne 0 ]]; then
             echo "test-env: native NTFS fixture generation failed" >&2
             exit "$status"
         fi
     fi
-    exec 9>&-
     provide TILO_NTFS_FIXTURES "$dir"
 }
 

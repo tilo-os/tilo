@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate disposable native images; refuse an existing output directory."""
-import argparse, hashlib, json, pathlib, shutil, subprocess, sys
+import argparse, hashlib, json, os, pathlib, subprocess, sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from build_native import build, SHA
@@ -13,6 +13,21 @@ src = build(a.tools_output, True)
 exe = out / 'fixture-builder'
 subprocess.run(['cc', '-D_DARWIN_C_SOURCE', '-D_GNU_SOURCE', '-DHAVE_CONFIG_H', '-I'+str(src), '-I'+str(src/'include/ntfs-3g'), str(ROOT/'tests/fixture_builder.c'), str(src/'libntfs-3g/.libs/libntfs-3g.a'), *(['-liconv'] if sys.platform == 'darwin' else []), '-o', str(exe)], check=True)
 def run(*args): subprocess.run(list(map(str,args)), check=True)
+def copy_image(source, destination):
+    """Copy an image keeping its zero runs as holes: a fixture is 64 MiB of which NTFS
+    writes a few, and the cached set is read by jobs that only read those parts."""
+    with source.open('rb') as reader, destination.open('wb') as writer:
+        while block := reader.read(1 << 20):
+            if block.count(0) == len(block):
+                writer.seek(len(block), os.SEEK_CUR)
+            else:
+                writer.write(block)
+        writer.truncate()
+def digest(path):
+    sha = hashlib.sha256()
+    with path.open('rb') as stream:
+        while block := stream.read(1 << 20): sha.update(block)
+    return sha.hexdigest()
 clean = out/'clean.img'
 with clean.open('xb') as f: f.truncate(64*1024*1024)
 run(src/'ntfsprogs/mkntfs', '-F', '-Q', '-T', '-L', 'TILO_FIXTURE', clean)
@@ -20,31 +35,31 @@ content = out/'content'; content.write_bytes(b'Connected NTFS fixture\n')
 run(src/'ntfsprogs/ntfscp', clean, content, '/hello.txt')
 run(exe, clean, 'serial')
 for name, mode in [('times','times'), ('times-v1','times-v1'), ('times-missing','times-missing'), ('times-duplicate','times-duplicate'), ('times-invalid-flags','times-invalid-flags'), ('dos-alias','dos-alias'), ('large-metadata','large-metadata'), ('restart-clean','restart-clean'), ('restart-bad-first','restart-bad-first'), ('restart-bad-second','restart-bad-second'), ('restart-v2','restart-v2'), ('dirty','dirty'), ('badlog','badlog'), ('generation','generation'), ('metadata','metadata'), ('upcase','upcase'), ('oversize','oversize'), ('attrlist-cycle','attrlist-cycle'), ('acl','acl'), ('hardlink','hardlink')]:
-    dest=out/(name+'.img'); shutil.copyfile(clean,dest); run(exe,dest,mode)
-large = out/'large.img'; shutil.copyfile(clean, large)
+    dest=out/(name+'.img'); copy_image(clean,dest); run(exe,dest,mode)
+large = out/'large.img'; copy_image(clean, large)
 content.write_bytes(b''.join(bytes((j+block)%256 for j in range(256)) * 4096 for block in range(12))); run(src/'ntfsprogs/ntfscp', large, content, '/large.bin')
 content.write_bytes(bytes(range(251))*17); run(src/'ntfsprogs/ntfscp', large, content, '/tail.bin')
 content.write_bytes(b''); run(src/'ntfsprogs/ntfscp', large, content, '/empty.bin')
 run(exe, large, 'cancellation')
 content.write_bytes(b'final chunk'); run(src/'ntfsprogs/ntfscp', large, content, '/cancel/last.bin')
-copy_tree = out/'copy-tree.img'; shutil.copyfile(large, copy_tree); run(exe, copy_tree, 'copy-directories')
+copy_tree = out/'copy-tree.img'; copy_image(large, copy_tree); run(exe, copy_tree, 'copy-directories')
 for name, data in [('zero-hiber',bytes(4096)), ('hiber',b'hibr'+bytes(4092)), ('nonzero-hiber',bytes(4095)+b'x'), ('short-hiber',bytes(32))]:
-    dest=out/(name+'.img'); shutil.copyfile(clean,dest)
+    dest=out/(name+'.img'); copy_image(clean,dest)
     content.write_bytes(data); run(src/'ntfsprogs/ntfscp',dest,content,'/hiberfil.sys')
-shutil.copyfile(out/'zero-hiber.img',out/'hiber-io.img'); run(exe,out/'hiber-io.img','hiber-io')
+copy_image(out/'zero-hiber.img',out/'hiber-io.img'); run(exe,out/'hiber-io.img','hiber-io')
 for name in ['bitlocker','truncated','corrupt']:
-    dest=out/(name+'.img'); shutil.copyfile(clean,dest)
+    dest=out/(name+'.img'); copy_image(clean,dest)
     with dest.open('r+b') as f:
         if name=='bitlocker': f.seek(3); f.write(b'-FVE-FS-')
         elif name=='truncated': f.truncate(300)
         else: f.seek(3); f.write(b'BROKEN!!')
 content.write_bytes(b'ordinary sibling\n')
 for name in ['times','times-v1','times-duplicate','times-invalid-flags','metadata','acl','hardlink','dos-alias']:
-    scoped = out/('copy-scoped-'+name+'.img'); shutil.copyfile(out/(name+'.img'), scoped)
+    scoped = out/('copy-scoped-'+name+'.img'); copy_image(out/(name+'.img'), scoped)
     run(src/'ntfsprogs/ntfscp', scoped, content, '/ordinary.txt')
-manifest={'fixture_builder_sha256':hashlib.sha256((ROOT/'tests/fixture_builder.c').read_bytes()).hexdigest(),'source_sha256':SHA, 'format':'mkntfs -F -Q -T; serial set through NTFS_BOOT_SECTOR', 'expected':{'serial':'1122334455667788','root_record':5,'hello_content_hex':b'Connected NTFS fixture\n'.hex()},'images':{}}
+manifest={'fixture_builder_sha256':digest(ROOT/'tests/fixture_builder.c'),'source_sha256':SHA, 'format':'mkntfs -F -Q -T; serial set through NTFS_BOOT_SECTOR', 'expected':{'serial':'1122334455667788','root_record':5,'hello_content_hex':b'Connected NTFS fixture\n'.hex()},'images':{}}
 for f in sorted(out.glob('*.img')):
-    manifest['images'][f.name]={'sha256':hashlib.sha256(f.read_bytes()).hexdigest(),'bytes':f.stat().st_size}
+    manifest['images'][f.name]={'sha256':digest(f),'bytes':f.stat().st_size}
 manifest['expected']['large_bytes']=12*1024*1024
 manifest['expected']['large_sha256']=hashlib.sha256(b''.join(bytes((j+block)%256 for j in range(256))*4096 for block in range(12))).hexdigest()
 manifest['expected']['large_pattern']='byte=(offset%256 + offset//1048576)%256'
