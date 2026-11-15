@@ -62,22 +62,18 @@ fn a_panel_publishes_its_accessibility_tree() {
     let mut session = session_with(&[panel()]);
     session.start_surface(&panel()).expect("the panel starts");
     shown(&mut session);
-    let names = assistive.until_it_sees(&mut session, "Night light");
-
     // The controls a person reaches with a screen reader are there, by the
-    // names they hear, and they can be pressed through AT-SPI. This session
-    // runs no sound server and no backlight: the volume row says so rather
-    // than standing a control that could set nothing.
+    // names they hear, and the tile among them takes a press through AT-SPI.
+    // This session runs no sound server and no backlight: the volume row
+    // says so rather than standing a control that could set nothing.
+    let read = assistive.until_it_presses(&mut session, "Night light");
     for control in ["Night light", "No audio device"] {
         assert!(
-            names.iter().any(|name| name == control),
-            "the panel's tree names no {control}: {names:?}"
+            read.names.iter().any(|name| name == control),
+            "the panel's tree names no {control}: {:?}",
+            read.names
         );
     }
-    assert!(
-        assistive.pressable("Night light"),
-        "the night light tile takes a press over AT-SPI"
-    );
 
     session.stop_surface("quick-settings");
 }
@@ -89,28 +85,25 @@ fn the_reader_speaks_the_focused_panel_control() {
     let mut session = session_with(&[panel()]);
     session.start_surface(&panel()).expect("the panel starts");
     shown(&mut session);
-    let names = assistive.until_it_sees(&mut session, "Night light");
+    // Assistive technology focuses a control the way it acts on any app: the
+    // control the reader reached takes the keyboard.
+    let read = assistive.until_it_focuses(&mut session, "Night light");
     // This session has no audio server: the volume row says so, and stands
     // no slider to reach or move.
     assert!(
-        names.iter().any(|name| name == "No audio device"),
-        "the panel says the row has no device: {names:?}"
+        read.names.iter().any(|name| name == "No audio device"),
+        "the panel says the row has no device: {:?}",
+        read.names
     );
     assert!(
-        !names.iter().any(|name| name == "Volume"),
-        "no volume control stands where nothing can be set: {names:?}"
+        !read.names.iter().any(|name| name == "Volume"),
+        "no volume control stands where nothing can be set: {:?}",
+        read.names
     );
     assert!(
         !spoken.said().contains("Night light"),
         "the panel speaks what it is focused on, and it starts out focused on nothing: {:?}",
         spoken.said()
-    );
-
-    // Assistive technology focuses a control the way it acts on
-    // any app: the control the reader reached takes the keyboard.
-    assert!(
-        assistive.focus("Night light"),
-        "the night light tile takes focus over AT-SPI"
     );
 
     let deadline = Instant::now() + OPENING;
@@ -220,14 +213,6 @@ impl Assistive {
         });
     }
 
-    /// Every name an external reader reaches from the newest provider's
-    /// root.
-    fn reader_sees(&self) -> Vec<String> {
-        self.newest().map_or_else(Vec::new, |provider| {
-            walk(self.a11y_bus.address(), &provider)
-        })
-    }
-
     /// The bus name of the provider that embedded last: the panel this test
     /// started.
     fn newest(&self) -> Option<String> {
@@ -238,38 +223,24 @@ impl Assistive {
             .cloned()
     }
 
-    /// Say assistive technology is on until the newest provider's tree
-    /// names `control`, which proves the panel is up and reachable.
+    /// One walk of the newest provider's tree: the names an external reader
+    /// reaches from its root, and the control named `control` with the verbs
+    /// it offers, which takes the keyboard too when `focus` says a reader
+    /// reaches for it.
     ///
-    /// An AccessKit provider joins the accessibility bus only once assistive
-    /// technology says it is on, and it wakes on that change rather than on
-    /// the value it finds. Say it until the provider hears it: it may still
-    /// be connecting the first time.
-    fn until_it_sees(&self, session: &mut Session, control: &str) -> Vec<String> {
-        let deadline = Instant::now() + OPENING;
-        loop {
-            self.say_assistive_technology(true);
-            pump(session);
-            let names = self.reader_sees();
-            if names.iter().any(|name| name == control) {
-                return names;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the panel published no accessibility tree: {names:?}"
-            );
-            self.say_assistive_technology(false);
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    /// The provider and object path of the control named `name`.
-    fn node(&self, name: &str) -> Option<(String, String)> {
-        let provider = self.newest()?;
+    /// Everything about the control is read from the same tree: a provider
+    /// joins and leaves the accessibility bus as assistive technology
+    /// changes, and a tree read twice answers for two of them.
+    fn read(&self, control: &str, focus: bool) -> Read {
+        let Some(provider) = self.newest() else {
+            return Read::default();
+        };
         block_on(async {
             let connection = connected(self.a11y_bus.address()).await;
             let mut queue = vec![ROOT.to_owned()];
             let mut seen = HashSet::new();
+            let mut read = Read::default();
+            let mut at = None;
             while let Some(path) = queue.pop() {
                 if !seen.insert(path.clone()) || seen.len() > WALK_LIMIT {
                     continue;
@@ -277,60 +248,95 @@ impl Assistive {
                 let Ok(node) = accessible(&connection, &provider, &path).await else {
                     continue;
                 };
-                if node.name().await.is_ok_and(|named| named == name) {
-                    return Some((provider.clone(), path));
+                if let Ok(name) = node.name().await {
+                    if at.is_none() && name == control {
+                        at = Some(path.clone());
+                    }
+                    read.names.push(name);
                 }
                 if let Ok(children) = node.get_children().await {
                     queue.extend(children.iter().map(|child| child.path_as_str().to_owned()));
                 }
             }
-            None
+            if let Some(path) = at {
+                read.verbs = verbs_over(&connection, &provider, &path)
+                    .await
+                    .unwrap_or_default();
+                if focus {
+                    read.focused = grab_focus(&connection, &provider, &path).await;
+                }
+            }
+            read
         })
     }
 
-    /// The verbs a control named `name` offers over AT-SPI.
-    fn verbs(&self, name: &str) -> Vec<String> {
-        let Some((provider, path)) = self.node(name) else {
-            return Vec::new();
-        };
-        block_on(verbs(self.a11y_bus.address(), &provider, &path))
+    /// Say assistive technology is on until the newest provider's tree names
+    /// `control` as a control a reader can press.
+    ///
+    /// An AccessKit provider joins the accessibility bus only once assistive
+    /// technology says it is on, and it wakes on that change rather than on
+    /// the value it finds. Say it until the provider hears it: it may still
+    /// be connecting the first time.
+    fn until_it_presses(&self, session: &mut Session, control: &str) -> Read {
+        self.until(session, control, false)
     }
 
-    /// Whether a control named `name` can be pressed over AT-SPI.
-    fn pressable(&self, name: &str) -> bool {
-        self.verbs(name).iter().any(|verb| verb == "click")
+    /// The same, for a reader that reaches for the control and takes its
+    /// keyboard away.
+    fn until_it_focuses(&self, session: &mut Session, control: &str) -> Read {
+        self.until(session, control, true)
     }
 
-    /// Move the keyboard to the control named `name`, the way an external
-    /// reader does when it reaches a control and acts on it. Whether the
-    /// panel took it.
-    fn focus(&self, name: &str) -> bool {
-        let Some((provider, path)) = self.node(name) else {
-            return false;
-        };
-        block_on(async {
-            let connection = connected(self.a11y_bus.address()).await;
-            let Ok(component) = atspi_proxies::component::ComponentProxy::builder(&connection)
-                .destination(provider)
-                .expect("a bus name")
-                .path(path)
-                .expect("an object path")
-                .build()
-                .await
-            else {
-                return false;
-            };
-            component.grab_focus().await.unwrap_or(false)
-        })
+    fn until(&self, session: &mut Session, control: &str, focus: bool) -> Read {
+        let deadline = Instant::now() + OPENING;
+        loop {
+            self.say_assistive_technology(true);
+            pump(session);
+            let read = self.read(control, focus);
+            if read.names.iter().any(|name| name == control)
+                && read.verbs.iter().any(|verb| verb == "click")
+                && (!focus || read.focused)
+            {
+                return read;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the panel's tree names no {control} a reader can reach: it names {:?}, \
+                 the control offers {:?}, and it takes the keyboard: {}",
+                read.names,
+                read.verbs,
+                read.focused
+            );
+            self.say_assistive_technology(false);
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 
-/// The verbs the node at `path` offers, by the names a reader sees.
-async fn verbs(address: &str, provider: &str, path: &str) -> Vec<String> {
-    let connection = connected(address).await;
-    verbs_over(&connection, provider, path)
+/// One walk of a provider's tree: what it names, and the control asked for
+/// with the verbs it offers and whether it took the keyboard.
+#[derive(Debug, Default)]
+struct Read {
+    names: Vec<String>,
+    verbs: Vec<String>,
+    focused: bool,
+}
+
+/// Give the keyboard to the control at `path`, the way an assistive
+/// technology does when it reaches a control and acts on it. Whether the
+/// panel took it.
+async fn grab_focus(connection: &zbus::Connection, provider: &str, path: &str) -> bool {
+    let Ok(component) = atspi_proxies::component::ComponentProxy::builder(connection)
+        .destination(provider.to_owned())
+        .expect("a bus name")
+        .path(path.to_owned())
+        .expect("an object path")
+        .build()
         .await
-        .unwrap_or_default()
+    else {
+        return false;
+    };
+    component.grab_focus().await.unwrap_or(false)
 }
 
 /// The verbs the node at `path` offers, over a connection already open.
@@ -413,31 +419,6 @@ impl Spoken {
     fn said(&self) -> String {
         std::fs::read_to_string(&self.words).unwrap_or_default()
     }
-}
-
-/// Every accessible name from `provider`'s root down.
-fn walk(address: &str, provider: &str) -> Vec<String> {
-    block_on(async {
-        let connection = connected(address).await;
-        let mut queue = vec![ROOT.to_owned()];
-        let mut seen = HashSet::new();
-        let mut names = Vec::new();
-        while let Some(path) = queue.pop() {
-            if !seen.insert(path.clone()) || seen.len() > WALK_LIMIT {
-                continue;
-            }
-            let Ok(node) = accessible(&connection, provider, &path).await else {
-                continue;
-            };
-            if let Ok(name) = node.name().await {
-                names.push(name);
-            }
-            if let Ok(children) = node.get_children().await {
-                queue.extend(children.iter().map(|child| child.path_as_str().to_owned()));
-            }
-        }
-        names
-    })
 }
 
 /// One node of a provider's tree.
