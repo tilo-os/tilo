@@ -264,9 +264,6 @@ struct Record {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Kept {
-    /// Written as `room`: a record kept by an earlier session loads as it
-    /// is, rather than forgetting every file the person chose.
-    #[serde(rename = "room")]
     workspace: String,
     app: String,
     kind: String,
@@ -635,29 +632,6 @@ mod tests {
             );
             assert_eq!(next.tokens(&key()).len(), 1, "what is gone is forgotten");
             assert_eq!(next.grant(&key(), &kept, Kind::Read).unwrap(), path);
-        }
-
-        phase a_record_written_under_the_room_key_still_opens_its_files;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let record = dir.path().join("documents.json");
-            let kept = dir.path().join("kept.pdf");
-            std::fs::write(&kept, b"kept").unwrap();
-            let host = kept.canonicalize().unwrap();
-            std::fs::write(
-                &record,
-                serde_json::json!({
-                    "documents": [{
-                        "room": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
-                        "app": "so.tilo.totp",
-                        "kind": "read",
-                        "host": &host,
-                    }],
-                })
-                .to_string(),
-            )
-            .unwrap();
-            assert_eq!(Documents::kept_in(record).chosen(&key()), [host]);
         }
 
         phase recent_lists_choices_newest_first_and_keeps_the_order;

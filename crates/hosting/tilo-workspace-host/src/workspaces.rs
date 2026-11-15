@@ -117,7 +117,7 @@ use tilo_peer_state::replica::PeerGuard;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::{GovernedAccess, StatePeer};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
@@ -475,7 +475,7 @@ impl GovernedWorkspace {
         // to start on the workspaces it had been serving.
         if record.authority.device_public_key != authority.device_public_key
             || record.authority.user_public_key != authority.user_public_key
-            || granted(&record.authority.capabilities) != granted(&authority.capabilities)
+            || record.authority.capabilities != authority.capabilities
             || record.authority.expires_at_ns != authority.expires_at_ns
         {
             return Err("workspace is governed by a different device".into());
@@ -1078,7 +1078,7 @@ fn host_serving(mut host: WorkspaceServices, dir: &Path) -> WorkspaceServices {
         };
         if authority.device_public_key == host.cert.device_public_key
             && authority.user_public_key == host.cert.user_public_key
-            && granted(&authority.capabilities) == granted(&host.cert.capabilities)
+            && authority.capabilities == host.cert.capabilities
         {
             host.cert = authority;
         }
@@ -1087,40 +1087,20 @@ fn host_serving(mut host: WorkspaceServices, dir: &Path) -> WorkspaceServices {
     host
 }
 
-/// What `capabilities` let a device do: without the retired flags
-/// ([`tilo_user_identity::RetiredFlags`]), which grant nothing. A 0.1
-/// release's host certified itself with them each start, and the record it
-/// kept names that certificate; the same device certified without them now
-/// is still the device that governs the workspace.
-fn granted(capabilities: &DeviceCapabilities) -> DeviceCapabilities {
-    DeviceCapabilities {
-        retired: tilo_user_identity::RetiredFlags::default(),
-        ..capabilities.clone()
-    }
-}
-
 /// The certificate a workspace record names as its authority, read from the
-/// record's own bytes: every version starts with its version, the workspace's
+/// record's own bytes: the record starts with its version, the workspace's
 /// UUID text, the workspace's id and its name, and the authority is the fifth
-/// field. Version 3 (the 0.1 releases') wrote the id as a 64-bit number,
-/// version 4 as the UUID's bytes.
+/// field.
 fn record_authority(path: &Path) -> Result<DeviceCert, String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let mut rest: &[u8] = &bytes;
-    let (version, tail) =
-        postcard::take_from_bytes::<u32>(rest).map_err(|error| error.to_string())?;
+    let (_, tail) = postcard::take_from_bytes::<u32>(rest).map_err(|error| error.to_string())?;
     rest = tail;
     let (_, tail) = postcard::take_from_bytes::<String>(rest).map_err(|error| error.to_string())?;
     rest = tail;
-    rest = if version <= 3 {
-        postcard::take_from_bytes::<u64>(rest)
-            .map_err(|error| error.to_string())?
-            .1
-    } else {
-        postcard::take_from_bytes::<WorkspaceId>(rest)
-            .map_err(|error| error.to_string())?
-            .1
-    };
+    let (_, tail) =
+        postcard::take_from_bytes::<WorkspaceId>(rest).map_err(|error| error.to_string())?;
+    rest = tail;
     let (_, tail) = postcard::take_from_bytes::<String>(rest).map_err(|error| error.to_string())?;
     rest = tail;
     let (cert, _) =

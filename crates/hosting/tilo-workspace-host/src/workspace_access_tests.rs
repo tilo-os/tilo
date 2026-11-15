@@ -11,7 +11,7 @@ use super::*;
 use crate::workspace::Membership;
 use tilo_relay_protocol::WorkspaceId;
 
-const ROOM: &str = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
+const WORKSPACE: &str = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
 const OTHER_WORKSPACE: &str = "0b9e8f6c-2a1d-4e3b-8c7f-5d4a3b2c1e0f";
 const NOW: u64 = 1_000_000_000_000;
 
@@ -180,7 +180,7 @@ fn member_grant(device: [u8; 32], user: [u8; 32]) -> Setup {
 }
 
 fn workspace(root: &std::path::Path) -> WorkspaceRuntime {
-    let id = WorkspaceId::parse(ROOM).unwrap();
+    let id = WorkspaceId::parse(WORKSPACE).unwrap();
     WorkspaceRuntime::open(root, id, false, Membership::default()).unwrap()
 }
 
@@ -240,7 +240,7 @@ fn decide_matrix() {
         },
         Case {
             name: "a grant for exactly this workspace",
-            peer: grant(owner, [15; 32], one(ROOM), Some(NOW + 1)),
+            peer: grant(owner, [15; 32], one(WORKSPACE), Some(NOW + 1)),
             setup: member_grant([15; 32], owner),
             expected: ["AAAAANNANAA", "AAAAANNANAA", "AAAAANNANAA"],
         },
@@ -277,7 +277,7 @@ fn decide_matrix() {
             name: "a grant minted for this workspace by a grant its person revoked",
             peer: {
                 let parent = grant(owner, [62; 32], AgentScope::AllWorkspaces, Some(NOW + 1));
-                let mut minted = grant(owner, [63; 32], one(ROOM), Some(NOW + 1));
+                let mut minted = grant(owner, [63; 32], one(WORKSPACE), Some(NOW + 1));
                 minted.cert.issuer = Some(Box::new(parent.cert));
                 minted
             },
@@ -337,7 +337,7 @@ fn decide_matrix() {
             peer: peer(owner, [40; 32], false, None),
             setup: Box::new(|runtime, relay| {
                 runtime.membership.devices.push([40; 32]);
-                relay.delegate([40; 32], Some((NOW + 1, ROOM)));
+                relay.delegate([40; 32], Some((NOW + 1, WORKSPACE)));
             }),
             expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
@@ -346,7 +346,7 @@ fn decide_matrix() {
             peer: peer(owner, [41; 32], false, None),
             setup: Box::new(|runtime, relay| {
                 runtime.membership.devices.push([41; 32]);
-                relay.delegate([41; 32], Some((NOW, ROOM)));
+                relay.delegate([41; 32], Some((NOW, WORKSPACE)));
             }),
             expected: ["eeeeeeeeeee", "eeeeeeeeeee", "eeeeeeeeeee"],
         },
@@ -372,8 +372,9 @@ fn decide_matrix() {
             name: "the device governing this workspace on this relay",
             peer: peer(owner, [70; 32], true, None),
             setup: Box::new(|runtime, _| {
-                runtime.workspace_authority =
-                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
+                runtime.workspace_authority = Some(
+                    crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
+                );
             }),
             expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
         },
@@ -382,8 +383,9 @@ fn decide_matrix() {
             peer: peer(owner, [71; 32], false, None),
             setup: Box::new(|runtime, _| {
                 runtime.membership.devices.push([71; 32]);
-                runtime.workspace_authority =
-                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
+                runtime.workspace_authority = Some(
+                    crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
+                );
             }),
             expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
@@ -391,9 +393,10 @@ fn decide_matrix() {
             name: "agent delegated this workspace, in a workspace this relay governs",
             peer: peer(owner, [44; 32], false, None),
             setup: Box::new(|runtime, relay| {
-                runtime.workspace_authority =
-                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
-                relay.delegate([44; 32], Some((NOW + 1, ROOM)));
+                runtime.workspace_authority = Some(
+                    crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
+                );
+                relay.delegate([44; 32], Some((NOW + 1, WORKSPACE)));
             }),
             expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNANN"],
         },
@@ -401,9 +404,10 @@ fn decide_matrix() {
             name: "another user's agent, in a workspace this relay governs",
             peer: peer(bob, [45; 32], false, None),
             setup: Box::new(|runtime, relay| {
-                runtime.workspace_authority =
-                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
-                relay.delegate([45; 32], Some((NOW + 1, ROOM)));
+                runtime.workspace_authority = Some(
+                    crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
+                );
+                relay.delegate([45; 32], Some((NOW + 1, WORKSPACE)));
             }),
             expected: ["NNNNNNNNdNN", "NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
@@ -481,7 +485,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     // while the session runs: what it reaches is the register's to say.
     runtime.membership.devices.push(device);
     let scope = crate::environment::EnvironmentScope::for_record(
-        WorkspaceId::parse(ROOM).unwrap(),
+        WorkspaceId::parse(WORKSPACE).unwrap(),
         "so.tilo.browser",
         "record-1",
     );
@@ -563,7 +567,9 @@ fn an_agent_joins_governance_only_inside_its_live_delegation() {
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = workspace(tmp.path());
     runtime.admission = AdmissionMode::Governed;
-    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
+    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(
+        WORKSPACE,
+    ));
     let agent = peer(relay.owner, [90; 32], false, None);
     let decide = |runtime: &WorkspaceRuntime, now: u64| {
         decide_in(
@@ -579,7 +585,7 @@ fn an_agent_joins_governance_only_inside_its_live_delegation() {
         decide(&runtime, NOW),
         Decision::Deny(DenyReason::NotADelegatedAgent)
     );
-    relay.delegate([90; 32], Some((NOW + 1, ROOM)));
+    relay.delegate([90; 32], Some((NOW + 1, WORKSPACE)));
     assert_eq!(decide(&runtime, NOW), Decision::Admit);
     // At its expiry, and once withdrawn, it is refused.
     assert_eq!(
@@ -592,14 +598,16 @@ fn an_agent_joins_governance_only_inside_its_live_delegation() {
         Decision::Deny(DenyReason::AgentWithdrawn)
     );
     // A workspace no authority of this relay governs takes no agent in.
-    relay.delegate([90; 32], Some((NOW + 1, ROOM)));
+    relay.delegate([90; 32], Some((NOW + 1, WORKSPACE)));
     runtime.workspace_authority = None;
     assert_eq!(
         decide(&runtime, NOW),
         Decision::Deny(DenyReason::NotADelegatedAgent)
     );
     // Its certificate must still be current.
-    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
+    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(
+        WORKSPACE,
+    ));
     relay.revoke([90; 32]);
     assert_eq!(decide(&runtime, NOW), Decision::Deny(DenyReason::Revoked));
 }

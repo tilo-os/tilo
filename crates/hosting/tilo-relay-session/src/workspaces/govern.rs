@@ -272,7 +272,7 @@ mod tests {
     use tilo_relay_protocol::WorkspaceId;
 
     #[test]
-    fn a_room_link_names_its_relay_workspace_and_room() {
+    fn a_link_names_its_relay_workspace_and_workspace_id() {
         let relay = iroh::SecretKey::from_bytes(&[3; 32]).public();
         let link = WorkspaceLink {
             relay,

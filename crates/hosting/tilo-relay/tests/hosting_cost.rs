@@ -52,7 +52,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, publisher, spawn_relay};
 use tilo_relay::WorkspaceId;
 
-const ROOM: &str = "5e11f00d-7110-4625-8000-000000000625";
+const SEEDED_WORKSPACE: &str = "5e11f00d-7110-4625-8000-000000000625";
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(625);
 /// Four routes, as in a workspace with four open documents.
 const ROUTES: [(&str, &str); 4] = [
@@ -359,7 +359,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let now = SystemTime::now();
     let certificates = vec![author.cert.clone(), coding.cert.clone()];
     let mut owner = StatePeer::new(
-        ROOM,
+        SEEDED_WORKSPACE,
         author.cert.clone(),
         certificates.clone(),
         RevocationList::new(),
@@ -369,7 +369,8 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     owner
         .install_seed(
             SeedState {
-                workspace_changes: seed_workspace(ROOM, &author.cert, &certificates).unwrap(),
+                workspace_changes: seed_workspace(SEEDED_WORKSPACE, &author.cert, &certificates)
+                    .unwrap(),
                 documents: ROUTES
                     .iter()
                     .zip(1u8..)

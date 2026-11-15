@@ -72,7 +72,7 @@ mod branch {
     };
     use tilo_user_identity::persist::IdentityPaths;
 
-    /// Where the relay keeps its state, its channel state among it.
+    /// Where the relay keeps its state, its workspaces' group state among it.
     const RELAY_STATE: &str = "/var/lib/tilo-relay";
     /// Each person's Secret Service, which re-seals their vault as them.
     const SECRET_SERVICE: &str = "/usr/libexec/tilo/tilo-secret-service";
@@ -88,7 +88,7 @@ mod branch {
         let people = people(Path::new(PASSWD));
         let vaults: Vec<PersonVault<'_>> =
             people.iter().map(|person| PersonVault { person }).collect();
-        let relay = RelayChannels {
+        let relay = RelayGroups {
             root: PathBuf::from(RELAY_STATE),
         };
         let names = MachineNames {
@@ -238,58 +238,38 @@ mod branch {
         }
     }
 
-    /// The relay's channel state: sealed under a key the device key derives,
-    /// and every group in it names the source's device as its member, so no
-    /// re-seal makes it this device's. Its member files are dropped, and the
-    /// relay joins its workspaces' channels as this device, admitted by their
-    /// participants. The channels' routes name no device and stay.
-    struct RelayChannels {
+    /// Each workspace's group state: sealed under a key the device key
+    /// derives, and every group in it names the source's device as its
+    /// member, so no re-seal makes it this device's. Its member files are
+    /// dropped, and the relay joins its workspaces' groups as this device,
+    /// admitted by their participants.
+    struct RelayGroups {
         root: PathBuf,
     }
 
-    impl RelayChannels {
-        /// The directories channel member files are kept in: each
-        /// workspace's under `channels/`, and those an earlier relay kept
-        /// beside its rooms.
-        fn directories(&self) -> Vec<PathBuf> {
-            let children = |dir: PathBuf| -> Vec<PathBuf> {
-                std::fs::read_dir(dir)
-                    .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
-                    .unwrap_or_default()
-            };
-            let mut directories: Vec<PathBuf> = children(self.root.join("channels"))
-                .into_iter()
-                .map(|workspace| workspace.join("channels"))
-                .collect();
-            for parent in [self.root.clone(), self.root.join("rooms")] {
-                directories.extend(
-                    children(parent)
-                        .into_iter()
-                        .filter(|path| path.extension().is_some_and(|ext| ext == "channels")),
-                );
-            }
-            directories
+    impl RelayGroups {
+        /// The directory the relay keeps each workspace's group state in.
+        fn groups(&self) -> PathBuf {
+            self.root.join("groups")
         }
     }
 
-    impl SealedStore for RelayChannels {
+    impl SealedStore for RelayGroups {
         fn name(&self) -> String {
-            format!("the relay's channel state in {}", self.root.display())
+            format!("the relay's group state in {}", self.root.display())
         }
 
         fn reseal(&self, _: &[SigningKey], _: &SigningKey) -> Result<Resealed, String> {
             let mut dropped = false;
-            for directory in self.directories() {
-                let Ok(entries) = std::fs::read_dir(&directory) else {
-                    continue;
-                };
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|ext| ext == "peer") {
-                        std::fs::remove_file(&path)
-                            .map_err(|error| format!("{}: {error}", path.display()))?;
-                        dropped = true;
-                    }
+            let Ok(entries) = std::fs::read_dir(self.groups()) else {
+                return Ok(Resealed::Absent);
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "peer") {
+                    std::fs::remove_file(&path)
+                        .map_err(|error| format!("{}: {error}", path.display()))?;
+                    dropped = true;
                 }
             }
             Ok(if dropped {
@@ -371,26 +351,24 @@ mod branch {
                 assert!(super::people(&dir.path().join("missing")).is_empty());
             }
 
-            phase the_relays_channel_members_are_dropped_and_its_routes_kept;
+            phase the_relays_group_members_are_dropped_and_its_other_files_kept;
             {
                 let dir = tempfile::tempdir().unwrap();
-                let relay = RelayChannels {
+                let relay = RelayGroups {
                     root: dir.path().to_path_buf(),
                 };
                 let key = SigningKey::from_bytes(&[1; 32]);
                 assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Absent);
-                let current = dir.path().join("channels/ws-1/channels");
-                let earlier = dir.path().join("rooms/ws-2.channels");
-                for directory in [&current, &earlier] {
-                    std::fs::create_dir_all(directory).unwrap();
-                    std::fs::write(directory.join("a.peer"), "member").unwrap();
-                    std::fs::write(directory.join("a.route"), "route").unwrap();
-                }
+                let groups = dir.path().join("groups");
+                std::fs::create_dir(&groups).unwrap();
+                assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Absent);
+                let member = groups.join("ws-1.peer");
+                let kept = groups.join("notes");
+                std::fs::write(&member, "member").unwrap();
+                std::fs::write(&kept, "notes").unwrap();
                 assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Reset);
-                for directory in [&current, &earlier] {
-                    assert!(!directory.join("a.peer").exists());
-                    assert!(directory.join("a.route").exists());
-                }
+                assert!(!member.exists());
+                assert!(kept.exists());
                 assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Absent);
             }
 

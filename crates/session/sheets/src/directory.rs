@@ -385,7 +385,7 @@ fn sample_directory() -> Directory {
         host: "tilo.sh".to_owned(),
         tag: None,
         activity: crate::t_args(
-            "sheets-room-activity",
+            "sheets-workspace-activity",
             &[("people", ui::i18n::ArgValue::Text(here.to_string()))],
         ),
         members: (here > 0).then(|| format!("{} members", here.saturating_mul(4))),
@@ -394,7 +394,7 @@ fn sample_directory() -> Directory {
             .map(|n| {
                 (
                     crate::t_args(
-                        "sheets-room-person",
+                        "sheets-workspace-person",
                         &[("number", ui::i18n::ArgValue::Text(n.to_string()))],
                     ),
                     format!("person-{n}"),

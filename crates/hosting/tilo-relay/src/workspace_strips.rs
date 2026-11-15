@@ -116,7 +116,7 @@ mod tests {
     }
 
     /// The workspace the desktop is the shared desktop of.
-    const ROOM: &str = "0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11";
+    const WORKSPACE: &str = "0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11";
 
     fn desktop(doc: &automerge::AutoCommit) -> SharedDesktop {
         shared_record::read(doc, None).unwrap()
@@ -138,11 +138,11 @@ mod tests {
         // name and the listed strips.
         {
             let mut doc = automerge::AutoCommit::new();
-            assert!(settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main", "Games"])).unwrap());
+            assert!(settle_strips(&mut doc, WORKSPACE, "Hangout", &names(&["Main", "Games"])).unwrap());
             assert_eq!(strips(&doc), ["Main", "Games"]);
             let tree: Layout = desktop(&doc).tree;
             assert_eq!(tree.workspaces[0].name, "Hangout");
-            assert_eq!(tree.workspaces[0].id().to_string(), ROOM);
+            assert_eq!(tree.workspaces[0].id().to_string(), WORKSPACE);
             assert_eq!(tree.active, tree.workspaces[0].id());
         }
 
@@ -151,7 +151,7 @@ mod tests {
         // what is there, and the strips people made and who made them are kept.
         {
             let mut doc = automerge::AutoCommit::new();
-            settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main"])).unwrap();
+            settle_strips(&mut doc, WORKSPACE, "Hangout", &names(&["Main"])).unwrap();
             let mut value = desktop(&doc);
             value.tree.workspaces[0]
                 .strips
@@ -159,8 +159,8 @@ mod tests {
             value.authors.insert(77, "alice".into());
             shared_record::write(&mut doc, &value).unwrap();
 
-            assert!(!settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main"])).unwrap());
-            assert!(settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main", "Quiet"])).unwrap());
+            assert!(!settle_strips(&mut doc, WORKSPACE, "Hangout", &names(&["Main"])).unwrap());
+            assert!(settle_strips(&mut doc, WORKSPACE, "Hangout", &names(&["Main", "Quiet"])).unwrap());
             assert_eq!(strips(&doc), ["Main", "Someone's", "Quiet"]);
             let value = desktop(&doc);
             assert_eq!(value.authors.get(&77).map(String::as_str), Some("alice"));
@@ -176,7 +176,7 @@ mod tests {
         // No listed strips leaves the record alone, even an absent one.
         {
             let mut doc = automerge::AutoCommit::new();
-            assert!(!settle_strips(&mut doc, ROOM, "Hangout", &[]).unwrap());
+            assert!(!settle_strips(&mut doc, WORKSPACE, "Hangout", &[]).unwrap());
             assert!(shared_record::read(&doc, None).is_none());
         }
 

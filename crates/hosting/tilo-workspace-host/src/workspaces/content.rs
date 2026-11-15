@@ -568,14 +568,14 @@ mod tests {
 
     impl WorkspaceContent for One {
         fn read(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
-            (workspace == ROOM
+            (workspace == WORKSPACE
                 && app == "so.tilo.chat"
                 && hash == blake3::hash(&self.0).to_hex().as_str())
             .then(|| self.0.clone())
         }
     }
 
-    const ROOM: &str = "2f10f463-8f4c-43a3-b9dd-18df422eb0bd";
+    const WORKSPACE: &str = "2f10f463-8f4c-43a3-b9dd-18df422eb0bd";
 
     fn want(workspace: &str, hash: &str) -> Vec<u8> {
         postcard::to_allocvec(&NeighbourMsg::RecordContentWant {
@@ -601,13 +601,13 @@ mod tests {
         let avatar = vec![7_u8; PIECE_BYTES + 10];
         let hash = blake3::hash(&avatar).to_hex().to_string();
         assert_eq!(
-            lacks(&workspaces.content_answer(ROOM, &want(ROOM, &hash))),
+            lacks(&workspaces.content_answer(WORKSPACE, &want(WORKSPACE, &hash))),
             Some((peer_handle(&cert.device_public_key), 42)),
             "a host that serves no content keeps none"
         );
         workspaces.serve_content(Arc::new(One(avatar.clone())));
 
-        let frames = workspaces.content_answer(ROOM, &want(ROOM, &hash));
+        let frames = workspaces.content_answer(WORKSPACE, &want(WORKSPACE, &hash));
         let mut gathered = Vec::new();
         for frame in &frames {
             let NeighbourMsg::RecordContentPiece {
@@ -633,16 +633,20 @@ mod tests {
         let other = "0b7e4c2a-9d1f-4e3b-8a6c-5f2d1e0c9b8a";
         assert!(
             workspaces
-                .content_answer(other, &want(ROOM, &hash))
+                .content_answer(other, &want(WORKSPACE, &hash))
                 .is_empty(),
             "another workspace's request"
         );
         assert_eq!(
-            lacks(&workspaces.content_answer(ROOM, &want(ROOM, &"0".repeat(64)))),
+            lacks(&workspaces.content_answer(WORKSPACE, &want(WORKSPACE, &"0".repeat(64)))),
             Some((peer_handle(&cert.device_public_key), 42)),
             "not kept: the member is told so"
         );
-        assert!(workspaces.content_answer(ROOM, b"not a request").is_empty());
+        assert!(
+            workspaces
+                .content_answer(WORKSPACE, b"not a request")
+                .is_empty()
+        );
     }
 
     /// Who said, to whom, that it keeps none of what was asked: the one

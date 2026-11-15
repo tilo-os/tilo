@@ -271,8 +271,7 @@ impl std::fmt::Debug for ContentKeyring {
     }
 }
 
-/// What a content ciphertext is bound to: its workspace (or, sealed by a 0.1
-/// release, its channel), epoch and artifact.
+/// What a content ciphertext is bound to: its workspace, epoch and artifact.
 fn content_record(bound: uuid::Uuid, epoch: u64, artifact: ArtifactId) -> [u8; 40] {
     let mut record = [0_u8; 40];
     let (bound_part, rest) = record.split_at_mut(16);

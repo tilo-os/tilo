@@ -29,8 +29,8 @@ pub trait CertificateAuthority: Send + Sync {
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String>;
     /// Whether `_device` governs `_workspace`; `None` is this host's own device.
-    /// A foreign device is held to the workspace's cap only in rooms it does
-    /// not govern; the default governs none.
+    /// A foreign device is held to the workspace's cap only in workspaces it
+    /// does not govern; the default governs none.
     fn governs(&self, _workspace: Uuid, _device: Option<&[u8; 32]>) -> bool {
         false
     }

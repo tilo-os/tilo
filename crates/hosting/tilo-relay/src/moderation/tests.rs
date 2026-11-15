@@ -16,7 +16,7 @@ use tilo_moderation::{Case, Judge, JudgeError, ModerationAgent, Outcome, Verdict
 
 use super::*;
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const OWNER: &str = "owner";
 const ADA: &str = "ada";
 const MALLORY: &str = "mallory";
@@ -65,7 +65,7 @@ fn flooded_workspace() -> Replica {
     let mut page = Replica::open(
         &catalogue,
         "so.tilo.chat",
-        ROOM,
+        WORKSPACE,
         OWNER,
         ReplicaActor::Owner,
         Seed::New,
@@ -167,19 +167,19 @@ fn bot_replica(page: &Replica) -> Replica {
     let grant = Grant::new(
         "bot:moderation",
         bot,
-        TreePath::workspace(ROOM),
+        TreePath::workspace(WORKSPACE),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
         Grantee::person(OWNER),
     );
-    let standing = Standing::person(WorkspacePolicy::new(ROOM, OWNER), OWNER).acting_as(
+    let standing = Standing::person(WorkspacePolicy::new(WORKSPACE, OWNER), OWNER).acting_as(
         tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::bot(BOT)),
         [grant],
     );
     let mut bot = Replica::open(
         &AppCatalogue::native(),
         page.app_id(),
-        ROOM,
+        WORKSPACE,
         &format!("bot:{BOT}"),
         ReplicaActor::Bot {
             installation: BOT.into(),
@@ -205,7 +205,7 @@ fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
     let mut page = flooded_workspace();
     assert_eq!(texts_by(&messages(&page), MALLORY).len(), 3);
     let mut bot = bot_replica(&page);
-    let mut policy = WorkspacePolicy::new(ROOM, OWNER);
+    let mut policy = WorkspacePolicy::new(WORKSPACE, OWNER);
     for (person, role) in [(ADA, Role::Editor), (MALLORY, Role::Editor)] {
         policy.members.insert(person.to_owned(), role);
     }

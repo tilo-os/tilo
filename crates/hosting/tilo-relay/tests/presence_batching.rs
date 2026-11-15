@@ -44,7 +44,7 @@ use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, publisher,
 use tilo_relay::WorkspaceId;
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(710);
-const ROOM: &str = "5e11f00d-7110-4625-8000-000000000710";
+const SEEDED_WORKSPACE: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
 
 /// A member reading the relay's frames through the production session
@@ -154,7 +154,9 @@ fn pointer(step: u32, user: &str) -> NeighbourMsg {
     NeighbourMsg::RetiredPresenceMoved {
         peer: 0x9e37_79b9_7f4a_7c15,
         user: user.into(),
-        key: format!(r#"{{"pointer":{{"space":{{"tile":{{"workspace":"{ROOM}","tab":1}}}}}}}}"#),
+        key: format!(
+            r#"{{"pointer":{{"space":{{"tile":{{"workspace":"{SEEDED_WORKSPACE}","tab":1}}}}}}}}"#
+        ),
         point: (f64::from(step).mul_add(3.0, 200.0), 300.0),
         ts: 1_800_000_000_000 + u64::from(step) * 10,
         colour: Some("teal".into()),
@@ -165,7 +167,7 @@ fn caret(pos: u64) -> NeighbourMsg {
     NeighbourMsg::RetiredAppPresenceV2 {
         peer: 0x9e37_79b9_7f4a_7c15,
         app_id: "so.tilo.word-processor".into(),
-        cluster_id: ROOM.into(),
+        cluster_id: SEEDED_WORKSPACE.into(),
         presence: PeerPresence {
             key: br#"{"widget":{"path":[{"field":"body"}]}}"#.to_vec(),
             payload: PeerPresencePayload::Caret { pos },
@@ -178,7 +180,7 @@ fn typing(start: u64, end: u64) -> NeighbourMsg {
     NeighbourMsg::RetiredAppPresenceV2 {
         peer: 0x9e37_79b9_7f4a_7c15,
         app_id: "so.tilo.word-processor".into(),
-        cluster_id: ROOM.into(),
+        cluster_id: SEEDED_WORKSPACE.into(),
         presence: PeerPresence {
             key: br#"{"widget":{"path":[{"field":"body"}]}}"#.to_vec(),
             payload: PeerPresencePayload::Typing { start, end },
@@ -324,7 +326,7 @@ fn seeded_workspace(author: &TestDevice, reader: &TestDevice) -> (StatePeer, Aut
     let now = SystemTime::now();
     let certificates = vec![author.cert.clone(), reader.cert.clone()];
     let mut owner = StatePeer::new(
-        ROOM,
+        SEEDED_WORKSPACE,
         author.cert.clone(),
         certificates.clone(),
         RevocationList::new(),
@@ -339,7 +341,8 @@ fn seeded_workspace(author: &TestDevice, reader: &TestDevice) -> (StatePeer, Aut
     owner
         .install_seed(
             SeedState {
-                workspace_changes: seed_workspace(ROOM, &author.cert, &certificates).unwrap(),
+                workspace_changes: seed_workspace(SEEDED_WORKSPACE, &author.cert, &certificates)
+                    .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
                     record_id: RECORD.into(),

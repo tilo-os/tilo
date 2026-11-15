@@ -617,8 +617,8 @@ invite-failed = No link was made: { $reason }
 invite-revoke-failed = The link was not taken back: { $reason }
 
 ## What the window names
-sheets-room-activity = { $people } here now
-sheets-room-person = Person { $number }
+sheets-workspace-activity = { $people } here now
+sheets-workspace-person = Person { $number }
 
 ## Actions
 

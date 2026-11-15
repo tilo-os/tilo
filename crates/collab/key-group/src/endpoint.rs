@@ -89,9 +89,7 @@ impl ContentKeys {
         self.keyring.get(epoch).is_some()
     }
 
-    /// Whether a key of the epoch `metadata` names is held: one of the
-    /// workspace's epochs, or one of a channel a 0.1 release kept
-    /// ([`crate::released`]).
+    /// Whether a key of the epoch `metadata` names is held.
     pub fn holds_key_for(&self, metadata: &EncryptionMetadata) -> bool {
         self.keyring.holds_key_for(metadata)
     }
