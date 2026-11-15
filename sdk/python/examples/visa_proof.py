@@ -164,6 +164,23 @@ def values_of(fields: list[FormFieldRow]) -> dict[str, Any]:
     return {field["name"]: field["value"] for field in fields}
 
 
+def acting_agent(version: Mapping[str, Any]) -> str | None:
+    """The agent a history entry's acting tree names (`actor.by.member.agent`)."""
+    actor = version.get("actor") or {}
+    return ((actor.get("by") or {}).get("member") or {}).get("agent")
+
+
+def acted_for(actor: Mapping[str, Any]) -> set[str]:
+    """Every person an acting tree acted for, by their id."""
+    people: set[str] = set()
+    for acted in actor.get("for") or []:
+        member = (acted.get("by") or {}).get("member") or {}
+        if member.get("person"):
+            people.add(member["person"])
+        people |= acted_for(acted)
+    return people
+
+
 async def refused(call: Any) -> str:
     """How the API refused `call`: an HTTP status, or a refusal's code."""
     try:
@@ -347,18 +364,19 @@ async def main() -> int:
     versions = [version for version in history.get("versions", []) if isinstance(version, Mapping)]
     for version in versions:
         say("   history", str({key: version.get(key) for key in ("sentence", "by", "run", "run_id", "actor", "undone") if key in version}))
-    by_agent = [version for version in versions if (version.get("actor") or {}).get("kind") == "agent"]
+    by_agent = [version for version in versions if acting_agent(version)]
     check(by_agent, f"{len(by_agent)} of {len(versions)} changes are the agent's")
     names = {(version.get("actor") or {}).get("name") for version in by_agent}
     check(names == {"Jane Doe's agent"}, f"History names the agent by its key's name ({names})")
     colours = {(version.get("actor") or {}).get("colour") for version in by_agent}
     check(len(colours) == 1 and None not in colours, f"in one colour ({colours})")
-    people = {(version.get("actor") or {}).get("for") for version in by_agent}
-    check(len(people) == 1 and None not in people, f"each on behalf of the one person ({people})")
+    people = {frozenset(acted_for(version.get("actor") or {})) for version in by_agent}
+    check(len(people) == 1 and set() not in people, f"each on behalf of the one person ({people})")
     runs = {version["run_id"]: version.get("run") for version in by_agent if version.get("run_id")}
     say("   runs", str(runs))
     check(list(runs.values()) == [RUN_TITLE], f"History names the agent's one run {RUN_TITLE!r}")
-    check(reviewer_person not in people, "the reviewer is not the person the agent acted for")
+    check(reviewer_person is None or all(reviewer_person not in acted for acted in people),
+          "the reviewer is not the person the agent acted for")
 
     say("4d. The reviewer undoes the agent's run")
     run_id = next(iter(runs))
