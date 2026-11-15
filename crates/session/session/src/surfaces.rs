@@ -338,7 +338,12 @@ fn own_display(
 /// `native-render-prepare` at every session start on a machine without 3D; with no device to
 /// prefer it has nothing to do. The launcher does the same for the apps it starts.
 fn device_select_environment(render_node: Option<&Path>) -> Vec<(String, String)> {
-    if render_node.is_some() {
+    // A render node is a GPU to prefer; a display's primary node (`card*`), which the compositor
+    // names when it has no render node, is not one.
+    let renders = render_node
+        .and_then(Path::file_name)
+        .is_some_and(|name| name.to_string_lossy().starts_with("renderD"));
+    if renders {
         return Vec::new();
     }
     vec![(
@@ -1261,6 +1266,13 @@ mod tests {
             assert!(
                 device_select_environment(Some(Path::new("/dev/dri/renderD128"))).is_empty(),
                 "a named GPU leaves the layer to pick"
+            );
+            // A display's primary node with no render node beside it (a VM's virtio card without
+            // 3D) is no GPU to render on either: the surfaces still crashed with it named
+            // (r24ead78485).
+            assert_eq!(
+                device_select_environment(Some(Path::new("/dev/dri/card1"))),
+                device_select_environment(None),
             );
         }
 
