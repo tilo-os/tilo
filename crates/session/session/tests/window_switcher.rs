@@ -169,8 +169,28 @@ fn hold_alt_tab(session: &mut Session) -> Duration {
     pressed.elapsed()
 }
 
-/// Move the pointer to the centre of card `index` , as the panel was last drawn.
+/// Where the panel's cards stand, once it has drawn what it shows now. The panel is up from the pass
+/// that shows it, and its cards stand nowhere until a frame has drawn them: a look at them before
+/// that frame finds none, or the ones of what the panel showed before.
+fn drawn_cards(session: &mut Session) -> Vec<(usize, Rect)> {
+    until(session, "the panel draws the cards it shows", |session| {
+        let panel = session.window_switcher();
+        !panel.needs_redraw() && !panel.card_rects().is_empty()
+    });
+    session.window_switcher().card_rects()
+}
+
+/// Move the pointer to the centre of card `index` , once the panel has drawn it where it shows it
+/// now.
 fn move_to_card(session: &mut Session, index: usize) {
+    until(
+        session,
+        &format!("the panel draws card {index}"),
+        |session| {
+            let panel = session.window_switcher();
+            !panel.needs_redraw() && panel.card_rects().iter().any(|(at, _)| *at == index)
+        },
+    );
     let cards = session.window_switcher().card_rects();
     let (_, card) = cards
         .iter()
@@ -519,7 +539,7 @@ fn a_workspace_too_full_for_cards_shows_the_page_the_walk_reached() {
     assert_eq!(crate::common::windows(&session).len(), 14);
 
     hold_alt_tab(&mut session);
-    let page = session.window_switcher().card_rects();
+    let page = drawn_cards(&mut session);
     assert!(
         page.len() < 14,
         "a page holds fewer cards than the workspace has windows: {} cards",
@@ -549,7 +569,7 @@ fn a_workspace_too_full_for_cards_shows_the_page_the_walk_reached() {
         13,
         "End chose the last"
     );
-    let last = session.window_switcher().card_rects();
+    let last = drawn_cards(&mut session);
     assert!(
         last.iter().any(|(at, _)| *at == 13),
         "the page turned to the window the walk reached: {last:?}"
