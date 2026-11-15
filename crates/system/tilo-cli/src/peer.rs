@@ -129,11 +129,13 @@ impl Peer {
     /// once [`LIST_AGAIN`] passed: what was listed, and whether the host
     /// answered the whole list.
     async fn listed(&self, device: &Entered) -> (Vec<Listed>, bool) {
-        let mut listed = self.listed.lock().await;
-        if let Some((at, list, complete)) = listed.as_ref()
-            && at.elapsed() < LIST_AGAIN
         {
-            return (list.clone(), *complete);
+            let listed = self.listed.lock().await;
+            if let Some((at, list, complete)) = listed.as_ref()
+                && at.elapsed() < LIST_AGAIN
+            {
+                return (list.clone(), *complete);
+            }
         }
         let mut list = vec![Listed {
             workspace: device.workspace_id(),
@@ -169,7 +171,7 @@ impl Peer {
                 false
             }
         };
-        *listed = Some((Instant::now(), list.clone(), complete));
+        *self.listed.lock().await = Some((Instant::now(), list.clone(), complete));
         (list, complete)
     }
 
@@ -411,6 +413,7 @@ impl Peer {
                 })
                 .collect()
         });
+        drop(listed);
         (rows, complete)
     }
 
