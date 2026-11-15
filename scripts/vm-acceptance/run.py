@@ -253,19 +253,28 @@ def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
 SESSION_DROPIN = "/etc/systemd/system/tilo-vm-session@{slot}.service.d/90-acceptance-session.conf"
 
 
-def session_environment(vm: TiloVm) -> None:
+def session_environment(vm: TiloVm) -> str:
     """Start the slot's session with what `TILO_ACCEPTANCE_SESSION_ENV` asks (`KEY=VALUE` words: its
     log level, the launcher's debug output), from its first start on. A run without it writes
-    nothing."""
+    nothing. Says what it wrote, or why it wrote nothing, on the run's output too."""
     # Each word goes into the drop-in as it is: one a shell would have to quote is left out.
     pairs = [w for w in os.environ.get("TILO_ACCEPTANCE_SESSION_ENV", "").split()
              if "=" in w and shlex.quote(w) == w]
+    asked = os.environ.get("TILO_ACCEPTANCE_SESSION_ENV")
     if not pairs:
-        return
+        said = f"nothing asked (TILO_ACCEPTANCE_SESSION_ENV={asked!r})"
+        print(f"session environment: {said}", flush=True)
+        return said
     dropin = SESSION_DROPIN.format(slot=vm.slot)
     lines = "".join(f"Environment={p}\\n" for p in pairs)
-    vm.root_exec(f"mkdir -p \"$(dirname {dropin})\" && printf '[Service]\\n{lines}' > {dropin} && "
-                 "systemctl daemon-reload", timeout=60, check=False)
+    try:
+        wrote = vm.root_exec(f"mkdir -p \"$(dirname {dropin})\" && printf '[Service]\\n{lines}' > {dropin} && "
+                             f"systemctl daemon-reload; cat {dropin} 2>&1", timeout=60, check=False)
+    except VmError as exc:
+        wrote = f"could not write it: {exc}"
+    said = f"{dropin}: {' '.join(wrote.split()) or '(nothing written)'}"
+    print(f"session environment: {said}", flush=True)
+    return said
 
 
 def keep_slot_logs(vm: TiloVm, out: Path) -> Path | None:
@@ -582,7 +591,7 @@ def main() -> int:
         if management:
             facts["provenance"]["swap"] = management
         meta["provenance"] = facts["provenance"]
-        session_environment(vm)
+        meta["session_environment"] = session_environment(vm)
         try:
             slot_create(vm, outputs, None)
         except VmError:

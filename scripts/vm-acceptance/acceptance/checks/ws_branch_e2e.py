@@ -495,6 +495,7 @@ class Problems(list):
                      "and a checkout in it, windows on its shell, a few hundred MB of data")
 def set_up(ctx, res):
     ctx.facts["wsb:why"] = "WB01 failed"
+    ctx.facts["wsb:debug-switch"] = ensure_debug_switch(ctx)
     ctx.reset()
     # The device's files are served, or nothing after this can be: a files service that does not
     # come names itself here (fs.service, /var/workspace), not as an environment's lost probe.
@@ -1046,23 +1047,105 @@ def crashed_processes(ctx) -> str:
 
 
 CHAT_PS = "/var/tmp/e2e-chat-processes.log"
+CHAT_DETAIL = "/var/tmp/e2e-chat-detail.log"
+
+# Follows the processes in the scopes of the apps APPS names (cgroups, not command lines: a
+# sandboxed app's own command need not name it) every 0.3 s for SECONDS: when each scope and process
+# came and went and how long it lived (to PS), and what each process was doing at first sight and
+# 3, 15 and 60 s old (to DETAIL): its threads and what they wait in, its main thread's kernel stack,
+# the kinds of files it holds open, and its display and GPU environment.
+SCOPE_WATCH = r"""
+import collections, glob, os, time
+apps, ps, detail, seconds = APPS, "PS", "DETAIL", SECONDS
+out, more = open(ps, "a", buffering=1), open(detail, "a", buffering=1)
+def read(path, keep=4000):
+    try:
+        with open(path, "rb") as f:
+            return f.read(keep).decode("utf-8", "replace")
+    except OSError as e:
+        return f"({e.strerror})"
+def snapshot(pid, age, scope):
+    d = f"/proc/{pid}"
+    threads = collections.Counter()
+    for t in glob.glob(f"{d}/task/*"):
+        stat = read(f"{t}/stat").rsplit(")", 1)[-1].split()
+        threads[(read(f"{t}/comm").strip(), stat[0] if stat else "?", read(f"{t}/wchan").strip())] += 1
+    fds = collections.Counter()
+    for fd in glob.glob(f"{d}/fd/*"):
+        try:
+            target = os.readlink(fd)
+        except OSError:
+            continue
+        kind = target.split(":")[0] if target.startswith(("socket:", "pipe:", "anon_inode:")) else target
+        if kind.startswith("/home") or kind.startswith("/var/home") or kind.startswith("/run/user"):
+            kind = kind.rsplit("/", 1)[0] + "/..."
+        fds[kind] += 1
+    env = [v for v in read(f"{d}/environ", 65536).split("\0") if v.split("=")[0] in (
+        "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "NODEVICE_SELECT", "TILO_LAUNCHER_DEBUG_STDERR", "RUST_LOG",
+        "WGPU_BACKEND", "WGPU_ADAPTER_NAME", "LIBGL_ALWAYS_SOFTWARE", "MESA_LOADER_DRIVER_OVERRIDE",
+        "VK_ICD_FILENAMES", "VK_DRIVER_FILES", "DISPLAY", "TILO_RENDER_NODE")]
+    more.write(f"== {time.strftime('%T')} pid {pid} at {age:.1f}s in {scope}: "
+               f"{read(d + '/cmdline', 400).replace(chr(0), ' ')[:300]}\n")
+    more.write("threads: " + "; ".join(f"{n}x {c} {s} {w}" for (c, s, w), n in threads.most_common(14)) + "\n")
+    more.write("stack: " + " | ".join(read(f"{d}/stack").splitlines()[:10]) + "\n")
+    more.write("files: " + ", ".join(f"{k} x{n}" for k, n in fds.most_common(16)) + "\n")
+    more.write("env: " + " ".join(v[:160] for v in env) + "\n")
+scopes, pids, end = {}, {}, time.time() + seconds
+while time.time() < end:
+    now = time.time()
+    found = {}
+    for app in apps:
+        for c in glob.glob(f"/sys/fs/cgroup/user.slice/*/*/*/app-tilo-{app}-*.scope") + \
+                 glob.glob(f"/sys/fs/cgroup/user.slice/*/*/*/*/app-tilo-{app}-*.scope"):
+            found[c] = app
+    stamp = time.strftime("%T") + f".{int(now * 10) % 10}"
+    for c in found:
+        if c not in scopes:
+            scopes[c] = now
+            out.write(f"{stamp} scope {os.path.basename(c)} came\n")
+    for c in [c for c in scopes if c not in found]:
+        out.write(f"{stamp} scope {os.path.basename(c)} went after {now - scopes.pop(c):.1f}s\n")
+    live = {}
+    for c in found:
+        for pid in read(f"{c}/cgroup.procs").split():
+            if pid.isdigit():
+                live[pid] = os.path.basename(c)
+    for pid, scope in live.items():
+        if pid not in pids:
+            pids[pid] = [now, set()]
+            stat = read(f"/proc/{pid}/stat").rsplit(")", 1)[-1].split()
+            out.write(f"{stamp} pid {pid} came in {scope}, parent {stat[1] if len(stat) > 1 else '?'}: "
+                      f"{read(f'/proc/{pid}/comm').strip()} {read(f'/proc/{pid}/cmdline', 300).replace(chr(0), ' ')[:200]}\n")
+        age = now - pids[pid][0]
+        for mark in (0, 3, 15, 60):
+            if age >= mark and mark not in pids[pid][1]:
+                pids[pid][1].add(mark)
+                snapshot(pid, age, scope)
+    for pid in [p for p in pids if p not in live]:
+        out.write(f"{stamp} pid {pid} went after {now - pids.pop(pid)[0]:.1f}s\n")
+    time.sleep(0.3)
+"""
 
 
-def watch_chat(ctx) -> None:
-    """For the next three minutes, note every process whose command names Chat, with its parent,
-    age and state, every 0.3 s: what starts for Chat and when it goes."""
+def watch_chat(ctx, seconds: int = 1800) -> None:
+    """For the next `seconds`, follow the processes in Chat's scopes, and in Notes' to compare
+    with an app whose window comes ([`SCOPE_WATCH`])."""
+    script = (SCOPE_WATCH.replace("APPS", repr([CHAT, ae.NOTES])).replace('"PS"', repr(CHAT_PS))
+              .replace('"DETAIL"', repr(CHAT_DETAIL)).replace("SECONDS", str(seconds)))
     ctx.vm.root_exec(
-        "setsid nohup sh -c 'end=$(( $(date +%s) + 180 )); while [ $(date +%s) -lt $end ]; do "
-        "ps -eo pid=,ppid=,etimes=,stat=,args= 2>/dev/null | grep -a so.tilo.chat | grep -av grep "
-        f"| sed \"s/^/$(date +%T) /\" >> {CHAT_PS}; sleep 0.3; done' </dev/null >/dev/null 2>&1 &",
+        f"cat > /var/tmp/e2e-scope-watch.py <<'PY'\n{script}\nPY\n"
+        "setsid nohup python3 -I /var/tmp/e2e-scope-watch.py </dev/null >/var/tmp/e2e-scope-watch.err 2>&1 &",
         timeout=30, check=False)
 
 
 def chat_processes(ctx) -> str:
-    """What [`watch_chat`] saw, each process once with when it was first and last seen."""
+    """What [`watch_chat`] saw: each scope and process of Chat and Notes as it came and went, then
+    what each process was doing, Chat's first."""
     return ctx.vm.root_exec(
-        f"awk '{{k=$2\" \"$3; if(!(k in a)) a[k]=$1; b[k]=$1; c[k]=$0}} END {{for (k in c) print a[k], \"-\", "
-        f"b[k], substr(c[k], 10, 300)}}' {CHAT_PS} 2>/dev/null | sort | head -n 30", timeout=60, check=False)
+        f"cat {CHAT_PS} 2>/dev/null | tail -n 40; tail -n 3 /var/tmp/e2e-scope-watch.err 2>/dev/null; "
+        f"echo '== what they were doing'; grep -a -A4 '{CHAT}' {CHAT_DETAIL} 2>/dev/null | tail -n 30 | cut -c1-600; "
+        f"echo '== Notes, whose window comes'; grep -a -A4 '{ae.NOTES}' {CHAT_DETAIL} 2>/dev/null | head -n 10 | cut -c1-600",
+        timeout=60, check=False)
 
 
 def session_dropin(ctx) -> str:
@@ -1100,6 +1183,55 @@ def session_told(ctx, lines: int = 60) -> str:
     return "the session log said: " + (session_log(ctx, TOLD, lines).strip() or "(nothing of it)")
 
 
+# The session's log level for this check: its branches and its launches in full. run.py's drop-in
+# carries the same (tools/ci/vm-acceptance.sh sets TILO_ACCEPTANCE_SESSION_ENV for it).
+SESSION_LOG_LEVEL = "info,tilo_session::workspace_branch=debug,tilo_session::apps=debug"
+
+
+def ensure_debug_switch(ctx) -> str:
+    """Have the running session keep each app's own output and log its branches and launches in
+    full. run.py writes the drop-in before the session first starts; when the running session did
+    not get it, WB01 writes it and restarts the session, and says that it had to."""
+    running = debug_switch(ctx)
+    if "TILO_LAUNCHER_DEBUG_STDERR=1" in running:
+        return f"the session started with it: {running.strip()[-400:]}"
+    dropin = session_dropin(ctx)
+    wrote = ctx.vm.root_exec(
+        f"mkdir -p \"$(dirname {dropin})\" && printf '[Service]\\nEnvironment=TILO_LAUNCHER_DEBUG_STDERR=1\\n"
+        f"Environment=RUST_LOG={SESSION_LOG_LEVEL}\\n' > {dropin} && systemctl daemon-reload && cat {dropin}",
+        timeout=60, check=False)
+    since = ctx.vm.exec("date +%s", check=False).strip()
+    try:
+        ctx.vm.restart_session(timeout=300)
+    except VmError as exc:
+        said = restart_evidence(ctx, since)
+        ctx.write("WB01-restart.txt", said)
+        raise CheckFailed(f"the session did not come back after WB01 restarted it with its debug switch: "
+                          f"{exc}; {said[-5000:]}") from exc
+    ctx.facts.pop("awake_at", None)
+    return (f"run.py's drop-in was not in effect ({running.strip()[-300:]}); WB01 wrote "
+            f"{wrote.strip()[-300:]!r} and restarted the session: {debug_switch(ctx).strip()[-400:]}")
+
+
+def restart_evidence(ctx, since: str) -> str:
+    """Why the slot session did not come back after a restart at `since`: its unit's state and
+    journal, the kernel's word on a crash or kill, core dumps, and the session's own log."""
+    unit = f"tilo-vm-session@{ctx.vm.slot}.service"
+    noise = "FRAME-LIFECYCLE|paint-stats|HEAP-MILESTONE|DEVICE-MEMORY|PUMP-PHASE"
+    return ctx.vm.root_exec(
+        f"echo '== {unit}'; systemctl status --no-pager -n 0 {unit} 2>&1 | head -n 12; "
+        f"echo '== its journal since the restart'; journalctl --no-pager -o short-precise -u {unit} "
+        f"--since @{since or 0} 2>&1 | sed 's/\\x1b\\[[0-9;]*m//g' | grep -avE '{noise}' | tail -n 60 | cut -c1-400; "
+        f"echo '== the kernel'; journalctl -k --no-pager --since @{since or 0} 2>&1 "
+        "| grep -aiE 'segfault|oom|killed process|trap|general protection' | tail -n 6; "
+        f"echo '== core dumps'; coredumpctl --no-pager list --since @{since or 0} 2>&1 | tail -n 4; "
+        "for f in /home/*/.local/state/tilo/session-logs/events.log /var/home/*/.local/state/tilo/session-logs/events.log "
+        "/home/*/.local/state/tilo/session-logs/latest.log /var/home/*/.local/state/tilo/session-logs/latest.log; do "
+        "[ -f \"$f\" ] || continue; echo \"== $f\"; sed 's/\\x1b\\[[0-9;]*m//g' \"$f\" "
+        f"| grep -avE '{noise}' | tail -n 50 | cut -c1-400; done",
+        timeout=240, check=False)
+
+
 def debug_switch(ctx) -> str:
     """Whether the running session got the drop-in: the file, and its processes' environment."""
     return ctx.vm.root_exec(
@@ -1116,7 +1248,8 @@ def chat_evidence(ctx, since: int) -> str:
     def part(title: str, text: str, keep: int = 1500) -> str:
         return f"== {title}\n{(text or '(nothing)').strip()[-keep:]}"
     return "\n".join([
-        part("the session's debug switch", debug_switch(ctx), 600),
+        part("the session's debug switch", ctx.facts.get("wsb:debug-switch", "(not set up)") + "\nnow: "
+             + debug_switch(ctx), 900),
         part("Chat's own output", ctx.vm.root_exec(
             "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
             "-path '*so.tilo.chat*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
@@ -1357,7 +1490,12 @@ def after_restart(ctx, res):
     # from its own records and files, not from windows that stayed open.
     ctx.reset()
     since = ctx.vm.exec("date +%s", check=False).strip()
-    ctx.vm.restart_session(timeout=180)
+    try:
+        ctx.vm.restart_session(timeout=180)
+    except VmError as exc:
+        said = restart_evidence(ctx, since)
+        ctx.write("WB05-restart.txt", said)
+        raise CheckFailed(f"the session did not come back after its restart: {exc}; {said[-5000:]}") from exc
     started = time.monotonic()
     ctx.facts.pop("awake_at", None)
 
