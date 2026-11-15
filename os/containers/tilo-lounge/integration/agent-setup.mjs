@@ -105,13 +105,16 @@ const finish = async (code, message) => {
     // Whose channels the page holds keys for: a page without its workspace's
     // keys joins no live plane, so it hears nobody and nobody hears it.
     report[`${name}Channels`] = await read(tab, `globalThis.tiloChannels?.() ?? ''`);
+    // The windows the page's shell holds and which one is in view: a window
+    // the workspace's layout holds but the page does not show is said here.
+    report[`${name}Layout`] = await read(tab, `JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.() ?? null).slice(0, 6000)`);
     report[`${name}Kept`] = await read(tab, `JSON.stringify(Object.fromEntries(Object.keys(localStorage)
       .filter(key => /workspace|membership|entered/i.test(key)).map(key => [key, localStorage.getItem(key)])))`);
   }
   writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
   for (const browser of browsers) await browser.close().catch(() => {});
   if (message) {
-    for (const {name} of tabs) console.error(`--- ${name} at ${report[`${name}At`]}, answering ${report[`${name}Answers`]}\n--- ${name} kept: ${report[`${name}Kept`]}\n--- ${name} people: ${report[`${name}People`]}\n--- ${name} channels: ${report[`${name}Channels`]}`);
+    for (const {name} of tabs) console.error(`--- ${name} at ${report[`${name}At`]}, answering ${report[`${name}Answers`]}\n--- ${name} kept: ${report[`${name}Kept`]}\n--- ${name} people: ${report[`${name}People`]}\n--- ${name} channels: ${report[`${name}Channels`]}\n--- ${name} layout: ${report[`${name}Layout`]}`);
     console.error(`FAIL: ${message}`);
   }
   console.log(JSON.stringify(report));
