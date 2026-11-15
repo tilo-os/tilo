@@ -754,8 +754,8 @@ mod tests {
     #[test]
     fn a_retired_command_reads_and_is_refused() {
         let grant_for_task = [
-            &[0x03, 0x01, b't', 0x06][..],
-            b"room:r",
+            &[0x03, 0x01, b't', 0x0b][..],
+            b"workspace:r",
             &[0x01, 0x00, 0x02],
         ]
         .concat();
