@@ -385,6 +385,53 @@ fn each_control_invokes_its_effect_on_the_device() {
     );
 }
 
+/// Every tile a person can press is one a screen reader can press: the tree
+/// the panel hands assistive technology stands a switch over the tile that
+/// offers Click, and a button that offers it over the chevron half of a tile
+/// that opens a section.
+#[test]
+fn every_activatable_tile_offers_a_click_to_a_screen_reader() {
+    use ui::accesskit::{Action, Role};
+
+    let mut app = staged("controls");
+    let targets = app.harness().targets();
+    let mut tiles: Vec<(String, Rect)> = targets
+        .iter()
+        .filter(|(name, _)| name.starts_with("qs-tile-") && !name.ends_with("_details"))
+        .map(|(name, rect)| (name.clone(), *rect))
+        .collect();
+    tiles.sort_by(|left, right| left.0.cmp(&right.0));
+    assert!(!tiles.is_empty(), "the page stands tiles");
+    let nodes = app.harness().a11y_nodes();
+    let presses = |rect: Rect, role: Role| {
+        nodes.iter().any(|(_, node)| {
+            node.role() == role
+                && node.supports_action(Action::Click)
+                && node.bounds().is_some_and(|bounds| {
+                    let centre = rect.center();
+                    (bounds.x0..=bounds.x1).contains(&centre.x)
+                        && (bounds.y0..=bounds.y1).contains(&centre.y)
+                })
+        })
+    };
+    for (name, rect) in tiles {
+        assert!(
+            presses(rect, Role::Switch),
+            "the tile {name} is a switch that offers Click: {:#?}",
+            nodes
+                .iter()
+                .map(|(_, node)| (node.role(), node.label(), node.bounds()))
+                .collect::<Vec<_>>()
+        );
+        if let Some(details) = targets.get(&format!("{name}_details")) {
+            assert!(
+                presses(*details, Role::Button),
+                "the chevron of {name} is a button that offers Click"
+            );
+        }
+    }
+}
+
 #[test]
 fn what_plays_is_steered_from_the_panel_through_its_effects() {
     let (mut app, _) = hosted("controls");
