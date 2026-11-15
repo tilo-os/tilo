@@ -181,3 +181,43 @@ def dump(ctx, label: str, fields: dict[str, str] | None) -> tuple[str, str]:
     how = how_it_ended(fields or {}, text)
     killer = killer_evidence(text)
     return f"data/{name}", (f"{how}; the kernel and systemd-oomd said: {killer}" if killer else how)
+
+
+# The file a run's own environment for the session goes in, beside tilo-vmd's (50-tilo-vm-layers.conf
+# and the others it writes and removes by name): tilo-vmd never touches it.
+ENVIRONMENT_DROPIN = "90-acceptance-session.conf"
+
+
+def environment_script(slot: str, pairs: list[str]) -> str:
+    """A root shell script that starts the slot session's next run with `pairs` (`KEY=VALUE`
+    words a shell need not quote) and says how each step went: who runs it, the drop-in written
+    to /etc and to /run (systemd reads both), the reload, the manager's own environment when
+    neither file could be written, and what the unit then says it has."""
+    name = unit(slot)
+    body = "[Service]\\n" + "".join(f"Environment={p}\\n" for p in pairs)
+    return (
+        f"echo \"as $(id -un) ($(id -u))\"; wrote=''; "
+        f"for base in /etc/systemd/system /run/systemd/system; do d=\"$base/{name}.d\"; "
+        f"if mkdir -p \"$d\" 2>&1 && printf '{body}' > \"$d/{ENVIRONMENT_DROPIN}\" 2>&1; then "
+        "wrote=\"$wrote $d\"; echo \"wrote $d/" + ENVIRONMENT_DROPIN + "\"; "
+        "else echo \"could not write $d (status $?)\"; fi; done; "
+        "systemctl daemon-reload 2>&1; echo \"daemon-reload: status $?\"; "
+        "if [ -z \"$wrote\" ]; then systemctl set-environment " + " ".join(pairs) + " 2>&1; "
+        "echo \"set-environment: status $?\"; fi; "
+        f"ls -la /etc/systemd/system/{name}.d /run/systemd/system/{name}.d 2>&1; "
+        f"systemctl show {name} -p Environment -p DropInPaths 2>&1 | cut -c1-700"
+    )
+
+
+def environment_state(slot: str) -> str:
+    """A root shell script that says what the slot session has of a run's environment: the
+    drop-ins, what the unit says, and each running `tilo-session` process's own environment
+    (the debug switch, its log level, and the displays it was started under)."""
+    name = unit(slot)
+    return (
+        f"ls -la /etc/systemd/system/{name}.d /run/systemd/system/{name}.d 2>&1 | grep -av '^total'; "
+        f"systemctl show {name} -p Environment -p DropInPaths 2>&1 | cut -c1-700; "
+        "for p in $(pgrep '^tilo-session'); do echo \"$p $(cat /proc/$p/comm): $(tr '\\0' '\\n' "
+        "< /proc/$p/environ 2>/dev/null | grep -aE '^(TILO_LAUNCHER_DEBUG_STDERR|RUST_LOG|WAYLAND_DISPLAY|DISPLAY)=' "
+        "| tr '\\n' ' ')\"; done"
+    )

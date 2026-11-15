@@ -29,7 +29,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from acceptance import core, records, report  # noqa: E402
+from acceptance import core, records, report, session_unit  # noqa: E402
 from acceptance.checks import (agent, agents_e2e, apps, basics, clock,  # noqa: E402,F401
                                daily_apps, input_devices, provenance, resources, search, secrets, startup, ui,
                                window, ws_branch_e2e)
@@ -248,11 +248,6 @@ def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
     vm.run(*args, timeout=300, slot=False)
 
 
-# Where the slot session's environment for a run goes: an instance drop-in, written as root before
-# the slot's session first starts, as scripts/e2e-remote/run.py writes its log level.
-SESSION_DROPIN = "/etc/systemd/system/tilo-vm-session@{slot}.service.d/90-acceptance-session.conf"
-
-
 def session_environment(vm: TiloVm) -> str:
     """Start the slot's session with what `TILO_ACCEPTANCE_SESSION_ENV` asks (`KEY=VALUE` words: its
     log level, the launcher's debug output), from its first start on. A run without it writes
@@ -265,14 +260,11 @@ def session_environment(vm: TiloVm) -> str:
         said = f"nothing asked (TILO_ACCEPTANCE_SESSION_ENV={asked!r})"
         print(f"session environment: {said}", flush=True)
         return said
-    dropin = SESSION_DROPIN.format(slot=vm.slot)
-    lines = "".join(f"Environment={p}\\n" for p in pairs)
     try:
-        wrote = vm.root_exec(f"mkdir -p \"$(dirname {dropin})\" && printf '[Service]\\n{lines}' > {dropin} && "
-                             f"systemctl daemon-reload; cat {dropin} 2>&1", timeout=60, check=False)
+        wrote = vm.root_exec(session_unit.environment_script(vm.slot, pairs), timeout=90, check=True)
     except VmError as exc:
-        wrote = f"could not write it: {exc}"
-    said = f"{dropin}: {' '.join(wrote.split()) or '(nothing written)'}"
+        wrote = f"could not run the writer: {exc}"
+    said = " | ".join(line.strip() for line in wrote.splitlines() if line.strip()) or "(the writer said nothing)"
     print(f"session environment: {said}", flush=True)
     return said
 

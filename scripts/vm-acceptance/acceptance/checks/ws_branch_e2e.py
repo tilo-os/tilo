@@ -31,7 +31,7 @@ import threading
 import time
 import uuid
 
-from .. import core
+from .. import core, session_unit
 from ..core import CheckFailed, Unobservable, check, expect
 from ..sheets import press
 from ..vm import VmError, wait_until
@@ -1138,21 +1138,28 @@ def watch_chat(ctx, seconds: int = 1800) -> None:
         timeout=30, check=False)
 
 
-def chat_processes(ctx) -> str:
-    """What [`watch_chat`] saw: each scope and process of Chat and Notes as it came and went, then
-    what each process was doing, Chat's first."""
+def scope_events(ctx) -> str:
+    """What [`watch_chat`] saw come and go: each scope and process of Chat and Notes, when, and
+    how long it lived."""
+    return ctx.vm.root_exec(f"tail -n 80 {CHAT_PS} 2>/dev/null; tail -n 3 /var/tmp/e2e-scope-watch.err 2>/dev/null",
+                            timeout=60, check=False)
+
+
+def scope_detail(ctx, app: str, lines: int = 40) -> str:
+    """What [`watch_chat`] saw `app`'s processes doing: the snapshots taken in `app`'s own scopes
+    (picked by the scope each snapshot names, not by a mention of the app in a file name)."""
     return ctx.vm.root_exec(
-        f"cat {CHAT_PS} 2>/dev/null | tail -n 40; tail -n 3 /var/tmp/e2e-scope-watch.err 2>/dev/null; "
-        f"echo '== what they were doing'; grep -a -A4 '{CHAT}' {CHAT_DETAIL} 2>/dev/null | tail -n 30 | cut -c1-600; "
-        f"echo '== Notes, whose window comes'; grep -a -A4 '{ae.NOTES}' {CHAT_DETAIL} 2>/dev/null | head -n 10 | cut -c1-600",
-        timeout=60, check=False)
+        f"awk '/^== /{{keep = index($0, \"app-tilo-{app}-\") > 0}} keep' {CHAT_DETAIL} 2>/dev/null "
+        f"| tail -n {lines} | cut -c1-500", timeout=60, check=False)
 
 
-def session_dropin(ctx) -> str:
-    """The slot session's drop-in run.py writes before the session first starts, from
-    `TILO_ACCEPTANCE_SESSION_ENV` (tools/ci/vm-acceptance.sh sets it for this check): the
-    launcher's debug output and the log level, as e2e-remote and e2e-branch set theirs."""
-    return f"/etc/systemd/system/tilo-vm-session@{ctx.vm.slot}.service.d/90-acceptance-session.conf"
+def chat_processes(ctx) -> str:
+    """[`scope_events`], then what Chat's processes were doing, then Notes' first for comparison;
+    each also kept in a data file of its own (WB01-chat-scope-*.txt) so none is cut for another."""
+    events, chat, notes = scope_events(ctx), scope_detail(ctx, CHAT), scope_detail(ctx, ae.NOTES, 12)
+    ctx.write("WB01-chat-scope-events.txt", events)
+    ctx.write("WB01-chat-scope-detail.txt", chat + "\n== Notes, whose window comes\n" + notes)
+    return f"{events.strip()[-1500:]}\n== what Chat's processes were doing\n{chat.strip()[-1500:]}"
 
 
 # What the session logs of an app that did not open and a branch that is not complete: Chat's
@@ -1190,16 +1197,18 @@ SESSION_LOG_LEVEL = "info,tilo_session::workspace_branch=debug,tilo_session::app
 
 def ensure_debug_switch(ctx) -> str:
     """Have the running session keep each app's own output and log its branches and launches in
-    full. run.py writes the drop-in before the session first starts; when the running session did
-    not get it, WB01 writes it and restarts the session, and says that it had to."""
+    full: without a `RUST_LOG` it logs errors alone (tilo_startup_metrics::log_directives), so
+    none of the warnings this check reads would be there. run.py writes the drop-in before the
+    session first starts; when the running session did not get it, WB01 writes it with the same
+    writer (session_unit.environment_script), restarts the session, and says every step."""
     running = debug_switch(ctx)
     if "TILO_LAUNCHER_DEBUG_STDERR=1" in running:
-        return f"the session started with it: {running.strip()[-400:]}"
-    dropin = session_dropin(ctx)
-    wrote = ctx.vm.root_exec(
-        f"mkdir -p \"$(dirname {dropin})\" && printf '[Service]\\nEnvironment=TILO_LAUNCHER_DEBUG_STDERR=1\\n"
-        f"Environment=RUST_LOG={SESSION_LOG_LEVEL}\\n' > {dropin} && systemctl daemon-reload && cat {dropin}",
-        timeout=60, check=False)
+        return f"the session started with it: {running.strip()[-500:]}"
+    pairs = ["TILO_LAUNCHER_DEBUG_STDERR=1", f"RUST_LOG={SESSION_LOG_LEVEL}"]
+    try:
+        wrote = ctx.vm.root_exec(session_unit.environment_script(ctx.vm.slot, pairs), timeout=90)
+    except VmError as exc:
+        wrote = f"the writer failed: {exc}"
     since = ctx.vm.exec("date +%s", check=False).strip()
     try:
         ctx.vm.restart_session(timeout=300)
@@ -1209,8 +1218,10 @@ def ensure_debug_switch(ctx) -> str:
         raise CheckFailed(f"the session did not come back after WB01 restarted it with its debug switch: "
                           f"{exc}; {said[-5000:]}") from exc
     ctx.facts.pop("awake_at", None)
-    return (f"run.py's drop-in was not in effect ({running.strip()[-300:]}); WB01 wrote "
-            f"{wrote.strip()[-300:]!r} and restarted the session: {debug_switch(ctx).strip()[-400:]}")
+    report = (f"run.py's drop-in was not in effect:\n{running.strip()[-600:]}\nWB01's writer said:\n"
+              f"{wrote.strip()[-1500:]}\nafter the restart:\n{debug_switch(ctx).strip()[-800:]}")
+    ctx.write("WB01-debug-switch.txt", report)
+    return report
 
 
 def restart_evidence(ctx, since: str) -> str:
@@ -1233,12 +1244,12 @@ def restart_evidence(ctx, since: str) -> str:
 
 
 def debug_switch(ctx) -> str:
-    """Whether the running session got the drop-in: the file, and its processes' environment."""
-    return ctx.vm.root_exec(
-        f"cat {session_dropin(ctx)} 2>&1 | tail -n 3; for p in $(pgrep '^tilo-session'); do "
-        "echo \"$p $(cat /proc/$p/comm) $(tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null "
-        "| grep -aE '^(TILO_LAUNCHER_DEBUG_STDERR|RUST_LOG)=' | tr '\\n' ' ')\"; done",
-        timeout=60, check=False)
+    """What the running session has of the debug switch: the drop-ins, what its unit says, and
+    each `tilo-session` process's own environment, with the displays it was started under."""
+    try:
+        return ctx.vm.root_exec(session_unit.environment_state(ctx.vm.slot), timeout=60)
+    except VmError as exc:
+        return f"(could not read it: {exc})"
 
 
 def chat_evidence(ctx, since: int) -> str:
@@ -1255,7 +1266,7 @@ def chat_evidence(ctx, since: int) -> str:
             "-path '*so.tilo.chat*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
             "tail -c 3000 \"$f\"; done", timeout=300, check=False), 3000),
         part("the session of Chat's launches", session_log(ctx, TOLD, 30), 3000),
-        part("Chat's processes as they came and went", chat_processes(ctx), 2500),
+        part("Chat's processes as they came and went", chat_processes(ctx), 3200),
         part("core dumps", ctx.vm.root_exec("coredumpctl --no-pager list 2>&1 | tail -n 5", timeout=60,
                                             check=False), 600),
     ])
