@@ -104,6 +104,8 @@ mod plain_http;
 mod recovery;
 #[path = "refused_commit.rs"]
 mod refused_commit;
+#[path = "rename.rs"]
+mod rename;
 #[path = "resume.rs"]
 mod resume;
 #[path = "stand_in_revocation.rs"]
