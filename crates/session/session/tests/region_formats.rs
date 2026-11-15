@@ -68,6 +68,11 @@ fn a_region_the_person_changes_reaches_the_sessions_own_formats() {
     let _home = tilo_test_env::TestHome::new().expect("a home");
     let mut session = session();
     let before = ui::format::region::current();
+    assert_eq!(
+        before.first_day,
+        ui::format::region::FirstDayOfWeek::Monday,
+        "a home that chose no region starts its week on Monday, so Sunday below is a change"
+    );
 
     // The person starts their week on Sunday and reads a 12-hour clock: the session's own
     // formatters — the week their shell's calendar starts on, the clocks its views write — follow
