@@ -102,6 +102,10 @@ pub struct RecordService {
     /// keeps the records of every package it loads and of each one the session runs itself
     /// ([`Self::share`]).
     kept_in_workspace: Option<KeptRecord>,
+    /// Whether this service is the session's own document ([`Self::session_document`]): the one a
+    /// package the session runs itself (the shell) keeps its record in, started whether or not the
+    /// session seeds any app, so a program names the shell the session shows.
+    session_document: bool,
 }
 
 /// The record of the one app a service keeps ([`RecordService::of_app`]), as the workspace holds
@@ -151,11 +155,25 @@ impl RecordService {
             kept,
             window: tilo_wake::WakeScope::new(),
             kept_in_workspace: None,
+            session_document: false,
         };
         let _ = service.flush();
         service.publications.settle(&service.host, &service.planner);
         let _ = service.watch.take();
         service
+    }
+
+    /// The session's own document, which keeps the records of the packages the session runs
+    /// itself (the shell, [`Service::share`]): started whether or not the session seeds any app,
+    /// so the package the shell actually shows — the store's installed `so.tilo.shell`, else the
+    /// build's stand-in (`docs/designs/app-language/shell.md` §6) — is one a REPL's or an agent's
+    /// program names, and its record is read by its app as Notes' is.
+    #[must_use]
+    pub fn session_document(host: Host, person: impl Into<String>) -> Self {
+        Self {
+            session_document: true,
+            ..Self::new(host, person)
+        }
     }
 
     /// The record of the app `app` that `host` holds, its package loaded (with the packages it is
@@ -282,9 +300,11 @@ impl RecordService {
     /// layout and the shell's settings, and both are the person's, synced with their
     /// devices, as an app's record is.
     ///
-    /// An app's record ([`Self::of_app`]) is that app's alone, and takes no other package's.
+    /// An app's record ([`Self::of_app`]) is that app's alone, and takes no other package's, and
+    /// so does a notebook's or any other session's record: only the session's own document
+    /// ([`Self::session_document`]) keeps the packages the session runs itself.
     pub fn share(&mut self, share: &tilo_service::Share<'_>) -> Result<(), String> {
-        if self.kept_in_workspace.is_some() {
+        if !self.session_document || self.kept_in_workspace.is_some() {
             return Ok(());
         }
         let _in_records = self.in_records();
@@ -1033,6 +1053,10 @@ impl RecordService {
 impl Service for RecordService {
     fn seated(&mut self, person: &str, _earlier: &[String]) {
         person.clone_into(&mut self.person);
+    }
+
+    fn keeps_session_document(&self) -> bool {
+        self.session_document
     }
 
     fn resources(&self) -> Vec<ResourceSpec> {

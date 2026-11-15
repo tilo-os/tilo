@@ -215,6 +215,14 @@ pub trait Service {
         None
     }
 
+    /// Whether this service is the session's own document — the one document the packages the
+    /// session runs itself (the shell) keep their records in, published to every connection by
+    /// its app. The session starts one when it runs the shell and no seeded document is among its
+    /// services; a session with two would keep the shell's package twice.
+    fn keeps_session_document(&self) -> bool {
+        false
+    }
+
     /// Every record [`Self::record`] answers, each with the app it is of: what a connection the
     /// session admits reads by the app.
     fn records(&self) -> Vec<Record> {

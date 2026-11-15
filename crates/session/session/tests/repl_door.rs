@@ -230,6 +230,57 @@ fn a_repl_named_when_the_session_starts_is_admitted_without_asking() {
     assert!(questions.pending().is_empty(), "nobody was asked");
 }
 
+/// The shell package the session runs is one a program names, whether or not the app store holds
+/// a copy of it: an image ships `so.tilo.shell` only as the session's built-in stand-in, and
+/// `docs/designs/app-language/shell.md` §6 makes it the package the session shows, so a program
+/// written for a person's device works on the image's. The REPL shows the frames through it, and
+/// the desk draws them.
+///
+/// This fails on a build whose door compiles programs against the installed packages alone: the
+/// image's store holds no shell, and the program is refused as an unknown name.
+#[test]
+fn a_program_names_the_shell_package_the_session_runs_with_none_installed() {
+    let _settled = ui::motion::testing::settled();
+    // An app store that holds no shell: what an image's own store holds, where the session's
+    // copy stands in for the package a person's device installs.
+    let store = tempfile::tempdir().expect("a store of the test's own");
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("TILO_APPS_DATA_DIR", store.path());
+    // A session that runs no service of a seeded app's: an image's own, whose apps a person opens
+    // when they want one, so nothing but the shell itself publishes a package to the door.
+    let root = private_home();
+    let questions = Questions::new();
+    let program = std::env::current_exe().expect("this test's program");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: Vec::new(),
+        questions: Some(questions),
+        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        mcp_server: Some(root.path().join("agent.sock")),
+        admit_repl: vec![program],
+        ..Options::default()
+    });
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.show_style(shell.viewing, style: \"so.tilo.shell:frames\")",
+    );
+    assert!(
+        !failed,
+        "the program names the shell the session runs: {answer}"
+    );
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, CANVAS).is_some()
+    });
+}
+
 /// Placing what a text finds, twice, through the door: each place is the person's step, and the
 /// session keeps answering, the connection that asked and a new one alike.
 #[test]
