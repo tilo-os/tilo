@@ -1186,6 +1186,11 @@ class Run:
         fills = [e for e in _entries(record) if e.get("action") == "fill_form" and e.get("ok")]
         actors: dict[str, str] = {}
         res.facts["actors"] = actors
+        # Every session of one MCP client is the same agent member, so two agents of one client
+        # share the actor's name whichever machine each runs on. What tells them apart in the
+        # tab is the device its record says beside the name: none for B's own agent.
+        told: dict[str, list[str]] = {}
+        res.facts["told_apart_by"] = told
         for party in parties:
             who = party.box.letter.upper()
             for value in party.answers.values():
@@ -1198,6 +1203,7 @@ class Run:
                              f"({party.mark!r}): {said_record[:1500]}")
             actor = str(mine[0].get("actor") or "")
             actors[who] = actor
+            told[who] = [actor, str(mine[0].get("device") or "")]
             if not actor:
                 raise Failed(f"B's tab records what the agent on {who} answered under no name: {mine[0]}")
             # Which machine that actor worked from is a step of its own: what the entry says of
@@ -1215,8 +1221,9 @@ class Run:
                 if who_set.get(question) != actor:
                     raise Failed(f"{question!r} is not reviewed as set by the agent on {who} ({actor}): "
                                  f"{who_set}")
-        if len(set(actors.values())) != len(parties):
-            raise Failed(f"B's tab does not tell the {len(parties)} agents apart: {actors}")
+        if len({tuple(said) for said in told.values()}) != len(parties):
+            raise Failed(f"B's tab does not tell the {len(parties)} agents apart by actor and "
+                         f"device: {told}")
 
     def devices_named(self, res: Result) -> None:
         """Each agent that worked in B's tab from another machine is recorded there with its
