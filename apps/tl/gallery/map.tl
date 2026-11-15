@@ -20,7 +20,7 @@ view places(p: Places) {
             }
         }
         ui.MapPin(name: "Content", x: 620, y: 40, width: 320, height: 200) {
-            ui.Place(name: "Groceries — Notes", fill) {
+            ui.Place(name: "Groceries", fill) {
                 controls: {
                     ui.Button("Close", icon: .x, icon_only: true, role: .plain)
                 }
