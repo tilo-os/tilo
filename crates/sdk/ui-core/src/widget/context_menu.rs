@@ -456,6 +456,7 @@ thread_local! {
 }
 
 /// Whether the last press or key was the context-menu gesture ([`note_input`]).
+#[cfg(feature = "native")]
 pub(crate) fn context_gesture() -> bool {
     CONTEXT_GESTURE.with(Cell::get)
 }

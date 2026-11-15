@@ -2,6 +2,7 @@
 //! the box the send row opens beside the menu, and the box a window opens with
 //! no menu around it.
 
+#[cfg(feature = "native")]
 use vello::kurbo::Rect;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
