@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use collab_types::DocumentMutation;
 use tilo_fs::namespace::Namespace;
@@ -35,8 +35,42 @@ pub(crate) use fs_protocol::tree::FILES_APP;
 /// How often the replica looks again when nothing woke it: the session's
 /// events wake it at once, this only bounds a missed wake.
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
-/// How often the namespace is kept on disk while it changes.
+/// How often the namespace is kept on disk while it changes, at most.
 const KEEP_EVERY: Duration = Duration::from_secs(2);
+/// How often the files and bytes the tree names are counted again while it changes, at most.
+const COUNT_EVERY: Duration = Duration::from_secs(1);
+/// How many times its own cost a step that walks or saves the whole tree waits before it runs
+/// again: it then takes at most a twentieth of the replica's time. Run on every change, a count
+/// of every node made writing a repository's twenty thousand files quadratic, and held the tree
+/// (which every write into the folder waits for) for most of the time.
+const PACE: u32 = 20;
+
+/// When a step whose cost grows with the tree may run again.
+#[derive(Debug)]
+struct Paced {
+    next: Instant,
+    floor: Duration,
+}
+
+impl Paced {
+    fn new(floor: Duration) -> Self {
+        Self {
+            next: Instant::now(),
+            floor,
+        }
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        now >= self.next
+    }
+
+    /// The step ran from `started` to `ended`: it waits its floor, or `PACE` times what it took.
+    fn ran(&mut self, started: Instant, ended: Instant) {
+        let took = ended.saturating_duration_since(started);
+        let wait = self.floor.max(took.saturating_mul(PACE));
+        self.next = ended.checked_add(wait).unwrap_or(ended);
+    }
+}
 
 /// The route of `workspace`'s tree.
 pub(crate) fn route(workspace: WorkspaceId) -> DocumentRoute {
@@ -125,6 +159,10 @@ impl TreeReplica {
             founded: false,
             kept,
             kept_heads: Vec::new(),
+            keeping: Paced::new(KEEP_EVERY),
+            pulling: Paced::new(LOOK_AGAIN),
+            counting: Paced::new(COUNT_EVERY),
+            counted_heads: None,
             standing: Arc::clone(&standing),
             content,
         };
@@ -169,6 +207,11 @@ struct Sync {
     founded: bool,
     kept: PathBuf,
     kept_heads: Vec<automerge::ChangeHash>,
+    keeping: Paced,
+    counting: Paced,
+    pulling: Paced,
+    /// The heads the files and bytes in `standing` were counted at.
+    counted_heads: Option<Vec<automerge::ChangeHash>>,
     standing: Arc<Mutex<Standing>>,
     content: Arc<SessionContent>,
 }
@@ -198,7 +241,7 @@ impl Sync {
                 self.take(event);
             }
             if !self.paused.load(std::sync::atomic::Ordering::Relaxed) {
-                self.pull();
+                self.pull_paced();
                 self.push();
                 self.content.reask(&self.link);
             }
@@ -206,7 +249,11 @@ impl Sync {
             tokio::select! {
                 () = wake.notified() => {}
                 moved = changes.changed() => if moved.is_err() { return },
-                _ = keep.tick() => self.keep(),
+                _ = keep.tick() => if self.keeping.due(Instant::now()) {
+                    let started = Instant::now();
+                    self.keep();
+                    self.keeping.ran(started, Instant::now());
+                },
                 () = tokio::time::sleep(LOOK_AGAIN) => {}
             }
         }
@@ -243,6 +290,27 @@ impl Sync {
                 self.standing.lock_recover().opened = true;
             }
             _ => {}
+        }
+    }
+
+    /// [`Self::pull`], paced while the session holds writes of this device's that its replica
+    /// has not taken in: a read then overlays them on the whole record, so it costs the whole
+    /// tree each time, and all it can bring is another device's change, which waits a moment.
+    fn pull_paced(&mut self) {
+        let holding = self
+            .link
+            .engine()
+            .held_writes()
+            .lock()
+            .contains_key(&self.route);
+        if !holding {
+            self.pull();
+            return;
+        }
+        let now = Instant::now();
+        if self.pulling.due(now) {
+            self.pull();
+            self.pulling.ran(now, Instant::now());
         }
     }
 
@@ -342,8 +410,39 @@ impl Sync {
         }
     }
 
-    fn say_where_it_stands(&self) {
-        let (files, bytes) = {
+    fn say_where_it_stands(&mut self) {
+        let heads = self.namespace.lock_recover().heads();
+        let counted =
+            if self.counted_heads.as_ref() != Some(&heads) && self.counting.due(Instant::now()) {
+                let started = Instant::now();
+                let counted = self.count();
+                self.counting.ran(started, Instant::now());
+                self.counted_heads = Some(heads.clone());
+                Some(counted)
+            } else {
+                None
+            };
+        let sent = self.sent == heads;
+        let durable = !self
+            .link
+            .engine()
+            .held_writes()
+            .lock()
+            .contains_key(&self.route)
+            && self.link.snapshot().outgoing_pending == 0;
+        let mut standing = self.standing.lock_recover();
+        if let Some((files, bytes)) = counted {
+            standing.files = files;
+            standing.bytes = bytes;
+        }
+        standing.paused = self.paused.load(std::sync::atomic::Ordering::Relaxed);
+        standing.sent = sent;
+        standing.durable = durable;
+    }
+
+    /// The files the tree names and their bytes: a walk of every node.
+    fn count(&self) -> (usize, u64) {
+        {
             let namespace = self.namespace.lock_recover();
             let mut files = 0_usize;
             let mut bytes = 0_u64;
@@ -358,21 +457,7 @@ impl Sync {
                 }
             }
             (files, bytes)
-        };
-        let sent = self.sent == self.namespace.lock_recover().heads();
-        let durable = !self
-            .link
-            .engine()
-            .held_writes()
-            .lock()
-            .contains_key(&self.route)
-            && self.link.snapshot().outgoing_pending == 0;
-        let mut standing = self.standing.lock_recover();
-        standing.files = files;
-        standing.bytes = bytes;
-        standing.paused = self.paused.load(std::sync::atomic::Ordering::Relaxed);
-        standing.sent = sent;
-        standing.durable = durable;
+        }
     }
 
     /// Keep the namespace on disk, so a restart starts where this one was.
@@ -445,6 +530,21 @@ mod tests {
     /// file copied in while the host had not answered) sends those changes
     /// with its next write: the record then holds every file, with nothing a
     /// write of this device builds on missing.
+    #[test]
+    fn a_step_that_walks_the_tree_waits_twenty_times_its_cost_and_at_least_its_floor() {
+        let mut paced = super::Paced::new(Duration::from_secs(1));
+        let start = Instant::now();
+        assert!(paced.due(start));
+        // Cheap: the floor decides.
+        paced.ran(start, start + Duration::from_millis(10));
+        assert!(!paced.due(start + Duration::from_millis(900)));
+        assert!(paced.due(start + Duration::from_millis(1010)));
+        // Costly: twenty times its cost.
+        paced.ran(start, start + Duration::from_millis(200));
+        assert!(!paced.due(start + Duration::from_secs(4)));
+        assert!(paced.due(start + Duration::from_millis(4200)));
+    }
+
     #[test]
     fn what_a_namespace_made_before_the_record_arrived_goes_out() {
         // The record as a page that opened Files founded it: no tree yet.
