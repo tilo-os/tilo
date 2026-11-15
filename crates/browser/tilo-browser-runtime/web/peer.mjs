@@ -1494,14 +1494,50 @@ export async function pairDevice(options) {
     const custodyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
     const info = siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
     if (!info.address) throw new Error('the host named no iroh endpoint to reach it at');
-    const certified = await runtime.certifyDevice(userPublicKey, label,
+    const {certified, enrolled} = await certifyUnderAFreeName(label, name => runtime.certifyDevice(userPublicKey, name,
       options.invite ?? null, custodyForWasm, code => options.onPairingCode?.(code),
-      JSON.stringify(info.address));
-    const common = {...options, identity: undefined, label, profile, custody: own, runtime};
+      JSON.stringify(info.address)));
+    const common = {...options, identity: undefined, label: enrolled, profile, custody: own, runtime};
     if (!door) return connect({...common, deviceCertificate: certified});
     return join({...common, origin, door, certified});
   };
   return options.custody ? pairing() : withCustody(own, pairing, signal);
+}
+
+/** Why a host refuses a device name another of the person's devices reads by
+ * (`DEVICE_LABEL_TAKEN` in the relay protocol). */
+const DEVICE_LABEL_TAKEN = 'that name is another of your devices';
+/** How many numbered names a device tries when the person has devices called
+ * what it would be, as `tilo login` does. */
+const LABEL_ATTEMPTS = 10;
+
+/** `label` numbered `n`, as `tilo login` numbers a computer: the name itself
+ * first, then `Chrome on Linux 2`, `3`, …, within 64 characters. */
+export function numberedLabel(label, n) {
+  if (n < 2) return label;
+  const suffix = ` ${n}`;
+  return `${[...label].slice(0, 64 - suffix.length).join('')}${suffix}`;
+}
+
+/**
+ * Certify this device under the first name no other device of the person
+ * reads by: `certify(name)` asks the host, which refuses a name another of
+ * their devices has (a second browser of the same kind on the same system),
+ * and the next number asks again. Resolves to `{certified, enrolled}`, the
+ * host's answer and the name it enrolled under.
+ */
+export async function certifyUnderAFreeName(label, certify) {
+  let refused;
+  for (let n = 1; n <= LABEL_ATTEMPTS; n++) {
+    const name = numberedLabel(label, n);
+    try {
+      return {certified: await certify(name), enrolled: name};
+    } catch (error) {
+      if (!String(error?.message ?? error).includes(DEVICE_LABEL_TAKEN)) throw error;
+      refused = error;
+    }
+  }
+  throw refused;
 }
 
 const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
