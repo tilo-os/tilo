@@ -2,8 +2,9 @@
 //! window here can show. A session role that offers an app by name — the roster's card offering to
 //! write to a person in Chat — asks this and never the bundle.
 //!
-//! The apps a palette offers to open are these, as a host's installed apps are its own: the bundle
-//! is what this page has, and it has no machine apps or store catalogue beside them.
+//! The apps a palette offers to open are the page's own tile source's
+//! ([`crate::desktop::Tiles::search_applications`]): the bundle is what this page has, and it has no
+//! machine apps or store catalogue beside them.
 
 use std::sync::Arc;
 
@@ -24,18 +25,10 @@ impl Apps for PageApps {
         crate::desktop::known_application(id).map_or_else(String::new, str::to_owned)
     }
 
-    /// The bundle's apps, each a launch here: what a palette or a new tab offers to open, and the
-    /// apps installed on this host's own terms.
+    /// None: what a page offers to open is its tile source's list of the apps it can start, which
+    /// the shell's search reads whether or not this session's search has been fetched.
     fn applications(&self) -> Vec<AppEntry> {
-        crate::desktop::known_applications()
-            .into_iter()
-            .filter(|(id, _)| tilo_desktop_search::availability::runs_on(id, &["web"]))
-            .map(|(id, title)| AppEntry {
-                id: id.into(),
-                title: title.into(),
-                category: None,
-            })
-            .collect()
+        Vec::new()
     }
 
     fn host_apps(&self) -> Vec<HostAppEntry> {

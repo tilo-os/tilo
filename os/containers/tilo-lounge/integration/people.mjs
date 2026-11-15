@@ -356,23 +356,6 @@ const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 
 // answer are the previous query's. So Enter waits for the shell to have answered
 // *this* query, and for the row asked for to be the first one under the
 // palette's heading, which is where the highlight sits.
-/// What the open search offers with nothing typed, as the groups it lists: the
-/// page's own sources list apps and windows, the session's list settings, people
-/// and files, so which stands says how much of search is mounted here.
-const emptyCard = async (tab, command) => {
-  for (let tries = 0; tries < 3; tries++) {
-    if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen').catch(() => false)) break;
-    await key(tab, 'Escape');
-    await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', stepLimit(2)).catch(() => {});
-  }
-  if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen').catch(() => false)) {
-    await key(tab, 'k', command);
-  }
-  await tab.evaluate('globalThis.__tiloWait?.(() => globalThis.tiloMount?.state()?.searchSearching === false, 20000)').catch(() => false);
-  const card = JSON.parse(await tab.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.searchCard ?? null)').catch(() => 'null'));
-  return card?.rows?.map(entry => `${entry.title} [${entry.kind}]`) ?? null;
-};
-
 const search = async (tab, command, query, row, opens = null) => {
   const began = Date.now();
   const framesFrom = await presented(tab);
@@ -481,6 +464,24 @@ const search = async (tab, command, query, row, opens = null) => {
     ` frames=${await presented(tab) - framesFrom}`);
   return chosen;
 };
+
+/// What the open search offers with nothing typed, as the groups it lists: the
+/// page's own sources list apps and windows, the session's list settings, people
+/// and files, so which stands says how much of search is mounted here.
+const emptyCard = async (tab, command) => {
+  for (let tries = 0; tries < 3; tries++) {
+    if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen').catch(() => false)) break;
+    await key(tab, 'Escape');
+    await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', stepLimit(2)).catch(() => {});
+  }
+  if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen').catch(() => false)) {
+    await key(tab, 'k', command);
+  }
+  await tab.evaluate('globalThis.__tiloWait?.(() => globalThis.tiloMount?.state()?.searchSearching === false, 20000)').catch(() => false);
+  const card = JSON.parse(await tab.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.searchCard ?? null)').catch(() => 'null'));
+  return card?.rows?.map(entry => `${entry.title} [${entry.kind}]`) ?? null;
+};
+
 // A page-side clock around the person's Enter. What a person waits for is the
 // shell showing the app's window, and this shell paints into one canvas: the
 // window is on screen when the frame that carries it is presented. So both
