@@ -112,7 +112,8 @@ listing = listings[0]
 expected = {
     "name": "Lounge",
     "description": "The Tilo community: chat, notes and a shared desktop",
-    "defaultRole": "Editor",
+    # A role preset on the wire, which a site capitalises where it shows one.
+    "defaultRole": "editor",
     "door": f"directory/{workspace}/",
     "workspace": workspace,
 }
