@@ -2934,6 +2934,7 @@ settings-effect-pair-device = Pair
 settings-effect-connect-device = Connect
 settings-effect-disconnect-device = Disconnect
 settings-effect-set-device-trusted = Let a device connect without asking
+settings-effect-rename-paired-device = Rename a paired device
 settings-effect-rename-device = Rename device
 settings-effect-forget-device = Forget
 settings-effect-set-work = Set the work this device takes

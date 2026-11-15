@@ -133,7 +133,7 @@ pub enum BluetoothEffect {
     },
     /// Give a paired device another name on this device.
     #[effect(job, row)]
-    RenameDevice {
+    RenamePairedDevice {
         #[param("The device's object path")]
         device: String,
         #[param("The new name")]
@@ -205,7 +205,7 @@ fn effect_device(effect: &BluetoothEffect) -> Option<&str> {
         | BluetoothEffect::ConnectDevice { device }
         | BluetoothEffect::DisconnectDevice { device }
         | BluetoothEffect::SetDeviceTrusted { device, .. }
-        | BluetoothEffect::RenameDevice { device, .. }
+        | BluetoothEffect::RenamePairedDevice { device, .. }
         | BluetoothEffect::ForgetDevice { device } => Some(device),
     }
 }
@@ -284,7 +284,7 @@ fn carry_out(
                 })
             })
             .map_err(|error| failed("settings-bluetooth-trust-failed", error)),
-        BluetoothEffect::RenameDevice {
+        BluetoothEffect::RenamePairedDevice {
             device,
             name: alias,
         } => control
@@ -570,7 +570,7 @@ fn device_live_row(device: &DeviceInfo, pairing: Option<&str>) -> LiveRow {
         device: path.clone(),
         trusted: !device.trusted,
     }))
-    .operation(offer(BluetoothEffect::RenameDevice {
+    .operation(offer(BluetoothEffect::RenamePairedDevice {
         device: path.clone(),
         name: device.name.clone(),
     }))
@@ -817,7 +817,7 @@ impl BluetoothModel {
                         .with_id(&format!("bluetooth.alias.{}", token(&d.path)))
                         .with_accessible_name(t("settings-bluetooth-name"))
                         .edits_on_click(),
-                    effect(BluetoothEffect::RENAME_DEVICE)
+                    effect(BluetoothEffect::RENAME_PAIRED_DEVICE)
                         .map(move |name: String| (path.clone(), name.trim().to_owned())),
                 ),
             )),

@@ -2934,6 +2934,7 @@ settings-effect-pair-device = Koppeln
 settings-effect-connect-device = Verbinden
 settings-effect-disconnect-device = Trennen
 settings-effect-set-device-trusted = Gerät ohne Nachfrage verbinden lassen
+settings-effect-rename-paired-device = Gekoppeltes Gerät umbenennen
 settings-effect-rename-device = Gerät umbenennen
 settings-effect-forget-device = Vergessen
 settings-effect-set-work = Die Arbeit festlegen, die dieses Gerät übernimmt
