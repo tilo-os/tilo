@@ -1045,6 +1045,20 @@ mod tests {
         bytes
     }
 
+    /// A handshake as a service reads it: `magic`, then a length in `framing`, then that many bytes
+    /// of JSON.
+    fn handshake(magic: &[u8], framing: Framing, bytes: &[u8]) -> serde_json::Value {
+        assert_eq!(&bytes[..magic.len()], magic, "the frame's tag");
+        let (prefix, json) = bytes[magic.len()..].split_at(4);
+        let prefix: [u8; 4] = prefix.try_into().expect("a length");
+        assert_eq!(
+            framing.decode_prefix(prefix).expect("the frame's length"),
+            json.len(),
+            "the length names the payload that follows it"
+        );
+        serde_json::from_slice(json).expect("the handshake is JSON")
+    }
+
     /// What `/proc/self/fd/<n>` says a descriptor points at — `socket:[<inode>]` for a connected
     /// socket, unique to that connection.
     #[cfg(target_os = "linux")]
@@ -1136,9 +1150,7 @@ mod tests {
                     let (mut stream, _) = listener.accept().expect("accept");
                     let mut bytes = Vec::new();
                     stream.read_to_end(&mut bytes).expect("handshake");
-                    // Little-endian length of the 50-byte JSON handshake.
-                    assert_eq!(bytes[..4], [50, 0, 0, 0]);
-                    serde_json::from_slice::<serde_json::Value>(&bytes[4..]).expect("json")
+                    bytes
                 });
                 let bind = resolve_identity_bind("so.tilo.notes", Some("workspace-7"), false)
                     .expect("resolve")
@@ -1146,7 +1158,11 @@ mod tests {
                 assert_eq!(bind.name, IDENTITY_SERVICE);
                 assert_eq!(bind.child_fd, 31);
                 drop(bind);
-                let handshake = reader.join().expect("reader");
+                let handshake = handshake(
+                    b"",
+                    runtime_identity::wire::HANDSHAKE_FRAMING,
+                    &reader.join().expect("reader"),
+                );
                 assert_eq!(handshake["app_id"], "so.tilo.notes");
                 assert_eq!(handshake["workspace_id"], "workspace-7");
             }
@@ -1157,42 +1173,25 @@ mod tests {
                     "workspace_id": "workspace-7",
                 });
                 let bytes = written(|stream| write_collab_handoff(stream, "so.tilo.notes", "workspace-7"));
-                assert_eq!(bytes[..8], *b"QCL1\x3f\0\0\0");
-                assert_eq!(
-                    serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
-                    fields
-                );
+                assert_eq!(handshake(b"QCL1", COLLAB_LAUNCH_FRAMING, &bytes), fields);
 
                 let bytes = written(|stream| write_compat_handoff(stream, "so.tilo.notes", "workspace-7"));
-                assert_eq!(bytes[..4], [63, 0, 0, 0]);
-                assert_eq!(
-                    serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
-                    fields
-                );
+                assert_eq!(handshake(b"", COMPAT_HANDOFF_FRAMING, &bytes), fields);
 
                 let app_only = serde_json::json!({"protocol": 1, "app_id": "so.tilo.notes"});
                 let bytes = written(|stream| write_model_gateway_handoff(stream, "so.tilo.notes"));
-                assert_eq!(bytes[..4], [39, 0, 0, 0]);
-                assert_eq!(
-                    serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
-                    app_only
-                );
+                assert_eq!(handshake(b"", MODEL_GATEWAY_HANDOFF_FRAMING, &bytes), app_only);
 
                 let bytes = written(|stream| write_ush_handoff(stream, "so.tilo.notes", None));
-                assert_eq!(bytes[..8], *b"QUS1\x27\0\0\0");
-                assert_eq!(
-                    serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
-                    app_only
-                );
+                assert_eq!(handshake(b"QUS1", USH_HANDOFF_FRAMING, &bytes), app_only);
                 // An empty workspace is no workspace: the old bytes, exactly.
                 let empty = written(|stream| write_ush_handoff(stream, "so.tilo.notes", Some("")));
                 assert_eq!(empty, bytes);
 
                 let bytes =
                     written(|stream| write_ush_handoff(stream, "so.tilo.notes", Some("workspace-7")));
-                assert_eq!(bytes[..8], *b"QUS1\x3c\0\0\0");
                 assert_eq!(
-                    serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
+                    handshake(b"QUS1", USH_HANDOFF_FRAMING, &bytes),
                     serde_json::json!({
                         "protocol": 1,
                         "app_id": "so.tilo.notes",
@@ -1201,11 +1200,7 @@ mod tests {
                 );
 
                 let bytes = written(|stream| write_app_host_handoff(stream, "so.tilo.notes"));
-                assert_eq!(bytes[..8], *b"QAH1\0\0\0\x27");
-                assert_eq!(
-                    serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
-                    app_only
-                );
+                assert_eq!(handshake(b"QAH1", APP_HOST_HANDOFF_FRAMING, &bytes), app_only);
             }
             {
                 use std::io::Read;
