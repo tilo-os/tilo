@@ -778,168 +778,193 @@ mod tests {
         matches.iter().map(|m| m.entry.url.as_str()).collect()
     }
 
-    #[test]
-    fn host_prefix_beats_substring_whatever_the_frecency() {
-        let mut idx = index(&[
-            entry(
-                "https://blog.example.org/why-you-should",
-                "Why you should",
-                90,
+    tilo_test_env::scenario! {
+        fn history_matches_rank_by_where_they_match_and_by_frecency;
+
+        phase host_prefix_beats_substring_whatever_the_frecency;
+        {
+            let mut idx = index(&[
+                entry(
+                    "https://blog.example.org/why-you-should",
+                    "Why you should",
+                    90,
+                    NOW,
+                ),
+                entry("https://www.youtube.com/", "YouTube", 1, NOW - 40 * 86_400),
+            ]);
+            let hits = idx.search("you", 8, NOW);
+            assert_eq!(urls(&hits)[0], "https://www.youtube.com/");
+            assert_eq!(hits[0].tier, Tier::Prefix);
+            assert_eq!(hits[1].tier, Tier::Word);
+        }
+
+        phase host_word_beats_title_substring;
+        {
+            let mut idx = index(&[
+                entry("https://a.test/x", "Learn about tubes", 5, NOW),
+                entry("https://m.youtube.com/watch", "A video", 1, NOW),
+            ]);
+            let hits = idx.search("tube", 8, NOW);
+            assert_eq!(urls(&hits)[0], "https://m.youtube.com/watch");
+        }
+
+        phase frecency_orders_within_a_tier;
+        {
+            let mut idx = index(&[
+                entry("https://youtube.com/a", "A", 1, NOW),
+                entry("https://youtube.com/b", "B", 30, NOW),
+                entry("https://youtube.com/c", "C", 30, NOW - 60 * 86_400),
+            ]);
+            let hits = idx.search("youtube", 8, NOW);
+            assert_eq!(
+                urls(&hits),
+                vec![
+                    "https://youtube.com/b",
+                    "https://youtube.com/a",
+                    "https://youtube.com/c"
+                ]
+            );
+            assert!(frecency(30, NOW, NOW) > frecency(1, NOW, NOW));
+            assert!(frecency(3, NOW, NOW) > frecency(3, NOW - 30 * 86_400, NOW));
+        }
+
+        phase extending_a_query_rescans_only_its_matches;
+        {
+            let mut entries: Vec<HistoryEntry> = (0..500)
+                .map(|i| entry(&format!("https://site{i}.test/"), "Other", 1, NOW))
+                .collect();
+            entries.push(entry("https://youtube.com/", "YouTube", 3, NOW));
+            entries.push(entry("https://youtu.be/", "YouTube short", 1, NOW));
+            let mut idx = index(&entries);
+            assert_eq!(urls(&idx.search("y", 8, NOW)).len(), 2);
+            assert_eq!(idx.scanned, 502);
+            let hits = idx.search("yout", 8, NOW);
+            assert_eq!(
+                idx.scanned, 2,
+                "a longer query only rescans the last matches"
+            );
+            assert_eq!(hits.len(), 2);
+            idx.search("x", 8, NOW);
+            assert_eq!(idx.scanned, 502, "a different query starts over");
+        }
+
+        phase matching_ten_thousand_pages_narrows_per_keystroke;
+        {
+            let mut idx = index(&ten_thousand_pages());
+            for q in ["s", "si", "sit", "site"] {
+                assert_eq!(idx.search(q, MAX_ROWS, NOW).len(), MAX_ROWS);
+            }
+            assert_eq!(idx.scanned, 10_000, "every page still matches `site`");
+            assert_eq!(idx.search("site1", MAX_ROWS, NOW).len(), MAX_ROWS);
+            assert_eq!(idx.scanned, 10_000);
+            assert_eq!(idx.search("site12", MAX_ROWS, NOW).len(), MAX_ROWS);
+            assert_eq!(
+                idx.scanned,
+                1 + 10 + 100 + 1000,
+                "only `site1` matches are examined"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn rows_lead_with_what_enter_does_and_repeat_nothing;
+
+        phase typed_address_leads_and_pages_are_not_repeated;
+        {
+            let mut idx = index(&[entry("https://youtube.com/", "YouTube", 4, NOW)]);
+            let hits = idx.search("youtube.com", 8, NOW);
+            let rows = build_rows(
+                "youtube.com",
+                &hits,
+                &[],
+                &[],
+                "https://other.test/",
+                MAX_ROWS,
+            );
+            assert_eq!(rows[0].kind, RowKind::Go);
+            assert_eq!(rows[0].url, "youtube.com", "opened as typed");
+            assert_eq!(rows[0].detail, "https://youtube.com");
+            assert_eq!(
+                rows.iter().filter(|r| r.kind == RowKind::History).count(),
+                0
+            );
+            assert_eq!(rows.last().map(|r| r.kind), Some(RowKind::Search));
+        }
+
+        phase words_lead_with_search_unless_a_page_completes_them;
+        {
+            let mut idx = index(&[entry("https://youtube.com/", "YouTube", 4, NOW)]);
+            let hits = idx.search("you", 8, NOW);
+            let rows = build_rows("you", &hits, &[], &["you tube".into()], "", MAX_ROWS);
+            assert_eq!(rows[0].kind, RowKind::History);
+            assert_eq!(rows[0].title, "YouTube");
+            assert_eq!(rows[1].kind, RowKind::Search);
+
+            let mut idx = index(&[entry(
+                "https://a.test/",
+                "Notes about rust you wrote",
+                4,
                 NOW,
-            ),
-            entry("https://www.youtube.com/", "YouTube", 1, NOW - 40 * 86_400),
-        ]);
-        let hits = idx.search("you", 8, NOW);
-        assert_eq!(urls(&hits)[0], "https://www.youtube.com/");
-        assert_eq!(hits[0].tier, Tier::Prefix);
-        assert_eq!(hits[1].tier, Tier::Word);
-    }
-
-    #[test]
-    fn host_word_beats_title_substring() {
-        let mut idx = index(&[
-            entry("https://a.test/x", "Learn about tubes", 5, NOW),
-            entry("https://m.youtube.com/watch", "A video", 1, NOW),
-        ]);
-        let hits = idx.search("tube", 8, NOW);
-        assert_eq!(urls(&hits)[0], "https://m.youtube.com/watch");
-    }
-
-    #[test]
-    fn frecency_orders_within_a_tier() {
-        let mut idx = index(&[
-            entry("https://youtube.com/a", "A", 1, NOW),
-            entry("https://youtube.com/b", "B", 30, NOW),
-            entry("https://youtube.com/c", "C", 30, NOW - 60 * 86_400),
-        ]);
-        let hits = idx.search("youtube", 8, NOW);
-        assert_eq!(
-            urls(&hits),
-            vec![
-                "https://youtube.com/b",
-                "https://youtube.com/a",
-                "https://youtube.com/c"
-            ]
-        );
-        assert!(frecency(30, NOW, NOW) > frecency(1, NOW, NOW));
-        assert!(frecency(3, NOW, NOW) > frecency(3, NOW - 30 * 86_400, NOW));
-    }
-
-    #[test]
-    fn extending_a_query_rescans_only_its_matches() {
-        let mut entries: Vec<HistoryEntry> = (0..500)
-            .map(|i| entry(&format!("https://site{i}.test/"), "Other", 1, NOW))
-            .collect();
-        entries.push(entry("https://youtube.com/", "YouTube", 3, NOW));
-        entries.push(entry("https://youtu.be/", "YouTube short", 1, NOW));
-        let mut idx = index(&entries);
-        assert_eq!(urls(&idx.search("y", 8, NOW)).len(), 2);
-        assert_eq!(idx.scanned, 502);
-        let hits = idx.search("yout", 8, NOW);
-        assert_eq!(
-            idx.scanned, 2,
-            "a longer query only rescans the last matches"
-        );
-        assert_eq!(hits.len(), 2);
-        idx.search("x", 8, NOW);
-        assert_eq!(idx.scanned, 502, "a different query starts over");
-    }
-
-    #[test]
-    fn typed_address_leads_and_pages_are_not_repeated() {
-        let mut idx = index(&[entry("https://youtube.com/", "YouTube", 4, NOW)]);
-        let hits = idx.search("youtube.com", 8, NOW);
-        let rows = build_rows(
-            "youtube.com",
-            &hits,
-            &[],
-            &[],
-            "https://other.test/",
-            MAX_ROWS,
-        );
-        assert_eq!(rows[0].kind, RowKind::Go);
-        assert_eq!(rows[0].url, "youtube.com", "opened as typed");
-        assert_eq!(rows[0].detail, "https://youtube.com");
-        assert_eq!(
-            rows.iter().filter(|r| r.kind == RowKind::History).count(),
-            0
-        );
-        assert_eq!(rows.last().map(|r| r.kind), Some(RowKind::Search));
-    }
-
-    #[test]
-    fn words_lead_with_search_unless_a_page_completes_them() {
-        let mut idx = index(&[entry("https://youtube.com/", "YouTube", 4, NOW)]);
-        let hits = idx.search("you", 8, NOW);
-        let rows = build_rows("you", &hits, &[], &["you tube".into()], "", MAX_ROWS);
-        assert_eq!(rows[0].kind, RowKind::History);
-        assert_eq!(rows[0].title, "YouTube");
-        assert_eq!(rows[1].kind, RowKind::Search);
-
-        let mut idx = index(&[entry(
-            "https://a.test/",
-            "Notes about rust you wrote",
-            4,
-            NOW,
-        )]);
-        let hits = idx.search("rust", 8, NOW);
-        let rows = build_rows("rust", &hits, &[], &[], "", MAX_ROWS);
-        assert_eq!(rows[0].kind, RowKind::Search);
-        assert_eq!(rows[1].kind, RowKind::History);
-    }
-
-    #[test]
-    fn suggestions_merge_without_duplicates_or_the_typed_text() {
-        let remote: Vec<String> = ["Rust", "rust lang", "RUST LANG", "rust book", " "]
-            .map(String::from)
-            .to_vec();
-        let rows = build_rows("rust", &[], &[], &remote, "", MAX_ROWS);
-        let kinds: Vec<_> = rows.iter().map(|r| (r.kind, r.title.as_str())).collect();
-        assert_eq!(
-            kinds,
-            [
-                (RowKind::Search, "rust"),
-                (RowKind::Suggestion, "rust lang"),
-                (RowKind::Suggestion, "rust book"),
-            ]
-        );
-        let many: Vec<String> = (0..20).map(|i| format!("rust {i}")).collect();
-        assert_eq!(
-            build_rows("rust", &[], &[], &many, "", MAX_ROWS).len(),
-            MAX_ROWS
-        );
-    }
-
-    #[test]
-    fn current_page_is_not_offered_back() {
-        let mut idx = index(&[entry("https://youtube.com/", "YouTube", 4, NOW)]);
-        let hits = idx.search("you", 8, NOW);
-        let rows = build_rows("you", &hits, &[], &[], "https://YOUTUBE.com:443", MAX_ROWS);
-        assert!(rows.iter().all(|r| r.kind != RowKind::History));
-    }
-
-    #[test]
-    fn distinct_destinations_survive_row_deduplication() {
-        let urls = [
-            "https://example.test/Report",
-            "http://example.test/Report",
-            "https://www.example.test/Report",
-            "https://example.test/Report/",
-        ];
-        let mut idx = index(&urls.map(|url| entry(url, "Report", 1, NOW)));
-        let hits = idx.search("report", 8, NOW);
-        let mut rows = build_rows("report", &hits, &[], &[], "", MAX_ROWS);
-        for url in urls {
-            assert!(rows.iter().any(|row| row.url == url), "missing {url}");
+            )]);
+            let hits = idx.search("rust", 8, NOW);
+            let rows = build_rows("rust", &hits, &[], &[], "", MAX_ROWS);
+            assert_eq!(rows[0].kind, RowKind::Search);
+            assert_eq!(rows[1].kind, RowKind::History);
         }
-        lead_with_address(&mut rows, urls[0]);
-        for url in urls {
-            assert_eq!(rows.iter().filter(|row| row.url == url).count(), 1, "{url}");
+
+        phase suggestions_merge_without_duplicates_or_the_typed_text;
+        {
+            let remote: Vec<String> = ["Rust", "rust lang", "RUST LANG", "rust book", " "]
+                .map(String::from)
+                .to_vec();
+            let rows = build_rows("rust", &[], &[], &remote, "", MAX_ROWS);
+            let kinds: Vec<_> = rows.iter().map(|r| (r.kind, r.title.as_str())).collect();
+            assert_eq!(
+                kinds,
+                [
+                    (RowKind::Search, "rust"),
+                    (RowKind::Suggestion, "rust lang"),
+                    (RowKind::Suggestion, "rust book"),
+                ]
+            );
+            let many: Vec<String> = (0..20).map(|i| format!("rust {i}")).collect();
+            assert_eq!(
+                build_rows("rust", &[], &[], &many, "", MAX_ROWS).len(),
+                MAX_ROWS
+            );
         }
-        let rows = build_rows("report", &hits, &[], &[], urls[0], MAX_ROWS);
-        assert!(!rows.iter().any(|row| row.url == urls[0]));
-        for url in &urls[1..] {
-            assert!(rows.iter().any(|row| row.url == *url), "missing {url}");
+
+        phase current_page_is_not_offered_back;
+        {
+            let mut idx = index(&[entry("https://youtube.com/", "YouTube", 4, NOW)]);
+            let hits = idx.search("you", 8, NOW);
+            let rows = build_rows("you", &hits, &[], &[], "https://YOUTUBE.com:443", MAX_ROWS);
+            assert!(rows.iter().all(|r| r.kind != RowKind::History));
+        }
+
+        phase distinct_destinations_survive_row_deduplication;
+        {
+            let urls = [
+                "https://example.test/Report",
+                "http://example.test/Report",
+                "https://www.example.test/Report",
+                "https://example.test/Report/",
+            ];
+            let mut idx = index(&urls.map(|url| entry(url, "Report", 1, NOW)));
+            let hits = idx.search("report", 8, NOW);
+            let mut rows = build_rows("report", &hits, &[], &[], "", MAX_ROWS);
+            for url in urls {
+                assert!(rows.iter().any(|row| row.url == url), "missing {url}");
+            }
+            lead_with_address(&mut rows, urls[0]);
+            for url in urls {
+                assert_eq!(rows.iter().filter(|row| row.url == url).count(), 1, "{url}");
+            }
+            let rows = build_rows("report", &hits, &[], &[], urls[0], MAX_ROWS);
+            assert!(!rows.iter().any(|row| row.url == urls[0]));
+            for url in &urls[1..] {
+                assert!(rows.iter().any(|row| row.url == *url), "missing {url}");
+            }
         }
     }
 
@@ -950,268 +975,284 @@ mod tests {
         index.search(query, MAX_ROWS)
     }
 
-    #[test]
-    fn a_saved_page_is_suggested_and_leads_a_visited_one() {
-        let mut idx = index(&[
-            entry(
-                "https://news.example.test/annual-report",
-                "Annual report",
-                90,
-                NOW,
-            ),
-            entry(
-                "https://blog.example.test/",
-                "The annual report explained",
-                90,
-                NOW,
-            ),
-        ]);
-        let hits = idx.search("annual", 8, NOW);
-        let bookmarks = saved(
-            &[("https://reports.example.test/yearly", "Annual report")],
-            "annual",
-        );
-        assert_eq!(
-            bookmarks.len(),
-            1,
-            "the bookmark is recalled: {bookmarks:?}"
-        );
-        let rows = build_rows("annual", &hits, &bookmarks, &[], "", MAX_ROWS);
-        let kinds: Vec<RowKind> = rows.iter().map(|row| row.kind).collect();
-        assert_eq!(
-            kinds,
-            [
-                RowKind::Search,
-                RowKind::Bookmark,
-                RowKind::History,
-                RowKind::History
-            ],
-            "{rows:?}"
-        );
-        let bookmark = &rows[1];
-        assert_eq!(bookmark.title, "Annual report");
-        assert_eq!(bookmark.detail, "reports.example.test/yearly");
-        assert_eq!(bookmark.url, "https://reports.example.test/yearly");
-    }
+    tilo_test_env::scenario! {
+        fn saved_pages_are_suggested_once_each;
 
-    #[test]
-    fn a_saved_page_ranks_within_its_tier() {
-        let mut idx = index(&[
-            entry("https://annual.test/", "Home", 500, NOW),
-            entry("https://news.example.test/", "Annual report", 500, NOW),
-        ]);
-        let hits = idx.search("annual", 8, NOW);
-        let bookmarks = saved(
-            &[("https://reports.example.test/yearly", "Annual report")],
-            "annual",
-        );
-        let rows = build_rows("annual", &hits, &bookmarks, &[], "", MAX_ROWS);
-        let kinds: Vec<RowKind> = rows.iter().map(|row| row.kind).collect();
-        assert_eq!(
-            kinds,
-            [
-                RowKind::History,
-                RowKind::Bookmark,
-                RowKind::History,
-                RowKind::Search
-            ],
-            "{rows:?}"
-        );
-        assert_eq!(rows[0].url, "https://annual.test/");
-        assert_eq!(rows[1].url, "https://reports.example.test/yearly");
-    }
-
-    #[test]
-    fn one_address_is_one_saved_row() {
-        let url = "https://example.test/Annual";
-        for history_title in ["Annual report", "Notes"] {
-            let mut idx = index(&[entry(url, history_title, 9, NOW)]);
+        phase a_saved_page_is_suggested_and_leads_a_visited_one;
+        {
+            let mut idx = index(&[
+                entry(
+                    "https://news.example.test/annual-report",
+                    "Annual report",
+                    90,
+                    NOW,
+                ),
+                entry(
+                    "https://blog.example.test/",
+                    "The annual report explained",
+                    90,
+                    NOW,
+                ),
+            ]);
             let hits = idx.search("annual", 8, NOW);
-            let bookmarks = saved(&[(url, "Annual report")], "annual");
+            let bookmarks = saved(
+                &[("https://reports.example.test/yearly", "Annual report")],
+                "annual",
+            );
+            assert_eq!(
+                bookmarks.len(),
+                1,
+                "the bookmark is recalled: {bookmarks:?}"
+            );
             let rows = build_rows("annual", &hits, &bookmarks, &[], "", MAX_ROWS);
-            let pages: Vec<&Row> = rows
-                .iter()
-                .filter(|row| !matches!(row.kind, RowKind::Search | RowKind::Suggestion))
-                .collect();
-            assert_eq!(pages.len(), 1, "{history_title}: {rows:?}");
-            assert_eq!(pages[0].kind, RowKind::Bookmark);
-            assert_eq!(pages[0].title, "Annual report");
+            let kinds: Vec<RowKind> = rows.iter().map(|row| row.kind).collect();
+            assert_eq!(
+                kinds,
+                [
+                    RowKind::Search,
+                    RowKind::Bookmark,
+                    RowKind::History,
+                    RowKind::History
+                ],
+                "{rows:?}"
+            );
+            let bookmark = &rows[1];
+            assert_eq!(bookmark.title, "Annual report");
+            assert_eq!(bookmark.detail, "reports.example.test/yearly");
+            assert_eq!(bookmark.url, "https://reports.example.test/yearly");
+        }
+
+        phase a_saved_page_ranks_within_its_tier;
+        {
+            let mut idx = index(&[
+                entry("https://annual.test/", "Home", 500, NOW),
+                entry("https://news.example.test/", "Annual report", 500, NOW),
+            ]);
+            let hits = idx.search("annual", 8, NOW);
+            let bookmarks = saved(
+                &[("https://reports.example.test/yearly", "Annual report")],
+                "annual",
+            );
+            let rows = build_rows("annual", &hits, &bookmarks, &[], "", MAX_ROWS);
+            let kinds: Vec<RowKind> = rows.iter().map(|row| row.kind).collect();
+            assert_eq!(
+                kinds,
+                [
+                    RowKind::History,
+                    RowKind::Bookmark,
+                    RowKind::History,
+                    RowKind::Search
+                ],
+                "{rows:?}"
+            );
+            assert_eq!(rows[0].url, "https://annual.test/");
+            assert_eq!(rows[1].url, "https://reports.example.test/yearly");
+        }
+
+        phase one_address_is_one_saved_row;
+        {
+            let url = "https://example.test/Annual";
+            for history_title in ["Annual report", "Notes"] {
+                let mut idx = index(&[entry(url, history_title, 9, NOW)]);
+                let hits = idx.search("annual", 8, NOW);
+                let bookmarks = saved(&[(url, "Annual report")], "annual");
+                let rows = build_rows("annual", &hits, &bookmarks, &[], "", MAX_ROWS);
+                let pages: Vec<&Row> = rows
+                    .iter()
+                    .filter(|row| !matches!(row.kind, RowKind::Search | RowKind::Suggestion))
+                    .collect();
+                assert_eq!(pages.len(), 1, "{history_title}: {rows:?}");
+                assert_eq!(pages[0].kind, RowKind::Bookmark);
+                assert_eq!(pages[0].title, "Annual report");
+            }
+        }
+
+        phase saved_pages_match_without_case_or_diacritics;
+        {
+            let pages = [
+                ("https://example.test/strasse", "Große Straße"),
+                ("https://example.test/other", "Unrelated"),
+            ];
+            for query in ["grosse", "Große", "strasse", "STRASSE", "straße"] {
+                let found = saved(&pages, query);
+                assert_eq!(
+                    found.iter().map(|hit| hit.url.as_str()).collect::<Vec<_>>(),
+                    vec!["https://example.test/strasse"],
+                    "{query}"
+                );
+            }
+            assert!(
+                saved(&pages, "  ").is_empty(),
+                "an empty query recalls nothing"
+            );
+            assert!(saved(&pages, "zzz").is_empty());
+        }
+
+        phase the_same_page_saved_twice_is_one_row;
+        {
+            let mut index = BookmarkIndex::default();
+            index.rebuild([
+                ("https://example.test/air", "Annual report"),
+                ("https://example.test/air", "Annual report (workspace)"),
+                ("https://www.example.test/air", "Annual report"),
+            ]);
+            assert_eq!(index.len(), 1, "one address, one saved page");
+            let found = index.search("annual", MAX_ROWS);
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].title, "Annual report", "the first save wins");
         }
     }
 
-    #[test]
-    fn saved_pages_match_without_case_or_diacritics() {
-        let pages = [
-            ("https://example.test/strasse", "Große Straße"),
-            ("https://example.test/other", "Unrelated"),
-        ];
-        for query in ["grosse", "Große", "strasse", "STRASSE", "straße"] {
-            let found = saved(&pages, query);
+    tilo_test_env::scenario! {
+        fn typed_text_is_completed_and_read_as_an_address;
+
+        phase inline_completion_preserves_case_sensitive_destinations;
+        {
+            let mut index = HistoryIndex::default();
+            let url = "https://example.test/Reports/Annual?token=AbC";
+            index.rebuild(&[HistoryEntry {
+                url: url.into(),
+                title: "Report".into(),
+                last_visit: NOW,
+                visit_count: 1,
+            }]);
+            let hits = index.search("example.test/Re", 8, NOW);
+            let completion = inline_completion("example.test/Re", hits.first()).unwrap();
+            assert_eq!(completion, "example.test/Reports/Annual?token=AbC");
+            let mut rows = Vec::new();
+            lead_with_address(&mut rows, &completion);
+            assert_eq!(rows[0].detail, url);
+            assert_eq!(address_target(&rows[0].url), url);
+            assert_eq!(display_url(url), "example.test/Reports/Annual?token=AbC");
+            let hits = index.search("example.test/re", 8, NOW);
+            assert_eq!(inline_completion("example.test/re", hits.first()), None);
+        }
+
+        phase inline_completion_completes_the_host_of_the_best_prefix_match;
+        {
+            let mut idx = index(&[entry("https://www.youtube.com/watch?v=1", "Cats", 4, NOW)]);
+            let hits = idx.search("You", 8, NOW);
             assert_eq!(
-                found.iter().map(|hit| hit.url.as_str()).collect::<Vec<_>>(),
-                vec!["https://example.test/strasse"],
-                "{query}"
+                inline_completion("You", hits.first()).as_deref(),
+                Some("Youtube.com")
+            );
+            let hits = idx.search("youtube.com/wa", 8, NOW);
+            assert_eq!(
+                inline_completion("youtube.com/wa", hits.first()).as_deref(),
+                Some("youtube.com/watch?v=1")
+            );
+            let hits = idx.search("cats", 8, NOW);
+            assert_eq!(inline_completion("cats", hits.first()), None);
+            assert_eq!(
+                inline_completion("youtube.com", idx.search("youtube.com", 8, NOW).first()),
+                None
             );
         }
-        assert!(
-            saved(&pages, "  ").is_empty(),
-            "an empty query recalls nothing"
-        );
-        assert!(saved(&pages, "zzz").is_empty());
-    }
 
-    #[test]
-    fn the_same_page_saved_twice_is_one_row() {
-        let mut index = BookmarkIndex::default();
-        index.rebuild([
-            ("https://example.test/air", "Annual report"),
-            ("https://example.test/air", "Annual report (workspace)"),
-            ("https://www.example.test/air", "Annual report"),
-        ]);
-        assert_eq!(index.len(), 1, "one address, one saved page");
-        let found = index.search("annual", MAX_ROWS);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].title, "Annual report", "the first save wins");
-    }
+        phase what_looks_like_an_address;
+        {
+            assert!(looks_like_address("youtube.com"));
+            assert!(looks_like_address("https://a.b/c"));
+            assert!(looks_like_address("localhost:3000"));
+            assert!(!looks_like_address("rust lang"));
+            assert!(!looks_like_address("you"));
+            assert!(!looks_like_address("what is e.g. this"));
+        }
 
-    #[test]
-    fn inline_completion_preserves_case_sensitive_destinations() {
-        let mut index = HistoryIndex::default();
-        let url = "https://example.test/Reports/Annual?token=AbC";
-        index.rebuild(&[HistoryEntry {
-            url: url.into(),
-            title: "Report".into(),
-            last_visit: NOW,
-            visit_count: 1,
-        }]);
-        let hits = index.search("example.test/Re", 8, NOW);
-        let completion = inline_completion("example.test/Re", hits.first()).unwrap();
-        assert_eq!(completion, "example.test/Reports/Annual?token=AbC");
-        let mut rows = Vec::new();
-        lead_with_address(&mut rows, &completion);
-        assert_eq!(rows[0].detail, url);
-        assert_eq!(address_target(&rows[0].url), url);
-        assert_eq!(display_url(url), "example.test/Reports/Annual?token=AbC");
-        let hits = index.search("example.test/re", 8, NOW);
-        assert_eq!(inline_completion("example.test/re", hits.first()), None);
-    }
-
-    #[test]
-    fn inline_completion_completes_the_host_of_the_best_prefix_match() {
-        let mut idx = index(&[entry("https://www.youtube.com/watch?v=1", "Cats", 4, NOW)]);
-        let hits = idx.search("You", 8, NOW);
-        assert_eq!(
-            inline_completion("You", hits.first()).as_deref(),
-            Some("Youtube.com")
-        );
-        let hits = idx.search("youtube.com/wa", 8, NOW);
-        assert_eq!(
-            inline_completion("youtube.com/wa", hits.first()).as_deref(),
-            Some("youtube.com/watch?v=1")
-        );
-        let hits = idx.search("cats", 8, NOW);
-        assert_eq!(inline_completion("cats", hits.first()), None);
-        assert_eq!(
-            inline_completion("youtube.com", idx.search("youtube.com", 8, NOW).first()),
-            None
-        );
-    }
-
-    #[test]
-    fn what_looks_like_an_address() {
-        assert!(looks_like_address("youtube.com"));
-        assert!(looks_like_address("https://a.b/c"));
-        assert!(looks_like_address("localhost:3000"));
-        assert!(!looks_like_address("rust lang"));
-        assert!(!looks_like_address("you"));
-        assert!(!looks_like_address("what is e.g. this"));
-    }
-
-    #[test]
-    fn a_local_address_opens_over_http_and_a_site_over_https() {
-        for (typed, opened) in [
-            ("localhost:3000", "http://localhost:3000"),
-            ("localhost", "http://localhost"),
-            (
-                "app.localhost:8080/login",
-                "http://app.localhost:8080/login",
-            ),
-            ("127.0.0.1:8080", "http://127.0.0.1:8080"),
-            ("192.168.1.1", "http://192.168.1.1"),
-            ("[::1]:8443", "http://[::1]:8443"),
-            ("printer.local/status", "http://printer.local/status"),
-            ("example.com", "https://example.com"),
-            ("localhost.example.com", "https://localhost.example.com"),
-            ("1.2.3.4.example", "https://1.2.3.4.example"),
-            ("http://intranet.example", "http://intranet.example"),
-            ("https://localhost:3000", "https://localhost:3000"),
-        ] {
-            assert_eq!(address_target(typed), opened, "{typed}");
+        phase a_local_address_opens_over_http_and_a_site_over_https;
+        {
+            for (typed, opened) in [
+                ("localhost:3000", "http://localhost:3000"),
+                ("localhost", "http://localhost"),
+                (
+                    "app.localhost:8080/login",
+                    "http://app.localhost:8080/login",
+                ),
+                ("127.0.0.1:8080", "http://127.0.0.1:8080"),
+                ("192.168.1.1", "http://192.168.1.1"),
+                ("[::1]:8443", "http://[::1]:8443"),
+                ("printer.local/status", "http://printer.local/status"),
+                ("example.com", "https://example.com"),
+                ("localhost.example.com", "https://localhost.example.com"),
+                ("1.2.3.4.example", "https://1.2.3.4.example"),
+                ("http://intranet.example", "http://intranet.example"),
+                ("https://localhost:3000", "https://localhost:3000"),
+            ] {
+                assert_eq!(address_target(typed), opened, "{typed}");
+            }
         }
     }
 
-    #[test]
-    fn suggest_endpoint_follows_the_configured_engine() {
-        assert_eq!(
-            suggest_endpoint("https://duckduckgo.com/?q=", "a b").as_deref(),
-            Some("https://duckduckgo.com/ac/?type=list&q=a+b")
-        );
-        assert!(
-            suggest_endpoint("https://www.google.com/search?q={query}", "x")
-                .is_some_and(|u| u.contains("suggestqueries.google.com"))
-        );
-        assert_eq!(suggest_endpoint("https://example.org/?q=", "x"), None);
-        assert_eq!(suggest_endpoint("http://duckduckgo.com/?q=", "x"), None);
+    tilo_test_env::scenario! {
+        fn search_suggestions_come_from_the_configured_engine;
+
+        phase suggest_endpoint_follows_the_configured_engine;
+        {
+            assert_eq!(
+                suggest_endpoint("https://duckduckgo.com/?q=", "a b").as_deref(),
+                Some("https://duckduckgo.com/ac/?type=list&q=a+b")
+            );
+            assert!(
+                suggest_endpoint("https://www.google.com/search?q={query}", "x")
+                    .is_some_and(|u| u.contains("suggestqueries.google.com"))
+            );
+            assert_eq!(suggest_endpoint("https://example.org/?q=", "x"), None);
+            assert_eq!(suggest_endpoint("http://duckduckgo.com/?q=", "x"), None);
+        }
+
+        phase opensearch_responses_parse;
+        {
+            assert_eq!(
+                parse_suggestions(r#"["rus",["rust","rustup",""," "],[],[]]"#),
+                ["rust", "rustup"]
+            );
+            assert!(parse_suggestions("not json").is_empty());
+            assert!(parse_suggestions(r#"{"a":1}"#).is_empty());
+        }
     }
 
-    #[test]
-    fn opensearch_responses_parse() {
-        assert_eq!(
-            parse_suggestions(r#"["rus",["rust","rustup",""," "],[],[]]"#),
-            ["rust", "rustup"]
-        );
-        assert!(parse_suggestions("not json").is_empty());
-        assert!(parse_suggestions(r#"{"a":1}"#).is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn debounce_fires_once_for_the_latest_typing;
 
-    #[test]
-    fn debounce_waits_for_quiet_and_supersedes() {
-        let t0 = Instant::now();
-        let mut d = Debounce::default();
-        let g1 = d.typed("r", t0);
-        assert!(d.due(t0 + Duration::from_millis(50), DEBOUNCE).is_none());
-        let g2 = d.typed("ru", t0 + Duration::from_millis(100));
-        assert!(
-            d.due(t0 + Duration::from_millis(200), DEBOUNCE).is_none(),
-            "a keystroke restarts the quiet period"
-        );
-        let (generation, query) = d
-            .due(t0 + Duration::from_millis(260), DEBOUNCE)
-            .expect("quiet long enough");
-        assert_eq!((generation, query.as_str()), (g2, "ru"));
-        assert!(
-            d.due(t0 + Duration::from_secs(5), DEBOUNCE).is_none(),
-            "fires once"
-        );
-        assert!(!d.is_current(g1));
-        assert!(d.is_current(g2));
-    }
+        phase debounce_waits_for_quiet_and_supersedes;
+        {
+            let t0 = Instant::now();
+            let mut d = Debounce::default();
+            let g1 = d.typed("r", t0);
+            assert!(d.due(t0 + Duration::from_millis(50), DEBOUNCE).is_none());
+            let g2 = d.typed("ru", t0 + Duration::from_millis(100));
+            assert!(
+                d.due(t0 + Duration::from_millis(200), DEBOUNCE).is_none(),
+                "a keystroke restarts the quiet period"
+            );
+            let (generation, query) = d
+                .due(t0 + Duration::from_millis(260), DEBOUNCE)
+                .expect("quiet long enough");
+            assert_eq!((generation, query.as_str()), (g2, "ru"));
+            assert!(
+                d.due(t0 + Duration::from_secs(5), DEBOUNCE).is_none(),
+                "fires once"
+            );
+            assert!(!d.is_current(g1));
+            assert!(d.is_current(g2));
+        }
 
-    #[test]
-    fn cancel_makes_every_outstanding_answer_stale() {
-        let t0 = Instant::now();
-        let mut d = Debounce::default();
-        d.typed("ru", t0);
-        let (g, _) = d.due(t0 + DEBOUNCE, DEBOUNCE).expect("due");
-        assert!(d.is_current(g));
-        d.cancel();
-        assert!(
-            !d.is_current(g),
-            "an answer arriving after cancel is dropped"
-        );
-        d.typed("rus", t0);
-        d.cancel();
-        assert!(d.due(t0 + Duration::from_secs(1), DEBOUNCE).is_none());
+        phase cancel_makes_every_outstanding_answer_stale;
+        {
+            let t0 = Instant::now();
+            let mut d = Debounce::default();
+            d.typed("ru", t0);
+            let (g, _) = d.due(t0 + DEBOUNCE, DEBOUNCE).expect("due");
+            assert!(d.is_current(g));
+            d.cancel();
+            assert!(
+                !d.is_current(g),
+                "an answer arriving after cancel is dropped"
+            );
+            d.typed("rus", t0);
+            d.cancel();
+            assert!(d.due(t0 + Duration::from_secs(1), DEBOUNCE).is_none());
+        }
     }
 
     fn ten_thousand_pages() -> Vec<HistoryEntry> {
@@ -1225,23 +1266,6 @@ mod tests {
                 )
             })
             .collect()
-    }
-
-    #[test]
-    fn matching_ten_thousand_pages_narrows_per_keystroke() {
-        let mut idx = index(&ten_thousand_pages());
-        for q in ["s", "si", "sit", "site"] {
-            assert_eq!(idx.search(q, MAX_ROWS, NOW).len(), MAX_ROWS);
-        }
-        assert_eq!(idx.scanned, 10_000, "every page still matches `site`");
-        assert_eq!(idx.search("site1", MAX_ROWS, NOW).len(), MAX_ROWS);
-        assert_eq!(idx.scanned, 10_000);
-        assert_eq!(idx.search("site12", MAX_ROWS, NOW).len(), MAX_ROWS);
-        assert_eq!(
-            idx.scanned,
-            1 + 10 + 100 + 1000,
-            "only `site1` matches are examined"
-        );
     }
 
     #[test]

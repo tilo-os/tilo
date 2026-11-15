@@ -1294,54 +1294,123 @@ fn the_answers_a_signed_in_page_offers_are_not_remembered() {
     assert_eq!(kept.questions.len(), 7);
 }
 
-/// Memory is the document's: it changes through the document's own action,
-/// which takes a form's shape and nothing else, and two devices that each
-/// remembered a form hold both once they have synced.
-#[test]
-fn memory_is_the_documents_and_syncs_like_the_rest_of_it() {
-    let form = |signature: &str, label: &str| RememberedForm {
-        signature: signature.into(),
-        label: label.into(),
-        questions: vec![RememberedQuestion {
-            name: "Name".into(),
-            kind: "text".into(),
-            ..RememberedQuestion::default()
-        }],
-        ..RememberedForm::default()
-    };
-    let remember = |origin: &str, page: &str, form: RememberedForm| {
-        Browser::REMEMBER_FORMS.with(browser::RememberForms {
-            origin: origin.into(),
-            page: page.into(),
-            forms: vec![form],
-            whole: true,
-            at: 1,
-        })
-    };
-    let mut ours = Replica::<Browser>::new();
-    let mut theirs = ours.fork();
-    ours.apply(remember(SITE, "/apply", form("aaaa1111", "Apply")))
-        .expect("a form's shape is remembered");
-    theirs
-        .apply(remember(SITE, "/contact", form("bbbb2222", "Contact")))
-        .expect("a form's shape is remembered");
-    assert!(
-        ours.apply(remember("mailto:a@b", "/apply", form("cccc3333", "")))
-            .is_err(),
-        "a site is an http(s) origin"
-    );
-    assert!(
-        ours.apply(remember(SITE, "/apply", form("not a signature", "")))
-            .is_err()
-    );
-    ours.sync_with(&mut theirs).expect("the two devices sync");
-    let (ours, theirs) = (ours.state().unwrap(), theirs.state().unwrap());
-    assert_eq!(ours.site_forms, theirs.site_forms);
-    let known: Vec<&str> = ours.site_forms.keys().map(String::as_str).collect();
-    assert_eq!(
-        known,
-        ["https://visa.test aaaa1111", "https://visa.test bbbb2222"]
-    );
+tilo_test_env::scenario! {
+    fn remembered_forms_are_the_documents_and_sync;
+
+    phase memory_is_the_documents_and_syncs_like_the_rest_of_it;
+    // Memory is the document's: it changes through the document's own action,
+    // which takes a form's shape and nothing else, and two devices that each
+    // remembered a form hold both once they have synced.
+    {
+        let form = |signature: &str, label: &str| RememberedForm {
+            signature: signature.into(),
+            label: label.into(),
+            questions: vec![RememberedQuestion {
+                name: "Name".into(),
+                kind: "text".into(),
+                ..RememberedQuestion::default()
+            }],
+            ..RememberedForm::default()
+        };
+        let remember = |origin: &str, page: &str, form: RememberedForm| {
+            Browser::REMEMBER_FORMS.with(browser::RememberForms {
+                origin: origin.into(),
+                page: page.into(),
+                forms: vec![form],
+                whole: true,
+                at: 1,
+            })
+        };
+        let mut ours = Replica::<Browser>::new();
+        let mut theirs = ours.fork();
+        ours.apply(remember(SITE, "/apply", form("aaaa1111", "Apply")))
+            .expect("a form's shape is remembered");
+        theirs
+            .apply(remember(SITE, "/contact", form("bbbb2222", "Contact")))
+            .expect("a form's shape is remembered");
+        assert!(
+            ours.apply(remember("mailto:a@b", "/apply", form("cccc3333", "")))
+                .is_err(),
+            "a site is an http(s) origin"
+        );
+        assert!(
+            ours.apply(remember(SITE, "/apply", form("not a signature", "")))
+                .is_err()
+        );
+        ours.sync_with(&mut theirs).expect("the two devices sync");
+        let (ours, theirs) = (ours.state().unwrap(), theirs.state().unwrap());
+        assert_eq!(ours.site_forms, theirs.site_forms);
+        let known: Vec<&str> = ours.site_forms.keys().map(String::as_str).collect();
+        assert_eq!(
+            known,
+            ["https://visa.test aaaa1111", "https://visa.test bbbb2222"]
+        );
+    }
+
+    phase forgetting_is_the_documents_action_and_syncs;
+    // Forgetting is the document's own action like remembering: it syncs, a
+    // site is named by its origin or an address of it, and a form nobody
+    // remembers cannot be forgotten.
+    {
+        let form = |signature: &str| RememberedForm {
+            signature: signature.into(),
+            label: "Form".into(),
+            ..RememberedForm::default()
+        };
+        let remember = |origin: &str, form: RememberedForm| {
+            Browser::REMEMBER_FORMS.with(browser::RememberForms {
+                origin: origin.into(),
+                page: "/".into(),
+                forms: vec![form],
+                whole: false,
+                at: 1,
+            })
+        };
+        let forget = |origin: &str, signature: &str| {
+            Browser::FORGET_FORM.with(browser::ForgetForm {
+                origin: origin.into(),
+                signature: signature.into(),
+            })
+        };
+        let mut ours = Replica::<Browser>::new();
+        for (origin, signature) in [
+            (SITE, "aaaa1111"),
+            (SITE, "bbbb2222"),
+            ("https://shop.test", "cccc3333"),
+            ("https://bank.test", "dddd4444"),
+        ] {
+            ours.apply(remember(origin, form(signature)))
+                .expect("a form's shape is remembered");
+        }
+        let mut theirs = ours.fork();
+        assert!(ours.apply(forget(SITE, "ffff0000")).is_err());
+        assert!(ours.apply(forget("mailto:a@b", "aaaa1111")).is_err());
+        ours.apply(forget("https://visa.test/apply?step=2", "aaaa1111"))
+            .expect("a form is forgotten");
+        ours.apply(Browser::FORGET_SITE_FORMS.with(browser::ForgetSiteForms {
+            origin: "https://shop.test".into(),
+        }))
+        .expect("a site's forms are forgotten");
+        ours.sync_with(&mut theirs).expect("the two devices sync");
+        let known = |replica: &Replica<Browser>| -> Vec<String> {
+            replica
+                .state()
+                .unwrap()
+                .site_forms
+                .keys()
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            known(&ours),
+            ["https://bank.test dddd4444", "https://visa.test bbbb2222"]
+        );
+        assert_eq!(known(&theirs), known(&ours));
+        theirs
+            .apply(Browser::FORGET_ALL_FORMS.with(()))
+            .expect("everything is forgotten");
+        assert!(known(&theirs).is_empty());
+    }
 }
 
 /// A first visit has its forms as actions without any agent's read: the
@@ -2169,69 +2238,4 @@ fn the_screenshot_scenario_shows_the_forms_remembered_of_a_site() {
     ] {
         assert!(targets.contains_key(control), "{control} is a control");
     }
-}
-
-/// Forgetting is the document's own action like remembering: it syncs, a
-/// site is named by its origin or an address of it, and a form nobody
-/// remembers cannot be forgotten.
-#[test]
-fn forgetting_is_the_documents_action_and_syncs() {
-    let form = |signature: &str| RememberedForm {
-        signature: signature.into(),
-        label: "Form".into(),
-        ..RememberedForm::default()
-    };
-    let remember = |origin: &str, form: RememberedForm| {
-        Browser::REMEMBER_FORMS.with(browser::RememberForms {
-            origin: origin.into(),
-            page: "/".into(),
-            forms: vec![form],
-            whole: false,
-            at: 1,
-        })
-    };
-    let forget = |origin: &str, signature: &str| {
-        Browser::FORGET_FORM.with(browser::ForgetForm {
-            origin: origin.into(),
-            signature: signature.into(),
-        })
-    };
-    let mut ours = Replica::<Browser>::new();
-    for (origin, signature) in [
-        (SITE, "aaaa1111"),
-        (SITE, "bbbb2222"),
-        ("https://shop.test", "cccc3333"),
-        ("https://bank.test", "dddd4444"),
-    ] {
-        ours.apply(remember(origin, form(signature)))
-            .expect("a form's shape is remembered");
-    }
-    let mut theirs = ours.fork();
-    assert!(ours.apply(forget(SITE, "ffff0000")).is_err());
-    assert!(ours.apply(forget("mailto:a@b", "aaaa1111")).is_err());
-    ours.apply(forget("https://visa.test/apply?step=2", "aaaa1111"))
-        .expect("a form is forgotten");
-    ours.apply(Browser::FORGET_SITE_FORMS.with(browser::ForgetSiteForms {
-        origin: "https://shop.test".into(),
-    }))
-    .expect("a site's forms are forgotten");
-    ours.sync_with(&mut theirs).expect("the two devices sync");
-    let known = |replica: &Replica<Browser>| -> Vec<String> {
-        replica
-            .state()
-            .unwrap()
-            .site_forms
-            .keys()
-            .cloned()
-            .collect()
-    };
-    assert_eq!(
-        known(&ours),
-        ["https://bank.test dddd4444", "https://visa.test bbbb2222"]
-    );
-    assert_eq!(known(&theirs), known(&ours));
-    theirs
-        .apply(Browser::FORGET_ALL_FORMS.with(()))
-        .expect("everything is forgotten");
-    assert!(known(&theirs).is_empty());
 }

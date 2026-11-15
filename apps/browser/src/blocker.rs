@@ -336,69 +336,73 @@ fn source_version(texts: &[String]) -> u64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn bundled_user_scripts_are_present_and_skip_youtube_ads() {
+    tilo_test_env::scenario! {
+        fn the_bundled_lists_and_user_scripts_are_what_ships;
+
+        phase bundled_user_scripts_are_present_and_skip_youtube_ads;
         {
-            let scripts = user_scripts();
-            assert!(!scripts.is_empty(), "expected at least one user script");
-            for (i, s) in scripts.iter().enumerate() {
-                assert!(!s.trim().is_empty(), "user script {i} is empty");
+            {
+                let scripts = user_scripts();
+                assert!(!scripts.is_empty(), "expected at least one user script");
+                for (i, s) in scripts.iter().enumerate() {
+                    assert!(!s.trim().is_empty(), "user script {i} is empty");
+                }
             }
-        }
 
-        {
-            let scripts = user_scripts();
-            let yt = scripts
-                .iter()
-                .find(|s| s.contains("ytp-ad"))
-                .expect("a YouTube ad-skip script referencing ytp-ad");
+            {
+                let scripts = user_scripts();
+                let yt = scripts
+                    .iter()
+                    .find(|s| s.contains("ytp-ad"))
+                    .expect("a YouTube ad-skip script referencing ytp-ad");
 
-            assert!(!yt.trim().is_empty(), "YouTube script is empty");
-            assert!(yt.contains("ytp-ad-skip-button"), "no skip-button click");
-            assert!(
-                yt.to_lowercase().contains("skip"),
-                "no skip logic in YouTube script"
-            );
-            assert!(yt.contains("ad-showing"), "no ad-in-progress detection");
-            assert!(yt.contains("currentTime"), "no fast-forward seek");
-            assert!(
-                yt.contains("MutationObserver") && yt.contains("setInterval"),
-                "no SPA-navigation resilience",
-            );
-        }
-    }
-
-    #[test]
-    fn filter_list_set_covers_sources_and_excludes_page_blanking_lists() {
-        {
-            let names: Vec<&str> = LISTS.iter().map(|(n, _)| *n).collect();
-            for expected in [
-                "easylist.txt",
-                "easyprivacy.txt",
-                "easylist-cookie.txt",
-                "ublock-filters.txt",
-                "ublock-privacy.txt",
-                "ublock-badware.txt",
-                "ublock-resource-abuse.txt",
-            ] {
-                assert!(names.contains(&expected), "missing filter list {expected}");
-            }
-            for (_, url) in LISTS {
-                assert!(url.starts_with("https://"), "non-https list URL: {url}");
-            }
-        }
-
-        {
-            // uBO quick fixes and AdGuard Base convert to over-broad `block`
-            // rules that catch a page's own first-party document, so a
-            // navigation goes permanently blank. They were reinstated once by
-            // accident; this asserts their absence.
-            let names: Vec<&str> = LISTS.iter().map(|(n, _)| *n).collect();
-            for banned in EXCLUDED_LISTS {
+                assert!(!yt.trim().is_empty(), "YouTube script is empty");
+                assert!(yt.contains("ytp-ad-skip-button"), "no skip-button click");
                 assert!(
-                    !names.contains(banned),
-                    "{banned} blanks pages under WebKit content blocking — it must stay out of LISTS",
+                    yt.to_lowercase().contains("skip"),
+                    "no skip logic in YouTube script"
                 );
+                assert!(yt.contains("ad-showing"), "no ad-in-progress detection");
+                assert!(yt.contains("currentTime"), "no fast-forward seek");
+                assert!(
+                    yt.contains("MutationObserver") && yt.contains("setInterval"),
+                    "no SPA-navigation resilience",
+                );
+            }
+        }
+
+        phase filter_list_set_covers_sources_and_excludes_page_blanking_lists;
+        {
+            {
+                let names: Vec<&str> = LISTS.iter().map(|(n, _)| *n).collect();
+                for expected in [
+                    "easylist.txt",
+                    "easyprivacy.txt",
+                    "easylist-cookie.txt",
+                    "ublock-filters.txt",
+                    "ublock-privacy.txt",
+                    "ublock-badware.txt",
+                    "ublock-resource-abuse.txt",
+                ] {
+                    assert!(names.contains(&expected), "missing filter list {expected}");
+                }
+                for (_, url) in LISTS {
+                    assert!(url.starts_with("https://"), "non-https list URL: {url}");
+                }
+            }
+
+            {
+                // uBO quick fixes and AdGuard Base convert to over-broad `block`
+                // rules that catch a page's own first-party document, so a
+                // navigation goes permanently blank. They were reinstated once by
+                // accident; this asserts their absence.
+                let names: Vec<&str> = LISTS.iter().map(|(n, _)| *n).collect();
+                for banned in EXCLUDED_LISTS {
+                    assert!(
+                        !names.contains(banned),
+                        "{banned} blanks pages under WebKit content blocking — it must stay out of LISTS",
+                    );
+                }
             }
         }
     }

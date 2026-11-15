@@ -745,98 +745,150 @@ mod tests {
     fn contains(widget: &dyn Widget, id: &str) -> bool {
         ui::widget::find_test_id(widget, id).is_some()
     }
-    #[test]
-    fn an_extensions_question_is_asked_first_and_answered_once() {
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture.clone();
-        let mut capabilities = Capabilities::default();
-        capabilities.apply(WebViewEvent::PermissionRequested {
-            id: 1,
-            origin: "https://site.test".into(),
-            permissions: "camera".into(),
-        });
-        for request in [4, 5] {
-            capabilities.ask_for_extension(ExtensionQuestion {
-                request,
-                name: "Permit".into(),
-                lines: vec!["Read your browsing history".into()],
+    tilo_test_env::scenario! {
+        fn a_question_of_an_extension_or_a_site_is_asked_and_answered_once;
+
+        phase an_extensions_question_is_asked_first_and_answered_once;
+        {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture.clone();
+            let mut capabilities = Capabilities::default();
+            capabilities.apply(WebViewEvent::PermissionRequested {
+                id: 1,
+                origin: "https://site.test".into(),
+                permissions: "camera".into(),
             });
+            for request in [4, 5] {
+                capabilities.ask_for_extension(ExtensionQuestion {
+                    request,
+                    name: "Permit".into(),
+                    lines: vec!["Read your browsing history".into()],
+                });
+            }
+            assert!(capabilities.extension_questions_changed());
+            assert!(!capabilities.extension_questions_changed());
+            assert!(capabilities.asks_for_extension() && capabilities.prompt_is_permission());
+            // Its question comes before the site's, and an agent or a screen reader
+            // answers it as the person does.
+            let mut prompt = capabilities.prompt(&engine).unwrap();
+            assert!(contains(
+                prompt.as_ref(),
+                "browser.decision.extension.4.true"
+            ));
+            assert!(!contains(prompt.as_ref(), "browser.decision.true.1.true"));
+            prompt
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.decision.extension.4.true").unwrap(),
+                    &mut automerge::AutoCommit::new(),
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            assert_eq!(
+                capture.commands(),
+                [WebViewCommand::ExtensionPermissionDecision {
+                    request: 4,
+                    allow: true
+                }]
+            );
+            assert!(capabilities.extension_questions_changed());
+            capabilities.decline_prompt(&engine);
+            assert_eq!(
+                capture.commands().last(),
+                Some(&WebViewCommand::ExtensionPermissionDecision {
+                    request: 5,
+                    allow: false
+                })
+            );
+            assert!(!capabilities.asks_for_extension());
+            let prompt = capabilities.prompt(&engine).unwrap();
+            assert!(contains(prompt.as_ref(), "browser.decision.true.1.true"));
+            capabilities
+                .extension_questions
+                .borrow_mut()
+                .answer(&engine, 5, true);
+            assert_eq!(capture.commands().len(), 2);
         }
-        assert!(capabilities.extension_questions_changed());
-        assert!(!capabilities.extension_questions_changed());
-        assert!(capabilities.asks_for_extension() && capabilities.prompt_is_permission());
-        // Its question comes before the site's, and an agent or a screen reader
-        // answers it as the person does.
-        let mut prompt = capabilities.prompt(&engine).unwrap();
-        assert!(contains(
-            prompt.as_ref(),
-            "browser.decision.extension.4.true"
-        ));
-        assert!(!contains(prompt.as_ref(), "browser.decision.true.1.true"));
-        prompt
-            .start_encoded(
-                ui::tilo_actions::OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec("browser.decision.extension.4.true").unwrap(),
-                &mut automerge::AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert_eq!(
-            capture.commands(),
-            [WebViewCommand::ExtensionPermissionDecision {
-                request: 4,
-                allow: true
-            }]
-        );
-        assert!(capabilities.extension_questions_changed());
-        capabilities.decline_prompt(&engine);
-        assert_eq!(
-            capture.commands().last(),
-            Some(&WebViewCommand::ExtensionPermissionDecision {
-                request: 5,
-                allow: false
-            })
-        );
-        assert!(!capabilities.asks_for_extension());
-        let prompt = capabilities.prompt(&engine).unwrap();
-        assert!(contains(prompt.as_ref(), "browser.decision.true.1.true"));
-        capabilities
-            .extension_questions
-            .borrow_mut()
-            .answer(&engine, 5, true);
-        assert_eq!(capture.commands().len(), 2);
-    }
-    #[test]
-    fn an_extensions_question_whose_page_closed_goes_unanswered() {
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture.clone();
-        let mut capabilities = Capabilities::default();
-        for request in [4, 5] {
-            capabilities.ask_for_extension(ExtensionQuestion {
-                request,
-                name: "Permit".into(),
-                lines: vec!["Read your browsing history".into()],
+
+        phase an_extensions_question_whose_page_closed_goes_unanswered;
+        {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture.clone();
+            let mut capabilities = Capabilities::default();
+            for request in [4, 5] {
+                capabilities.ask_for_extension(ExtensionQuestion {
+                    request,
+                    name: "Permit".into(),
+                    lines: vec!["Read your browsing history".into()],
+                });
+            }
+            assert!(capabilities.extension_questions_changed());
+            capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 4 });
+            assert!(capabilities.extension_questions_changed());
+            let prompt = capabilities.prompt(&engine).unwrap();
+            assert!(!contains(
+                prompt.as_ref(),
+                "browser.decision.extension.4.true"
+            ));
+            assert!(contains(
+                prompt.as_ref(),
+                "browser.decision.extension.5.true"
+            ));
+            capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 4 });
+            assert!(!capabilities.extension_questions_changed());
+            capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 5 });
+            assert!(!capabilities.asks_for_extension());
+            assert!(capabilities.prompt(&engine).is_none());
+            assert!(capture.commands().is_empty());
+        }
+
+        phase a_sites_permission_request_is_published_with_the_page_and_answered_once;
+        {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture.clone();
+            let mut capabilities = Capabilities::default();
+            assert!(capabilities.resource().is_none(), "nothing is asked");
+            capabilities.apply(WebViewEvent::PermissionRequested {
+                id: 7,
+                origin: "https://site.test".into(),
+                permissions: "location".into(),
             });
+            let row = capabilities.resource().unwrap();
+            assert_eq!(row.id.as_str(), RESOURCE);
+            assert!(row.label.contains("https://site.test"), "{}", row.label);
+            let names: Vec<&str> = row
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            assert_eq!(names, ["answer-permission", "answer-permission"]);
+            for action in &row.actions {
+                assert_ne!(
+                    action.contract.risk,
+                    ui::tilo_actions::RiskLevel::None,
+                    "granting a site a capability asks first"
+                );
+            }
+            let page_answers = capabilities.permission_answers();
+            let names: Vec<&str> = page_answers
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            assert_eq!(names, ["answer-permission", "answer-permission"]);
+            capabilities
+                .answer(&engine, 7, true)
+                .expect("the waiting request is answered");
+            assert_eq!(
+                capture.commands(),
+                [WebViewCommand::PermissionDecision { id: 7, allow: true }]
+            );
+            capabilities.apply(WebViewEvent::PermissionClosed { id: 7 });
+            assert!(capabilities.resource().is_none());
+            assert!(capabilities.permission_answers().is_empty());
+            assert!(capabilities.answer(&engine, 7, false).is_err());
+            assert_eq!(capture.commands().len(), 1);
         }
-        assert!(capabilities.extension_questions_changed());
-        capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 4 });
-        assert!(capabilities.extension_questions_changed());
-        let prompt = capabilities.prompt(&engine).unwrap();
-        assert!(!contains(
-            prompt.as_ref(),
-            "browser.decision.extension.4.true"
-        ));
-        assert!(contains(
-            prompt.as_ref(),
-            "browser.decision.extension.5.true"
-        ));
-        capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 4 });
-        assert!(!capabilities.extension_questions_changed());
-        capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 5 });
-        assert!(!capabilities.asks_for_extension());
-        assert!(capabilities.prompt(&engine).is_none());
-        assert!(capture.commands().is_empty());
     }
     #[test]
     #[allow(
@@ -1088,53 +1140,6 @@ mod tests {
                 "browser.download.terminal-status"
             ));
         }
-    }
-
-    #[test]
-    fn a_sites_permission_request_is_published_with_the_page_and_answered_once() {
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture.clone();
-        let mut capabilities = Capabilities::default();
-        assert!(capabilities.resource().is_none(), "nothing is asked");
-        capabilities.apply(WebViewEvent::PermissionRequested {
-            id: 7,
-            origin: "https://site.test".into(),
-            permissions: "location".into(),
-        });
-        let row = capabilities.resource().unwrap();
-        assert_eq!(row.id.as_str(), RESOURCE);
-        assert!(row.label.contains("https://site.test"), "{}", row.label);
-        let names: Vec<&str> = row
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        assert_eq!(names, ["answer-permission", "answer-permission"]);
-        for action in &row.actions {
-            assert_ne!(
-                action.contract.risk,
-                ui::tilo_actions::RiskLevel::None,
-                "granting a site a capability asks first"
-            );
-        }
-        let page_answers = capabilities.permission_answers();
-        let names: Vec<&str> = page_answers
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        assert_eq!(names, ["answer-permission", "answer-permission"]);
-        capabilities
-            .answer(&engine, 7, true)
-            .expect("the waiting request is answered");
-        assert_eq!(
-            capture.commands(),
-            [WebViewCommand::PermissionDecision { id: 7, allow: true }]
-        );
-        capabilities.apply(WebViewEvent::PermissionClosed { id: 7 });
-        assert!(capabilities.resource().is_none());
-        assert!(capabilities.permission_answers().is_empty());
-        assert!(capabilities.answer(&engine, 7, false).is_err());
-        assert_eq!(capture.commands().len(), 1);
     }
     #[test]
     fn an_extension_opens_only_a_complete_download_the_engine_reported() {

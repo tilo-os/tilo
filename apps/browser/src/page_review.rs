@@ -739,368 +739,376 @@ mod tests {
             .unwrap_or_else(|| panic!("the review lists {name}"))
     }
 
-    #[test]
-    fn a_form_is_reviewed_by_its_questions_in_its_own_order() {
-        let (forms, fields) = page();
-        let review = Fields::read(Some(&forms), &fields);
-        assert_eq!(review.forms.len(), 2, "the form, then what no form asks");
-        let form = &review.forms[0];
-        assert_eq!(
-            (form.id.as_str(), form.label.as_str()),
-            ("form1", "Apply for a visitor visa")
-        );
-        assert_eq!(
-            form.questions
+    tilo_test_env::scenario! {
+        fn fields_are_reviewed_by_question_with_what_they_hold_and_who_set_them;
+
+        phase a_form_is_reviewed_by_its_questions_in_its_own_order;
+        {
+            let (forms, fields) = page();
+            let review = Fields::read(Some(&forms), &fields);
+            assert_eq!(review.forms.len(), 2, "the form, then what no form asks");
+            let form = &review.forms[0];
+            assert_eq!(
+                (form.id.as_str(), form.label.as_str()),
+                ("form1", "Apply for a visitor visa")
+            );
+            assert_eq!(
+                form.questions
+                    .iter()
+                    .map(|question| question.name.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    "Given names",
+                    "Nationality",
+                    "Refused before?",
+                    "Portal password",
+                    "Arrival",
+                    "Accept terms"
+                ]
+            );
+            let other = &review.forms[1];
+            assert_eq!((other.id.as_str(), other.label.as_str()), ("", ""));
+            assert_eq!(other.questions[0].name, "Search");
+            assert_eq!(other.questions[0].set, SetBy::NoOne);
+        }
+
+        phase each_answer_says_what_it_holds_and_who_set_it;
+        {
+            let (forms, fields) = page();
+            let review = Fields::read(Some(&forms), &fields);
+            let given = question(&review, "Given names");
+            assert_eq!(given.holds, Holds::Text("Maria Elena".into()));
+            assert_eq!(
+                given.set,
+                SetBy::Action {
+                    actor: "agent:ada".into(),
+                    device: None,
+                    device_unknown: false,
+                    seq: 1
+                }
+            );
+            assert!(!given.changed && !given.required_and_empty() && !given.invalid);
+            assert_eq!(given.element.as_deref(), Some("d1e2"));
+
+            // Radios of one name are one question: its answer is the one chosen,
+            // set by whoever chose it, and a seq written as a double is whole.
+            let refused = question(&review, "Refused before?");
+            assert_eq!(refused.holds, Holds::Text("No".into()));
+            assert_eq!(
+                refused.set,
+                SetBy::Action {
+                    actor: "agent:ben".into(),
+                    device: None,
+                    device_unknown: false,
+                    seq: 2
+                }
+            );
+            assert_eq!(refused.element.as_deref(), Some("d1e7"));
+
+            // A choice showing its empty option holds no answer.
+            let nationality = question(&review, "Nationality");
+            assert_eq!(nationality.holds, Holds::Nothing);
+            assert!(nationality.required_and_empty());
+            assert_eq!(nationality.set, SetBy::NoOne);
+
+            // What changed after it was set, and what the page refuses, say so.
+            let arrival = question(&review, "Arrival");
+            assert!(arrival.changed && arrival.invalid);
+            assert_eq!(
+                arrival.problem.as_deref(),
+                Some("Choose a date after today.")
+            );
+
+            let terms = question(&review, "Accept terms");
+            assert_eq!((&terms.holds, &terms.set), (&Holds::No, &SetBy::Page));
+            assert!(terms.required_and_empty());
+        }
+
+        phase a_secret_is_kept_as_set_or_not_and_never_as_text;
+        {
+            let (forms, fields) = page();
+            let review = Fields::read(Some(&forms), &fields);
+            let password = question(&review, "Portal password");
+            assert_eq!(password.holds, Holds::Secret { set: true });
+            assert_eq!(password.set, SetBy::Input);
+            assert_eq!(review.secrets(), ["Portal password"]);
+
+            // Whatever a read says a secret holds, only whether it is set is
+            // kept: a read that carried its text would not put it on screen.
+            let leaked = json!({"fields": [{"element": "d1e8", "role": "textbox",
+                "name": "Portal password", "value": "hunter2-secret",
+                "form": "form1", "question": "Portal password"}]});
+            let review = Fields::read(Some(&forms), &leaked);
+            assert_eq!(
+                question(&review, "Portal password").holds,
+                Holds::Secret { set: true }
+            );
+            assert!(!format!("{review:?}").contains("hunter2"));
+
+            // Without the forms read a secret is still known by how it is listed.
+            let alone = json!({"fields": [
+                {"role": "textbox", "name": "Password", "value": "<0 characters hidden>"},
+                {"role": "textbox", "name": "PIN", "value": "<4 characters hidden>"},
+            ]});
+            let review = Fields::read(None, &alone);
+            assert_eq!(
+                question(&review, "Password").holds,
+                Holds::Secret { set: false }
+            );
+            assert_eq!(question(&review, "PIN").holds, Holds::Secret { set: true });
+        }
+
+        phase fields_alone_are_grouped_by_the_question_they_answer;
+        {
+            let (_, fields) = page();
+            let review = Fields::read(None, &fields);
+            let form = review
+                .forms
                 .iter()
-                .map(|question| question.name.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "Given names",
-                "Nationality",
-                "Refused before?",
-                "Portal password",
-                "Arrival",
-                "Accept terms"
-            ]
-        );
-        let other = &review.forms[1];
-        assert_eq!((other.id.as_str(), other.label.as_str()), ("", ""));
-        assert_eq!(other.questions[0].name, "Search");
-        assert_eq!(other.questions[0].set, SetBy::NoOne);
+                .find(|form| form.id == "form1")
+                .expect("the form the fields read names");
+            assert_eq!(form.label, "");
+            assert_eq!(form.questions.len(), 6, "two radios are one question");
+            assert_eq!(
+                question(&review, "Refused before?").holds,
+                Holds::Text("No".into())
+            );
+            // A question the fields read does not list is said from the forms
+            // read, with nothing claimed about who set it.
+            let (forms, _) = page();
+            let review = Fields::read(Some(&forms), &json!({"fields": []}));
+            let given = question(&review, "Given names");
+            assert_eq!(given.holds, Holds::Text("Maria Elena".into()));
+            assert_eq!(given.set, SetBy::Unknown);
+            assert_eq!(
+                question(&review, "Portal password").holds,
+                Holds::Secret { set: true }
+            );
+        }
+
+        phase the_fields_of_a_frame_are_listed_under_their_frame;
+        // A frame's fields are listed after the page's own, under their frame,
+        // by the question the fields read gives each. A form of a frame is its
+        // own document's: a question it shares a name with is not the page's.
+        {
+            let (forms, _) = page();
+            let fields = json!({"fields": [
+                {"element": "d1e2", "role": "textbox", "name": "Given names", "value": "Maria Elena",
+                    "form": "form1", "question": "Given names"},
+                {"element": "d3e2", "role": "textbox", "name": "Card number",
+                    "value": "<16 characters hidden>", "form": "form1", "question": "Card number",
+                    "frame": "3", "set": {"how": "input"}},
+                {"element": "d3e3", "role": "textbox", "name": "Given names", "value": "Ada",
+                    "form": "form1", "question": "Given names", "frame": "3"},
+                {"element": "d5e1", "role": "searchbox", "name": "Search", "value": "", "frame": 5},
+                // What names no frame an outline printed is no frame's field.
+                {"element": "d9e1", "role": "textbox", "name": "Stray", "value": "", "frame": "x; y"},
+            ]});
+            let review = Fields::read(Some(&forms), &fields);
+            let listed: Vec<(Option<&str>, &str, usize)> = review
+                .forms
+                .iter()
+                .map(|form| {
+                    (
+                        form.frame.as_deref(),
+                        form.id.as_str(),
+                        form.questions.len(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                listed,
+                [
+                    (None, "form1", 6),
+                    (None, "", 1),
+                    (Some("3"), "form1", 2),
+                    (Some("5"), "", 1)
+                ]
+            );
+            assert_eq!(
+                review.forms[0].questions[0].holds,
+                Holds::Text("Maria Elena".into()),
+                "the page's own question is answered by the page's own field"
+            );
+            let card = &review.forms[2].questions[0];
+            assert_eq!(
+                (card.name.as_str(), &card.holds, &card.set),
+                ("Card number", &Holds::Secret { set: true }, &SetBy::Input)
+            );
+            let given = &review.forms[2].questions[1];
+            assert_eq!(given.holds, Holds::Text("Ada".into()));
+            assert_eq!(given.element.as_deref(), Some("d3e3"));
+            assert_eq!(review.forms[3].questions[0].name, "Search");
+        }
+
+        phase an_actor_is_read_with_the_device_it_worked_from;
+        // Who set a field and who did a step are read with the other device
+        // they worked from, where the answer names one: by its name, or by the
+        // start of its key when it has none.
+        {
+            let (laptop, unnamed) = ("5c".repeat(32), "40".repeat(32));
+            let field = |name: &str, set: Value| {
+                json!({"element": "d1e2", "role": "textbox", "name": name, "value": "x",
+                    "form": "form1", "question": name, "set": set})
+            };
+            let fields = json!({"fields": [
+                field("Given names", json!({"how": "action", "by": "agent:task-a", "seq": 1,
+                    "device": laptop, "device_name": "Studio laptop"})),
+                field("Passport number", json!({"how": "action", "by": "agent:task-d", "seq": 2,
+                    "device": unnamed})),
+                field("Arrival", json!({"how": "action", "by": "agent:task-b", "seq": 3})),
+            ]});
+            let review = Fields::read(None, &fields);
+            let from = |name: &str| match &question(&review, name).set {
+                SetBy::Action { device, .. } => device.clone(),
+                other => panic!("{name} was set by an action: {other:?}"),
+            };
+            let given = from("Given names").expect("a device");
+            assert_eq!(
+                (given.id.as_str(), given.name.as_str(), given.shown_as()),
+                (laptop.as_str(), "Studio laptop", "Studio laptop")
+            );
+            let passport = from("Passport number").expect("a device");
+            assert_eq!(
+                (passport.name.as_str(), passport.shown_as()),
+                ("", "40404040")
+            );
+            assert_eq!(from("Arrival"), None, "an actor on this device");
+
+            let mut record = Record::default();
+            record.take(&json!({"entries": [
+                {"seq": 1, "actor": "agent:task-a", "device": laptop,
+                    "device_name": "Studio laptop", "action": "fill_form", "ok": true},
+                {"seq": 2, "actor": "agent:task-b", "action": "click", "ok": true},
+                // A name alone names no device.
+                {"seq": 3, "actor": "agent:task-c", "device_name": "Studio laptop",
+                    "action": "click", "ok": true},
+            ], "next": 3}));
+            let devices: Vec<Option<&str>> = record
+                .steps
+                .iter()
+                .map(|step| step.device.as_ref().map(Device::shown_as))
+                .collect();
+            assert_eq!(devices, [Some("Studio laptop"), None, None]);
+        }
     }
 
-    #[test]
-    fn each_answer_says_what_it_holds_and_who_set_it() {
-        let (forms, fields) = page();
-        let review = Fields::read(Some(&forms), &fields);
-        let given = question(&review, "Given names");
-        assert_eq!(given.holds, Holds::Text("Maria Elena".into()));
-        assert_eq!(
-            given.set,
-            SetBy::Action {
-                actor: "agent:ada".into(),
-                device: None,
-                device_unknown: false,
-                seq: 1
-            }
-        );
-        assert!(!given.changed && !given.required_and_empty() && !given.invalid);
-        assert_eq!(given.element.as_deref(), Some("d1e2"));
+    tilo_test_env::scenario! {
+        fn the_record_is_read_as_steps_that_say_what_happened;
 
-        // Radios of one name are one question: its answer is the one chosen,
-        // set by whoever chose it, and a seq written as a double is whole.
-        let refused = question(&review, "Refused before?");
-        assert_eq!(refused.holds, Holds::Text("No".into()));
-        assert_eq!(
-            refused.set,
-            SetBy::Action {
-                actor: "agent:ben".into(),
-                device: None,
-                device_unknown: false,
-                seq: 2
-            }
-        );
-        assert_eq!(refused.element.as_deref(), Some("d1e7"));
+        phase a_step_says_that_it_was_typed_and_that_it_wrote_a_secret;
+        // The record says of an entry that it was typed straight into the
+        // page, and that it wrote into a secret field: of that one nothing
+        // written is read, whatever the entry carries.
+        {
+            let mut record = Record::default();
+            record.take(&json!({"entries": [
+                {"seq": 1, "actor": "", "how": "input", "ok": true,
+                    "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"},
+                {"seq": 2, "actor": "agent:ada", "action": "fill", "ok": true, "secret": true,
+                    "target": {"role": "textbox", "name": "Password"}, "text": "leaked",
+                    "values": ["leaked"]},
+            ], "next": 2, "more": false}));
+            let typed = &record.steps[0];
+            assert!(typed.kind == StepKind::Typed && !typed.secret);
+            assert_eq!((typed.action.as_str(), typed.actor.as_str()), ("", ""));
+            assert_eq!(typed.wrote, ["ada@example.org"]);
+            let secret = &record.steps[1];
+            assert!(secret.kind == StepKind::Action && secret.secret);
+            assert!(secret.wrote.is_empty());
+            assert!(!format!("{record:?}").contains("leaked"));
+        }
 
-        // A choice showing its empty option holds no answer.
-        let nationality = question(&review, "Nationality");
-        assert_eq!(nationality.holds, Holds::Nothing);
-        assert!(nationality.required_and_empty());
-        assert_eq!(nationality.set, SetBy::NoOne);
-
-        // What changed after it was set, and what the page refuses, say so.
-        let arrival = question(&review, "Arrival");
-        assert!(arrival.changed && arrival.invalid);
-        assert_eq!(
-            arrival.problem.as_deref(),
-            Some("Choose a date after today.")
-        );
-
-        let terms = question(&review, "Accept terms");
-        assert_eq!((&terms.holds, &terms.set), (&Holds::No, &SetBy::Page));
-        assert!(terms.required_and_empty());
-    }
-
-    #[test]
-    fn a_secret_is_kept_as_set_or_not_and_never_as_text() {
-        let (forms, fields) = page();
-        let review = Fields::read(Some(&forms), &fields);
-        let password = question(&review, "Portal password");
-        assert_eq!(password.holds, Holds::Secret { set: true });
-        assert_eq!(password.set, SetBy::Input);
-        assert_eq!(review.secrets(), ["Portal password"]);
-
-        // Whatever a read says a secret holds, only whether it is set is
-        // kept: a read that carried its text would not put it on screen.
-        let leaked = json!({"fields": [{"element": "d1e8", "role": "textbox",
-            "name": "Portal password", "value": "hunter2-secret",
-            "form": "form1", "question": "Portal password"}]});
-        let review = Fields::read(Some(&forms), &leaked);
-        assert_eq!(
-            question(&review, "Portal password").holds,
-            Holds::Secret { set: true }
-        );
-        assert!(!format!("{review:?}").contains("hunter2"));
-
-        // Without the forms read a secret is still known by how it is listed.
-        let alone = json!({"fields": [
-            {"role": "textbox", "name": "Password", "value": "<0 characters hidden>"},
-            {"role": "textbox", "name": "PIN", "value": "<4 characters hidden>"},
-        ]});
-        let review = Fields::read(None, &alone);
-        assert_eq!(
-            question(&review, "Password").holds,
-            Holds::Secret { set: false }
-        );
-        assert_eq!(question(&review, "PIN").holds, Holds::Secret { set: true });
-    }
-
-    #[test]
-    fn fields_alone_are_grouped_by_the_question_they_answer() {
-        let (_, fields) = page();
-        let review = Fields::read(None, &fields);
-        let form = review
-            .forms
-            .iter()
-            .find(|form| form.id == "form1")
-            .expect("the form the fields read names");
-        assert_eq!(form.label, "");
-        assert_eq!(form.questions.len(), 6, "two radios are one question");
-        assert_eq!(
-            question(&review, "Refused before?").holds,
-            Holds::Text("No".into())
-        );
-        // A question the fields read does not list is said from the forms
-        // read, with nothing claimed about who set it.
-        let (forms, _) = page();
-        let review = Fields::read(Some(&forms), &json!({"fields": []}));
-        let given = question(&review, "Given names");
-        assert_eq!(given.holds, Holds::Text("Maria Elena".into()));
-        assert_eq!(given.set, SetBy::Unknown);
-        assert_eq!(
-            question(&review, "Portal password").holds,
-            Holds::Secret { set: true }
-        );
-    }
-
-    /// The record says of an entry that it was typed straight into the
-    /// page, and that it wrote into a secret field: of that one nothing
-    /// written is read, whatever the entry carries.
-    #[test]
-    fn a_step_says_that_it_was_typed_and_that_it_wrote_a_secret() {
-        let mut record = Record::default();
-        record.take(&json!({"entries": [
-            {"seq": 1, "actor": "", "how": "input", "ok": true,
-                "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"},
-            {"seq": 2, "actor": "agent:ada", "action": "fill", "ok": true, "secret": true,
-                "target": {"role": "textbox", "name": "Password"}, "text": "leaked",
-                "values": ["leaked"]},
-        ], "next": 2, "more": false}));
-        let typed = &record.steps[0];
-        assert!(typed.kind == StepKind::Typed && !typed.secret);
-        assert_eq!((typed.action.as_str(), typed.actor.as_str()), ("", ""));
-        assert_eq!(typed.wrote, ["ada@example.org"]);
-        let secret = &record.steps[1];
-        assert!(secret.kind == StepKind::Action && secret.secret);
-        assert!(secret.wrote.is_empty());
-        assert!(!format!("{record:?}").contains("leaked"));
-    }
-
-    /// The record says of an entry that the window held something the page
-    /// was about to send, and how that ended: what it was, and who answered.
-    #[test]
-    fn a_step_says_what_was_held_and_how_it_ended() {
-        let mut record = Record::default();
-        record.take(&json!({"entries": [
-            {"seq": 1, "actor": "agent:ada", "action": "click", "ok": true,
-                "message": "Clicked button \"Send\"",
-                "target": {"role": "button", "name": "Send"}},
-            {"seq": 2, "actor": "agent:ada", "how": "hold", "action": "submit", "ok": true,
-                "message": "POST https://visa.example", "to_url": "https://visa.example"},
-            {"seq": 3, "actor": "", "how": "hold", "action": "allow", "ok": true,
-                "message": "POST https://visa.example", "to_url": "https://visa.example"},
-        ], "next": 3, "more": false}));
-        let clicked = &record.steps[0];
-        assert!(clicked.kind == StepKind::Action && clicked.leaving.is_empty());
-        let held = &record.steps[1];
-        assert_eq!(held.kind, StepKind::Hold(HoldStep::Submit));
-        assert_eq!(
-            (
-                held.action.as_str(),
-                held.actor.as_str(),
-                held.leaving.as_str()
-            ),
-            ("submit", "agent:ada", "POST https://visa.example")
-        );
-        let allowed = &record.steps[2];
-        assert_eq!(allowed.kind, StepKind::Hold(HoldStep::Allowed));
-        assert_eq!(
-            (allowed.action.as_str(), allowed.actor.as_str()),
-            ("allow", "")
-        );
-    }
-
-    /// The record says why what waited was dropped, and the review reads
-    /// each reason as what it is.
-    #[test]
-    fn a_step_says_why_what_was_held_was_dropped() {
-        let mut record = Record::default();
-        let dropped = |seq: u64, action: &str| {
-            json!({"seq": seq, "actor": "", "how": "hold", "action": action, "ok": true,
-                "message": "POST https://visa.example", "to_url": "https://visa.example"})
-        };
-        record.take(
-            &json!({"entries": [dropped(1, "drop"), dropped(2, "too_many"), dropped(3, "gone")],
-            "next": 3, "more": false}),
-        );
-        let said: Vec<String> = record
-            .steps
-            .iter()
-            .map(|step| format!("{:?}", step.kind))
-            .collect();
-        assert_eq!(said, ["Hold(Dropped)", "Hold(TooMany)", "Hold(Gone)"]);
-    }
-
-    #[test]
-    fn the_record_is_read_on_in_order_and_never_twice() {
-        let mut record = Record::default();
-        let first = json!({"entries": [
-            {"seq": 1, "time_ms": 1_700_000_000_000_u64, "actor": "agent:ada",
-                "action": "fill", "ok": true,
-                "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"},
-            {"seq": 2.0, "actor": "agent:ben", "action": "fill_form", "ok": false,
-                "answers": [{"name": "Arrival", "value": "2027-02-03"}]},
-        ], "next": 2, "more": true, "dropped": 0, "waiting": 0});
-        assert_eq!(record.since(), 0);
-        assert_eq!(record.take(&first), (true, true));
-        assert_eq!(record.since(), 2);
-        assert_eq!(record.steps[0].target.as_deref(), Some("Email"));
-        assert_eq!(record.steps[0].wrote, ["ada@example.org"]);
-        assert_eq!(record.steps[0].time_ms, Some(1_700_000_000_000));
-        assert!(!record.steps[1].ok);
-        assert_eq!(record.steps[1].wrote, ["Arrival"]);
-        // The same answer again adds nothing.
-        assert_eq!(record.take(&first), (false, true));
-        assert_eq!(record.steps.len(), 2);
-        let second = json!({"entries": [
-            {"seq": 3, "actor": "", "action": "scroll", "ok": true},
-        ], "next": 3, "more": false});
-        assert_eq!(record.take(&second), (true, false));
-        assert_eq!(
-            record.steps.iter().map(|step| step.seq).collect::<Vec<_>>(),
-            [1, 2, 3]
-        );
-        // A record that starts over is another tab's.
-        let other = json!({"entries": [{"seq": 1, "actor": "agent:cy", "action": "click"}],
-            "next": 1, "more": false});
-        assert_eq!(record.take(&other), (true, false));
-        assert_eq!(record.steps.len(), 1);
-        assert_eq!(record.steps[0].actor, "agent:cy");
-    }
-
-    /// A frame's fields are listed after the page's own, under their frame,
-    /// by the question the fields read gives each. A form of a frame is its
-    /// own document's: a question it shares a name with is not the page's.
-    #[test]
-    fn the_fields_of_a_frame_are_listed_under_their_frame() {
-        let (forms, _) = page();
-        let fields = json!({"fields": [
-            {"element": "d1e2", "role": "textbox", "name": "Given names", "value": "Maria Elena",
-                "form": "form1", "question": "Given names"},
-            {"element": "d3e2", "role": "textbox", "name": "Card number",
-                "value": "<16 characters hidden>", "form": "form1", "question": "Card number",
-                "frame": "3", "set": {"how": "input"}},
-            {"element": "d3e3", "role": "textbox", "name": "Given names", "value": "Ada",
-                "form": "form1", "question": "Given names", "frame": "3"},
-            {"element": "d5e1", "role": "searchbox", "name": "Search", "value": "", "frame": 5},
-            // What names no frame an outline printed is no frame's field.
-            {"element": "d9e1", "role": "textbox", "name": "Stray", "value": "", "frame": "x; y"},
-        ]});
-        let review = Fields::read(Some(&forms), &fields);
-        let listed: Vec<(Option<&str>, &str, usize)> = review
-            .forms
-            .iter()
-            .map(|form| {
+        phase a_step_says_what_was_held_and_how_it_ended;
+        // The record says of an entry that the window held something the page
+        // was about to send, and how that ended: what it was, and who answered.
+        {
+            let mut record = Record::default();
+            record.take(&json!({"entries": [
+                {"seq": 1, "actor": "agent:ada", "action": "click", "ok": true,
+                    "message": "Clicked button \"Send\"",
+                    "target": {"role": "button", "name": "Send"}},
+                {"seq": 2, "actor": "agent:ada", "how": "hold", "action": "submit", "ok": true,
+                    "message": "POST https://visa.example", "to_url": "https://visa.example"},
+                {"seq": 3, "actor": "", "how": "hold", "action": "allow", "ok": true,
+                    "message": "POST https://visa.example", "to_url": "https://visa.example"},
+            ], "next": 3, "more": false}));
+            let clicked = &record.steps[0];
+            assert!(clicked.kind == StepKind::Action && clicked.leaving.is_empty());
+            let held = &record.steps[1];
+            assert_eq!(held.kind, StepKind::Hold(HoldStep::Submit));
+            assert_eq!(
                 (
-                    form.frame.as_deref(),
-                    form.id.as_str(),
-                    form.questions.len(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            listed,
-            [
-                (None, "form1", 6),
-                (None, "", 1),
-                (Some("3"), "form1", 2),
-                (Some("5"), "", 1)
-            ]
-        );
-        assert_eq!(
-            review.forms[0].questions[0].holds,
-            Holds::Text("Maria Elena".into()),
-            "the page's own question is answered by the page's own field"
-        );
-        let card = &review.forms[2].questions[0];
-        assert_eq!(
-            (card.name.as_str(), &card.holds, &card.set),
-            ("Card number", &Holds::Secret { set: true }, &SetBy::Input)
-        );
-        let given = &review.forms[2].questions[1];
-        assert_eq!(given.holds, Holds::Text("Ada".into()));
-        assert_eq!(given.element.as_deref(), Some("d3e3"));
-        assert_eq!(review.forms[3].questions[0].name, "Search");
-    }
+                    held.action.as_str(),
+                    held.actor.as_str(),
+                    held.leaving.as_str()
+                ),
+                ("submit", "agent:ada", "POST https://visa.example")
+            );
+            let allowed = &record.steps[2];
+            assert_eq!(allowed.kind, StepKind::Hold(HoldStep::Allowed));
+            assert_eq!(
+                (allowed.action.as_str(), allowed.actor.as_str()),
+                ("allow", "")
+            );
+        }
 
-    /// Who set a field and who did a step are read with the other device
-    /// they worked from, where the answer names one: by its name, or by the
-    /// start of its key when it has none.
-    #[test]
-    fn an_actor_is_read_with_the_device_it_worked_from() {
-        let (laptop, unnamed) = ("5c".repeat(32), "40".repeat(32));
-        let field = |name: &str, set: Value| {
-            json!({"element": "d1e2", "role": "textbox", "name": name, "value": "x",
-                "form": "form1", "question": name, "set": set})
-        };
-        let fields = json!({"fields": [
-            field("Given names", json!({"how": "action", "by": "agent:task-a", "seq": 1,
-                "device": laptop, "device_name": "Studio laptop"})),
-            field("Passport number", json!({"how": "action", "by": "agent:task-d", "seq": 2,
-                "device": unnamed})),
-            field("Arrival", json!({"how": "action", "by": "agent:task-b", "seq": 3})),
-        ]});
-        let review = Fields::read(None, &fields);
-        let from = |name: &str| match &question(&review, name).set {
-            SetBy::Action { device, .. } => device.clone(),
-            other => panic!("{name} was set by an action: {other:?}"),
-        };
-        let given = from("Given names").expect("a device");
-        assert_eq!(
-            (given.id.as_str(), given.name.as_str(), given.shown_as()),
-            (laptop.as_str(), "Studio laptop", "Studio laptop")
-        );
-        let passport = from("Passport number").expect("a device");
-        assert_eq!(
-            (passport.name.as_str(), passport.shown_as()),
-            ("", "40404040")
-        );
-        assert_eq!(from("Arrival"), None, "an actor on this device");
+        phase a_step_says_why_what_was_held_was_dropped;
+        // The record says why what waited was dropped, and the review reads
+        // each reason as what it is.
+        {
+            let mut record = Record::default();
+            let dropped = |seq: u64, action: &str| {
+                json!({"seq": seq, "actor": "", "how": "hold", "action": action, "ok": true,
+                    "message": "POST https://visa.example", "to_url": "https://visa.example"})
+            };
+            record.take(
+                &json!({"entries": [dropped(1, "drop"), dropped(2, "too_many"), dropped(3, "gone")],
+                "next": 3, "more": false}),
+            );
+            let said: Vec<String> = record
+                .steps
+                .iter()
+                .map(|step| format!("{:?}", step.kind))
+                .collect();
+            assert_eq!(said, ["Hold(Dropped)", "Hold(TooMany)", "Hold(Gone)"]);
+        }
 
-        let mut record = Record::default();
-        record.take(&json!({"entries": [
-            {"seq": 1, "actor": "agent:task-a", "device": laptop,
-                "device_name": "Studio laptop", "action": "fill_form", "ok": true},
-            {"seq": 2, "actor": "agent:task-b", "action": "click", "ok": true},
-            // A name alone names no device.
-            {"seq": 3, "actor": "agent:task-c", "device_name": "Studio laptop",
-                "action": "click", "ok": true},
-        ], "next": 3}));
-        let devices: Vec<Option<&str>> = record
-            .steps
-            .iter()
-            .map(|step| step.device.as_ref().map(Device::shown_as))
-            .collect();
-        assert_eq!(devices, [Some("Studio laptop"), None, None]);
+        phase the_record_is_read_on_in_order_and_never_twice;
+        {
+            let mut record = Record::default();
+            let first = json!({"entries": [
+                {"seq": 1, "time_ms": 1_700_000_000_000_u64, "actor": "agent:ada",
+                    "action": "fill", "ok": true,
+                    "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"},
+                {"seq": 2.0, "actor": "agent:ben", "action": "fill_form", "ok": false,
+                    "answers": [{"name": "Arrival", "value": "2027-02-03"}]},
+            ], "next": 2, "more": true, "dropped": 0, "waiting": 0});
+            assert_eq!(record.since(), 0);
+            assert_eq!(record.take(&first), (true, true));
+            assert_eq!(record.since(), 2);
+            assert_eq!(record.steps[0].target.as_deref(), Some("Email"));
+            assert_eq!(record.steps[0].wrote, ["ada@example.org"]);
+            assert_eq!(record.steps[0].time_ms, Some(1_700_000_000_000));
+            assert!(!record.steps[1].ok);
+            assert_eq!(record.steps[1].wrote, ["Arrival"]);
+            // The same answer again adds nothing.
+            assert_eq!(record.take(&first), (false, true));
+            assert_eq!(record.steps.len(), 2);
+            let second = json!({"entries": [
+                {"seq": 3, "actor": "", "action": "scroll", "ok": true},
+            ], "next": 3, "more": false});
+            assert_eq!(record.take(&second), (true, false));
+            assert_eq!(
+                record.steps.iter().map(|step| step.seq).collect::<Vec<_>>(),
+                [1, 2, 3]
+            );
+            // A record that starts over is another tab's.
+            let other = json!({"entries": [{"seq": 1, "actor": "agent:cy", "action": "click"}],
+                "next": 1, "more": false});
+            assert_eq!(record.take(&other), (true, false));
+            assert_eq!(record.steps.len(), 1);
+            assert_eq!(record.steps[0].actor, "agent:cy");
+        }
     }
 }

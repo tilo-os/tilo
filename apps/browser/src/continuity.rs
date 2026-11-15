@@ -95,138 +95,157 @@ mod tests {
         }
     }
 
-    #[test]
-    fn continuity_actions_preserve_existing_library_and_retry_without_resurrection() {
-        use crate::personal_bookmarks::PersonalBookmarks;
-        let mut library = Replica::<PersonalBookmarks>::new();
-        library
-            .apply(PersonalBookmarks::ADD_BOOKMARK.with((
-                "https://existing.test/".to_owned(),
-                "My bookmark".to_owned(),
-            )))
-            .unwrap();
-        let imported = batch().bookmark_action().unwrap();
-        library.apply(imported.clone()).unwrap();
-        library.apply(imported.clone()).unwrap();
-        let state = library.state().unwrap().projected();
-        assert_eq!(state.bookmarks.entries().len(), 2);
-        assert!(
-            state
+    tilo_test_env::scenario! {
+        fn an_import_is_additive_private_and_refused_before_any_write;
+
+        phase continuity_actions_preserve_existing_library_and_retry_without_resurrection;
+        {
+            use crate::personal_bookmarks::PersonalBookmarks;
+            let mut library = Replica::<PersonalBookmarks>::new();
+            library
+                .apply(PersonalBookmarks::ADD_BOOKMARK.with((
+                    "https://existing.test/".to_owned(),
+                    "My bookmark".to_owned(),
+                )))
+                .unwrap();
+            let imported = batch().bookmark_action().unwrap();
+            library.apply(imported.clone()).unwrap();
+            library.apply(imported.clone()).unwrap();
+            let state = library.state().unwrap().projected();
+            assert_eq!(state.bookmarks.entries().len(), 2);
+            assert!(
+                state
+                    .bookmarks
+                    .entries()
+                    .iter()
+                    .any(|r| r.title == "My bookmark")
+            );
+            let entry = state
                 .bookmarks
                 .entries()
                 .iter()
-                .any(|r| r.title == "My bookmark")
-        );
-        let entry = state
-            .bookmarks
-            .entries()
-            .iter()
-            .find(|r| r.url == "https://old.test/")
-            .unwrap();
-        assert_eq!(entry.tags.len(), 1);
-        library
-            .apply(PersonalBookmarks::REMOVE_BOOKMARK.with((entry.url.clone(), entry.tags.clone())))
-            .unwrap();
-        library.apply(imported).unwrap();
-        assert_eq!(library.state().unwrap().bookmarks().entries().len(), 1);
-    }
-
-    #[test]
-    fn continuity_history_is_private_additive_and_idempotent_with_original_counts() {
-        let mut history = Replica::<BrowsingHistory>::new();
-        history
-            .apply(BrowsingHistory::VISIT.with(browsing_history::Visit {
-                url: "https://old.test/".parse().unwrap(),
-                title: "Current title".into(),
-                at: 456,
-            }))
-            .unwrap();
-        history.apply(batch().history_action().unwrap()).unwrap();
-        history.apply(batch().history_action().unwrap()).unwrap();
-        let entries = history.state().unwrap().entries();
-        let row = &entries[0];
-        assert_eq!((row.visit_count, row.last_visit), (18, 456));
-        assert_eq!(row.title, "Current title");
-        history
-            .apply(BrowsingHistory::VISIT.with(browsing_history::Visit {
-                url: row.url.parse().unwrap(),
-                title: "New title".into(),
-                at: 789,
-            }))
-            .unwrap();
-        assert_eq!(history.state().unwrap().entries()[0].visit_count, 19);
-        history
-            .apply(BrowsingHistory::CLEAR_HISTORY.with(()))
-            .unwrap();
-        history.apply(batch().history_action().unwrap()).unwrap();
-        assert!(history.state().unwrap().is_empty());
-        let tree = ui::tilo_resource::publish::<BrowsingHistory>(
-            "private",
-            "History",
-            &history.state().unwrap(),
-        );
-        let declaration = tree
-            .actions
-            .iter()
-            .find(|action| action.id == "import-history-bundle")
-            .unwrap();
-        assert_eq!(
-            declaration.params()[0].ty,
-            ui::tilo_actions::ParamType::Secret
-        );
-        assert_eq!(
-            declaration.contract.need().kind,
-            ui::tilo_actions::ActionKind::Undoable
-        );
-        assert!(!declaration.contract.need().privileged);
-    }
-
-    #[test]
-    fn continuity_preflight_refuses_cross_record_or_changed_source_before_any_write() {
-        use crate::personal_bookmarks::PersonalBookmarks;
-        let mut library = Replica::<PersonalBookmarks>::new();
-        let batch = batch();
-        // Visits never enter the personal library.
-        let with_history = ImportBundle::from_batch(batch.clone()).unwrap();
-        assert!(
+                .find(|r| r.url == "https://old.test/")
+                .unwrap();
+            assert_eq!(entry.tags.len(), 1);
             library
-                .apply(
-                    PersonalBookmarks::IMPORT_BOOKMARKS
-                        .with(serde_json::to_string(&with_history).unwrap())
-                )
-                .is_err()
-        );
-        assert_eq!(library.state().unwrap(), PersonalBookmarks::default());
-        let mut history = Replica::<BrowsingHistory>::new();
-        let mixed = ImportBundle::from_batch(batch.clone()).unwrap();
-        assert!(
+                .apply(PersonalBookmarks::REMOVE_BOOKMARK.with((entry.url.clone(), entry.tags.clone())))
+                .unwrap();
+            library.apply(imported).unwrap();
+            assert_eq!(library.state().unwrap().bookmarks().entries().len(), 1);
+        }
+
+        phase continuity_history_is_private_additive_and_idempotent_with_original_counts;
+        {
+            let mut history = Replica::<BrowsingHistory>::new();
             history
-                .apply(
-                    BrowsingHistory::IMPORT_HISTORY_BUNDLE
-                        .with(serde_json::to_string(&mixed).unwrap())
-                )
-                .is_err()
-        );
-        assert!(history.state().unwrap().is_empty());
-        history.apply(batch.history_action().unwrap()).unwrap();
-        let saved = history.state().unwrap();
-        let mut changed = batch.clone();
-        changed.history[0].visit_count = 33;
-        assert!(history.apply(changed.history_action().unwrap()).is_err());
-        assert_eq!(history.state().unwrap(), saved);
-        let mut invalid = batch;
-        invalid.bookmarks.push(BookmarkImport {
-            url: "file:///secret".into(),
-            title: "Private".into(),
-        });
-        let before = library.doc_mut().save();
-        assert!(
-            invalid
-                .bookmark_action()
-                .map_or(true, |action| library.apply(action).is_err())
-        );
-        assert_eq!(library.doc_mut().save(), before);
-        assert_eq!(history.state().unwrap(), saved);
+                .apply(BrowsingHistory::VISIT.with(browsing_history::Visit {
+                    url: "https://old.test/".parse().unwrap(),
+                    title: "Current title".into(),
+                    at: 456,
+                }))
+                .unwrap();
+            history.apply(batch().history_action().unwrap()).unwrap();
+            history.apply(batch().history_action().unwrap()).unwrap();
+            let entries = history.state().unwrap().entries();
+            let row = &entries[0];
+            assert_eq!((row.visit_count, row.last_visit), (18, 456));
+            assert_eq!(row.title, "Current title");
+            history
+                .apply(BrowsingHistory::VISIT.with(browsing_history::Visit {
+                    url: row.url.parse().unwrap(),
+                    title: "New title".into(),
+                    at: 789,
+                }))
+                .unwrap();
+            assert_eq!(history.state().unwrap().entries()[0].visit_count, 19);
+            history
+                .apply(BrowsingHistory::CLEAR_HISTORY.with(()))
+                .unwrap();
+            history.apply(batch().history_action().unwrap()).unwrap();
+            assert!(history.state().unwrap().is_empty());
+            let tree = ui::tilo_resource::publish::<BrowsingHistory>(
+                "private",
+                "History",
+                &history.state().unwrap(),
+            );
+            let declaration = tree
+                .actions
+                .iter()
+                .find(|action| action.id == "import-history-bundle")
+                .unwrap();
+            assert_eq!(
+                declaration.params()[0].ty,
+                ui::tilo_actions::ParamType::Secret
+            );
+            assert_eq!(
+                declaration.contract.need().kind,
+                ui::tilo_actions::ActionKind::Undoable
+            );
+            assert!(!declaration.contract.need().privileged);
+        }
+
+        phase continuity_preflight_refuses_cross_record_or_changed_source_before_any_write;
+        {
+            use crate::personal_bookmarks::PersonalBookmarks;
+            let mut library = Replica::<PersonalBookmarks>::new();
+            let batch = batch();
+            // Visits never enter the personal library.
+            let with_history = ImportBundle::from_batch(batch.clone()).unwrap();
+            assert!(
+                library
+                    .apply(
+                        PersonalBookmarks::IMPORT_BOOKMARKS
+                            .with(serde_json::to_string(&with_history).unwrap())
+                    )
+                    .is_err()
+            );
+            assert_eq!(library.state().unwrap(), PersonalBookmarks::default());
+            let mut history = Replica::<BrowsingHistory>::new();
+            let mixed = ImportBundle::from_batch(batch.clone()).unwrap();
+            assert!(
+                history
+                    .apply(
+                        BrowsingHistory::IMPORT_HISTORY_BUNDLE
+                            .with(serde_json::to_string(&mixed).unwrap())
+                    )
+                    .is_err()
+            );
+            assert!(history.state().unwrap().is_empty());
+            history.apply(batch.history_action().unwrap()).unwrap();
+            let saved = history.state().unwrap();
+            let mut changed = batch.clone();
+            changed.history[0].visit_count = 33;
+            assert!(history.apply(changed.history_action().unwrap()).is_err());
+            assert_eq!(history.state().unwrap(), saved);
+            let mut invalid = batch;
+            invalid.bookmarks.push(BookmarkImport {
+                url: "file:///secret".into(),
+                title: "Private".into(),
+            });
+            let before = library.doc_mut().save();
+            assert!(
+                invalid
+                    .bookmark_action()
+                    .map_or(true, |action| library.apply(action).is_err())
+            );
+            assert_eq!(library.doc_mut().save(), before);
+            assert_eq!(history.state().unwrap(), saved);
+        }
+
+        phase selected_bookmark_projection_excludes_history_before_private_import;
+        {
+            use crate::personal_bookmarks::PersonalBookmarks;
+            let import = batch().bookmark_action().unwrap();
+            let bundle: ImportBundle =
+                serde_json::from_str(import.arguments["bundle"].as_str().unwrap()).unwrap();
+            assert!(bundle.chunks.iter().all(|chunk| chunk.history.is_empty()));
+            let mut library = Replica::<PersonalBookmarks>::new();
+            library.apply(import).unwrap();
+            assert_eq!(
+                library.state().unwrap().bookmarks().entries()[0].url,
+                "https://old.test/"
+            );
+        }
     }
 
     #[test]
@@ -373,21 +392,6 @@ mod tests {
         assert_eq!(
             declaration.params()[0].ty,
             ui::tilo_actions::ParamType::Secret
-        );
-    }
-
-    #[test]
-    fn selected_bookmark_projection_excludes_history_before_private_import() {
-        use crate::personal_bookmarks::PersonalBookmarks;
-        let import = batch().bookmark_action().unwrap();
-        let bundle: ImportBundle =
-            serde_json::from_str(import.arguments["bundle"].as_str().unwrap()).unwrap();
-        assert!(bundle.chunks.iter().all(|chunk| chunk.history.is_empty()));
-        let mut library = Replica::<PersonalBookmarks>::new();
-        library.apply(import).unwrap();
-        assert_eq!(
-            library.state().unwrap().bookmarks().entries()[0].url,
-            "https://old.test/"
         );
     }
 }

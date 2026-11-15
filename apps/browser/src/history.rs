@@ -679,251 +679,255 @@ mod tests {
         }
     }
 
-    #[test]
-    fn record_dedups_keeps_titles_and_evicts_at_the_bound() {
-        {
-            let mut h = History::new();
-            h.record_at("https://a.test", "First", 100);
-            h.record_at("https://a.test", "Second", 200);
-            assert_eq!(h.len(), 1, "same URL collapses to one entry");
-            let e = &h.entries()[0];
-            assert_eq!(e.visit_count, 2, "revisit bumps the count");
-            assert_eq!(e.last_visit, 200, "revisit refreshes the timestamp");
-            assert_eq!(e.title, "Second", "revisit refreshes the title");
-        }
+    tilo_test_env::scenario! {
+        fn history_dedups_matches_ranks_and_merges;
 
+        phase record_dedups_keeps_titles_and_evicts_at_the_bound;
         {
-            let mut h = History::new();
-            h.record_at("https://a.test", "Real Title", 100);
-            h.record_at("https://a.test", "   ", 200);
-            assert_eq!(
-                h.entries()[0].title,
-                "Real Title",
-                "a blank title must not overwrite a good one"
-            );
-        }
+            {
+                let mut h = History::new();
+                h.record_at("https://a.test", "First", 100);
+                h.record_at("https://a.test", "Second", 200);
+                assert_eq!(h.len(), 1, "same URL collapses to one entry");
+                let e = &h.entries()[0];
+                assert_eq!(e.visit_count, 2, "revisit bumps the count");
+                assert_eq!(e.last_visit, 200, "revisit refreshes the timestamp");
+                assert_eq!(e.title, "Second", "revisit refreshes the title");
+            }
 
-        {
-            let mut h = History::new();
-            h.record_at("   ", "nope", 100);
-            assert!(h.is_empty(), "a blank URL is not recorded");
-        }
-
-        {
-            let mut h = History::new();
-            h.record_at("https://a.test", "A", 100);
-            h.record_at("https://b.test", "B", 100);
-            assert_eq!(h.len(), 2);
-        }
-
-        {
-            let mut h = History::new();
-            for index in 0..=MAX_HISTORY_ENTRIES {
-                h.record_at(
-                    &format!("https://{index}.example.test"),
-                    "Page",
-                    u64::try_from(index).unwrap_or(u64::MAX),
+            {
+                let mut h = History::new();
+                h.record_at("https://a.test", "Real Title", 100);
+                h.record_at("https://a.test", "   ", 200);
+                assert_eq!(
+                    h.entries()[0].title,
+                    "Real Title",
+                    "a blank title must not overwrite a good one"
                 );
             }
-            assert_eq!(h.len(), MAX_HISTORY_ENTRIES);
+
+            {
+                let mut h = History::new();
+                h.record_at("   ", "nope", 100);
+                assert!(h.is_empty(), "a blank URL is not recorded");
+            }
+
+            {
+                let mut h = History::new();
+                h.record_at("https://a.test", "A", 100);
+                h.record_at("https://b.test", "B", 100);
+                assert_eq!(h.len(), 2);
+            }
+
+            {
+                let mut h = History::new();
+                for index in 0..=MAX_HISTORY_ENTRIES {
+                    h.record_at(
+                        &format!("https://{index}.example.test"),
+                        "Page",
+                        u64::try_from(index).unwrap_or(u64::MAX),
+                    );
+                }
+                assert_eq!(h.len(), MAX_HISTORY_ENTRIES);
+                assert!(
+                    !h.entries()
+                        .iter()
+                        .any(|entry| entry.url == "https://0.example.test"),
+                    "the least recent row is evicted first"
+                );
+            }
+        }
+
+        phase matching_is_case_insensitive_and_tolerates_typos;
+        {
+            let matches = |needle: &str, row: HistoryEntry| {
+                let mut history = History::new();
+                history.entries.push(row);
+                !history.suggest_at(needle, 1, 1_000).is_empty()
+            };
+            let github = || entry("https://github.com", "Code hosting", 1_000, 1);
+            assert!(matches("githbu", github()), "a typo in the URL matches");
+            assert!(matches("HOSTING", github()), "a title substring matches");
+            assert!(!matches("zzz", entry("https://example.com", "", 1, 1)));
+            assert!(!matches("acb", entry("abc", "", 1, 1)));
+
+            let mut history = History::new();
+            history.entries.push(entry("barcode", "", 1, 1));
+            history.entries.push(entry("codeberg", "", 1, 1));
+            let urls: Vec<_> = history
+                .suggest_at("code", 2, 1)
+                .into_iter()
+                .map(|row| row.url)
+                .collect();
+            assert_eq!(urls, ["codeberg", "barcode"], "a prefix beats an infix");
             assert!(
-                !h.entries()
-                    .iter()
-                    .any(|entry| entry.url == "https://0.example.test"),
-                "the least recent row is evicted first"
+                !matches("git", entry("legit", "", 1, 1)),
+                "a match inside a word needs four letters"
             );
         }
-    }
 
-    #[test]
-    fn matching_is_case_insensitive_and_tolerates_typos() {
-        let matches = |needle: &str, row: HistoryEntry| {
-            let mut history = History::new();
-            history.entries.push(row);
-            !history.suggest_at(needle, 1, 1_000).is_empty()
-        };
-        let github = || entry("https://github.com", "Code hosting", 1_000, 1);
-        assert!(matches("githbu", github()), "a typo in the URL matches");
-        assert!(matches("HOSTING", github()), "a title substring matches");
-        assert!(!matches("zzz", entry("https://example.com", "", 1, 1)));
-        assert!(!matches("acb", entry("abc", "", 1, 1)));
+        phase suggestions_rank_by_match_recency_frequency_and_limit;
+        {
+            struct Case {
+                name: &'static str,
+                rows: &'static [(&'static str, &'static str, u64, u32)],
+                query: &'static str,
+                now: u64,
+                len: Option<usize>,
+                first: Option<&'static str>,
+            }
+            let cases = [
+                Case {
+                    name: "'GIT' matches 'GitHub' case-insensitively",
+                    rows: &[("https://GitHub.com", "GitHub", 1_000, 1)],
+                    query: "GIT",
+                    now: 2_000,
+                    len: Some(1),
+                    first: None,
+                },
+                Case {
+                    name: "the prefix match ranks first",
+                    rows: &[
+                        ("https://barcode.example", "Barcode", 1_000, 1),
+                        ("https://codeberg.org", "Codeberg", 1_000, 1),
+                    ],
+                    query: "code",
+                    now: 2_000,
+                    len: Some(2),
+                    first: Some("https://codeberg.org"),
+                },
+                Case {
+                    name: "only the entry matching 'git' survives",
+                    rows: &[
+                        ("https://github.com", "GitHub", 1_000, 1),
+                        ("https://example.org", "Example", 1_000, 1),
+                    ],
+                    query: "git",
+                    now: 2_000,
+                    len: Some(1),
+                    first: Some("https://github.com"),
+                },
+                Case {
+                    name: "with no query and equal visits, the most-recent page leads",
+                    rows: &[
+                        ("https://old.test", "Old", 100, 1),
+                        ("https://recent.test", "Recent", 5_000, 1),
+                    ],
+                    query: "",
+                    now: 5_000,
+                    len: None,
+                    first: Some("https://recent.test"),
+                },
+                Case {
+                    name: "equal recency → the more-visited page leads",
+                    rows: &[
+                        ("https://rare.test", "Rare", 1_000, 1),
+                        ("https://popular.test", "Popular", 1_000, 25),
+                    ],
+                    query: "",
+                    now: 1_000,
+                    len: None,
+                    first: Some("https://popular.test"),
+                },
+                Case {
+                    name: "equal match quality → the more-recent page leads",
+                    rows: &[
+                        ("https://a-test.com", "test", 100, 1),
+                        ("https://b-test.com", "test", 9_000, 1),
+                    ],
+                    query: "test",
+                    now: 9_000,
+                    len: None,
+                    first: Some("https://b-test.com"),
+                },
+            ];
+            for case in cases {
+                let mut h = History::new();
+                for &(url, title, last_visit, visit_count) in case.rows {
+                    h.entries.push(entry(url, title, last_visit, visit_count));
+                }
+                let out = h.suggest_at(case.query, 10, case.now);
+                if let Some(len) = case.len {
+                    assert_eq!(out.len(), len, "{}", case.name);
+                }
+                if let Some(first) = case.first {
+                    assert_eq!(out[0].url, first, "{}", case.name);
+                }
+            }
 
-        let mut history = History::new();
-        history.entries.push(entry("barcode", "", 1, 1));
-        history.entries.push(entry("codeberg", "", 1, 1));
-        let urls: Vec<_> = history
-            .suggest_at("code", 2, 1)
-            .into_iter()
-            .map(|row| row.url)
-            .collect();
-        assert_eq!(urls, ["codeberg", "barcode"], "a prefix beats an infix");
-        assert!(
-            !matches("git", entry("legit", "", 1, 1)),
-            "a match inside a word needs four letters"
-        );
-    }
-
-    #[test]
-    fn suggestions_rank_by_match_recency_frequency_and_limit() {
-        struct Case {
-            name: &'static str,
-            rows: &'static [(&'static str, &'static str, u64, u32)],
-            query: &'static str,
-            now: u64,
-            len: Option<usize>,
-            first: Option<&'static str>,
-        }
-        let cases = [
-            Case {
-                name: "'GIT' matches 'GitHub' case-insensitively",
-                rows: &[("https://GitHub.com", "GitHub", 1_000, 1)],
-                query: "GIT",
-                now: 2_000,
-                len: Some(1),
-                first: None,
-            },
-            Case {
-                name: "the prefix match ranks first",
-                rows: &[
-                    ("https://barcode.example", "Barcode", 1_000, 1),
-                    ("https://codeberg.org", "Codeberg", 1_000, 1),
-                ],
-                query: "code",
-                now: 2_000,
-                len: Some(2),
-                first: Some("https://codeberg.org"),
-            },
-            Case {
-                name: "only the entry matching 'git' survives",
-                rows: &[
-                    ("https://github.com", "GitHub", 1_000, 1),
-                    ("https://example.org", "Example", 1_000, 1),
-                ],
-                query: "git",
-                now: 2_000,
-                len: Some(1),
-                first: Some("https://github.com"),
-            },
-            Case {
-                name: "with no query and equal visits, the most-recent page leads",
-                rows: &[
-                    ("https://old.test", "Old", 100, 1),
-                    ("https://recent.test", "Recent", 5_000, 1),
-                ],
-                query: "",
-                now: 5_000,
-                len: None,
-                first: Some("https://recent.test"),
-            },
-            Case {
-                name: "equal recency → the more-visited page leads",
-                rows: &[
-                    ("https://rare.test", "Rare", 1_000, 1),
-                    ("https://popular.test", "Popular", 1_000, 25),
-                ],
-                query: "",
-                now: 1_000,
-                len: None,
-                first: Some("https://popular.test"),
-            },
-            Case {
-                name: "equal match quality → the more-recent page leads",
-                rows: &[
-                    ("https://a-test.com", "test", 100, 1),
-                    ("https://b-test.com", "test", 9_000, 1),
-                ],
-                query: "test",
-                now: 9_000,
-                len: None,
-                first: Some("https://b-test.com"),
-            },
-        ];
-        for case in cases {
             let mut h = History::new();
-            for &(url, title, last_visit, visit_count) in case.rows {
-                h.entries.push(entry(url, title, last_visit, visit_count));
+            for i in 0..10 {
+                h.record_at(&format!("https://site{i}.test"), "Site", 1_000 + i as u64);
             }
-            let out = h.suggest_at(case.query, 10, case.now);
-            if let Some(len) = case.len {
-                assert_eq!(out.len(), len, "{}", case.name);
-            }
-            if let Some(first) = case.first {
-                assert_eq!(out[0].url, first, "{}", case.name);
-            }
+            let out = h.suggest_at("site", 3, 5_000);
+            assert_eq!(out.len(), 3, "the result is capped at the limit");
         }
 
-        let mut h = History::new();
-        for i in 0..10 {
-            h.record_at(&format!("https://site{i}.test"), "Site", 1_000 + i as u64);
-        }
-        let out = h.suggest_at("site", 3, 5_000);
-        assert_eq!(out.len(), 3, "the result is capped at the limit");
-    }
-
-    #[test]
-    fn browsing_history_record_counts_visits_and_merges_devices() {
-        use ui::tilo_resource::Replica;
-        let visit = |url: &str, title: &str, at: u64| {
-            BrowsingHistory::VISIT.with(browsing_history::Visit {
-                url: url.parse().unwrap(),
-                title: title.into(),
-                at,
-            })
-        };
-        let entries = |record: &Replica<BrowsingHistory>| {
-            History::of(&record.state().unwrap()).entries().to_vec()
-        };
-        let mut laptop = Replica::<BrowsingHistory>::new();
-        laptop.apply(visit("https://a.test", "Alpha", 111)).unwrap();
-        laptop.apply(visit("https://b.test", "Beta", 222)).unwrap();
-        laptop.apply(visit("https://a.test", "", 333)).unwrap();
-        let history = entries(&laptop);
-        assert_eq!(history.len(), 2);
-        let alpha = history
-            .iter()
-            .find(|entry| entry.url == "https://a.test")
-            .unwrap();
-        assert_eq!((alpha.visit_count, alpha.last_visit), (2, 333));
-        assert_eq!(alpha.title, "Alpha", "a blank title keeps the known one");
-
-        let long_title = "t".repeat(MAX_HISTORY_TITLE_BYTES + 64);
-        laptop
-            .apply(visit("https://kept.test", &long_title, 1))
-            .unwrap();
-        let too_long_url = format!("https://example.test/{}", "x".repeat(MAX_HISTORY_URL_BYTES));
-        assert!(laptop.apply(visit(&too_long_url, "ignored", 1)).is_err());
-        assert_eq!(
-            entries(&laptop)
+        phase browsing_history_record_counts_visits_and_merges_devices;
+        {
+            use ui::tilo_resource::Replica;
+            let visit = |url: &str, title: &str, at: u64| {
+                BrowsingHistory::VISIT.with(browsing_history::Visit {
+                    url: url.parse().unwrap(),
+                    title: title.into(),
+                    at,
+                })
+            };
+            let entries = |record: &Replica<BrowsingHistory>| {
+                History::of(&record.state().unwrap()).entries().to_vec()
+            };
+            let mut laptop = Replica::<BrowsingHistory>::new();
+            laptop.apply(visit("https://a.test", "Alpha", 111)).unwrap();
+            laptop.apply(visit("https://b.test", "Beta", 222)).unwrap();
+            laptop.apply(visit("https://a.test", "", 333)).unwrap();
+            let history = entries(&laptop);
+            assert_eq!(history.len(), 2);
+            let alpha = history
                 .iter()
-                .find(|entry| entry.url == "https://kept.test")
-                .unwrap()
-                .title
-                .len(),
-            MAX_HISTORY_TITLE_BYTES
-        );
+                .find(|entry| entry.url == "https://a.test")
+                .unwrap();
+            assert_eq!((alpha.visit_count, alpha.last_visit), (2, 333));
+            assert_eq!(alpha.title, "Alpha", "a blank title keeps the known one");
 
-        let mut phone = laptop.fork();
-        phone.apply(visit("https://c.test", "Gamma", 444)).unwrap();
-        phone.apply(visit("https://a.test", "", 400)).unwrap();
-        laptop.apply(visit("https://a.test", "", 350)).unwrap();
-        laptop
-            .apply(BrowsingHistory::FORGET.with("https://b.test".to_owned()))
-            .unwrap();
-        laptop.sync_with(&mut phone).unwrap();
-        assert_eq!(laptop.state().unwrap(), phone.state().unwrap());
-        let merged = entries(&laptop);
-        let urls: Vec<&str> = merged.iter().map(|entry| entry.url.as_str()).collect();
-        assert!(urls.contains(&"https://c.test"));
-        assert!(!urls.contains(&"https://b.test"));
-        let alpha = merged
-            .iter()
-            .find(|entry| entry.url == "https://a.test")
-            .unwrap();
-        assert_eq!(alpha.visit_count, 4, "visits on two devices add up");
+            let long_title = "t".repeat(MAX_HISTORY_TITLE_BYTES + 64);
+            laptop
+                .apply(visit("https://kept.test", &long_title, 1))
+                .unwrap();
+            let too_long_url = format!("https://example.test/{}", "x".repeat(MAX_HISTORY_URL_BYTES));
+            assert!(laptop.apply(visit(&too_long_url, "ignored", 1)).is_err());
+            assert_eq!(
+                entries(&laptop)
+                    .iter()
+                    .find(|entry| entry.url == "https://kept.test")
+                    .unwrap()
+                    .title
+                    .len(),
+                MAX_HISTORY_TITLE_BYTES
+            );
 
-        laptop
-            .apply(BrowsingHistory::CLEAR_HISTORY.with(()))
-            .unwrap();
-        assert!(entries(&laptop).is_empty());
+            let mut phone = laptop.fork();
+            phone.apply(visit("https://c.test", "Gamma", 444)).unwrap();
+            phone.apply(visit("https://a.test", "", 400)).unwrap();
+            laptop.apply(visit("https://a.test", "", 350)).unwrap();
+            laptop
+                .apply(BrowsingHistory::FORGET.with("https://b.test".to_owned()))
+                .unwrap();
+            laptop.sync_with(&mut phone).unwrap();
+            assert_eq!(laptop.state().unwrap(), phone.state().unwrap());
+            let merged = entries(&laptop);
+            let urls: Vec<&str> = merged.iter().map(|entry| entry.url.as_str()).collect();
+            assert!(urls.contains(&"https://c.test"));
+            assert!(!urls.contains(&"https://b.test"));
+            let alpha = merged
+                .iter()
+                .find(|entry| entry.url == "https://a.test")
+                .unwrap();
+            assert_eq!(alpha.visit_count, 4, "visits on two devices add up");
+
+            laptop
+                .apply(BrowsingHistory::CLEAR_HISTORY.with(()))
+                .unwrap();
+            assert!(entries(&laptop).is_empty());
+        }
     }
 }

@@ -219,57 +219,61 @@ mod tests {
         assert!(widget.load_error.is_some());
     }
 
-    #[test]
-    fn only_a_scheme_the_browser_chose_falls_back() {
-        let fallback = HttpFallback::for_typed("neverssl.com", "https://neverssl.com").unwrap();
-        assert_eq!(fallback.http, "http://neverssl.com");
-        assert_eq!(
-            HttpFallback::for_typed(" example.com/a?b ", "https://example.com/a?b").map(|f| f.http),
-            Some("http://example.com/a?b".to_owned())
-        );
-        assert_eq!(
-            HttpFallback::for_typed("https://neverssl.com", "https://neverssl.com"),
-            None
-        );
-        assert_eq!(
-            HttpFallback::for_typed("localhost:3000", "http://localhost:3000"),
-            None
-        );
-        assert_eq!(
-            HttpFallback::for_typed("cats", "https://duckduckgo.com/?q=cats"),
-            None
-        );
-    }
+    tilo_test_env::scenario! {
+        fn http_is_tried_only_for_a_scheme_the_browser_chose;
 
-    #[test]
-    fn http_answers_a_refused_or_unencrypted_connection_only() {
-        for error in [
-            "ERR_CONNECTION_REFUSED",
-            "net::ERR_CONNECTION_RESET",
-            "ERR_EMPTY_RESPONSE",
-            "ERR_SSL_PROTOCOL_ERROR",
-            "ERR_CERT_COMMON_NAME_INVALID",
-            "ERR_CONNECTION_TIMED_OUT (-118)",
-        ] {
-            assert!(answers_over_http(error), "{error}");
+        phase only_a_scheme_the_browser_chose_falls_back;
+        {
+            let fallback = HttpFallback::for_typed("neverssl.com", "https://neverssl.com").unwrap();
+            assert_eq!(fallback.http, "http://neverssl.com");
+            assert_eq!(
+                HttpFallback::for_typed(" example.com/a?b ", "https://example.com/a?b").map(|f| f.http),
+                Some("http://example.com/a?b".to_owned())
+            );
+            assert_eq!(
+                HttpFallback::for_typed("https://neverssl.com", "https://neverssl.com"),
+                None
+            );
+            assert_eq!(
+                HttpFallback::for_typed("localhost:3000", "http://localhost:3000"),
+                None
+            );
+            assert_eq!(
+                HttpFallback::for_typed("cats", "https://duckduckgo.com/?q=cats"),
+                None
+            );
         }
-        for error in [
-            "ERR_NAME_NOT_RESOLVED",
-            "ERR_INTERNET_DISCONNECTED",
-            "ERR_BLOCKED_BY_CLIENT",
-            "ERR_ABORTED",
-            "The browser engine couldn’t start.",
-        ] {
-            assert!(!answers_over_http(error), "{error}");
+
+        phase http_answers_a_refused_or_unencrypted_connection_only;
+        {
+            for error in [
+                "ERR_CONNECTION_REFUSED",
+                "net::ERR_CONNECTION_RESET",
+                "ERR_EMPTY_RESPONSE",
+                "ERR_SSL_PROTOCOL_ERROR",
+                "ERR_CERT_COMMON_NAME_INVALID",
+                "ERR_CONNECTION_TIMED_OUT (-118)",
+            ] {
+                assert!(answers_over_http(error), "{error}");
+            }
+            for error in [
+                "ERR_NAME_NOT_RESOLVED",
+                "ERR_INTERNET_DISCONNECTED",
+                "ERR_BLOCKED_BY_CLIENT",
+                "ERR_ABORTED",
+                "The browser engine couldn’t start.",
+            ] {
+                assert!(!answers_over_http(error), "{error}");
+            }
+            let fallback = HttpFallback::for_typed("neverssl.com", "https://neverssl.com").unwrap();
+            assert_eq!(
+                fallback.retry("https://neverssl.com/", "ERR_SSL_PROTOCOL_ERROR"),
+                Some("http://neverssl.com")
+            );
+            assert_eq!(
+                fallback.retry("https://other.example/", "ERR_SSL_PROTOCOL_ERROR"),
+                None
+            );
         }
-        let fallback = HttpFallback::for_typed("neverssl.com", "https://neverssl.com").unwrap();
-        assert_eq!(
-            fallback.retry("https://neverssl.com/", "ERR_SSL_PROTOCOL_ERROR"),
-            Some("http://neverssl.com")
-        );
-        assert_eq!(
-            fallback.retry("https://other.example/", "ERR_SSL_PROTOCOL_ERROR"),
-            None
-        );
     }
 }

@@ -321,151 +321,155 @@ mod tests {
         letter.to_string().repeat(32)
     }
 
-    #[test]
-    fn reconcile_loads_and_unloads_once_and_tracks_replies() {
-        let now = ui::time::now();
-        let mut host = ExtensionHost::new();
-        host.reconcile(&[wanted(&id('a'))], &[id('b')], now);
-        let sent = host.take_outbox();
-        assert_eq!(sent.len(), 2);
-        assert_eq!(sent[0].method, "Extensions.loadUnpacked");
-        assert_eq!(
-            sent[0].params["path"],
-            format!("/profile/extensions/{}", id('a'))
-        );
-        assert_eq!(sent[1].method, "Extensions.uninstall");
-        assert_eq!(sent[1].params["id"], id('b'));
+    tilo_test_env::scenario! {
+        fn the_host_loads_unloads_and_probes_badges_through_the_engine;
 
-        host.reconcile(&[wanted(&id('a'))], &[id('b')], now);
-        assert!(host.take_outbox().is_empty());
+        phase reconcile_loads_and_unloads_once_and_tracks_replies;
+        {
+            let now = ui::time::now();
+            let mut host = ExtensionHost::new();
+            host.reconcile(&[wanted(&id('a'))], &[id('b')], now);
+            let sent = host.take_outbox();
+            assert_eq!(sent.len(), 2);
+            assert_eq!(sent[0].method, "Extensions.loadUnpacked");
+            assert_eq!(
+                sent[0].params["path"],
+                format!("/profile/extensions/{}", id('a'))
+            );
+            assert_eq!(sent[1].method, "Extensions.uninstall");
+            assert_eq!(sent[1].params["id"], id('b'));
 
-        let loaded = json!({"id": id('a')}).to_string();
-        let update = host.on_result(sent[0].id, true, &loaded, now);
-        assert!(update.changed && update.notice.is_none());
-        assert!(host.is_loaded(&id('a')));
-        let update = host.on_result(sent[1].id, false, r#"{"message":"could not find"}"#, now);
-        assert_eq!(update, Update::default());
+            host.reconcile(&[wanted(&id('a'))], &[id('b')], now);
+            assert!(host.take_outbox().is_empty());
 
-        host.reconcile(&[], &[id('a')], now);
-        let unload = host.take_outbox();
-        assert_eq!(unload[0].method, "Extensions.uninstall");
-        assert!(host.on_result(unload[0].id, true, "{}", now).changed);
-        assert!(!host.is_loaded(&id('a')));
-        host.reconcile(&[wanted(&id('a'))], &[], now);
-        assert_eq!(host.take_outbox()[0].method, "Extensions.loadUnpacked");
+            let loaded = json!({"id": id('a')}).to_string();
+            let update = host.on_result(sent[0].id, true, &loaded, now);
+            assert!(update.changed && update.notice.is_none());
+            assert!(host.is_loaded(&id('a')));
+            let update = host.on_result(sent[1].id, false, r#"{"message":"could not find"}"#, now);
+            assert_eq!(update, Update::default());
 
-        let failed = host.take_outbox();
-        assert!(failed.is_empty());
-        let mut host = ExtensionHost::new();
-        host.reconcile(&[wanted(&id('c'))], &[], now);
-        let sent = host.take_outbox();
-        let update = host.on_result(
-            sent[0].id,
-            false,
-            r#"{"code":-32000,"message":"Manifest file is missing"}"#,
-            now,
-        );
-        assert!(!update.changed);
-        assert_eq!(
-            update.notice.as_deref(),
-            Some(
-                format!(
-                    "Extension {} could not be turned on. Remove it and add it again.",
-                    id('c')
-                )
-                .as_str()
-            ),
-            "the person is told what to do, not the engine's reason"
-        );
-        host.reconcile(&[wanted(&id('c'))], &[], now);
-        assert_eq!(host.take_outbox().len(), 1, "asked again after a failure");
+            host.reconcile(&[], &[id('a')], now);
+            let unload = host.take_outbox();
+            assert_eq!(unload[0].method, "Extensions.uninstall");
+            assert!(host.on_result(unload[0].id, true, "{}", now).changed);
+            assert!(!host.is_loaded(&id('a')));
+            host.reconcile(&[wanted(&id('a'))], &[], now);
+            assert_eq!(host.take_outbox()[0].method, "Extensions.loadUnpacked");
 
-        assert_eq!(host.on_result(999, true, "{}", now), Update::default());
-    }
+            let failed = host.take_outbox();
+            assert!(failed.is_empty());
+            let mut host = ExtensionHost::new();
+            host.reconcile(&[wanted(&id('c'))], &[], now);
+            let sent = host.take_outbox();
+            let update = host.on_result(
+                sent[0].id,
+                false,
+                r#"{"code":-32000,"message":"Manifest file is missing"}"#,
+                now,
+            );
+            assert!(!update.changed);
+            assert_eq!(
+                update.notice.as_deref(),
+                Some(
+                    format!(
+                        "Extension {} could not be turned on. Remove it and add it again.",
+                        id('c')
+                    )
+                    .as_str()
+                ),
+                "the person is told what to do, not the engine's reason"
+            );
+            host.reconcile(&[wanted(&id('c'))], &[], now);
+            assert_eq!(host.take_outbox().len(), 1, "asked again after a failure");
 
-    #[test]
-    fn a_page_shows_its_own_badge_until_its_next_document() {
-        use ui::webview::ExtensionActionChange as Change;
-        let mut host = ExtensionHost::new();
-        let a = id('a');
-        let badge = |text: &str| Change {
-            badge: Some(Some(text.into())),
-            ..Change::default()
-        };
-        assert!(host.action_changed(&a, true, &badge("on")));
-        assert!(host.action_changed(&a, false, &badge("7")));
-        assert_eq!(host.action_state(&a).unwrap().badge, "7");
-        assert!(
-            !host.action_changed(&a, false, &badge("7")),
-            "the same again"
-        );
-        assert!(!host.action_changed(&a, true, &badge("off")));
-        assert!(host.page_changed());
-        assert_eq!(host.action_state(&a).unwrap().badge, "off");
-        assert!(!host.page_changed(), "nothing left to take back");
-        host.action_changed(&a, false, &badge("9"));
-        host.forget(&a);
-        assert_eq!(host.action_state(&a), None);
-    }
-
-    #[test]
-    fn badge_probe_walks_targets_attach_evaluate_detach() {
-        let now = ui::time::now();
-        let mut host = ExtensionHost::new();
-        host.reconcile(&[wanted(&id('a')), wanted(&id('b'))], &[], now);
-        for request in host.take_outbox() {
-            let loaded =
-                json!({"id": request.params["path"].as_str().unwrap().rsplit('/').next().unwrap()});
-            host.on_result(request.id, true, &loaded.to_string(), now);
+            assert_eq!(host.on_result(999, true, "{}", now), Update::default());
         }
-        let ids = vec![id('a'), id('b'), id('c')];
 
-        host.probe(&ids, now);
-        let sent = host.take_outbox();
-        assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].method, "Target.getTargets");
-        host.probe(&ids, now + ui::time::Duration::from_secs(1));
-        assert!(host.take_outbox().is_empty(), "one probe at a time");
+        phase a_page_shows_its_own_badge_until_its_next_document;
+        {
+            use ui::webview::ExtensionActionChange as Change;
+            let mut host = ExtensionHost::new();
+            let a = id('a');
+            let badge = |text: &str| Change {
+                badge: Some(Some(text.into())),
+                ..Change::default()
+            };
+            assert!(host.action_changed(&a, true, &badge("on")));
+            assert!(host.action_changed(&a, false, &badge("7")));
+            assert_eq!(host.action_state(&a).unwrap().badge, "7");
+            assert!(
+                !host.action_changed(&a, false, &badge("7")),
+                "the same again"
+            );
+            assert!(!host.action_changed(&a, true, &badge("off")));
+            assert!(host.page_changed());
+            assert_eq!(host.action_state(&a).unwrap().badge, "off");
+            assert!(!host.page_changed(), "nothing left to take back");
+            host.action_changed(&a, false, &badge("9"));
+            host.forget(&a);
+            assert_eq!(host.action_state(&a), None);
+        }
 
-        let targets = json!({"targetInfos":[
-            {"targetId":"W-A","type":"service_worker","url":format!("chrome-extension://{}/sw.js", id('a'))},
-        ]})
-        .to_string();
-        host.on_result(sent[0].id, true, &targets, now);
-        let attach = host.take_outbox();
-        assert_eq!(attach[0].method, "Target.attachToTarget");
-        assert_eq!(attach[0].params["targetId"], "W-A");
-        host.on_result(attach[0].id, true, r#"{"sessionId":"S1"}"#, now);
-        let evaluate = host.take_outbox();
-        assert_eq!(evaluate[0].method, "Runtime.evaluate");
-        assert_eq!(evaluate[0].session.as_deref(), Some("S1"));
-        let value =
-            json!({"result":{"value": json!({"text":"7","title":"7 blocked"}).to_string()}});
-        let update = host.on_result(evaluate[0].id, true, &value.to_string(), now);
-        assert!(update.changed);
-        let detach = host.take_outbox();
-        assert_eq!(detach[0].method, "Target.detachFromTarget");
-        assert_eq!(detach[0].params["sessionId"], "S1");
-        assert_eq!(host.action_state(&id('a')).unwrap().badge, "7");
-        assert_eq!(host.action_state(&id('b')), None);
+        phase badge_probe_walks_targets_attach_evaluate_detach;
+        {
+            let now = ui::time::now();
+            let mut host = ExtensionHost::new();
+            host.reconcile(&[wanted(&id('a')), wanted(&id('b'))], &[], now);
+            for request in host.take_outbox() {
+                let loaded =
+                    json!({"id": request.params["path"].as_str().unwrap().rsplit('/').next().unwrap()});
+                host.on_result(request.id, true, &loaded.to_string(), now);
+            }
+            let ids = vec![id('a'), id('b'), id('c')];
 
-        let later = now + PROBE_INTERVAL;
-        host.probe(&ids, later);
-        let sent = host.take_outbox();
-        assert_eq!(sent[0].method, "Target.getTargets");
-        host.on_result(sent[0].id, true, &targets, later);
-        let attach = host.take_outbox();
-        host.on_result(attach[0].id, true, r#"{"sessionId":"S2"}"#, later);
-        let evaluate = host.take_outbox();
-        assert!(
-            !host
-                .on_result(evaluate[0].id, true, &value.to_string(), later)
-                .changed
-        );
+            host.probe(&ids, now);
+            let sent = host.take_outbox();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(sent[0].method, "Target.getTargets");
+            host.probe(&ids, now + ui::time::Duration::from_secs(1));
+            assert!(host.take_outbox().is_empty(), "one probe at a time");
 
-        let much_later = later + STALE_AFTER + PROBE_INTERVAL;
-        host.take_outbox();
-        host.probe(&ids, much_later);
-        assert_eq!(host.take_outbox()[0].method, "Target.getTargets");
+            let targets = json!({"targetInfos":[
+                {"targetId":"W-A","type":"service_worker","url":format!("chrome-extension://{}/sw.js", id('a'))},
+            ]})
+            .to_string();
+            host.on_result(sent[0].id, true, &targets, now);
+            let attach = host.take_outbox();
+            assert_eq!(attach[0].method, "Target.attachToTarget");
+            assert_eq!(attach[0].params["targetId"], "W-A");
+            host.on_result(attach[0].id, true, r#"{"sessionId":"S1"}"#, now);
+            let evaluate = host.take_outbox();
+            assert_eq!(evaluate[0].method, "Runtime.evaluate");
+            assert_eq!(evaluate[0].session.as_deref(), Some("S1"));
+            let value =
+                json!({"result":{"value": json!({"text":"7","title":"7 blocked"}).to_string()}});
+            let update = host.on_result(evaluate[0].id, true, &value.to_string(), now);
+            assert!(update.changed);
+            let detach = host.take_outbox();
+            assert_eq!(detach[0].method, "Target.detachFromTarget");
+            assert_eq!(detach[0].params["sessionId"], "S1");
+            assert_eq!(host.action_state(&id('a')).unwrap().badge, "7");
+            assert_eq!(host.action_state(&id('b')), None);
+
+            let later = now + PROBE_INTERVAL;
+            host.probe(&ids, later);
+            let sent = host.take_outbox();
+            assert_eq!(sent[0].method, "Target.getTargets");
+            host.on_result(sent[0].id, true, &targets, later);
+            let attach = host.take_outbox();
+            host.on_result(attach[0].id, true, r#"{"sessionId":"S2"}"#, later);
+            let evaluate = host.take_outbox();
+            assert!(
+                !host
+                    .on_result(evaluate[0].id, true, &value.to_string(), later)
+                    .changed
+            );
+
+            let much_later = later + STALE_AFTER + PROBE_INTERVAL;
+            host.take_outbox();
+            host.probe(&ids, much_later);
+            assert_eq!(host.take_outbox()[0].method, "Target.getTargets");
+        }
     }
 }

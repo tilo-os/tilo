@@ -568,75 +568,79 @@ mod tests {
     use std::collections::HashMap;
     use vello::kurbo::Point;
 
-    #[test]
-    fn search_engines_are_chosen_by_name_and_a_custom_template_stays() {
-        let named = search_engine_choices(DEFAULT_SEARCH_ENGINE);
-        assert_eq!(named.len(), SEARCH_ENGINES.len());
-        assert!(named.iter().all(|(template, name)| {
-            !name.contains("://") && template.starts_with("https://") && template.ends_with("q=")
-        }));
-        let custom = search_engine_choices("https://www.search.example/?q=");
-        assert_eq!(
-            custom.last(),
-            Some(&(
-                "https://www.search.example/?q=".to_owned(),
-                "search.example".to_owned()
-            )),
-            "a template from elsewhere is kept, named by its host"
-        );
-        for (_, template) in SEARCH_ENGINES {
-            let settings = Settings {
-                search_engine: (*template).to_owned(),
-                ..Settings::default()
-            };
-            assert!(settings.valid().is_ok(), "{template} is a valid engine");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn preferences_default_sensibly_and_keep_valid_choices;
 
-    #[test]
-    fn a_homepage_typed_as_a_site_is_kept_as_its_address() {
-        for (typed, kept) in [
-            ("example.com", Some("https://example.com/")),
-            ("  news.example/today ", Some("https://news.example/today")),
-            ("http://intranet.example", Some("http://intranet.example/")),
-            ("localhost:3000", Some("http://localhost:3000/")),
-            ("exa", None),
-            ("example.", None),
-            ("file:///etc/passwd", None),
-        ] {
-            assert_eq!(homepage_of(typed).as_deref(), kept, "{typed}");
-            if let Some(kept) = kept {
+        phase search_engines_are_chosen_by_name_and_a_custom_template_stays;
+        {
+            let named = search_engine_choices(DEFAULT_SEARCH_ENGINE);
+            assert_eq!(named.len(), SEARCH_ENGINES.len());
+            assert!(named.iter().all(|(template, name)| {
+                !name.contains("://") && template.starts_with("https://") && template.ends_with("q=")
+            }));
+            let custom = search_engine_choices("https://www.search.example/?q=");
+            assert_eq!(
+                custom.last(),
+                Some(&(
+                    "https://www.search.example/?q=".to_owned(),
+                    "search.example".to_owned()
+                )),
+                "a template from elsewhere is kept, named by its host"
+            );
+            for (_, template) in SEARCH_ENGINES {
                 let settings = Settings {
-                    homepage: kept.to_owned(),
+                    search_engine: (*template).to_owned(),
                     ..Settings::default()
                 };
-                assert!(settings.valid().is_ok(), "{kept} is accepted");
+                assert!(settings.valid().is_ok(), "{template} is a valid engine");
             }
         }
-        let presentation = SettingsPresentation::from_settings(&Settings::default());
-        presentation.homepage.set("example.com".into());
-        presentation.reflect(&Settings {
-            homepage: "https://example.com/".into(),
-            ..Settings::default()
-        });
-        assert_eq!(presentation.homepage.with(Clone::clone), "example.com");
-        presentation.reflect(&Settings {
-            homepage: "https://other.example/".into(),
-            ..Settings::default()
-        });
-        assert_eq!(
-            presentation.homepage.with(Clone::clone),
-            "https://other.example/"
-        );
-    }
 
-    #[test]
-    fn preference_defaults_are_sensible() {
-        let s = Settings::default();
-        assert!(s.adblock_enabled, "ad-block defaults on");
-        assert!(!s.clear_on_exit, "clear-on-exit defaults off");
-        assert_eq!(s.search_engine, DEFAULT_SEARCH_ENGINE);
-        assert_eq!(s.homepage, DEFAULT_HOMEPAGE);
+        phase a_homepage_typed_as_a_site_is_kept_as_its_address;
+        {
+            for (typed, kept) in [
+                ("example.com", Some("https://example.com/")),
+                ("  news.example/today ", Some("https://news.example/today")),
+                ("http://intranet.example", Some("http://intranet.example/")),
+                ("localhost:3000", Some("http://localhost:3000/")),
+                ("exa", None),
+                ("example.", None),
+                ("file:///etc/passwd", None),
+            ] {
+                assert_eq!(homepage_of(typed).as_deref(), kept, "{typed}");
+                if let Some(kept) = kept {
+                    let settings = Settings {
+                        homepage: kept.to_owned(),
+                        ..Settings::default()
+                    };
+                    assert!(settings.valid().is_ok(), "{kept} is accepted");
+                }
+            }
+            let presentation = SettingsPresentation::from_settings(&Settings::default());
+            presentation.homepage.set("example.com".into());
+            presentation.reflect(&Settings {
+                homepage: "https://example.com/".into(),
+                ..Settings::default()
+            });
+            assert_eq!(presentation.homepage.with(Clone::clone), "example.com");
+            presentation.reflect(&Settings {
+                homepage: "https://other.example/".into(),
+                ..Settings::default()
+            });
+            assert_eq!(
+                presentation.homepage.with(Clone::clone),
+                "https://other.example/"
+            );
+        }
+
+        phase preference_defaults_are_sensible;
+        {
+            let s = Settings::default();
+            assert!(s.adblock_enabled, "ad-block defaults on");
+            assert!(!s.clear_on_exit, "clear-on-exit defaults off");
+            assert_eq!(s.search_engine, DEFAULT_SEARCH_ENGINE);
+            assert_eq!(s.homepage, DEFAULT_HOMEPAGE);
+        }
     }
 
     #[test]

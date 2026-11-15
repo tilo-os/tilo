@@ -63,33 +63,37 @@ impl BrowsingMode {
 mod tests {
     use super::*;
 
-    #[test]
-    fn private_mode_denies_every_personal_persistence_boundary() {
-        let private = BrowsingMode::Private;
-        assert!(!private.persists_personal_state());
-        assert!(BrowsingMode::Normal.persists_personal_state());
-    }
+    tilo_test_env::scenario! {
+        fn each_browsing_mode_holds_only_what_is_its_own;
 
-    #[test]
-    fn only_the_persons_own_window_holds_their_account_custody() {
-        assert!(BrowsingMode::Normal.holds_account_custody());
-        for mode in [BrowsingMode::Private, BrowsingMode::Visitor] {
-            assert!(!mode.holds_account_custody(), "{mode:?}");
-            assert!(mode.has_own_profile(), "{mode:?}");
+        phase private_mode_denies_every_personal_persistence_boundary;
+        {
+            let private = BrowsingMode::Private;
+            assert!(!private.persists_personal_state());
+            assert!(BrowsingMode::Normal.persists_personal_state());
         }
-        assert!(!BrowsingMode::Normal.has_own_profile());
-        assert_eq!(BrowsingMode::of_launch(true, true), BrowsingMode::Private);
-        assert_eq!(BrowsingMode::of_launch(false, true), BrowsingMode::Visitor);
-        assert_eq!(BrowsingMode::of_launch(false, false), BrowsingMode::Normal);
-    }
 
-    #[test]
-    fn only_the_window_an_agent_operates_holds_what_the_page_sends() {
-        assert!(BrowsingMode::Visitor.holds_departures());
-        assert!(!BrowsingMode::Visitor.offers_file_picker());
-        for mode in [BrowsingMode::Normal, BrowsingMode::Private] {
-            assert!(!mode.holds_departures(), "{mode:?}");
-            assert!(mode.offers_file_picker(), "{mode:?}");
+        phase only_the_persons_own_window_holds_their_account_custody;
+        {
+            assert!(BrowsingMode::Normal.holds_account_custody());
+            for mode in [BrowsingMode::Private, BrowsingMode::Visitor] {
+                assert!(!mode.holds_account_custody(), "{mode:?}");
+                assert!(mode.has_own_profile(), "{mode:?}");
+            }
+            assert!(!BrowsingMode::Normal.has_own_profile());
+            assert_eq!(BrowsingMode::of_launch(true, true), BrowsingMode::Private);
+            assert_eq!(BrowsingMode::of_launch(false, true), BrowsingMode::Visitor);
+            assert_eq!(BrowsingMode::of_launch(false, false), BrowsingMode::Normal);
+        }
+
+        phase only_the_window_an_agent_operates_holds_what_the_page_sends;
+        {
+            assert!(BrowsingMode::Visitor.holds_departures());
+            assert!(!BrowsingMode::Visitor.offers_file_picker());
+            for mode in [BrowsingMode::Normal, BrowsingMode::Private] {
+                assert!(!mode.holds_departures(), "{mode:?}");
+                assert!(mode.offers_file_picker(), "{mode:?}");
+            }
         }
     }
 }

@@ -39,111 +39,154 @@ mod tests {
         }
     }
 
-    #[test]
-    fn canonical_hierarchy_retry_and_removal_survive_reload_without_url_dedup() {
-        let source = [17; 32];
-        let folder = |id: &str, parent: Option<&str>, position| ImportedNode {
-            id: id.into(),
-            parent: parent.map(str::to_owned),
-            position,
-            title: id.into(),
-            kind: NodeKind::Folder,
-        };
-        let bookmark = |id: &str, parent: &str| ImportedNode {
-            id: id.into(),
-            parent: Some(parent.into()),
-            position: 0,
-            title: id.into(),
-            kind: NodeKind::Bookmark {
-                url: "https://example.org/".into(),
-            },
-        };
-        let tree = ImportedTree {
-            source,
-            nodes: vec![
-                folder("root", None, 0),
-                folder("one", Some("root"), 0),
-                folder("two", Some("root"), 1),
-                bookmark("first", "one"),
-                bookmark("second", "two"),
-            ],
-        };
-        let mut bundle =
-            crate::continuity::ImportBundle::from_batch(crate::continuity::ImportBatch {
-                source,
-                bookmarks: vec![crate::continuity::BookmarkImport {
+    tilo_test_env::scenario! {
+        fn imported_trees_keep_their_shape_and_refuse_a_broken_one;
+
+        phase canonical_hierarchy_retry_and_removal_survive_reload_without_url_dedup;
+        {
+            let source = [17; 32];
+            let folder = |id: &str, parent: Option<&str>, position| ImportedNode {
+                id: id.into(),
+                parent: parent.map(str::to_owned),
+                position,
+                title: id.into(),
+                kind: NodeKind::Folder,
+            };
+            let bookmark = |id: &str, parent: &str| ImportedNode {
+                id: id.into(),
+                parent: Some(parent.into()),
+                position: 0,
+                title: id.into(),
+                kind: NodeKind::Bookmark {
                     url: "https://example.org/".into(),
-                    title: "Example".into(),
-                }],
-                history: vec![],
-            })
-            .unwrap();
-        bundle.imported_tree = Some(tree.clone());
-        let action = bundle.bookmark_action().unwrap();
-        let mut library = Replica::<PersonalBookmarks>::new();
-        library.apply(action.clone()).unwrap();
-        let state = library.state().unwrap();
-        assert_eq!(state.imported_trees(), vec![tree]);
-        assert_eq!(
-            state.bookmarks().entries().len(),
-            1,
-            "legacy flat URL identity remains compatible"
-        );
-        let trees = state.imported_trees();
-        let captured = &trees[0];
-        let children: Vec<_> = captured
-            .nodes
-            .iter()
-            .filter(|node| node.parent.as_deref() == Some("root"))
-            .collect();
-        assert_eq!(children.len(), 2);
-        let first = captured
-            .nodes
-            .iter()
-            .find(|node| node.parent.as_deref() == Some(&children[0].id))
-            .unwrap();
-        let second = captured
-            .nodes
-            .iter()
-            .find(|node| node.parent.as_deref() == Some(&children[1].id))
-            .unwrap();
-        let first = crate::personal_bookmarks::node_resource(captured, first);
-        let second = crate::personal_bookmarks::node_resource(captured, second);
-        assert_eq!(first.label, "first");
-        assert_eq!(second.label, "second");
-        assert!(
-            first
-                .actions
-                .iter()
-                .any(|action| action.id == "remove-personal-imported-node")
-        );
-        library
-            .apply(
-                PersonalBookmarks::REMOVE_IMPORTED_NODE
-                    .with((source_id(&source), "one".to_owned())),
-            )
-            .unwrap();
-        let mut reopened = Replica::<PersonalBookmarks>::from_doc(
-            ui::tilo_resource::Doc::load(&library.doc_mut().save()).unwrap(),
-        );
-        reopened.apply(action).unwrap();
-        let restored = reopened.state().unwrap().imported_trees();
-        assert_eq!(
-            restored[0]
+                },
+            };
+            let tree = ImportedTree {
+                source,
+                nodes: vec![
+                    folder("root", None, 0),
+                    folder("one", Some("root"), 0),
+                    folder("two", Some("root"), 1),
+                    bookmark("first", "one"),
+                    bookmark("second", "two"),
+                ],
+            };
+            let mut bundle =
+                crate::continuity::ImportBundle::from_batch(crate::continuity::ImportBatch {
+                    source,
+                    bookmarks: vec![crate::continuity::BookmarkImport {
+                        url: "https://example.org/".into(),
+                        title: "Example".into(),
+                    }],
+                    history: vec![],
+                })
+                .unwrap();
+            bundle.imported_tree = Some(tree.clone());
+            let action = bundle.bookmark_action().unwrap();
+            let mut library = Replica::<PersonalBookmarks>::new();
+            library.apply(action.clone()).unwrap();
+            let state = library.state().unwrap();
+            assert_eq!(state.imported_trees(), vec![tree]);
+            assert_eq!(
+                state.bookmarks().entries().len(),
+                1,
+                "legacy flat URL identity remains compatible"
+            );
+            let trees = state.imported_trees();
+            let captured = &trees[0];
+            let children: Vec<_> = captured
                 .nodes
                 .iter()
-                .map(|n| n.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["root", "two", "second"]
-        );
-        let mut conflicting = bundle;
-        conflicting.imported_tree.as_mut().unwrap().nodes[0].title = "changed source".into();
-        assert!(
-            reopened
-                .apply(conflicting.bookmark_action().unwrap())
-                .is_err()
-        );
-        assert_eq!(reopened.state().unwrap().imported_trees(), restored);
+                .filter(|node| node.parent.as_deref() == Some("root"))
+                .collect();
+            assert_eq!(children.len(), 2);
+            let first = captured
+                .nodes
+                .iter()
+                .find(|node| node.parent.as_deref() == Some(&children[0].id))
+                .unwrap();
+            let second = captured
+                .nodes
+                .iter()
+                .find(|node| node.parent.as_deref() == Some(&children[1].id))
+                .unwrap();
+            let first = crate::personal_bookmarks::node_resource(captured, first);
+            let second = crate::personal_bookmarks::node_resource(captured, second);
+            assert_eq!(first.label, "first");
+            assert_eq!(second.label, "second");
+            assert!(
+                first
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "remove-personal-imported-node")
+            );
+            library
+                .apply(
+                    PersonalBookmarks::REMOVE_IMPORTED_NODE
+                        .with((source_id(&source), "one".to_owned())),
+                )
+                .unwrap();
+            let mut reopened = Replica::<PersonalBookmarks>::from_doc(
+                ui::tilo_resource::Doc::load(&library.doc_mut().save()).unwrap(),
+            );
+            reopened.apply(action).unwrap();
+            let restored = reopened.state().unwrap().imported_trees();
+            assert_eq!(
+                restored[0]
+                    .nodes
+                    .iter()
+                    .map(|n| n.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["root", "two", "second"]
+            );
+            let mut conflicting = bundle;
+            conflicting.imported_tree.as_mut().unwrap().nodes[0].title = "changed source".into();
+            assert!(
+                reopened
+                    .apply(conflicting.bookmark_action().unwrap())
+                    .is_err()
+            );
+            assert_eq!(reopened.state().unwrap().imported_trees(), restored);
+        }
+
+        phase orphan_cycle_duplicate_order_and_corrupt_state_refuse_before_projection;
+        {
+            let node = ImportedNode {
+                id: "root".into(),
+                parent: None,
+                position: 0,
+                title: "Root".into(),
+                kind: NodeKind::Folder,
+            };
+            let valid = ImportedTree {
+                source: [23; 32],
+                nodes: vec![node.clone()],
+            };
+            let mut invalid = valid.clone();
+            invalid.nodes[0].parent = Some("missing".into());
+            assert!(invalid.validate().is_err());
+            invalid.nodes[0].parent = Some("root".into());
+            assert!(invalid.validate().is_err());
+            invalid = valid.clone();
+            let mut duplicate = node;
+            duplicate.id = "other".into();
+            invalid.nodes.push(duplicate);
+            assert!(invalid.validate().is_err());
+            // A kept tree that is not one reads as no library at all, never as
+            // an empty one.
+            let mut doc = ui::tilo_resource::Doc::new();
+            let trees = ui::tilo_resource::Slot::Key(&automerge::ROOT, "trees")
+                .object(&mut doc, automerge::ObjType::Map)
+                .unwrap();
+            ui::tilo_resource::write_key(
+                &mut doc,
+                &trees,
+                &source_id(&valid.source),
+                &ui::tilo_resource::Atom("{}".into()),
+            )
+            .unwrap();
+            assert!(crate::personal_bookmarks::PersonalBookmarks::read(&doc).is_err());
+        }
     }
 
     #[test]
@@ -258,44 +301,5 @@ mod tests {
         .unwrap();
         app.settle();
         assert_eq!(record.get().imported_trees()[0].nodes.len(), 1);
-    }
-
-    #[test]
-    fn orphan_cycle_duplicate_order_and_corrupt_state_refuse_before_projection() {
-        let node = ImportedNode {
-            id: "root".into(),
-            parent: None,
-            position: 0,
-            title: "Root".into(),
-            kind: NodeKind::Folder,
-        };
-        let valid = ImportedTree {
-            source: [23; 32],
-            nodes: vec![node.clone()],
-        };
-        let mut invalid = valid.clone();
-        invalid.nodes[0].parent = Some("missing".into());
-        assert!(invalid.validate().is_err());
-        invalid.nodes[0].parent = Some("root".into());
-        assert!(invalid.validate().is_err());
-        invalid = valid.clone();
-        let mut duplicate = node;
-        duplicate.id = "other".into();
-        invalid.nodes.push(duplicate);
-        assert!(invalid.validate().is_err());
-        // A kept tree that is not one reads as no library at all, never as
-        // an empty one.
-        let mut doc = ui::tilo_resource::Doc::new();
-        let trees = ui::tilo_resource::Slot::Key(&automerge::ROOT, "trees")
-            .object(&mut doc, automerge::ObjType::Map)
-            .unwrap();
-        ui::tilo_resource::write_key(
-            &mut doc,
-            &trees,
-            &source_id(&valid.source),
-            &ui::tilo_resource::Atom("{}".into()),
-        )
-        .unwrap();
-        assert!(crate::personal_bookmarks::PersonalBookmarks::read(&doc).is_err());
     }
 }

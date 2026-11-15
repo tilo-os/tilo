@@ -566,315 +566,323 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_extension_has_its_host_permissions_apart_from_its_content_scripts_sites() {
-        let manifest = serde_json::json!({
-            "permissions": ["tabs", "scripting", "https://old.example/*"],
-            "host_permissions": ["*://*.example.com/*"],
-            "content_scripts": [
-                {"matches": ["<all_urls>"], "js": ["c.js"]},
-                {"js": ["d.js"]},
-                {"matches": ["https://login.example/*"], "js": ["e.js"], "all_frames": true},
-            ],
-        });
-        assert_eq!(
-            access(&manifest),
-            Access {
-                permissions: vec!["tabs".into(), "scripting".into()],
-                hosts: vec!["*://*.example.com/*".into(), "https://old.example/*".into()],
-                scriptable: vec!["<all_urls>".into(), "https://login.example/*".into()],
-                // Only the script that runs in every frame reaches frames.
-                framed: vec!["https://login.example/*".into()],
-                token: None,
-                commands: None,
-                optional: ExtensionPermissionSet::default(),
-                granted: ExtensionPermissionSet::default(),
-            }
-        );
-        assert_eq!(access(&serde_json::json!({})), Access::default());
-        // What it may ask for later: MV3 names sites apart, MV2 among the rest.
-        let optional = |manifest| access(&manifest).optional;
-        assert_eq!(
-            optional(serde_json::json!({
-                "optional_permissions": ["tabs", "http://old.example/*"],
-                "optional_host_permissions": ["https://*.example.org/*"],
-            })),
-            ExtensionPermissionSet {
-                permissions: vec!["tabs".into()],
-                origins: vec![
-                    "https://*.example.org/*".into(),
-                    "http://old.example/*".into()
-                ],
-            }
-        );
-        // From V3 on a site among its permissions is no host permission, as in Chrome:
-        // one asking for every site there reads, scripts and captures no tab.
-        let v3 = access(&serde_json::json!({
-            "manifest_version": 3,
-            "permissions": ["tabs", "<all_urls>", "https://old.example/*"],
-            "optional_permissions": ["bookmarks", "*://*/*"],
-            "host_permissions": ["https://*.example.com/*"],
-        }));
-        assert_eq!(v3.permissions, vec!["tabs".to_owned()]);
-        assert_eq!(v3.hosts, vec!["https://*.example.com/*".to_owned()]);
-        assert_eq!(
-            v3.optional,
-            ExtensionPermissionSet {
-                permissions: vec!["bookmarks".into()],
-                origins: Vec::new(),
-            }
-        );
-        let shortcuts = serde_json::json!({"_execute_action": {"suggested_key": "Alt+Shift+Y"}});
-        assert_eq!(
-            access(&serde_json::json!({"commands": shortcuts})).commands,
-            Some(shortcuts)
-        );
-        assert_eq!(
-            access(&serde_json::json!({"commands": ["toggle"]})).commands,
-            None
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_manifest_says_what_an_extension_offers_and_may_reach;
 
-    #[test]
-    fn an_extension_offers_its_settings_page() {
-        let extension = installed(
-            "abc",
-            "uBlock Origin Lite",
-            true,
-            false,
-            r#"{"options_ui":{"page":"dashboard.html","open_in_tab":true}}"#,
-        );
-        assert_eq!(
-            extension.options_url().as_deref(),
-            Some("chrome-extension://abc/dashboard.html")
-        );
-        assert_eq!(
-            options_page(&serde_json::json!({"options_page": "options/index.html"})).as_deref(),
-            Some("options/index.html")
-        );
-        for escaping in ["../x.html", "/x.html", "https://example.test/", ""] {
+        phase an_extension_has_its_host_permissions_apart_from_its_content_scripts_sites;
+        {
+            let manifest = serde_json::json!({
+                "permissions": ["tabs", "scripting", "https://old.example/*"],
+                "host_permissions": ["*://*.example.com/*"],
+                "content_scripts": [
+                    {"matches": ["<all_urls>"], "js": ["c.js"]},
+                    {"js": ["d.js"]},
+                    {"matches": ["https://login.example/*"], "js": ["e.js"], "all_frames": true},
+                ],
+            });
             assert_eq!(
-                options_page(&serde_json::json!({"options_page": escaping})),
-                None,
-                "{escaping}"
+                access(&manifest),
+                Access {
+                    permissions: vec!["tabs".into(), "scripting".into()],
+                    hosts: vec!["*://*.example.com/*".into(), "https://old.example/*".into()],
+                    scriptable: vec!["<all_urls>".into(), "https://login.example/*".into()],
+                    // Only the script that runs in every frame reaches frames.
+                    framed: vec!["https://login.example/*".into()],
+                    token: None,
+                    commands: None,
+                    optional: ExtensionPermissionSet::default(),
+                    granted: ExtensionPermissionSet::default(),
+                }
+            );
+            assert_eq!(access(&serde_json::json!({})), Access::default());
+            // What it may ask for later: MV3 names sites apart, MV2 among the rest.
+            let optional = |manifest| access(&manifest).optional;
+            assert_eq!(
+                optional(serde_json::json!({
+                    "optional_permissions": ["tabs", "http://old.example/*"],
+                    "optional_host_permissions": ["https://*.example.org/*"],
+                })),
+                ExtensionPermissionSet {
+                    permissions: vec!["tabs".into()],
+                    origins: vec![
+                        "https://*.example.org/*".into(),
+                        "http://old.example/*".into()
+                    ],
+                }
+            );
+            // From V3 on a site among its permissions is no host permission, as in Chrome:
+            // one asking for every site there reads, scripts and captures no tab.
+            let v3 = access(&serde_json::json!({
+                "manifest_version": 3,
+                "permissions": ["tabs", "<all_urls>", "https://old.example/*"],
+                "optional_permissions": ["bookmarks", "*://*/*"],
+                "host_permissions": ["https://*.example.com/*"],
+            }));
+            assert_eq!(v3.permissions, vec!["tabs".to_owned()]);
+            assert_eq!(v3.hosts, vec!["https://*.example.com/*".to_owned()]);
+            assert_eq!(
+                v3.optional,
+                ExtensionPermissionSet {
+                    permissions: vec!["bookmarks".into()],
+                    origins: Vec::new(),
+                }
+            );
+            let shortcuts = serde_json::json!({"_execute_action": {"suggested_key": "Alt+Shift+Y"}});
+            assert_eq!(
+                access(&serde_json::json!({"commands": shortcuts})).commands,
+                Some(shortcuts)
+            );
+            assert_eq!(
+                access(&serde_json::json!({"commands": ["toggle"]})).commands,
+                None
             );
         }
-    }
 
-    #[test]
-    fn manifest_action_picks_icon_popup_and_refuses_escaping_paths() {
-        let manifest: Value = serde_json::from_str(
-            r#"{"action":{"default_title":"Lite","default_popup":"popup/index.html",
+        phase an_extension_offers_its_settings_page;
+        {
+            let extension = installed(
+                "abc",
+                "uBlock Origin Lite",
+                true,
+                false,
+                r#"{"options_ui":{"page":"dashboard.html","open_in_tab":true}}"#,
+            );
+            assert_eq!(
+                extension.options_url().as_deref(),
+                Some("chrome-extension://abc/dashboard.html")
+            );
+            assert_eq!(
+                options_page(&serde_json::json!({"options_page": "options/index.html"})).as_deref(),
+                Some("options/index.html")
+            );
+            for escaping in ["../x.html", "/x.html", "https://example.test/", ""] {
+                assert_eq!(
+                    options_page(&serde_json::json!({"options_page": escaping})),
+                    None,
+                    "{escaping}"
+                );
+            }
+        }
+
+        phase manifest_action_picks_icon_popup_and_refuses_escaping_paths;
+        {
+            let manifest: Value = serde_json::from_str(
+                r#"{"action":{"default_title":"Lite","default_popup":"popup/index.html",
                 "default_icon":{"16":"i16.png","32":"i32.png","128":"i128.png"}}}"#,
-        )
-        .unwrap();
-        let action = action_manifest(&manifest).unwrap();
-        assert_eq!(action.title.as_deref(), Some("Lite"));
-        assert_eq!(action.popup.as_deref(), Some("popup/index.html"));
-        assert_eq!(action.icon.as_deref(), Some("i32.png"));
-
-        let small: Value = serde_json::from_str(
-            r#"{"browser_action":{"default_icon":{"16":"a.png","19":"b.png"}}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            action_manifest(&small).unwrap().icon.as_deref(),
-            Some("b.png")
-        );
-        let fallback: Value =
-            serde_json::from_str(r#"{"action":{},"icons":{"48":"icon48.png","16":"icon16.png"}}"#)
-                .unwrap();
-        assert_eq!(
-            action_manifest(&fallback).unwrap().icon.as_deref(),
-            Some("icon48.png")
-        );
-
-        for bad in [
-            "../x.png",
-            "/abs.png",
-            "a/../../b.png",
-            "c:\\x.png",
-            "x.png?y",
-        ] {
-            let manifest = json!({"action": {"default_popup": bad, "default_icon": bad}});
+            )
+            .unwrap();
             let action = action_manifest(&manifest).unwrap();
-            assert_eq!((action.popup, action.icon), (None, None), "{bad}");
+            assert_eq!(action.title.as_deref(), Some("Lite"));
+            assert_eq!(action.popup.as_deref(), Some("popup/index.html"));
+            assert_eq!(action.icon.as_deref(), Some("i32.png"));
+
+            let small: Value = serde_json::from_str(
+                r#"{"browser_action":{"default_icon":{"16":"a.png","19":"b.png"}}}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                action_manifest(&small).unwrap().icon.as_deref(),
+                Some("b.png")
+            );
+            let fallback: Value =
+                serde_json::from_str(r#"{"action":{},"icons":{"48":"icon48.png","16":"icon16.png"}}"#)
+                    .unwrap();
+            assert_eq!(
+                action_manifest(&fallback).unwrap().icon.as_deref(),
+                Some("icon48.png")
+            );
+
+            for bad in [
+                "../x.png",
+                "/abs.png",
+                "a/../../b.png",
+                "c:\\x.png",
+                "x.png?y",
+            ] {
+                let manifest = json!({"action": {"default_popup": bad, "default_icon": bad}});
+                let action = action_manifest(&manifest).unwrap();
+                assert_eq!((action.popup, action.icon), (None, None), "{bad}");
+            }
+            assert!(action_manifest(&json!({"name": "no action"})).is_none());
         }
-        assert!(action_manifest(&json!({"name": "no action"})).is_none());
-    }
 
-    #[test]
-    fn toolbar_pins_enabled_actions_and_lists_the_rest_in_the_menu() {
-        let with_popup = r#"{"action":{"default_popup":"p.html","default_title":"Open"}}"#;
-        let list = [
-            installed(&"a".repeat(32), "Vault", true, true, with_popup),
-            installed(&"b".repeat(32), "Blocker", true, false, r#"{"action":{}}"#),
-            installed(&"c".repeat(32), "Disabled", false, true, with_popup),
-            installed(&"d".repeat(32), "Headless", true, true, r#"{"name":"x"}"#),
-        ];
-        let model = model(&list, |id| {
-            (id == "b".repeat(32)).then(|| ActionState {
-                badge: "12".into(),
-                title: Some("12 blocked".into()),
-                ..ActionState::default()
-            })
-        });
-        assert_eq!(model.pinned.len(), 1);
-        assert_eq!(model.pinned[0].label, "Vault");
-        assert_eq!(model.pinned[0].tooltip, "Vault \u{2014} Open");
-        assert!(model.pinned[0].has_popup());
-        assert_eq!(model.menu.len(), 2, "disabled and action-less stay out");
-        assert!(model.menu[0].pinned && !model.menu[1].pinned);
-        assert_eq!(model.menu[1].button.badge, "12");
-        assert_eq!(model.menu[1].button.tooltip, "Blocker \u{2014} 12 blocked");
-        assert!(!model.menu[1].button.has_popup());
-        assert_eq!(
-            list[0].popup_url().unwrap(),
-            format!("chrome-extension://{}/p.html", "a".repeat(32))
-        );
-    }
-
-    #[test]
-    fn a_page_shows_what_the_extension_set_for_it_over_what_every_page_shows() {
-        use ui::webview::ExtensionActionChange as Change;
-        let id = "a".repeat(32);
-        let own = |page: &str| format!("chrome-extension://{id}/{page}");
-        let list = [installed(
-            &id,
-            "Blocker",
-            true,
-            true,
-            r#"{"action":{"default_popup":"p.html","default_title":"Blocker"}}"#,
-        )];
-        let mut every = ActionState::default();
-        every.apply(&Change {
-            badge: Some(Some("on".into())),
-            title: Some(Some("Blocking".into())),
-            ..Change::default()
-        });
-        let mut page = PageValues::default();
-        page.apply(&Change {
-            badge: Some(Some("123456".into())),
-            popup: Some(Some(String::new())),
-            enabled: Some(Some(false)),
-            ..Change::default()
-        });
-        let button = |state: ActionState| model(&list, |_| Some(state.clone())).pinned.remove(0);
-        let shown = button(every.clone().under(&page));
-        assert_eq!(shown.badge, "1234", "Chrome's four characters");
-        assert_eq!(shown.tooltip, "Blocker \u{2014} Blocking");
-        assert_eq!(shown.popup, None, "a click goes to the extension");
-        assert!(!shown.enabled);
-
-        page.apply(&Change {
-            badge: Some(None),
-            popup: Some(None),
-            enabled: Some(None),
-            ..Change::default()
-        });
-        let shown = button(every.clone().under(&page));
-        assert_eq!(shown.badge, "on");
-        assert_eq!(shown.popup, Some(own("p.html")), "the manifest's popup");
-        assert!(shown.enabled);
-
-        every.apply(&Change {
-            popup: Some(Some(own("other.html"))),
-            ..Change::default()
-        });
-        assert_eq!(button(every.clone()).popup, Some(own("other.html")));
-        every.popup = Some("https://example.test/".into());
-        assert_eq!(button(every.clone()).popup, None);
-        page.apply(&Change {
-            title: Some(Some(String::new())),
-            ..Change::default()
-        });
-        assert_eq!(
-            button(ActionState::default().under(&page)).tooltip,
-            "Blocker"
-        );
-    }
-
-    #[test]
-    fn an_icon_an_extension_sets_is_one_of_its_own_files() {
-        let root = std::env::temp_dir().join(format!("tilo-action-icon-{}", std::process::id()));
-        std::fs::create_dir_all(root.join("icons")).unwrap();
-        std::fs::write(root.join("icons/on.png"), b"png").unwrap();
-        assert_eq!(
-            icon_within(&root, "/icons/on.png"),
-            Some(root.canonicalize().unwrap().join("icons/on.png"))
-        );
-        for outside in [
-            "icons/on.png",
-            "/../on.png",
-            "/icons/../../on.png",
-            "/",
-            "/missing.png",
-        ] {
-            assert_eq!(icon_within(&root, outside), None, "{outside}");
+        phase an_icon_an_extension_sets_is_one_of_its_own_files;
+        {
+            let root = std::env::temp_dir().join(format!("tilo-action-icon-{}", std::process::id()));
+            std::fs::create_dir_all(root.join("icons")).unwrap();
+            std::fs::write(root.join("icons/on.png"), b"png").unwrap();
+            assert_eq!(
+                icon_within(&root, "/icons/on.png"),
+                Some(root.canonicalize().unwrap().join("icons/on.png"))
+            );
+            for outside in [
+                "icons/on.png",
+                "/../on.png",
+                "/icons/../../on.png",
+                "/",
+                "/missing.png",
+            ] {
+                assert_eq!(icon_within(&root, outside), None, "{outside}");
+            }
+            std::fs::remove_dir_all(&root).unwrap();
         }
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
-    #[test]
-    fn service_worker_replies_parse_and_stay_bounded() {
-        let id = "a".repeat(32);
-        let targets = json!({"targetInfos":[
-            {"targetId":"PAGE","type":"page","url":format!("chrome-extension://{id}/p.html")},
-            {"targetId":"OTHER","type":"service_worker","url":format!("chrome-extension://{}/sw.js", "b".repeat(32))},
-            {"targetId":"WORKER","type":"service_worker","url":format!("chrome-extension://{id}/sw.js")}
-        ]})
-        .to_string();
-        assert_eq!(worker_target(&targets, &id).as_deref(), Some("WORKER"));
-        assert_eq!(worker_target(&targets, &"c".repeat(32)), None);
-        assert_eq!(worker_target("not json", &id), None);
+    tilo_test_env::scenario! {
+        fn the_toolbar_model_shows_what_each_extension_set;
 
-        assert_eq!(session_id(r#"{"sessionId":"S-1"}"#).as_deref(), Some("S-1"));
-        assert_eq!(
-            session_id(&json!({"sessionId": "x".repeat(129)}).to_string()),
-            None
-        );
+        phase toolbar_pins_enabled_actions_and_lists_the_rest_in_the_menu;
+        {
+            let with_popup = r#"{"action":{"default_popup":"p.html","default_title":"Open"}}"#;
+            let list = [
+                installed(&"a".repeat(32), "Vault", true, true, with_popup),
+                installed(&"b".repeat(32), "Blocker", true, false, r#"{"action":{}}"#),
+                installed(&"c".repeat(32), "Disabled", false, true, with_popup),
+                installed(&"d".repeat(32), "Headless", true, true, r#"{"name":"x"}"#),
+            ];
+            let model = model(&list, |id| {
+                (id == "b".repeat(32)).then(|| ActionState {
+                    badge: "12".into(),
+                    title: Some("12 blocked".into()),
+                    ..ActionState::default()
+                })
+            });
+            assert_eq!(model.pinned.len(), 1);
+            assert_eq!(model.pinned[0].label, "Vault");
+            assert_eq!(model.pinned[0].tooltip, "Vault \u{2014} Open");
+            assert!(model.pinned[0].has_popup());
+            assert_eq!(model.menu.len(), 2, "disabled and action-less stay out");
+            assert!(model.menu[0].pinned && !model.menu[1].pinned);
+            assert_eq!(model.menu[1].button.badge, "12");
+            assert_eq!(model.menu[1].button.tooltip, "Blocker \u{2014} 12 blocked");
+            assert!(!model.menu[1].button.has_popup());
+            assert_eq!(
+                list[0].popup_url().unwrap(),
+                format!("chrome-extension://{}/p.html", "a".repeat(32))
+            );
+        }
 
-        let evaluated = json!({"result":{"type":"string","value":
-            json!({"text":"123456","title":"6 blocked"}).to_string()}})
-        .to_string();
-        assert_eq!(
-            action_state(&evaluated),
-            Some(ActionState {
-                badge: "1234".into(),
-                title: Some("6 blocked".into()),
-                ..ActionState::default()
-            })
-        );
-        let off = json!({"result":{"type":"string","value":
-            json!({"text":"","title":"","popup":format!("chrome-extension://{id}/p.html"),"enabled":false}).to_string()}})
-        .to_string();
-        assert_eq!(
-            action_state(&off),
-            Some(ActionState {
-                popup: Some(format!("chrome-extension://{id}/p.html")),
-                disabled: true,
-                ..ActionState::default()
-            })
-        );
-        let counting = json!({"result":{"type":"string","value":
-            json!({"text":RULE_COUNT_PLACEHOLDER,"title":"uBlock Origin Lite"}).to_string()}})
-        .to_string();
-        assert_eq!(
-            action_state(&counting),
-            Some(ActionState {
-                title: Some("uBlock Origin Lite".into()),
-                ..ActionState::default()
-            })
-        );
-        assert_eq!(action_state(r#"{"exceptionDetails":{}}"#), None);
-        assert_eq!(action_state(r#"{"result":{"value":"{"}}"#), None);
+        phase a_page_shows_what_the_extension_set_for_it_over_what_every_page_shows;
+        {
+            use ui::webview::ExtensionActionChange as Change;
+            let id = "a".repeat(32);
+            let own = |page: &str| format!("chrome-extension://{id}/{page}");
+            let list = [installed(
+                &id,
+                "Blocker",
+                true,
+                true,
+                r#"{"action":{"default_popup":"p.html","default_title":"Blocker"}}"#,
+            )];
+            let mut every = ActionState::default();
+            every.apply(&Change {
+                badge: Some(Some("on".into())),
+                title: Some(Some("Blocking".into())),
+                ..Change::default()
+            });
+            let mut page = PageValues::default();
+            page.apply(&Change {
+                badge: Some(Some("123456".into())),
+                popup: Some(Some(String::new())),
+                enabled: Some(Some(false)),
+                ..Change::default()
+            });
+            let button = |state: ActionState| model(&list, |_| Some(state.clone())).pinned.remove(0);
+            let shown = button(every.clone().under(&page));
+            assert_eq!(shown.badge, "1234", "Chrome's four characters");
+            assert_eq!(shown.tooltip, "Blocker \u{2014} Blocking");
+            assert_eq!(shown.popup, None, "a click goes to the extension");
+            assert!(!shown.enabled);
 
-        assert_eq!(loaded_id(&json!({"id": id}).to_string()), Some(id));
-        assert_eq!(loaded_id(r#"{"id":"../x"}"#), None);
-        assert_eq!(evaluate_request().0, "Runtime.evaluate");
-        assert_eq!(
-            attach_request("T").1,
-            json!({"targetId":"T","flatten":true})
-        );
+            page.apply(&Change {
+                badge: Some(None),
+                popup: Some(None),
+                enabled: Some(None),
+                ..Change::default()
+            });
+            let shown = button(every.clone().under(&page));
+            assert_eq!(shown.badge, "on");
+            assert_eq!(shown.popup, Some(own("p.html")), "the manifest's popup");
+            assert!(shown.enabled);
+
+            every.apply(&Change {
+                popup: Some(Some(own("other.html"))),
+                ..Change::default()
+            });
+            assert_eq!(button(every.clone()).popup, Some(own("other.html")));
+            every.popup = Some("https://example.test/".into());
+            assert_eq!(button(every.clone()).popup, None);
+            page.apply(&Change {
+                title: Some(Some(String::new())),
+                ..Change::default()
+            });
+            assert_eq!(
+                button(ActionState::default().under(&page)).tooltip,
+                "Blocker"
+            );
+        }
+
+        phase service_worker_replies_parse_and_stay_bounded;
+        {
+            let id = "a".repeat(32);
+            let targets = json!({"targetInfos":[
+                {"targetId":"PAGE","type":"page","url":format!("chrome-extension://{id}/p.html")},
+                {"targetId":"OTHER","type":"service_worker","url":format!("chrome-extension://{}/sw.js", "b".repeat(32))},
+                {"targetId":"WORKER","type":"service_worker","url":format!("chrome-extension://{id}/sw.js")}
+            ]})
+            .to_string();
+            assert_eq!(worker_target(&targets, &id).as_deref(), Some("WORKER"));
+            assert_eq!(worker_target(&targets, &"c".repeat(32)), None);
+            assert_eq!(worker_target("not json", &id), None);
+
+            assert_eq!(session_id(r#"{"sessionId":"S-1"}"#).as_deref(), Some("S-1"));
+            assert_eq!(
+                session_id(&json!({"sessionId": "x".repeat(129)}).to_string()),
+                None
+            );
+
+            let evaluated = json!({"result":{"type":"string","value":
+                json!({"text":"123456","title":"6 blocked"}).to_string()}})
+            .to_string();
+            assert_eq!(
+                action_state(&evaluated),
+                Some(ActionState {
+                    badge: "1234".into(),
+                    title: Some("6 blocked".into()),
+                    ..ActionState::default()
+                })
+            );
+            let off = json!({"result":{"type":"string","value":
+                json!({"text":"","title":"","popup":format!("chrome-extension://{id}/p.html"),"enabled":false}).to_string()}})
+            .to_string();
+            assert_eq!(
+                action_state(&off),
+                Some(ActionState {
+                    popup: Some(format!("chrome-extension://{id}/p.html")),
+                    disabled: true,
+                    ..ActionState::default()
+                })
+            );
+            let counting = json!({"result":{"type":"string","value":
+                json!({"text":RULE_COUNT_PLACEHOLDER,"title":"uBlock Origin Lite"}).to_string()}})
+            .to_string();
+            assert_eq!(
+                action_state(&counting),
+                Some(ActionState {
+                    title: Some("uBlock Origin Lite".into()),
+                    ..ActionState::default()
+                })
+            );
+            assert_eq!(action_state(r#"{"exceptionDetails":{}}"#), None);
+            assert_eq!(action_state(r#"{"result":{"value":"{"}}"#), None);
+
+            assert_eq!(loaded_id(&json!({"id": id}).to_string()), Some(id));
+            assert_eq!(loaded_id(r#"{"id":"../x"}"#), None);
+            assert_eq!(evaluate_request().0, "Runtime.evaluate");
+            assert_eq!(
+                attach_request("T").1,
+                json!({"targetId":"T","flatten":true})
+            );
+        }
     }
 }

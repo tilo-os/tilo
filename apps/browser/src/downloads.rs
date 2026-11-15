@@ -286,143 +286,147 @@ fn safe_name(name: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn download_rows_are_bounded_restart_safe_and_truthful() {
-        {
-            let mut downloads = Downloads::default();
-            downloads.requested("stable-1".into(), "https://example.test/a".into(), "a.bin");
-            downloads.destination("stable-1", "/tmp/a.bin".into());
-            downloads.progress("stable-1", 50, Some(100), 0.5);
-            let restored = Downloads::from_stored(downloads.stored());
-            let entry = restored.get("stable-1").unwrap();
-            assert_eq!(entry.resource_id(), "browser.downloads/stable-1");
-            assert_eq!(entry.status, DownloadStatus::Failed);
-        }
+    tilo_test_env::scenario! {
+        fn the_download_list_is_bounded_truthful_and_survives_a_restart;
 
+        phase download_rows_are_bounded_restart_safe_and_truthful;
         {
-            let mut downloads = Downloads::default();
-            downloads.requested("../escape".into(), "https://bad.test".into(), "bad");
-            assert!(downloads.entries().is_empty());
-            for index in 0..MAX_DOWNLOADS + 20 {
-                downloads.requested(
-                    format!("id-{index}"),
-                    format!("https://{index}.test"),
-                    "../safe.bin",
+            {
+                let mut downloads = Downloads::default();
+                downloads.requested("stable-1".into(), "https://example.test/a".into(), "a.bin");
+                downloads.destination("stable-1", "/tmp/a.bin".into());
+                downloads.progress("stable-1", 50, Some(100), 0.5);
+                let restored = Downloads::from_stored(downloads.stored());
+                let entry = restored.get("stable-1").unwrap();
+                assert_eq!(entry.resource_id(), "browser.downloads/stable-1");
+                assert_eq!(entry.status, DownloadStatus::Failed);
+            }
+
+            {
+                let mut downloads = Downloads::default();
+                downloads.requested("../escape".into(), "https://bad.test".into(), "bad");
+                assert!(downloads.entries().is_empty());
+                for index in 0..MAX_DOWNLOADS + 20 {
+                    downloads.requested(
+                        format!("id-{index}"),
+                        format!("https://{index}.test"),
+                        "../safe.bin",
+                    );
+                }
+                assert_eq!(downloads.entries().len(), MAX_DOWNLOADS);
+                assert!(
+                    downloads
+                        .entries()
+                        .iter()
+                        .all(|entry| entry.suggested_name == "safe.bin")
                 );
             }
-            assert_eq!(downloads.entries().len(), MAX_DOWNLOADS);
-            assert!(
-                downloads
-                    .entries()
-                    .iter()
-                    .all(|entry| entry.suggested_name == "safe.bin")
-            );
+
+            {
+                let mut downloads = Downloads::default();
+                assert!(downloads.requested(
+                    "complete".into(),
+                    "https://example.test/complete".into(),
+                    "complete.bin",
+                ));
+                downloads.finished("complete", "/tmp/complete.bin".into());
+                assert!(downloads.requested(
+                    "failed".into(),
+                    "https://example.test/failed".into(),
+                    "failed.bin",
+                ));
+                downloads.failed("failed", "network failed".repeat(2_000), false);
+                assert!(downloads.requested(
+                    "cancelled".into(),
+                    "https://example.test/cancelled".into(),
+                    "cancelled.bin",
+                ));
+                downloads.failed("cancelled", "ignored".into(), true);
+
+                let restored = Downloads::from_stored(downloads.stored());
+                assert_eq!(
+                    restored.get("complete").unwrap().status,
+                    DownloadStatus::Completed
+                );
+                assert_eq!(
+                    restored.get("failed").unwrap().status,
+                    DownloadStatus::Failed
+                );
+                assert!(
+                    restored
+                        .get("failed")
+                        .unwrap()
+                        .error
+                        .as_ref()
+                        .unwrap()
+                        .len()
+                        <= MAX_TEXT_BYTES
+                );
+                assert_eq!(
+                    restored.get("cancelled").unwrap().status,
+                    DownloadStatus::Cancelled
+                );
+                assert!(restored.get("cancelled").unwrap().error.is_none());
+
+                let previous_error = restored.get("failed").unwrap().error.clone();
+                let mut restored = restored;
+                restored.failed("failed", "Cancelled by cleanup".into(), true);
+                assert_eq!(
+                    restored.get("failed").unwrap().status,
+                    DownloadStatus::Failed
+                );
+                assert_eq!(restored.get("failed").unwrap().error, previous_error);
+            }
+
+            {
+                let mut downloads = Downloads::default();
+                assert!(downloads.requested(
+                    "path".into(),
+                    "https://example.test/path".into(),
+                    "../safe.bin",
+                ));
+                downloads.finished("path", "../../escape.bin".into());
+                let entry = downloads.get("path").unwrap();
+                assert_eq!(entry.suggested_name, "safe.bin");
+                assert_eq!(entry.status, DownloadStatus::Failed);
+                assert!(entry.destination.is_none());
+            }
         }
 
+        phase the_list_is_a_device_local_setting_that_survives_a_restart_within_its_budget;
         {
-            let mut downloads = Downloads::default();
-            assert!(downloads.requested(
-                "complete".into(),
-                "https://example.test/complete".into(),
-                "complete.bin",
-            ));
-            downloads.finished("complete", "/tmp/complete.bin".into());
-            assert!(downloads.requested(
-                "failed".into(),
-                "https://example.test/failed".into(),
-                "failed.bin",
-            ));
-            downloads.failed("failed", "network failed".repeat(2_000), false);
-            assert!(downloads.requested(
-                "cancelled".into(),
-                "https://example.test/cancelled".into(),
-                "cancelled.bin",
-            ));
-            downloads.failed("cancelled", "ignored".into(), true);
+            let dir = tempfile::tempdir().unwrap();
+            let store =
+                || ui::storage::Settings::<Stored>::for_app("so.tilo.browser").in_profile(dir.path());
+            assert_eq!(store().scope(), ui::storage::Scope::DeviceLocal);
 
-            let restored = Downloads::from_stored(downloads.stored());
+            let mut downloads = Downloads::load(store());
+            assert!(downloads.requested(
+                "kept".into(),
+                "https://example.test/kept".into(),
+                "kept.bin",
+            ));
+            downloads.finished("kept", "/tmp/kept.bin".into());
+            downloads.save().unwrap();
+            let restored = Downloads::load(store());
             assert_eq!(
-                restored.get("complete").unwrap().status,
+                restored.get("kept").unwrap().status,
                 DownloadStatus::Completed
             );
-            assert_eq!(
-                restored.get("failed").unwrap().status,
-                DownloadStatus::Failed
-            );
-            assert!(
-                restored
-                    .get("failed")
-                    .unwrap()
-                    .error
-                    .as_ref()
-                    .unwrap()
-                    .len()
-                    <= MAX_TEXT_BYTES
-            );
-            assert_eq!(
-                restored.get("cancelled").unwrap().status,
-                DownloadStatus::Cancelled
-            );
-            assert!(restored.get("cancelled").unwrap().error.is_none());
 
-            let previous_error = restored.get("failed").unwrap().error.clone();
-            let mut restored = restored;
-            restored.failed("failed", "Cancelled by cleanup".into(), true);
-            assert_eq!(
-                restored.get("failed").unwrap().status,
-                DownloadStatus::Failed
-            );
-            assert_eq!(restored.get("failed").unwrap().error, previous_error);
+            let long = "x".repeat(MAX_TEXT_BYTES - 64);
+            for index in 0..MAX_DOWNLOADS {
+                downloads.requested(
+                    format!("big-{index}"),
+                    format!("https://example.test/{long}/{index}"),
+                    "big.bin",
+                );
+            }
+            let stored = downloads.stored();
+            assert!(serde_json::to_string(&stored).unwrap().len() <= MAX_STORED_BYTES);
+            let kept = Downloads::from_stored(stored);
+            assert!(kept.get("kept").is_none(), "the oldest row gives way first");
+            assert!(kept.get(&format!("big-{}", MAX_DOWNLOADS - 1)).is_some());
         }
-
-        {
-            let mut downloads = Downloads::default();
-            assert!(downloads.requested(
-                "path".into(),
-                "https://example.test/path".into(),
-                "../safe.bin",
-            ));
-            downloads.finished("path", "../../escape.bin".into());
-            let entry = downloads.get("path").unwrap();
-            assert_eq!(entry.suggested_name, "safe.bin");
-            assert_eq!(entry.status, DownloadStatus::Failed);
-            assert!(entry.destination.is_none());
-        }
-    }
-
-    #[test]
-    fn the_list_is_a_device_local_setting_that_survives_a_restart_within_its_budget() {
-        let dir = tempfile::tempdir().unwrap();
-        let store =
-            || ui::storage::Settings::<Stored>::for_app("so.tilo.browser").in_profile(dir.path());
-        assert_eq!(store().scope(), ui::storage::Scope::DeviceLocal);
-
-        let mut downloads = Downloads::load(store());
-        assert!(downloads.requested(
-            "kept".into(),
-            "https://example.test/kept".into(),
-            "kept.bin",
-        ));
-        downloads.finished("kept", "/tmp/kept.bin".into());
-        downloads.save().unwrap();
-        let restored = Downloads::load(store());
-        assert_eq!(
-            restored.get("kept").unwrap().status,
-            DownloadStatus::Completed
-        );
-
-        let long = "x".repeat(MAX_TEXT_BYTES - 64);
-        for index in 0..MAX_DOWNLOADS {
-            downloads.requested(
-                format!("big-{index}"),
-                format!("https://example.test/{long}/{index}"),
-                "big.bin",
-            );
-        }
-        let stored = downloads.stored();
-        assert!(serde_json::to_string(&stored).unwrap().len() <= MAX_STORED_BYTES);
-        let kept = Downloads::from_stored(stored);
-        assert!(kept.get("kept").is_none(), "the oldest row gives way first");
-        assert!(kept.get(&format!("big-{}", MAX_DOWNLOADS - 1)).is_some());
     }
 }

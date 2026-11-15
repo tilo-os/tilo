@@ -501,238 +501,246 @@ mod tests {
         buf.into_inner()
     }
 
-    #[test]
-    fn an_update_that_asks_for_more_access_waits_for_the_person() {
-        let lines = |list: &[&str]| {
-            list.iter()
-                .map(|line| (*line).to_owned())
-                .collect::<Vec<_>>()
-        };
-        let allowed = lines(&[
-            "Read and change all your data on all websites",
-            "Block content on any page",
-        ]);
-        assert!(!asks_for_more(
-            &allowed,
-            &lines(&["Block content on any page"])
-        ));
-        assert!(!asks_for_more(&allowed, &allowed));
-        assert!(asks_for_more(
-            &allowed,
-            &lines(&["Block content on any page", "Read your browsing history"])
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn permission_summaries_say_what_an_extension_may_do;
 
-    #[test]
-    fn an_offer_says_what_an_extension_may_do_as_chrome_does() {
-        let ublock = r#"{"manifest_version":3,"name":"uBlock Origin Lite","version":"1",
+        phase an_update_that_asks_for_more_access_waits_for_the_person;
+        {
+            let lines = |list: &[&str]| {
+                list.iter()
+                    .map(|line| (*line).to_owned())
+                    .collect::<Vec<_>>()
+            };
+            let allowed = lines(&[
+                "Read and change all your data on all websites",
+                "Block content on any page",
+            ]);
+            assert!(!asks_for_more(
+                &allowed,
+                &lines(&["Block content on any page"])
+            ));
+            assert!(!asks_for_more(&allowed, &allowed));
+            assert!(asks_for_more(
+                &allowed,
+                &lines(&["Block content on any page", "Read your browsing history"])
+            ));
+        }
+
+        phase an_offer_says_what_an_extension_may_do_as_chrome_does;
+        {
+            let ublock = r#"{"manifest_version":3,"name":"uBlock Origin Lite","version":"1",
             "permissions":["activeTab","alarms","declarativeNetRequest","offscreen","scripting",
             "storage","unlimitedStorage","userScripts"],"host_permissions":["<all_urls>"]}"#;
-        assert_eq!(
-            summarize_manifest(ublock).unwrap(),
-            [
-                "Read and change all your data on all websites",
-                "Block content on any page"
-            ]
-        );
-        let narrow = r#"{"manifest_version":3,"name":"x","version":"1",
+            assert_eq!(
+                summarize_manifest(ublock).unwrap(),
+                [
+                    "Read and change all your data on all websites",
+                    "Block content on any page"
+                ]
+            );
+            let narrow = r#"{"manifest_version":3,"name":"x","version":"1",
             "permissions":["tabs","storage","declarativeNetRequest"],
             "content_scripts":[{"matches":["*://*.example.org/*","https://news.example/*"]}]}"#;
-        assert_eq!(
-            summarize_manifest(narrow).unwrap(),
-            [
-                "Read and change your data on 2 websites",
-                "Block content on any page",
-                "Read your browsing history"
-            ]
-        );
-        assert_eq!(
-            summarize_manifest(r#"{"name":"x","version":"1","permissions":["storage"]}"#).unwrap(),
-            ["It needs no special access"]
-        );
+            assert_eq!(
+                summarize_manifest(narrow).unwrap(),
+                [
+                    "Read and change your data on 2 websites",
+                    "Block content on any page",
+                    "Read your browsing history"
+                ]
+            );
+            assert_eq!(
+                summarize_manifest(r#"{"name":"x","version":"1","permissions":["storage"]}"#).unwrap(),
+                ["It needs no special access"]
+            );
+        }
     }
 
-    #[test]
-    fn an_extension_is_named_in_its_own_locale() {
-        let staged = stage_file(localized_zip("uBlock Origin Lite")).unwrap();
-        assert_eq!(staged.info.name, "uBlock Origin Lite", "the offer names it");
-        assert_eq!(staged.info.description, "Blocks ads for pages");
-        let root = tempfile::tempdir().unwrap();
-        let first = staged.install(root.path()).unwrap();
-        let second = stage_file(localized_zip("Dark Reader"))
-            .unwrap()
-            .install(root.path())
-            .unwrap();
-        assert_ne!(first.id, second.id);
-        let listed = list_in(root.path());
-        assert_eq!(
-            listed
-                .iter()
-                .map(|info| info.name.as_str())
-                .collect::<Vec<_>>(),
-            ["Dark Reader", "uBlock Origin Lite"]
-        );
-        let installed = crate::extension_toolbar::Installed::read(&listed[1], true, false).unwrap();
-        assert_eq!(
-            installed.action.unwrap().title.as_deref(),
-            Some("uBlock Origin Lite"),
-            "message names are matched as Chromium does, whatever their case"
-        );
-        assert_eq!(
-            localize("__MSG_missing__", &Messages::new()),
-            "__MSG_missing__"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn packages_install_named_listed_and_bounded;
 
-    #[test]
-    fn extension_archives_install_list_and_reject_invalid_packages() {
+        phase an_extension_is_named_in_its_own_locale;
         {
+            let staged = stage_file(localized_zip("uBlock Origin Lite")).unwrap();
+            assert_eq!(staged.info.name, "uBlock Origin Lite", "the offer names it");
+            assert_eq!(staged.info.description, "Blocks ads for pages");
             let root = tempfile::tempdir().unwrap();
-            let info = install_from_bytes(&fixture_zip(), root.path()).unwrap();
-            assert_eq!(info.id, "addon@darkreader.org");
-            assert_eq!(info.name, "Dark Reader");
-            assert_eq!(info.manifest_version, 2);
-            assert!(info.permissions.contains(&"storage".to_string()));
-            assert!(info.path.join("background.js").exists());
-        }
-
-        {
-            use crate::crx::fixtures::{Signer, crx};
-            let signer = Signer::new();
-            let package = crx(&signer, &[&signer], &fixture_zip());
-            let root = tempfile::tempdir().unwrap();
-            let info = install_from_bytes(&package, root.path()).unwrap();
-            assert_eq!(info.name, "Dark Reader");
-            assert_eq!(info.id, crate::crx::extension_id(&signer.spki));
-            assert_eq!(info.path, root.path().join(&info.id));
-            let manifest: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(info.path.join("manifest.json")).unwrap(),
-            )
-            .unwrap();
-            let key = manifest["key"].as_str().unwrap();
-            let der =
-                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key).unwrap();
-            assert_eq!(crate::crx::extension_id(&der), info.id);
-            assert_eq!(list_in(root.path())[0].id, info.id);
-
-            assert!(install_verified_crx(&package, root.path(), &"a".repeat(32)).is_err());
-            assert!(install_verified_crx(&package, root.path(), &info.id).is_ok());
-
-            let mut tampered = package;
-            *tampered.last_mut().unwrap() ^= 1;
-            let empty = tempfile::tempdir().unwrap();
-            assert!(matches!(
-                install_from_bytes(&tampered, empty.path()),
-                Err(ExtensionError::Archive(_))
-            ));
-            let mut unsigned = b"Cr24".to_vec();
-            unsigned.extend(3u32.to_le_bytes());
-            unsigned.extend(20u32.to_le_bytes());
-            unsigned.extend([0xAAu8; 20]);
-            unsigned.extend(fixture_zip());
-            assert!(install_from_bytes(&unsigned, empty.path()).is_err());
-            assert_eq!(std::fs::read_dir(empty.path()).unwrap().count(), 0);
-        }
-
-        {
-            let root = tempfile::tempdir().unwrap();
-            install_from_bytes(&fixture_zip(), root.path()).unwrap();
+            let first = staged.install(root.path()).unwrap();
+            let second = stage_file(localized_zip("Dark Reader"))
+                .unwrap()
+                .install(root.path())
+                .unwrap();
+            assert_ne!(first.id, second.id);
             let listed = list_in(root.path());
-            assert_eq!(listed.len(), 1);
-            assert_eq!(listed[0].name, "Dark Reader");
+            assert_eq!(
+                listed
+                    .iter()
+                    .map(|info| info.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["Dark Reader", "uBlock Origin Lite"]
+            );
+            let installed = crate::extension_toolbar::Installed::read(&listed[1], true, false).unwrap();
+            assert_eq!(
+                installed.action.unwrap().title.as_deref(),
+                Some("uBlock Origin Lite"),
+                "message names are matched as Chromium does, whatever their case"
+            );
+            assert_eq!(
+                localize("__MSG_missing__", &Messages::new()),
+                "__MSG_missing__"
+            );
         }
 
+        phase extension_archives_install_list_and_reject_invalid_packages;
         {
-            let mut buf = Cursor::new(Vec::new());
             {
-                let mut zip = zip::ZipWriter::new(&mut buf);
-                let opts = zip::write::SimpleFileOptions::default();
-                zip.start_file("readme.txt", opts).unwrap();
-                zip.write_all(b"hi").unwrap();
-                zip.finish().unwrap();
+                let root = tempfile::tempdir().unwrap();
+                let info = install_from_bytes(&fixture_zip(), root.path()).unwrap();
+                assert_eq!(info.id, "addon@darkreader.org");
+                assert_eq!(info.name, "Dark Reader");
+                assert_eq!(info.manifest_version, 2);
+                assert!(info.permissions.contains(&"storage".to_string()));
+                assert!(info.path.join("background.js").exists());
             }
-            let root = tempfile::tempdir().unwrap();
-            assert!(matches!(
-                install_from_bytes(&buf.into_inner(), root.path()),
-                Err(ExtensionError::Manifest(_))
-            ));
+
+            {
+                use crate::crx::fixtures::{Signer, crx};
+                let signer = Signer::new();
+                let package = crx(&signer, &[&signer], &fixture_zip());
+                let root = tempfile::tempdir().unwrap();
+                let info = install_from_bytes(&package, root.path()).unwrap();
+                assert_eq!(info.name, "Dark Reader");
+                assert_eq!(info.id, crate::crx::extension_id(&signer.spki));
+                assert_eq!(info.path, root.path().join(&info.id));
+                let manifest: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(info.path.join("manifest.json")).unwrap(),
+                )
+                .unwrap();
+                let key = manifest["key"].as_str().unwrap();
+                let der =
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key).unwrap();
+                assert_eq!(crate::crx::extension_id(&der), info.id);
+                assert_eq!(list_in(root.path())[0].id, info.id);
+
+                assert!(install_verified_crx(&package, root.path(), &"a".repeat(32)).is_err());
+                assert!(install_verified_crx(&package, root.path(), &info.id).is_ok());
+
+                let mut tampered = package;
+                *tampered.last_mut().unwrap() ^= 1;
+                let empty = tempfile::tempdir().unwrap();
+                assert!(matches!(
+                    install_from_bytes(&tampered, empty.path()),
+                    Err(ExtensionError::Archive(_))
+                ));
+                let mut unsigned = b"Cr24".to_vec();
+                unsigned.extend(3u32.to_le_bytes());
+                unsigned.extend(20u32.to_le_bytes());
+                unsigned.extend([0xAAu8; 20]);
+                unsigned.extend(fixture_zip());
+                assert!(install_from_bytes(&unsigned, empty.path()).is_err());
+                assert_eq!(std::fs::read_dir(empty.path()).unwrap().count(), 0);
+            }
+
+            {
+                let root = tempfile::tempdir().unwrap();
+                install_from_bytes(&fixture_zip(), root.path()).unwrap();
+                let listed = list_in(root.path());
+                assert_eq!(listed.len(), 1);
+                assert_eq!(listed[0].name, "Dark Reader");
+            }
+
+            {
+                let mut buf = Cursor::new(Vec::new());
+                {
+                    let mut zip = zip::ZipWriter::new(&mut buf);
+                    let opts = zip::write::SimpleFileOptions::default();
+                    zip.start_file("readme.txt", opts).unwrap();
+                    zip.write_all(b"hi").unwrap();
+                    zip.finish().unwrap();
+                }
+                let root = tempfile::tempdir().unwrap();
+                assert!(matches!(
+                    install_from_bytes(&buf.into_inner(), root.path()),
+                    Err(ExtensionError::Manifest(_))
+                ));
+            }
+
+            {
+                let bytes = vec![0; MAX_ARCHIVE_BYTES + 1];
+                assert!(matches!(
+                    install_from_bytes(&bytes, std::path::Path::new("/unused")),
+                    Err(ExtensionError::TooLarge)
+                ));
+            }
         }
 
+        phase extension_identifiers_and_manifests_are_safe_and_bounded;
         {
-            let bytes = vec![0; MAX_ARCHIVE_BYTES + 1];
-            assert!(matches!(
-                install_from_bytes(&bytes, std::path::Path::new("/unused")),
-                Err(ExtensionError::TooLarge)
-            ));
-        }
-    }
+            {
+                let manifest = r#"{"manifest_version": 3, "name": "My Cool Tool!", "version": "1.0"}"#;
+                let info = parse_manifest(manifest).unwrap();
+                assert_eq!(info.id, "my-cool-tool");
+                assert_eq!(info.manifest_version, 3);
+            }
 
-    #[test]
-    fn extension_identifiers_and_manifests_are_safe_and_bounded() {
-        {
-            let manifest = r#"{"manifest_version": 3, "name": "My Cool Tool!", "version": "1.0"}"#;
-            let info = parse_manifest(manifest).unwrap();
-            assert_eq!(info.id, "my-cool-tool");
-            assert_eq!(info.manifest_version, 3);
-        }
-
-        {
-            let manifest = r#"{
+            {
+                let manifest = r#"{
                 "manifest_version": 3,
                 "name": "Safe Name",
                 "version": "1.0",
                 "browser_specific_settings": {"gecko": {"id": "../../outside"}}
             }"#;
-            let info = parse_manifest(manifest).unwrap();
-            assert_eq!(info.id, "safe-name");
-            assert!(!info.id.contains('/'));
-        }
+                let info = parse_manifest(manifest).unwrap();
+                assert_eq!(info.id, "safe-name");
+                assert!(!info.id.contains('/'));
+            }
 
-        {
-            let manifest = r#"{"manifest_version": 3, "name": "🌙", "version": "1.0"}"#;
-            let info = parse_manifest(manifest).unwrap();
-            assert!(info.id.starts_with("extension-"));
-            assert!(info.id.len() > "extension-".len());
-            assert_eq!(
-                resource_id(&info.id),
-                format!("browser.extension:{}", info.id)
-            );
-        }
+            {
+                let manifest = r#"{"manifest_version": 3, "name": "🌙", "version": "1.0"}"#;
+                let info = parse_manifest(manifest).unwrap();
+                assert!(info.id.starts_with("extension-"));
+                assert!(info.id.len() > "extension-".len());
+                assert_eq!(
+                    resource_id(&info.id),
+                    format!("browser.extension:{}", info.id)
+                );
+            }
 
-        {
-            let root = tempfile::tempdir().unwrap();
-            let extension = root.path().join("oversized");
-            std::fs::create_dir(&extension).unwrap();
-            std::fs::write(
-                extension.join("manifest.json"),
-                vec![b' '; MAX_MANIFEST_BYTES as usize + 1],
-            )
-            .unwrap();
+            {
+                let root = tempfile::tempdir().unwrap();
+                let extension = root.path().join("oversized");
+                std::fs::create_dir(&extension).unwrap();
+                std::fs::write(
+                    extension.join("manifest.json"),
+                    vec![b' '; MAX_MANIFEST_BYTES as usize + 1],
+                )
+                .unwrap();
 
-            assert!(list_in(root.path()).is_empty());
-        }
+                assert!(list_in(root.path()).is_empty());
+            }
 
-        {
-            let oversized_name = "a".repeat(MAX_EXTENSION_NAME_BYTES + 1);
-            let manifest = format!(
-                r#"{{"manifest_version": 3, "name": "{oversized_name}", "version": "1.0"}}"#
-            );
-            assert!(matches!(
-                parse_manifest(&manifest),
-                Err(ExtensionError::Manifest(_))
-            ));
+            {
+                let oversized_name = "a".repeat(MAX_EXTENSION_NAME_BYTES + 1);
+                let manifest = format!(
+                    r#"{{"manifest_version": 3, "name": "{oversized_name}", "version": "1.0"}}"#
+                );
+                assert!(matches!(
+                    parse_manifest(&manifest),
+                    Err(ExtensionError::Manifest(_))
+                ));
 
-            let permissions = std::iter::repeat_n("tabs", MAX_EXTENSION_PERMISSIONS + 1)
-                .map(|permission| format!("\"{permission}\""))
-                .collect::<Vec<_>>()
-                .join(",");
-            let manifest = format!(
-                r#"{{"manifest_version": 3, "name": "Safe", "version": "1.0", "permissions": [{permissions}]}}"#
-            );
-            assert!(matches!(
-                parse_manifest(&manifest),
-                Err(ExtensionError::Manifest(_))
-            ));
+                let permissions = std::iter::repeat_n("tabs", MAX_EXTENSION_PERMISSIONS + 1)
+                    .map(|permission| format!("\"{permission}\""))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let manifest = format!(
+                    r#"{{"manifest_version": 3, "name": "Safe", "version": "1.0", "permissions": [{permissions}]}}"#
+                );
+                assert!(matches!(
+                    parse_manifest(&manifest),
+                    Err(ExtensionError::Manifest(_))
+                ));
+            }
         }
     }
 }
@@ -762,102 +770,106 @@ mod approval_tests {
         );
     }
 
-    #[test]
-    fn the_profiles_own_files_count_for_no_extension() {
-        let root = tempfile::tempdir().unwrap();
-        for index in 0..=MAX_INSTALLED_EXTENSIONS {
+    tilo_test_env::scenario! {
+        fn approvals_and_later_grants_are_kept_with_their_extension;
+
+        phase the_profiles_own_files_count_for_no_extension;
+        {
+            let root = tempfile::tempdir().unwrap();
+            for index in 0..=MAX_INSTALLED_EXTENSIONS {
+                std::fs::write(
+                    root.path().join(format!(".tilo-approval-{index}.json")),
+                    "x",
+                )
+                .unwrap();
+            }
+            let path = root.path().join("addon");
+            std::fs::create_dir(&path).unwrap();
             std::fs::write(
-                root.path().join(format!(".tilo-approval-{index}.json")),
-                "x",
+                path.join("manifest.json"),
+                r#"{"name":"fixture","version":"1","manifest_version":3}"#,
             )
             .unwrap();
+            assert_eq!(list_in(root.path()).len(), 1);
         }
-        let path = root.path().join("addon");
-        std::fs::create_dir(&path).unwrap();
-        std::fs::write(
-            path.join("manifest.json"),
-            r#"{"name":"fixture","version":"1","manifest_version":3}"#,
-        )
-        .unwrap();
-        assert_eq!(list_in(root.path()).len(), 1);
-    }
 
-    #[test]
-    fn approval_is_explicit_and_invalidated_by_manifest_changes() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("addon");
-        std::fs::create_dir(&path).unwrap();
-        std::fs::write(path.join("manifest.json"),r#"{"name":"fixture","version":"1","manifest_version":3,"permissions":["storage"],"host_permissions":["https://example.org/*"]}"#).unwrap();
-        let extension = list_in(root.path()).pop().unwrap();
-        assert!(!is_approved(&extension));
-        assert_eq!(
-            permission_summary(&extension).unwrap(),
-            ["Read and change your data on example.org"]
-        );
-        set_approved(&extension, true).unwrap();
-        assert!(is_approved(&extension));
-        std::fs::write(
-            path.join("manifest.json"),
-            r#"{"name":"fixture","version":"2","manifest_version":3,"permissions":["tabs"]}"#,
-        )
-        .unwrap();
-        assert!(!is_approved(&extension));
-    }
+        phase approval_is_explicit_and_invalidated_by_manifest_changes;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("addon");
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("manifest.json"),r#"{"name":"fixture","version":"1","manifest_version":3,"permissions":["storage"],"host_permissions":["https://example.org/*"]}"#).unwrap();
+            let extension = list_in(root.path()).pop().unwrap();
+            assert!(!is_approved(&extension));
+            assert_eq!(
+                permission_summary(&extension).unwrap(),
+                ["Read and change your data on example.org"]
+            );
+            set_approved(&extension, true).unwrap();
+            assert!(is_approved(&extension));
+            std::fs::write(
+                path.join("manifest.json"),
+                r#"{"name":"fixture","version":"2","manifest_version":3,"permissions":["tabs"]}"#,
+            )
+            .unwrap();
+            assert!(!is_approved(&extension));
+        }
 
-    #[test]
-    fn what_an_extension_was_granted_later_stays_with_it_until_it_goes() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("addon");
-        std::fs::create_dir(&path).unwrap();
-        std::fs::write(
-            path.join("manifest.json"),
-            r#"{"name":"fixture","version":"1","manifest_version":3,"optional_permissions":["tabs"]}"#,
-        )
-        .unwrap();
-        let extension = list_in(root.path()).pop().unwrap();
-        assert!(granted(&extension).is_empty());
-        let tabs = ExtensionPermissionSet {
-            permissions: vec!["tabs".into()],
-            origins: vec!["https://*.example.org/*".into()],
-        };
-        set_granted(&extension, &tabs).unwrap();
-        assert_eq!(granted(&extension), tabs);
-        assert_eq!(list_in(root.path()).len(), 1);
-        std::fs::write(
-            path.join("manifest.json"),
-            r#"{"name":"fixture","version":"2","manifest_version":3,"optional_permissions":["tabs"]}"#,
-        )
-        .unwrap();
-        assert_eq!(granted(&list_in(root.path()).pop().unwrap()), tabs);
-        // Given up, it leaves nothing behind.
-        set_granted(&extension, &ExtensionPermissionSet::default()).unwrap();
-        assert!(granted(&extension).is_empty());
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
-        set_granted(&extension, &tabs).unwrap();
-        uninstall(&extension, root.path()).unwrap();
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
-    }
+        phase what_an_extension_was_granted_later_stays_with_it_until_it_goes;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("addon");
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(
+                path.join("manifest.json"),
+                r#"{"name":"fixture","version":"1","manifest_version":3,"optional_permissions":["tabs"]}"#,
+            )
+            .unwrap();
+            let extension = list_in(root.path()).pop().unwrap();
+            assert!(granted(&extension).is_empty());
+            let tabs = ExtensionPermissionSet {
+                permissions: vec!["tabs".into()],
+                origins: vec!["https://*.example.org/*".into()],
+            };
+            set_granted(&extension, &tabs).unwrap();
+            assert_eq!(granted(&extension), tabs);
+            assert_eq!(list_in(root.path()).len(), 1);
+            std::fs::write(
+                path.join("manifest.json"),
+                r#"{"name":"fixture","version":"2","manifest_version":3,"optional_permissions":["tabs"]}"#,
+            )
+            .unwrap();
+            assert_eq!(granted(&list_in(root.path()).pop().unwrap()), tabs);
+            // Given up, it leaves nothing behind.
+            set_granted(&extension, &ExtensionPermissionSet::default()).unwrap();
+            assert!(granted(&extension).is_empty());
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+            set_granted(&extension, &tabs).unwrap();
+            uninstall(&extension, root.path()).unwrap();
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        }
 
-    #[test]
-    fn a_request_for_more_access_is_put_as_its_addition_was() {
-        let asked = |permissions: &[&str], origins: &[&str]| {
-            asked_summary(&ExtensionPermissionSet {
-                permissions: permissions.iter().map(|&entry| entry.to_owned()).collect(),
-                origins: origins.iter().map(|&entry| entry.to_owned()).collect(),
-            })
-        };
-        assert_eq!(
-            asked(&["tabs"], &["http://127.0.0.1/*"]),
-            [
-                "Read and change your data on 127.0.0.1",
-                "Read your browsing history"
-            ]
-        );
-        assert_eq!(
-            asked(&[], &["<all_urls>"]),
-            ["Read and change all your data on all websites"]
-        );
-        assert!(asked(&["storage", "alarms"], &[]).is_empty());
+        phase a_request_for_more_access_is_put_as_its_addition_was;
+        {
+            let asked = |permissions: &[&str], origins: &[&str]| {
+                asked_summary(&ExtensionPermissionSet {
+                    permissions: permissions.iter().map(|&entry| entry.to_owned()).collect(),
+                    origins: origins.iter().map(|&entry| entry.to_owned()).collect(),
+                })
+            };
+            assert_eq!(
+                asked(&["tabs"], &["http://127.0.0.1/*"]),
+                [
+                    "Read and change your data on 127.0.0.1",
+                    "Read your browsing history"
+                ]
+            );
+            assert_eq!(
+                asked(&[], &["<all_urls>"]),
+                ["Read and change all your data on all websites"]
+            );
+            assert!(asked(&["storage", "alarms"], &[]).is_empty());
+        }
     }
 }
 
@@ -1899,215 +1911,219 @@ mod tabs_tests {
     const RUNS_TABS: &str =
         ";typeof importScripts=='function'&&importScripts('/tilo-extension-tabs.js');";
 
-    #[test]
-    fn the_manager_keeps_the_token_its_worker_reports_with() {
-        let root = tempfile::tempdir().expect("temp dir");
-        let dir = root.path().join("extension-manager");
-        write_manager(&dir).expect("the manager is written");
-        let token = manager_token(&dir).expect("its worker is given a token");
-        assert_eq!(token.len(), 48);
-        let worker = std::fs::read_to_string(dir.join("worker.js")).expect("worker");
-        assert!(worker.contains(&format!("importScripts('{MANAGER_TOKEN_FILE}')")));
-        write_manager(&dir).expect("the manager is written again");
-        assert_eq!(manager_token(&dir), Some(token));
-    }
+    tilo_test_env::scenario! {
+        fn the_tab_script_runs_first_in_an_extensions_worker;
 
-    #[test]
-    fn an_extensions_worker_runs_the_tab_script_first_with_its_token() {
-        let root = extension(
-            r#"{"manifest_version":3,"background":{"service_worker":"bg/main.js"}}"#,
-            &[("bg/main.js", "self.mine = 1;\nself.two = 2;\n")],
-        );
-        let token = prepare_tabs(root.path()).expect("a worker is given the tab APIs");
-        assert_eq!(worker_of(&root), "bg/main.js");
-        let worker = read(&root, "bg/main.js");
-        assert_eq!(
-            worker,
-            format!("{RUNS_TABS}self.mine = 1;\nself.two = 2;\n")
-        );
-        let script = read(&root, TABS_FILE);
-        assert!(script.starts_with(&format!("globalThis.__tiloBridgeToken = \"{token}\";\n")));
-        assert!(script.ends_with(TABS_SCRIPT));
-        assert_eq!(tabs_token_of(root.path()).as_deref(), Some(token.as_str()));
-        assert_eq!(prepare_tabs(root.path()), Some(token));
-        assert_eq!(read(&root, "bg/main.js"), worker);
-        assert!(!root.path().join(WORKER_FILE).exists());
-    }
+        phase the_manager_keeps_the_token_its_worker_reports_with;
+        {
+            let root = tempfile::tempdir().expect("temp dir");
+            let dir = root.path().join("extension-manager");
+            write_manager(&dir).expect("the manager is written");
+            let token = manager_token(&dir).expect("its worker is given a token");
+            assert_eq!(token.len(), 48);
+            let worker = std::fs::read_to_string(dir.join("worker.js")).expect("worker");
+            assert!(worker.contains(&format!("importScripts('{MANAGER_TOKEN_FILE}')")));
+            write_manager(&dir).expect("the manager is written again");
+            assert_eq!(manager_token(&dir), Some(token));
+        }
 
-    #[test]
-    fn an_extension_turned_on_stays_on_once_its_worker_is_wrapped() {
-        let profile = tempfile::tempdir().unwrap();
-        let root = profile.path().join("blocker");
-        std::fs::create_dir(&root).unwrap();
-        std::fs::write(
-            root.join("manifest.json"),
-            r#"{"manifest_version":3,"name":"Blocker","version":"1",
+        phase an_extensions_worker_runs_the_tab_script_first_with_its_token;
+        {
+            let root = extension(
+                r#"{"manifest_version":3,"background":{"service_worker":"bg/main.js"}}"#,
+                &[("bg/main.js", "self.mine = 1;\nself.two = 2;\n")],
+            );
+            let token = prepare_tabs(root.path()).expect("a worker is given the tab APIs");
+            assert_eq!(worker_of(&root), "bg/main.js");
+            let worker = read(&root, "bg/main.js");
+            assert_eq!(
+                worker,
+                format!("{RUNS_TABS}self.mine = 1;\nself.two = 2;\n")
+            );
+            let script = read(&root, TABS_FILE);
+            assert!(script.starts_with(&format!("globalThis.__tiloBridgeToken = \"{token}\";\n")));
+            assert!(script.ends_with(TABS_SCRIPT));
+            assert_eq!(tabs_token_of(root.path()).as_deref(), Some(token.as_str()));
+            assert_eq!(prepare_tabs(root.path()), Some(token));
+            assert_eq!(read(&root, "bg/main.js"), worker);
+            assert!(!root.path().join(WORKER_FILE).exists());
+        }
+
+        phase an_extension_turned_on_stays_on_once_its_worker_is_wrapped;
+        {
+            let profile = tempfile::tempdir().unwrap();
+            let root = profile.path().join("blocker");
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(
+                root.join("manifest.json"),
+                r#"{"manifest_version":3,"name":"Blocker","version":"1",
             "background":{"service_worker":"worker.js"}}"#,
-        )
-        .unwrap();
-        std::fs::write(root.join("worker.js"), "self.mine = 1;").unwrap();
-        let added = list_in(profile.path()).pop().unwrap();
-        set_approved(&added, true).unwrap();
-        assert!(prepare_tabs(&root).is_some());
-        let read = list_in(profile.path()).pop().unwrap();
-        assert!(is_approved(&read), "the person turned it on");
-        assert_eq!(approved_in(profile.path()), [root.canonicalize().unwrap()]);
-        // Read again at the next start: still on.
-        assert!(prepare_tabs(&root).is_some());
-        assert!(is_approved(&read));
-
-        // One the person never turned on is not turned on by the wrap.
-        let other = profile.path().join("other");
-        std::fs::create_dir(&other).unwrap();
-        std::fs::write(
-            other.join("manifest.json"),
-            r#"{"manifest_version":3,"name":"Other","version":"1",
-            "background":{"service_worker":"worker.js"}}"#,
-        )
-        .unwrap();
-        std::fs::write(other.join("worker.js"), "").unwrap();
-        assert!(prepare_tabs(&other).is_some());
-        let other = list_in(profile.path())
-            .into_iter()
-            .find(|info| info.name == "Other")
+            )
             .unwrap();
-        assert!(!is_approved(&other));
-    }
+            std::fs::write(root.join("worker.js"), "self.mine = 1;").unwrap();
+            let added = list_in(profile.path()).pop().unwrap();
+            set_approved(&added, true).unwrap();
+            assert!(prepare_tabs(&root).is_some());
+            let read = list_in(profile.path()).pop().unwrap();
+            assert!(is_approved(&read), "the person turned it on");
+            assert_eq!(approved_in(profile.path()), [root.canonicalize().unwrap()]);
+            // Read again at the next start: still on.
+            assert!(prepare_tabs(&root).is_some());
+            assert!(is_approved(&read));
 
-    #[test]
-    fn a_module_worker_imports_the_tab_script_first() {
-        let root = extension(
-            r#"{"background":{"service_worker":"/worker.js","type":"module"}}"#,
-            &[("worker.js", "import './lib.js';\nexport {};")],
-        );
-        assert!(prepare_tabs(root.path()).is_some());
-        assert_eq!(worker_of(&root), "/worker.js");
-        assert_eq!(
-            read(&root, "worker.js"),
-            ";import '/tilo-extension-tabs.js';import './lib.js';\nexport {};"
-        );
-        assert!(prepare_tabs(root.path()).is_some());
-        assert_eq!(
-            read(&root, "worker.js"),
-            ";import '/tilo-extension-tabs.js';import './lib.js';\nexport {};"
-        );
-    }
+            // One the person never turned on is not turned on by the wrap.
+            let other = profile.path().join("other");
+            std::fs::create_dir(&other).unwrap();
+            std::fs::write(
+                other.join("manifest.json"),
+                r#"{"manifest_version":3,"name":"Other","version":"1",
+            "background":{"service_worker":"worker.js"}}"#,
+            )
+            .unwrap();
+            std::fs::write(other.join("worker.js"), "").unwrap();
+            assert!(prepare_tabs(&other).is_some());
+            let other = list_in(profile.path())
+                .into_iter()
+                .find(|info| info.name == "Other")
+                .unwrap();
+            assert!(!is_approved(&other));
+        }
 
-    #[test]
-    fn a_strict_worker_stays_strict() {
-        // A directive applies only while it comes first; a byte-order mark
-        // and comments may precede it.
-        for (own, prepared) in [
-            (
-                "\u{feff}/* (c) */\n'use strict';\nx();",
-                format!("\u{feff}/* (c) */\n'use strict';{RUNS_TABS}\nx();"),
-            ),
-            (
-                "\"use strict\"\n\"use asm\"; x();",
-                format!("\"use strict\"\n\"use asm\";{RUNS_TABS} x();"),
-            ),
-            (
-                "\"use strict\"\nx();",
-                format!("\"use strict\"{RUNS_TABS}\nx();"),
-            ),
-            (
-                "'use strict' // strict\nx();",
-                format!("'use strict' {RUNS_TABS}// strict\nx();"),
-            ),
-            (
-                "'use strict' /* a\nb */ x();",
-                format!("'use strict' {RUNS_TABS}/* a\nb */ x();"),
-            ),
-            (
-                "'use strict' /* c */; x();",
-                format!("'use strict' /* c */;{RUNS_TABS} x();"),
-            ),
-            (
-                "'use strict' /* c */ + x();",
-                format!("{RUNS_TABS}'use strict' /* c */ + x();"),
-            ),
-            (
-                "// header\n'not'.split(''); \"use strict\";",
-                format!("{RUNS_TABS}// header\n'not'.split(''); \"use strict\";"),
-            ),
-        ] {
+        phase a_module_worker_imports_the_tab_script_first;
+        {
+            let root = extension(
+                r#"{"background":{"service_worker":"/worker.js","type":"module"}}"#,
+                &[("worker.js", "import './lib.js';\nexport {};")],
+            );
+            assert!(prepare_tabs(root.path()).is_some());
+            assert_eq!(worker_of(&root), "/worker.js");
+            assert_eq!(
+                read(&root, "worker.js"),
+                ";import '/tilo-extension-tabs.js';import './lib.js';\nexport {};"
+            );
+            assert!(prepare_tabs(root.path()).is_some());
+            assert_eq!(
+                read(&root, "worker.js"),
+                ";import '/tilo-extension-tabs.js';import './lib.js';\nexport {};"
+            );
+        }
+
+        phase a_strict_worker_stays_strict;
+        {
+            // A directive applies only while it comes first; a byte-order mark
+            // and comments may precede it.
+            for (own, prepared) in [
+                (
+                    "\u{feff}/* (c) */\n'use strict';\nx();",
+                    format!("\u{feff}/* (c) */\n'use strict';{RUNS_TABS}\nx();"),
+                ),
+                (
+                    "\"use strict\"\n\"use asm\"; x();",
+                    format!("\"use strict\"\n\"use asm\";{RUNS_TABS} x();"),
+                ),
+                (
+                    "\"use strict\"\nx();",
+                    format!("\"use strict\"{RUNS_TABS}\nx();"),
+                ),
+                (
+                    "'use strict' // strict\nx();",
+                    format!("'use strict' {RUNS_TABS}// strict\nx();"),
+                ),
+                (
+                    "'use strict' /* a\nb */ x();",
+                    format!("'use strict' {RUNS_TABS}/* a\nb */ x();"),
+                ),
+                (
+                    "'use strict' /* c */; x();",
+                    format!("'use strict' /* c */;{RUNS_TABS} x();"),
+                ),
+                (
+                    "'use strict' /* c */ + x();",
+                    format!("{RUNS_TABS}'use strict' /* c */ + x();"),
+                ),
+                (
+                    "// header\n'not'.split(''); \"use strict\";",
+                    format!("{RUNS_TABS}// header\n'not'.split(''); \"use strict\";"),
+                ),
+            ] {
+                let root = extension(
+                    r#"{"background":{"service_worker":"w.js"}}"#,
+                    &[("w.js", own)],
+                );
+                assert!(prepare_tabs(root.path()).is_some());
+                assert_eq!(read(&root, "w.js"), prepared, "{own:?}");
+                assert!(prepare_tabs(root.path()).is_some());
+                assert_eq!(read(&root, "w.js"), prepared, "again: {own:?}");
+            }
+        }
+
+        phase a_strict_worker_under_a_long_header_runs_the_tab_script_once;
+        {
+            // Licences gathered into one comment, longer than the head read to
+            // tell the worker runs the script already.
+            let header = format!("/*{}*/\n", "x".repeat(WORKER_HEAD_BYTES as usize));
             let root = extension(
                 r#"{"background":{"service_worker":"w.js"}}"#,
-                &[("w.js", own)],
+                &[("w.js", &format!("{header}'use strict';x();"))],
             );
-            assert!(prepare_tabs(root.path()).is_some());
-            assert_eq!(read(&root, "w.js"), prepared, "{own:?}");
-            assert!(prepare_tabs(root.path()).is_some());
-            assert_eq!(read(&root, "w.js"), prepared, "again: {own:?}");
+            let prepared = format!("{header}'use strict';{RUNS_TABS}x();");
+            for start in ["first", "next", "after that"] {
+                assert!(prepare_tabs(root.path()).is_some());
+                assert!(read(&root, "w.js") == prepared, "{start} start");
+            }
         }
-    }
 
-    #[test]
-    fn a_strict_worker_under_a_long_header_runs_the_tab_script_once() {
-        // Licences gathered into one comment, longer than the head read to
-        // tell the worker runs the script already.
-        let header = format!("/*{}*/\n", "x".repeat(WORKER_HEAD_BYTES as usize));
-        let root = extension(
-            r#"{"background":{"service_worker":"w.js"}}"#,
-            &[("w.js", &format!("{header}'use strict';x();"))],
-        );
-        let prepared = format!("{header}'use strict';{RUNS_TABS}x();");
-        for start in ["first", "next", "after that"] {
-            assert!(prepare_tabs(root.path()).is_some());
-            assert!(read(&root, "w.js") == prepared, "{start} start");
-        }
-    }
-
-    #[test]
-    fn a_worker_an_earlier_browser_replaced_gets_its_address_back() {
-        // Turned on by the person while an earlier Browser had replaced its
-        // worker in the manifest.
-        let profile = tempfile::tempdir().unwrap();
-        let root = profile.path().join("keeper");
-        for (name, text) in [
-            (
-                "manifest.json",
-                r#"{"manifest_version":3,"name":"Keeper","version":"1",
+        phase a_worker_an_earlier_browser_replaced_gets_its_address_back;
+        {
+            // Turned on by the person while an earlier Browser had replaced its
+            // worker in the manifest.
+            let profile = tempfile::tempdir().unwrap();
+            let root = profile.path().join("keeper");
+            for (name, text) in [
+                (
+                    "manifest.json",
+                    r#"{"manifest_version":3,"name":"Keeper","version":"1",
                 "background":{"service_worker":"tilo-worker.js"}}"#,
-            ),
-            (
-                WORKER_FILE,
-                "// The extension's own worker: js/bg.js\nimportScripts('/tilo-extension-tabs.js', '/js/bg.js');\n",
-            ),
-            ("js/bg.js", "go();"),
-        ] {
-            std::fs::create_dir_all(root.join(name).parent().unwrap()).unwrap();
-            std::fs::write(root.join(name), text).unwrap();
-        }
-        set_approved(&list_in(profile.path()).pop().unwrap(), true).unwrap();
-        let token = prepare_tabs(&root).expect("the worker is given the tab APIs");
-        let manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(root.join("manifest.json")).unwrap())
-                .unwrap();
-        assert_eq!(manifest["background"]["service_worker"], "js/bg.js");
-        assert_eq!(
-            std::fs::read_to_string(root.join("js/bg.js")).unwrap(),
-            format!("{RUNS_TABS}go();")
-        );
-        assert!(!root.join(WORKER_FILE).exists());
-        assert!(
-            is_approved(&list_in(profile.path()).pop().unwrap()),
-            "still on"
-        );
-        assert_eq!(prepare_tabs(&root), Some(token));
-    }
-
-    #[test]
-    fn an_extension_without_a_worker_or_with_a_strange_one_is_left_as_it_is() {
-        let none = extension(r#"{"action":{"default_popup":"p.html"}}"#, &[]);
-        assert_eq!(prepare_tabs(none.path()), None);
-        for worker in ["../outside.js", "missing.js", "a'b.js", "https://x/y.js"] {
-            let root = extension(
-                &format!(r#"{{"background":{{"service_worker":"{worker}"}}}}"#),
-                &[],
+                ),
+                (
+                    WORKER_FILE,
+                    "// The extension's own worker: js/bg.js\nimportScripts('/tilo-extension-tabs.js', '/js/bg.js');\n",
+                ),
+                ("js/bg.js", "go();"),
+            ] {
+                std::fs::create_dir_all(root.join(name).parent().unwrap()).unwrap();
+                std::fs::write(root.join(name), text).unwrap();
+            }
+            set_approved(&list_in(profile.path()).pop().unwrap(), true).unwrap();
+            let token = prepare_tabs(&root).expect("the worker is given the tab APIs");
+            let manifest: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(root.join("manifest.json")).unwrap())
+                    .unwrap();
+            assert_eq!(manifest["background"]["service_worker"], "js/bg.js");
+            assert_eq!(
+                std::fs::read_to_string(root.join("js/bg.js")).unwrap(),
+                format!("{RUNS_TABS}go();")
             );
-            assert_eq!(prepare_tabs(root.path()), None, "{worker}");
-            assert!(!root.path().join(WORKER_FILE).exists());
+            assert!(!root.join(WORKER_FILE).exists());
+            assert!(
+                is_approved(&list_in(profile.path()).pop().unwrap()),
+                "still on"
+            );
+            assert_eq!(prepare_tabs(&root), Some(token));
+        }
+
+        phase an_extension_without_a_worker_or_with_a_strange_one_is_left_as_it_is;
+        {
+            let none = extension(r#"{"action":{"default_popup":"p.html"}}"#, &[]);
+            assert_eq!(prepare_tabs(none.path()), None);
+            for worker in ["../outside.js", "missing.js", "a'b.js", "https://x/y.js"] {
+                let root = extension(
+                    &format!(r#"{{"background":{{"service_worker":"{worker}"}}}}"#),
+                    &[],
+                );
+                assert_eq!(prepare_tabs(root.path()), None, "{worker}");
+                assert!(!root.path().join(WORKER_FILE).exists());
+            }
         }
     }
 }
@@ -2116,171 +2132,175 @@ mod tabs_tests {
 mod bridge_policy_tests {
     use super::*;
 
-    #[test]
-    fn a_policy_that_lists_where_pages_connect_also_lists_the_bridge() {
-        // As 1Password's and LastPass's do.
-        assert_eq!(
-            policy_with_bridge(
-                "default-src 'none'; script-src 'self'; connect-src https://*.vault.example wss://push.vault.example"
-            ),
-            Some(format!(
-                "default-src 'none'; script-src 'self'; connect-src https://*.vault.example wss://push.vault.example {BRIDGE_ORIGIN}"
-            ))
-        );
-        assert_eq!(
-            policy_with_bridge("connect-src 'none'"),
-            Some(format!("connect-src {BRIDGE_ORIGIN}"))
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_extensions_pages_admit_the_bridge_in_their_policy;
 
-    #[test]
-    fn a_default_that_governs_connections_is_kept_for_them_with_the_bridge() {
-        assert_eq!(
-            policy_with_bridge("default-src 'self' https://api.example; img-src *;"),
-            Some(format!(
-                "default-src 'self' https://api.example; img-src *; connect-src 'self' https://api.example {BRIDGE_ORIGIN}"
-            ))
-        );
-    }
-
-    #[test]
-    fn a_policy_that_already_lets_pages_reach_the_bridge_is_left_alone() {
-        for policy in [
-            "script-src 'self'; object-src 'self'",
-            "default-src 'self'; connect-src 'self' * data:",
-            "connect-src https:",
-            &format!("connect-src 'self' {BRIDGE_ORIGIN}"),
-        ] {
-            assert_eq!(policy_with_bridge(policy), None, "{policy}");
+        phase a_policy_that_lists_where_pages_connect_also_lists_the_bridge;
+        {
+            // As 1Password's and LastPass's do.
+            assert_eq!(
+                policy_with_bridge(
+                    "default-src 'none'; script-src 'self'; connect-src https://*.vault.example wss://push.vault.example"
+                ),
+                Some(format!(
+                    "default-src 'none'; script-src 'self'; connect-src https://*.vault.example wss://push.vault.example {BRIDGE_ORIGIN}"
+                ))
+            );
+            assert_eq!(
+                policy_with_bridge("connect-src 'none'"),
+                Some(format!("connect-src {BRIDGE_ORIGIN}"))
+            );
         }
-    }
 
-    #[test]
-    fn the_extension_pages_policy_and_a_manifest_v2_one_admit_the_bridge_once() {
-        let mut v3 = serde_json::json!({"content_security_policy": {
-            "extension_pages": "default-src 'self'; connect-src https://vault.example",
-            "sandbox": "sandbox allow-scripts; script-src 'self'"}});
-        assert!(admit_bridge(&mut v3));
-        assert!(!admit_bridge(&mut v3));
-        assert_eq!(
-            v3["content_security_policy"]["extension_pages"],
-            format!("default-src 'self'; connect-src https://vault.example {BRIDGE_ORIGIN}")
-        );
-        assert_eq!(
-            v3["content_security_policy"]["sandbox"],
-            "sandbox allow-scripts; script-src 'self'"
-        );
-        let mut v2 = serde_json::json!({"content_security_policy": "default-src 'self'"});
-        assert!(admit_bridge(&mut v2));
-        assert_eq!(
-            v2["content_security_policy"],
-            format!("default-src 'self'; connect-src 'self' {BRIDGE_ORIGIN}")
-        );
-        assert!(!admit_bridge(&mut serde_json::json!({"name": "no policy"})));
-    }
+        phase a_default_that_governs_connections_is_kept_for_them_with_the_bridge;
+        {
+            assert_eq!(
+                policy_with_bridge("default-src 'self' https://api.example; img-src *;"),
+                Some(format!(
+                    "default-src 'self' https://api.example; img-src *; connect-src 'self' https://api.example {BRIDGE_ORIGIN}"
+                ))
+            );
+        }
 
-    #[test]
-    fn a_page_that_declares_its_own_policy_admits_the_bridge() {
-        // 1Password's popup.
-        let page = r#"<html><head><META http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self';" /><meta name="description" content="connect-src x"></head></html>"#;
-        assert_eq!(
-            page_with_bridge(page).as_deref(),
-            Some(
-                format!(
-                    r#"<html><head><META http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; connect-src {BRIDGE_ORIGIN}" /><meta name="description" content="connect-src x"></head></html>"#
+        phase a_policy_that_already_lets_pages_reach_the_bridge_is_left_alone;
+        {
+            for policy in [
+                "script-src 'self'; object-src 'self'",
+                "default-src 'self'; connect-src 'self' * data:",
+                "connect-src https:",
+                &format!("connect-src 'self' {BRIDGE_ORIGIN}"),
+            ] {
+                assert_eq!(policy_with_bridge(policy), None, "{policy}");
+            }
+        }
+
+        phase the_extension_pages_policy_and_a_manifest_v2_one_admit_the_bridge_once;
+        {
+            let mut v3 = serde_json::json!({"content_security_policy": {
+                "extension_pages": "default-src 'self'; connect-src https://vault.example",
+                "sandbox": "sandbox allow-scripts; script-src 'self'"}});
+            assert!(admit_bridge(&mut v3));
+            assert!(!admit_bridge(&mut v3));
+            assert_eq!(
+                v3["content_security_policy"]["extension_pages"],
+                format!("default-src 'self'; connect-src https://vault.example {BRIDGE_ORIGIN}")
+            );
+            assert_eq!(
+                v3["content_security_policy"]["sandbox"],
+                "sandbox allow-scripts; script-src 'self'"
+            );
+            let mut v2 = serde_json::json!({"content_security_policy": "default-src 'self'"});
+            assert!(admit_bridge(&mut v2));
+            assert_eq!(
+                v2["content_security_policy"],
+                format!("default-src 'self'; connect-src 'self' {BRIDGE_ORIGIN}")
+            );
+            assert!(!admit_bridge(&mut serde_json::json!({"name": "no policy"})));
+        }
+
+        phase a_page_that_declares_its_own_policy_admits_the_bridge;
+        {
+            // 1Password's popup.
+            let page = r#"<html><head><META http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self';" /><meta name="description" content="connect-src x"></head></html>"#;
+            assert_eq!(
+                page_with_bridge(page).as_deref(),
+                Some(
+                    format!(
+                        r#"<html><head><META http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; connect-src {BRIDGE_ORIGIN}" /><meta name="description" content="connect-src x"></head></html>"#
+                    )
+                    .as_str()
                 )
-                .as_str()
-            )
-        );
-        // NordPass's, its quotes written as references.
-        let page = "<meta http-equiv='content-security-policy' content='connect-src &#39;self&#39; https://a.example'>";
-        assert_eq!(
-            page_with_bridge(page),
-            Some(format!(
-                "<meta http-equiv='content-security-policy' content='connect-src &#39;self&#39; https://a.example {BRIDGE_ORIGIN}'>"
-            ))
-        );
-        let admitted = page_with_bridge(page).unwrap();
-        assert_eq!(page_with_bridge(&admitted), None);
-        for untouched in [
-            "<html><body>no policy</body></html>",
-            "<meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'self'\">",
-            "<meta http-equiv=\"Content-Security-Policy\" content=\"connect-src &unknown; x\">",
-        ] {
-            assert_eq!(page_with_bridge(untouched), None, "{untouched}");
+            );
+            // NordPass's, its quotes written as references.
+            let page = "<meta http-equiv='content-security-policy' content='connect-src &#39;self&#39; https://a.example'>";
+            assert_eq!(
+                page_with_bridge(page),
+                Some(format!(
+                    "<meta http-equiv='content-security-policy' content='connect-src &#39;self&#39; https://a.example {BRIDGE_ORIGIN}'>"
+                ))
+            );
+            let admitted = page_with_bridge(page).unwrap();
+            assert_eq!(page_with_bridge(&admitted), None);
+            for untouched in [
+                "<html><body>no policy</body></html>",
+                "<meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'self'\">",
+                "<meta http-equiv=\"Content-Security-Policy\" content=\"connect-src &unknown; x\">",
+            ] {
+                assert_eq!(page_with_bridge(untouched), None, "{untouched}");
+            }
         }
-    }
 
-    #[test]
-    fn preparing_an_extension_admits_the_bridge_in_its_pages_once() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(
-            root.path().join("manifest.json"),
-            r#"{"manifest_version":3}"#,
-        )
-        .unwrap();
-        std::fs::create_dir_all(root.path().join("popup")).unwrap();
-        let policy = r#"<meta http-equiv="Content-Security-Policy" content="default-src 'none'">"#;
-        std::fs::write(root.path().join("popup/index.html"), policy).unwrap();
-        std::fs::write(root.path().join("popup/index.js"), policy).unwrap();
-        assert_eq!(prepare_tabs(root.path()), None);
-        let page = std::fs::read_to_string(root.path().join("popup/index.html")).unwrap();
-        assert!(page.contains(BRIDGE_ORIGIN), "{page}");
-        assert_eq!(
-            std::fs::read_to_string(root.path().join("popup/index.js")).unwrap(),
-            policy
-        );
-        // Once: what is written later is the extension's own.
-        std::fs::write(root.path().join("popup/index.html"), policy).unwrap();
-        prepare_tabs(root.path());
-        assert_eq!(
-            std::fs::read_to_string(root.path().join("popup/index.html")).unwrap(),
-            policy
-        );
-    }
+        phase preparing_an_extension_admits_the_bridge_in_its_pages_once;
+        {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(
+                root.path().join("manifest.json"),
+                r#"{"manifest_version":3}"#,
+            )
+            .unwrap();
+            std::fs::create_dir_all(root.path().join("popup")).unwrap();
+            let policy = r#"<meta http-equiv="Content-Security-Policy" content="default-src 'none'">"#;
+            std::fs::write(root.path().join("popup/index.html"), policy).unwrap();
+            std::fs::write(root.path().join("popup/index.js"), policy).unwrap();
+            assert_eq!(prepare_tabs(root.path()), None);
+            let page = std::fs::read_to_string(root.path().join("popup/index.html")).unwrap();
+            assert!(page.contains(BRIDGE_ORIGIN), "{page}");
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("popup/index.js")).unwrap(),
+                policy
+            );
+            // Once: what is written later is the extension's own.
+            std::fs::write(root.path().join("popup/index.html"), policy).unwrap();
+            prepare_tabs(root.path());
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("popup/index.html")).unwrap(),
+                policy
+            );
+        }
 
-    #[test]
-    fn an_extension_turned_on_stays_on_when_the_browser_prepares_it() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("vault");
-        std::fs::create_dir(&path).unwrap();
-        std::fs::write(
-            path.join("manifest.json"),
-            r#"{"name":"Vault","version":"1","manifest_version":3,"background":{"service_worker":"bg.js"},"content_security_policy":{"extension_pages":"default-src 'self'; connect-src https://vault.example"}}"#,
-        )
-        .unwrap();
-        std::fs::write(path.join("bg.js"), "").unwrap();
-        let extension = list_in(root.path()).pop().unwrap();
-        set_approved(&extension, true).unwrap();
-        assert!(prepare_tabs(&path).is_some());
-        assert!(is_approved(&extension), "preparing it turned it off");
-        let manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(path.join("manifest.json")).unwrap())
-                .unwrap();
-        assert_eq!(manifest["background"]["service_worker"], "bg.js");
-        assert!(
-            manifest["content_security_policy"]["extension_pages"]
-                .as_str()
-                .unwrap()
-                .ends_with(BRIDGE_ORIGIN)
-        );
-        // One the person did not turn on is not turned on by it.
-        let other = root.path().join("other");
-        std::fs::create_dir(&other).unwrap();
-        std::fs::write(
-            other.join("manifest.json"),
-            r#"{"name":"Other","version":"1","manifest_version":3,"content_security_policy":{"extension_pages":"default-src 'self'"}}"#,
-        )
-        .unwrap();
-        assert_eq!(prepare_tabs(&other), None);
-        let others = list_in(root.path());
-        let other = others.iter().find(|info| info.name == "Other").unwrap();
-        assert!(!is_approved(other));
-        assert!(
-            std::fs::read_to_string(other.path.join("manifest.json"))
-                .unwrap()
-                .contains(BRIDGE_ORIGIN)
-        );
+        phase an_extension_turned_on_stays_on_when_the_browser_prepares_it;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("vault");
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(
+                path.join("manifest.json"),
+                r#"{"name":"Vault","version":"1","manifest_version":3,"background":{"service_worker":"bg.js"},"content_security_policy":{"extension_pages":"default-src 'self'; connect-src https://vault.example"}}"#,
+            )
+            .unwrap();
+            std::fs::write(path.join("bg.js"), "").unwrap();
+            let extension = list_in(root.path()).pop().unwrap();
+            set_approved(&extension, true).unwrap();
+            assert!(prepare_tabs(&path).is_some());
+            assert!(is_approved(&extension), "preparing it turned it off");
+            let manifest: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(path.join("manifest.json")).unwrap())
+                    .unwrap();
+            assert_eq!(manifest["background"]["service_worker"], "bg.js");
+            assert!(
+                manifest["content_security_policy"]["extension_pages"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(BRIDGE_ORIGIN)
+            );
+            // One the person did not turn on is not turned on by it.
+            let other = root.path().join("other");
+            std::fs::create_dir(&other).unwrap();
+            std::fs::write(
+                other.join("manifest.json"),
+                r#"{"name":"Other","version":"1","manifest_version":3,"content_security_policy":{"extension_pages":"default-src 'self'"}}"#,
+            )
+            .unwrap();
+            assert_eq!(prepare_tabs(&other), None);
+            let others = list_in(root.path());
+            let other = others.iter().find(|info| info.name == "Other").unwrap();
+            assert!(!is_approved(other));
+            assert!(
+                std::fs::read_to_string(other.path.join("manifest.json"))
+                    .unwrap()
+                    .contains(BRIDGE_ORIGIN)
+            );
+        }
     }
 }
 

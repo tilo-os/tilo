@@ -683,73 +683,77 @@ mod lifecycle_tests {
     use ui::webview::WebViewEngine;
     use ui::widget::{Widget, WindowCloseAdmission};
 
-    #[test]
-    fn forget_action_is_destructive_selected_and_never_carries_credentials() {
-        let selected = Selection {
-            id: "selected-account".into(),
-            service: Service::Slack,
-            binding: "private-setup-binding".into(),
-        };
-        let resource = selected.resource();
-        assert_eq!(resource.id.0, "browser.service.selected-account");
-        let action = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "forget-service-session")
-            .unwrap();
-        assert_eq!(
-            action.contract.confirmation,
-            ui::tilo_actions::ConfirmationPolicy::Confirm
-        );
-        assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Outside);
-        let encoded = action.build_json(&serde_json::Map::new()).unwrap();
-        let payload: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
-        let decoded = crate::effects::BrowserEffect::decode(
-            payload["effect"].as_str().unwrap(),
-            payload["args"].as_object().unwrap(),
-        )
-        .unwrap();
-        assert!(
-            matches!(decoded, crate::effects::BrowserEffect::ForgetServiceSession {
-            session_id
-        } if session_id == selected.id)
-        );
-        assert!(!payload.to_string().contains("private-setup-binding"));
-    }
+    tilo_test_env::scenario! {
+        fn forgetting_a_service_session_is_a_selected_destructive_action;
 
-    #[test]
-    fn retry_forget_is_selected_destructive_and_contains_no_custody_binding() {
-        let selected = Selection {
-            id: "selected-account".into(),
-            service: Service::Slack,
-            binding: "private-setup-binding".into(),
-        };
-        let resource = selected.resource();
-        let action = resource
-            .actions
-            .iter()
-            .find(|action| action.label == CATALOG.t("browser-service-forget-retry"))
+        phase forget_action_is_destructive_selected_and_never_carries_credentials;
+        {
+            let selected = Selection {
+                id: "selected-account".into(),
+                service: Service::Slack,
+                binding: "private-setup-binding".into(),
+            };
+            let resource = selected.resource();
+            assert_eq!(resource.id.0, "browser.service.selected-account");
+            let action = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "forget-service-session")
+                .unwrap();
+            assert_eq!(
+                action.contract.confirmation,
+                ui::tilo_actions::ConfirmationPolicy::Confirm
+            );
+            assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Outside);
+            let encoded = action.build_json(&serde_json::Map::new()).unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
+            let decoded = crate::effects::BrowserEffect::decode(
+                payload["effect"].as_str().unwrap(),
+                payload["args"].as_object().unwrap(),
+            )
             .unwrap();
-        assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Outside);
-        assert_eq!(
-            action.contract.risk,
-            ui::tilo_actions::RiskLevel::Destructive
-        );
-        assert_eq!(
-            action.contract.confirmation,
-            ui::tilo_actions::ConfirmationPolicy::Confirm
-        );
-        let encoded = action.build_json(&serde_json::Map::new()).unwrap();
-        let payload: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
-        let decoded = crate::effects::BrowserEffect::decode(
-            payload["effect"].as_str().unwrap(),
-            payload["args"].as_object().unwrap(),
-        )
-        .unwrap();
-        assert!(
-            matches!(decoded, crate::effects::BrowserEffect::RetryForgetServiceSession { session_id } if session_id == selected.id)
-        );
-        assert!(!payload.to_string().contains("private-setup-binding"));
+            assert!(
+                matches!(decoded, crate::effects::BrowserEffect::ForgetServiceSession {
+                session_id
+            } if session_id == selected.id)
+            );
+            assert!(!payload.to_string().contains("private-setup-binding"));
+        }
+
+        phase retry_forget_is_selected_destructive_and_contains_no_custody_binding;
+        {
+            let selected = Selection {
+                id: "selected-account".into(),
+                service: Service::Slack,
+                binding: "private-setup-binding".into(),
+            };
+            let resource = selected.resource();
+            let action = resource
+                .actions
+                .iter()
+                .find(|action| action.label == CATALOG.t("browser-service-forget-retry"))
+                .unwrap();
+            assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Outside);
+            assert_eq!(
+                action.contract.risk,
+                ui::tilo_actions::RiskLevel::Destructive
+            );
+            assert_eq!(
+                action.contract.confirmation,
+                ui::tilo_actions::ConfirmationPolicy::Confirm
+            );
+            let encoded = action.build_json(&serde_json::Map::new()).unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
+            let decoded = crate::effects::BrowserEffect::decode(
+                payload["effect"].as_str().unwrap(),
+                payload["args"].as_object().unwrap(),
+            )
+            .unwrap();
+            assert!(
+                matches!(decoded, crate::effects::BrowserEffect::RetryForgetServiceSession { session_id } if session_id == selected.id)
+            );
+            assert!(!payload.to_string().contains("private-setup-binding"));
+        }
     }
 
     #[test]

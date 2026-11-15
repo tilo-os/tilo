@@ -298,176 +298,180 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_keyword_and_a_space_address_what_follows_to_the_extension() {
-        let keywords = ["kw", "Wiki"];
-        assert_eq!(split("kw cats", keywords), Some((0, "cats")));
-        assert_eq!(
-            split("  KW   cats and dogs", keywords),
-            Some((0, "cats and dogs"))
-        );
-        assert_eq!(split("wiki ", keywords), Some((1, "")));
-        for typed in ["kw", "kws cats", "cats kw", ""] {
-            assert_eq!(split(typed, keywords), None, "{typed}");
-        }
-        let manifest = |omnibox: serde_json::Value| serde_json::json!({ "omnibox": omnibox });
-        assert_eq!(
-            manifest_keyword(&manifest(serde_json::json!({"keyword": "kw"}))),
-            Some("kw".into())
-        );
-        for bad in [
-            serde_json::json!({"keyword": ""}),
-            serde_json::json!({"keyword": "two words"}),
-            serde_json::json!({"keyword": 7}),
-            serde_json::json!({"keyword": "k".repeat(65)}),
-        ] {
-            assert_eq!(manifest_keyword(&manifest(bad.clone())), None, "{bad}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn an_extensions_keyword_takes_what_is_typed_after_it;
 
-    #[test]
-    fn the_extension_hears_each_change_once_and_of_the_person_leaving() {
-        let engine = TestEngine::new();
-        let shared: SharedEngine = engine.clone();
-        let mut omnibox = ExtensionOmnibox::default();
-        let (kw, other) = (
-            keyword(&"a".repeat(32), "kw"),
-            keyword(&"b".repeat(32), "wk"),
-        );
-
-        assert!(omnibox.typed("kw ", Some((&kw, "")), &shared));
-        assert!(omnibox.typed("kw c", Some((&kw, "c")), &shared));
-        assert!(!omnibox.typed("kw c", Some((&kw, "c")), &shared));
-        assert!(omnibox.typed("wk d", Some((&other, "d")), &shared));
-        assert!(omnibox.typed("w", None, &shared));
-        assert!(!omnibox.typed("", None, &shared));
-        assert_eq!(
-            told(&engine),
-            [
-                (kw.id.clone(), OmniboxInput::Started),
-                (
-                    kw.id.clone(),
-                    OmniboxInput::Changed {
-                        text: String::new(),
-                        request: 1
-                    }
-                ),
-                (
-                    kw.id.clone(),
-                    OmniboxInput::Changed {
-                        text: "c".into(),
-                        request: 2
-                    }
-                ),
-                (kw.id.clone(), OmniboxInput::Cancelled),
-                (other.id.clone(), OmniboxInput::Started),
-                (
-                    other.id.clone(),
-                    OmniboxInput::Changed {
-                        text: "d".into(),
-                        request: 3
-                    }
-                ),
-                (other.id.clone(), OmniboxInput::Cancelled),
-            ]
-        );
-    }
-
-    #[test]
-    fn rows_are_what_enter_does_then_the_suggestions_for_what_is_typed() {
-        let engine = TestEngine::new();
-        let shared: SharedEngine = engine.clone();
-        let mut omnibox = ExtensionOmnibox::default();
-        let kw = keyword(&"a".repeat(32), "kw");
-        let suggestions = |request, contents: &[&str]| WebViewEvent::ExtensionOmniboxSuggestions {
-            id: kw.id.clone(),
-            request,
-            suggestions: contents
-                .iter()
-                .map(|content| OmniboxSuggestion {
-                    content: (*content).into(),
-                    description: format!("<match>{content}</match> &amp; more"),
-                })
-                .collect(),
-        };
-        let rows = |omnibox: &ExtensionOmnibox| {
-            omnibox.rows().map(|(_, rows)| {
-                rows.into_iter()
-                    .map(|row| (row.title, row.content))
-                    .collect::<Vec<_>>()
-            })
-        };
-        let pair = |title: &str, content: &str| (title.to_owned(), content.to_owned());
-        assert_eq!(rows(&omnibox), None);
-        omnibox.typed("kw ", Some((&kw, "")), &shared);
-        assert_eq!(rows(&omnibox), Some(vec![pair("kw finder", "")]));
-        omnibox.typed("kw ca", Some((&kw, "ca")), &shared);
-        assert!(!omnibox.on_engine_event(&suggestions(1, &["old"])));
-        assert!(omnibox.on_engine_event(&suggestions(2, &["cat", "ca"])));
-        assert!(
-            omnibox.on_engine_event(&WebViewEvent::ExtensionOmniboxDefault {
-                id: kw.id.clone(),
-                description: Some("Look up <match>%s</match>".into()),
-            })
-        );
-        assert_eq!(
-            rows(&omnibox),
-            Some(vec![pair("Look up ca", "ca"), pair("cat & more", "cat"),])
-        );
-        assert!(
-            !omnibox.on_engine_event(&WebViewEvent::ExtensionOmniboxSuggestions {
-                id: "b".repeat(32),
-                request: 2,
-                suggestions: Vec::new(),
-            })
-        );
-        omnibox.entered("kw ca");
-        assert_eq!(rows(&omnibox), None);
-        let before = told(&engine).len();
-        assert!(!omnibox.typed("kw ca", Some((&kw, "ca")), &shared));
-        assert_eq!(told(&engine).len(), before);
-        assert!(omnibox.typed("kw cat", Some((&kw, "cat")), &shared));
-        assert_eq!(
-            told(&engine)[before],
-            (kw.id.clone(), OmniboxInput::Started)
-        );
-    }
-
-    #[test]
-    fn what_is_typed_stands_in_the_default_suggestion_word_for_word() {
-        let shared: SharedEngine = TestEngine::new();
-        let mut omnibox = ExtensionOmnibox::default();
-        let kw = keyword(&"a".repeat(32), "kw");
-        let typed = "a<b &amp;  c";
-        omnibox.typed(&format!("kw {typed}"), Some((&kw, typed)), &shared);
-        assert!(
-            omnibox.on_engine_event(&WebViewEvent::ExtensionOmniboxDefault {
-                id: kw.id.clone(),
-                description: Some("Look up <match>%s</match> not %s".into()),
-            })
-        );
-        let (_, rows) = omnibox.rows().unwrap();
-        assert_eq!(
-            rows[0],
-            OmniboxRow {
-                title: "Look up a<b &amp;  c not %s".into(),
-                content: typed.into(),
+        phase a_keyword_and_a_space_address_what_follows_to_the_extension;
+        {
+            let keywords = ["kw", "Wiki"];
+            assert_eq!(split("kw cats", keywords), Some((0, "cats")));
+            assert_eq!(
+                split("  KW   cats and dogs", keywords),
+                Some((0, "cats and dogs"))
+            );
+            assert_eq!(split("wiki ", keywords), Some((1, "")));
+            for typed in ["kw", "kws cats", "cats kw", ""] {
+                assert_eq!(split(typed, keywords), None, "{typed}");
             }
-        );
-    }
+            let manifest = |omnibox: serde_json::Value| serde_json::json!({ "omnibox": omnibox });
+            assert_eq!(
+                manifest_keyword(&manifest(serde_json::json!({"keyword": "kw"}))),
+                Some("kw".into())
+            );
+            for bad in [
+                serde_json::json!({"keyword": ""}),
+                serde_json::json!({"keyword": "two words"}),
+                serde_json::json!({"keyword": 7}),
+                serde_json::json!({"keyword": "k".repeat(65)}),
+            ] {
+                assert_eq!(manifest_keyword(&manifest(bad.clone())), None, "{bad}");
+            }
+        }
 
-    #[test]
-    fn descriptions_are_read_without_their_markup() {
-        assert_eq!(
-            plain_description(
-                "Search <match>tilo</match> on <url>example.org</url> <dim>(beta)</dim>"
-            ),
-            "Search tilo on example.org (beta)"
-        );
-        assert_eq!(
-            plain_description("a &lt;b&gt; &amp;&#65;&#x42; &unknown; &"),
-            "a <b> &AB &unknown; &"
-        );
-        assert_eq!(plain_description("two\nlines <broken"), "two lines");
+        phase the_extension_hears_each_change_once_and_of_the_person_leaving;
+        {
+            let engine = TestEngine::new();
+            let shared: SharedEngine = engine.clone();
+            let mut omnibox = ExtensionOmnibox::default();
+            let (kw, other) = (
+                keyword(&"a".repeat(32), "kw"),
+                keyword(&"b".repeat(32), "wk"),
+            );
+
+            assert!(omnibox.typed("kw ", Some((&kw, "")), &shared));
+            assert!(omnibox.typed("kw c", Some((&kw, "c")), &shared));
+            assert!(!omnibox.typed("kw c", Some((&kw, "c")), &shared));
+            assert!(omnibox.typed("wk d", Some((&other, "d")), &shared));
+            assert!(omnibox.typed("w", None, &shared));
+            assert!(!omnibox.typed("", None, &shared));
+            assert_eq!(
+                told(&engine),
+                [
+                    (kw.id.clone(), OmniboxInput::Started),
+                    (
+                        kw.id.clone(),
+                        OmniboxInput::Changed {
+                            text: String::new(),
+                            request: 1
+                        }
+                    ),
+                    (
+                        kw.id.clone(),
+                        OmniboxInput::Changed {
+                            text: "c".into(),
+                            request: 2
+                        }
+                    ),
+                    (kw.id.clone(), OmniboxInput::Cancelled),
+                    (other.id.clone(), OmniboxInput::Started),
+                    (
+                        other.id.clone(),
+                        OmniboxInput::Changed {
+                            text: "d".into(),
+                            request: 3
+                        }
+                    ),
+                    (other.id.clone(), OmniboxInput::Cancelled),
+                ]
+            );
+        }
+
+        phase rows_are_what_enter_does_then_the_suggestions_for_what_is_typed;
+        {
+            let engine = TestEngine::new();
+            let shared: SharedEngine = engine.clone();
+            let mut omnibox = ExtensionOmnibox::default();
+            let kw = keyword(&"a".repeat(32), "kw");
+            let suggestions = |request, contents: &[&str]| WebViewEvent::ExtensionOmniboxSuggestions {
+                id: kw.id.clone(),
+                request,
+                suggestions: contents
+                    .iter()
+                    .map(|content| OmniboxSuggestion {
+                        content: (*content).into(),
+                        description: format!("<match>{content}</match> &amp; more"),
+                    })
+                    .collect(),
+            };
+            let rows = |omnibox: &ExtensionOmnibox| {
+                omnibox.rows().map(|(_, rows)| {
+                    rows.into_iter()
+                        .map(|row| (row.title, row.content))
+                        .collect::<Vec<_>>()
+                })
+            };
+            let pair = |title: &str, content: &str| (title.to_owned(), content.to_owned());
+            assert_eq!(rows(&omnibox), None);
+            omnibox.typed("kw ", Some((&kw, "")), &shared);
+            assert_eq!(rows(&omnibox), Some(vec![pair("kw finder", "")]));
+            omnibox.typed("kw ca", Some((&kw, "ca")), &shared);
+            assert!(!omnibox.on_engine_event(&suggestions(1, &["old"])));
+            assert!(omnibox.on_engine_event(&suggestions(2, &["cat", "ca"])));
+            assert!(
+                omnibox.on_engine_event(&WebViewEvent::ExtensionOmniboxDefault {
+                    id: kw.id.clone(),
+                    description: Some("Look up <match>%s</match>".into()),
+                })
+            );
+            assert_eq!(
+                rows(&omnibox),
+                Some(vec![pair("Look up ca", "ca"), pair("cat & more", "cat"),])
+            );
+            assert!(
+                !omnibox.on_engine_event(&WebViewEvent::ExtensionOmniboxSuggestions {
+                    id: "b".repeat(32),
+                    request: 2,
+                    suggestions: Vec::new(),
+                })
+            );
+            omnibox.entered("kw ca");
+            assert_eq!(rows(&omnibox), None);
+            let before = told(&engine).len();
+            assert!(!omnibox.typed("kw ca", Some((&kw, "ca")), &shared));
+            assert_eq!(told(&engine).len(), before);
+            assert!(omnibox.typed("kw cat", Some((&kw, "cat")), &shared));
+            assert_eq!(
+                told(&engine)[before],
+                (kw.id.clone(), OmniboxInput::Started)
+            );
+        }
+
+        phase what_is_typed_stands_in_the_default_suggestion_word_for_word;
+        {
+            let shared: SharedEngine = TestEngine::new();
+            let mut omnibox = ExtensionOmnibox::default();
+            let kw = keyword(&"a".repeat(32), "kw");
+            let typed = "a<b &amp;  c";
+            omnibox.typed(&format!("kw {typed}"), Some((&kw, typed)), &shared);
+            assert!(
+                omnibox.on_engine_event(&WebViewEvent::ExtensionOmniboxDefault {
+                    id: kw.id.clone(),
+                    description: Some("Look up <match>%s</match> not %s".into()),
+                })
+            );
+            let (_, rows) = omnibox.rows().unwrap();
+            assert_eq!(
+                rows[0],
+                OmniboxRow {
+                    title: "Look up a<b &amp;  c not %s".into(),
+                    content: typed.into(),
+                }
+            );
+        }
+
+        phase descriptions_are_read_without_their_markup;
+        {
+            assert_eq!(
+                plain_description(
+                    "Search <match>tilo</match> on <url>example.org</url> <dim>(beta)</dim>"
+                ),
+                "Search tilo on example.org (beta)"
+            );
+            assert_eq!(
+                plain_description("a &lt;b&gt; &amp;&#65;&#x42; &unknown; &"),
+                "a <b> &AB &unknown; &"
+            );
+            assert_eq!(plain_description("two\nlines <broken"), "two lines");
+        }
     }
 }

@@ -329,136 +329,140 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_question_is_asked_of_each_engine_and_answered_once() {
-        let engine = TestEngine::new();
-        let page: SharedEngine = engine.clone();
-        let mut dialogs = PageDialogs::default();
-        assert!(!dialogs.sync(&page));
-        assert!(
-            engine.accepts_page_dialogs(),
-            "the page's questions come here"
-        );
-        assert!(dialogs.apply(&asks(PageDialogKind::Confirm, 3)));
-        let row = dialogs.resource().expect("the question is a row");
-        assert_eq!(row.label, "shop.example asks");
-        assert_eq!(
-            row.presentation.and_then(|p| p.preview).as_deref(),
-            Some("Empty the basket?")
-        );
-        let labels: Vec<_> = row.actions.iter().map(|a| a.label.as_str()).collect();
-        assert_eq!(labels, ["Allow", "Cancel"]);
+    tilo_test_env::scenario! {
+        fn a_pages_question_is_a_row_answered_once;
 
-        assert!(
-            dialogs.answer(&page, 2, true, None).is_err(),
-            "an answer meant for another question"
-        );
-        dialogs.answer(&page, 3, true, None).unwrap();
-        assert_eq!(answers(&engine), [(3, true, None)]);
-        assert!(dialogs.widget().is_none() && dialogs.resource().is_none());
-        assert!(
-            dialogs.answer(&page, 3, false, None).is_err(),
-            "answered once"
-        );
+        phase a_question_is_asked_of_each_engine_and_answered_once;
+        {
+            let engine = TestEngine::new();
+            let page: SharedEngine = engine.clone();
+            let mut dialogs = PageDialogs::default();
+            assert!(!dialogs.sync(&page));
+            assert!(
+                engine.accepts_page_dialogs(),
+                "the page's questions come here"
+            );
+            assert!(dialogs.apply(&asks(PageDialogKind::Confirm, 3)));
+            let row = dialogs.resource().expect("the question is a row");
+            assert_eq!(row.label, "shop.example asks");
+            assert_eq!(
+                row.presentation.and_then(|p| p.preview).as_deref(),
+                Some("Empty the basket?")
+            );
+            let labels: Vec<_> = row.actions.iter().map(|a| a.label.as_str()).collect();
+            assert_eq!(labels, ["Allow", "Cancel"]);
 
-        dialogs.apply(&asks(PageDialogKind::Alert, 4));
-        assert!(!dialogs.apply(&WebViewEvent::PageDialogClosed { id: 3 }));
-        assert!(dialogs.apply(&WebViewEvent::PageDialogClosed { id: 4 }));
-        assert!(dialogs.current().is_none());
+            assert!(
+                dialogs.answer(&page, 2, true, None).is_err(),
+                "an answer meant for another question"
+            );
+            dialogs.answer(&page, 3, true, None).unwrap();
+            assert_eq!(answers(&engine), [(3, true, None)]);
+            assert!(dialogs.widget().is_none() && dialogs.resource().is_none());
+            assert!(
+                dialogs.answer(&page, 3, false, None).is_err(),
+                "answered once"
+            );
 
-        dialogs.apply(&asks(PageDialogKind::Alert, 5));
-        let restarted = TestEngine::new();
-        let page: SharedEngine = restarted.clone();
-        assert!(dialogs.sync(&page));
-        assert!(restarted.accepts_page_dialogs() && dialogs.current().is_none());
-    }
+            dialogs.apply(&asks(PageDialogKind::Alert, 4));
+            assert!(!dialogs.apply(&WebViewEvent::PageDialogClosed { id: 3 }));
+            assert!(dialogs.apply(&WebViewEvent::PageDialogClosed { id: 4 }));
+            assert!(dialogs.current().is_none());
 
-    #[test]
-    fn a_prompt_answers_its_field_or_the_text_given() {
-        let engine = TestEngine::new();
-        let page: SharedEngine = engine.clone();
-        let mut dialogs = PageDialogs::default();
-        dialogs.sync(&page);
-        dialogs.apply(&asks(PageDialogKind::Prompt, 1));
-        let row = dialogs.resource().unwrap();
-        let send = &row.actions[0];
-        assert_eq!(send.label, "Send");
-        assert_eq!(
-            send.params()
-                .iter()
-                .map(|param| &*param.name)
-                .collect::<Vec<_>>(),
-            ["text"],
-            "only the answer is asked; the question is bound"
-        );
-        dialogs.answer(&page, 1, true, None).unwrap();
-        dialogs.apply(&asks(PageDialogKind::Prompt, 2));
-        dialogs
-            .answer(&page, 2, true, Some("Grace".into()))
-            .unwrap();
-        dialogs.apply(&asks(PageDialogKind::Prompt, 3));
-        assert!(
+            dialogs.apply(&asks(PageDialogKind::Alert, 5));
+            let restarted = TestEngine::new();
+            let page: SharedEngine = restarted.clone();
+            assert!(dialogs.sync(&page));
+            assert!(restarted.accepts_page_dialogs() && dialogs.current().is_none());
+        }
+
+        phase a_prompt_answers_its_field_or_the_text_given;
+        {
+            let engine = TestEngine::new();
+            let page: SharedEngine = engine.clone();
+            let mut dialogs = PageDialogs::default();
+            dialogs.sync(&page);
+            dialogs.apply(&asks(PageDialogKind::Prompt, 1));
+            let row = dialogs.resource().unwrap();
+            let send = &row.actions[0];
+            assert_eq!(send.label, "Send");
+            assert_eq!(
+                send.params()
+                    .iter()
+                    .map(|param| &*param.name)
+                    .collect::<Vec<_>>(),
+                ["text"],
+                "only the answer is asked; the question is bound"
+            );
+            dialogs.answer(&page, 1, true, None).unwrap();
+            dialogs.apply(&asks(PageDialogKind::Prompt, 2));
             dialogs
-                .answer(&page, 3, true, Some("x".repeat(MAX_PAGE_DIALOG_ANSWER + 1)))
-                .is_err()
-        );
-        dialogs
-            .answer(&page, 3, false, Some("ignored".into()))
-            .unwrap();
-        assert_eq!(
-            answers(&engine),
-            [
-                (1, true, Some("Ada".into())),
-                (2, true, Some("Grace".into())),
-                (3, false, None),
-            ]
-        );
-    }
+                .answer(&page, 2, true, Some("Grace".into()))
+                .unwrap();
+            dialogs.apply(&asks(PageDialogKind::Prompt, 3));
+            assert!(
+                dialogs
+                    .answer(&page, 3, true, Some("x".repeat(MAX_PAGE_DIALOG_ANSWER + 1)))
+                    .is_err()
+            );
+            dialogs
+                .answer(&page, 3, false, Some("ignored".into()))
+                .unwrap();
+            assert_eq!(
+                answers(&engine),
+                [
+                    (1, true, Some("Ada".into())),
+                    (2, true, Some("Grace".into())),
+                    (3, false, None),
+                ]
+            );
+        }
 
-    #[test]
-    fn leaving_names_what_it_risks_and_an_alert_only_closes() {
-        let page: SharedEngine = TestEngine::new();
-        let mut dialogs = PageDialogs::default();
-        dialogs.sync(&page);
-        dialogs.apply(&asks(PageDialogKind::Leave { reload: false }, 1));
-        let row = dialogs.resource().unwrap();
-        assert_eq!(row.label, "Leave this page?");
-        assert_eq!(
-            row.presentation.and_then(|p| p.preview).as_deref(),
-            Some("Changes you made may not be saved.")
-        );
-        let labels: Vec<_> = row.actions.iter().map(|a| a.label.as_str()).collect();
-        assert_eq!(labels, ["Leave", "Cancel"]);
-        dialogs.apply(&asks(PageDialogKind::Leave { reload: true }, 2));
-        assert_eq!(dialogs.resource().unwrap().label, "Reload this page?");
+        phase leaving_names_what_it_risks_and_an_alert_only_closes;
+        {
+            let page: SharedEngine = TestEngine::new();
+            let mut dialogs = PageDialogs::default();
+            dialogs.sync(&page);
+            dialogs.apply(&asks(PageDialogKind::Leave { reload: false }, 1));
+            let row = dialogs.resource().unwrap();
+            assert_eq!(row.label, "Leave this page?");
+            assert_eq!(
+                row.presentation.and_then(|p| p.preview).as_deref(),
+                Some("Changes you made may not be saved.")
+            );
+            let labels: Vec<_> = row.actions.iter().map(|a| a.label.as_str()).collect();
+            assert_eq!(labels, ["Leave", "Cancel"]);
+            dialogs.apply(&asks(PageDialogKind::Leave { reload: true }, 2));
+            assert_eq!(dialogs.resource().unwrap().label, "Reload this page?");
 
-        let mut alert = PageDialog {
-            id: 3,
-            kind: PageDialogKind::Alert,
-            origin: String::new(),
-            message: "Saved\r\n".repeat(200),
-            default_text: String::new(),
-        };
-        dialogs.apply(&WebViewEvent::PageDialog(alert.clone()));
-        let row = dialogs.resource().unwrap();
-        assert_eq!(row.label, "Message from this page");
-        assert_eq!(
-            row.actions
-                .iter()
-                .map(|a| a.label.as_str())
-                .collect::<Vec<_>>(),
-            ["Close"]
-        );
-        let preview = row.presentation.and_then(|p| p.preview).unwrap();
-        assert!(
-            preview.len() <= ResourcePresentation::MAX_PREVIEW_BYTES && !preview.contains('\r')
-        );
-        alert.id = 4;
-        alert.origin = "http://127.0.0.1:8080".into();
-        dialogs.apply(&WebViewEvent::PageDialog(alert));
-        assert_eq!(
-            dialogs.resource().unwrap().label,
-            "Message from 127.0.0.1:8080"
-        );
+            let mut alert = PageDialog {
+                id: 3,
+                kind: PageDialogKind::Alert,
+                origin: String::new(),
+                message: "Saved\r\n".repeat(200),
+                default_text: String::new(),
+            };
+            dialogs.apply(&WebViewEvent::PageDialog(alert.clone()));
+            let row = dialogs.resource().unwrap();
+            assert_eq!(row.label, "Message from this page");
+            assert_eq!(
+                row.actions
+                    .iter()
+                    .map(|a| a.label.as_str())
+                    .collect::<Vec<_>>(),
+                ["Close"]
+            );
+            let preview = row.presentation.and_then(|p| p.preview).unwrap();
+            assert!(
+                preview.len() <= ResourcePresentation::MAX_PREVIEW_BYTES && !preview.contains('\r')
+            );
+            alert.id = 4;
+            alert.origin = "http://127.0.0.1:8080".into();
+            dialogs.apply(&WebViewEvent::PageDialog(alert));
+            assert_eq!(
+                dialogs.resource().unwrap().label,
+                "Message from 127.0.0.1:8080"
+            );
+        }
     }
 }

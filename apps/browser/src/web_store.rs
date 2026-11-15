@@ -175,62 +175,66 @@ mod tests {
     const ONEPASSWORD: &str = "aeblfdkhhhdcdjpifhhbdiojplfjncoa";
     const UBLOCK_LITE: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
 
-    #[test]
-    fn store_pages_are_recognised_and_lookalikes_are_not() {
-        let id = |url: &str| item_from_url(url).map(|item| item.id);
-        assert_eq!(
-            id(&format!(
-                "https://chromewebstore.google.com/detail/1password/{ONEPASSWORD}?hl=en"
-            )),
-            Some(ONEPASSWORD.into())
-        );
-        assert_eq!(
-            id(&format!(
-                "https://chromewebstore.google.com/detail/{UBLOCK_LITE}#reviews"
-            )),
-            Some(UBLOCK_LITE.into())
-        );
-        assert_eq!(
-            id(&format!(
-                "https://chrome.google.com/webstore/detail/ublock-origin-lite/{UBLOCK_LITE}"
-            )),
-            Some(UBLOCK_LITE.into())
-        );
-        for rejected in [
-            format!("http://chromewebstore.google.com/detail/x/{ONEPASSWORD}"),
-            format!("https://chromewebstore.google.com.evil.example/detail/x/{ONEPASSWORD}"),
-            format!("https://user@chromewebstore.google.com/detail/x/{ONEPASSWORD}"),
-            format!("https://chromewebstore.google.com:8443/detail/x/{ONEPASSWORD}"),
-            format!("https://chrome.google.com/detail/x/{ONEPASSWORD}"),
-            "https://chromewebstore.google.com/category/extensions".to_owned(),
-            "https://chromewebstore.google.com/detail/1password/short".to_owned(),
-            format!("https://chromewebstore.google.com/detail/a/b/{ONEPASSWORD}"),
-            format!("https://example.org/detail/x/{ONEPASSWORD}"),
-            "not a url".to_owned(),
-        ] {
-            assert_eq!(id(&rejected), None, "{rejected}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn web_store_addresses_are_recognised_and_built;
 
-    #[test]
-    fn package_address_carries_the_engine_version() {
-        let url = crx_url(ONEPASSWORD, "152.0.7977.83").unwrap();
-        assert_eq!(url.host_str(), Some("clients2.google.com"));
-        assert_eq!(url.path(), "/service/update2/crx");
-        let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
-        assert_eq!(query["prodversion"], "152.0.7977.83");
-        assert_eq!(query["acceptformat"], "crx3");
-        assert_eq!(query["response"], "redirect");
-        assert_eq!(
-            query["x"],
-            format!("id={ONEPASSWORD}&installsource=ondemand&uc")
-        );
-        assert!(crx_url("nope", "152.0.7977.83").is_none());
-        assert!(crx_url(ONEPASSWORD, "152;rm").is_none());
-        assert!(crx_url(ONEPASSWORD, "").is_none());
-        assert!(trusted_host("clients2.google.com"));
-        assert!(trusted_host("clients2.googleusercontent.com"));
-        assert!(!trusted_host("evilgoogle.com"));
-        assert!(!trusted_host("google.com.evil.example"));
+        phase store_pages_are_recognised_and_lookalikes_are_not;
+        {
+            let id = |url: &str| item_from_url(url).map(|item| item.id);
+            assert_eq!(
+                id(&format!(
+                    "https://chromewebstore.google.com/detail/1password/{ONEPASSWORD}?hl=en"
+                )),
+                Some(ONEPASSWORD.into())
+            );
+            assert_eq!(
+                id(&format!(
+                    "https://chromewebstore.google.com/detail/{UBLOCK_LITE}#reviews"
+                )),
+                Some(UBLOCK_LITE.into())
+            );
+            assert_eq!(
+                id(&format!(
+                    "https://chrome.google.com/webstore/detail/ublock-origin-lite/{UBLOCK_LITE}"
+                )),
+                Some(UBLOCK_LITE.into())
+            );
+            for rejected in [
+                format!("http://chromewebstore.google.com/detail/x/{ONEPASSWORD}"),
+                format!("https://chromewebstore.google.com.evil.example/detail/x/{ONEPASSWORD}"),
+                format!("https://user@chromewebstore.google.com/detail/x/{ONEPASSWORD}"),
+                format!("https://chromewebstore.google.com:8443/detail/x/{ONEPASSWORD}"),
+                format!("https://chrome.google.com/detail/x/{ONEPASSWORD}"),
+                "https://chromewebstore.google.com/category/extensions".to_owned(),
+                "https://chromewebstore.google.com/detail/1password/short".to_owned(),
+                format!("https://chromewebstore.google.com/detail/a/b/{ONEPASSWORD}"),
+                format!("https://example.org/detail/x/{ONEPASSWORD}"),
+                "not a url".to_owned(),
+            ] {
+                assert_eq!(id(&rejected), None, "{rejected}");
+            }
+        }
+
+        phase package_address_carries_the_engine_version;
+        {
+            let url = crx_url(ONEPASSWORD, "152.0.7977.83").unwrap();
+            assert_eq!(url.host_str(), Some("clients2.google.com"));
+            assert_eq!(url.path(), "/service/update2/crx");
+            let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+            assert_eq!(query["prodversion"], "152.0.7977.83");
+            assert_eq!(query["acceptformat"], "crx3");
+            assert_eq!(query["response"], "redirect");
+            assert_eq!(
+                query["x"],
+                format!("id={ONEPASSWORD}&installsource=ondemand&uc")
+            );
+            assert!(crx_url("nope", "152.0.7977.83").is_none());
+            assert!(crx_url(ONEPASSWORD, "152;rm").is_none());
+            assert!(crx_url(ONEPASSWORD, "").is_none());
+            assert!(trusted_host("clients2.google.com"));
+            assert!(trusted_host("clients2.googleusercontent.com"));
+            assert!(!trusted_host("evilgoogle.com"));
+            assert!(!trusted_host("google.com.evil.example"));
+        }
     }
 }

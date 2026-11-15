@@ -189,90 +189,94 @@ mod tests {
         (engine, shared)
     }
 
-    #[test]
-    fn a_sign_in_popup_shows_at_the_size_it_asked_for_with_its_site() {
-        let (engine, shared) = page();
-        let mut popups = PagePopups::default();
-        assert!(!popups.sync(&shared));
-        assert!(engine.accepts_popups(), "the page's popups stay its own");
-        assert!(!popups.sync(&shared));
-        engine.push_popup(1 << 30, "https://accounts.example.com/signin?x=1", 450, 700);
-        assert!(popups.sync(&shared));
-        assert!(popups.is_open());
-        assert_eq!(popups.width(1000.0), Some(450.0));
-        assert_eq!(popups.width(300.0), Some(300.0));
-        let panel = popups.panel(450.0, 900.0, 40.0).unwrap();
-        assert!(ui::widget::find_test_id(panel.as_ref(), "browser.popup.page").is_some());
-        assert!(ui::widget::find_test_id(panel.as_ref(), "browser.popup.close").is_some());
-        assert_eq!(
-            site_of("https://accounts.example.com/signin?x=1"),
-            "accounts.example.com"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_pages_popup_shows_in_a_panel_that_follows_it;
 
-    #[test]
-    fn a_popup_that_closes_itself_closes_the_panel() {
-        let (engine, shared) = page();
-        let mut popups = PagePopups::default();
-        popups.sync(&shared);
-        engine.push_popup(1 << 30, "https://pay.example.com/", 0, 0);
-        popups.sync(&shared);
-        assert_eq!(popups.width(1000.0), Some(DEFAULT_SIZE.0));
-        engine
-            .adopted(1 << 30)
-            .unwrap()
-            .push_event(WebViewEvent::TabClosed);
-        assert!(popups.sync(&shared));
-        assert!(!popups.is_open());
-    }
+        phase a_sign_in_popup_shows_at_the_size_it_asked_for_with_its_site;
+        {
+            let (engine, shared) = page();
+            let mut popups = PagePopups::default();
+            assert!(!popups.sync(&shared));
+            assert!(engine.accepts_popups(), "the page's popups stay its own");
+            assert!(!popups.sync(&shared));
+            engine.push_popup(1 << 30, "https://accounts.example.com/signin?x=1", 450, 700);
+            assert!(popups.sync(&shared));
+            assert!(popups.is_open());
+            assert_eq!(popups.width(1000.0), Some(450.0));
+            assert_eq!(popups.width(300.0), Some(300.0));
+            let panel = popups.panel(450.0, 900.0, 40.0).unwrap();
+            assert!(ui::widget::find_test_id(panel.as_ref(), "browser.popup.page").is_some());
+            assert!(ui::widget::find_test_id(panel.as_ref(), "browser.popup.close").is_some());
+            assert_eq!(
+                site_of("https://accounts.example.com/signin?x=1"),
+                "accounts.example.com"
+            );
+        }
 
-    #[test]
-    fn a_newer_popup_replaces_the_one_shown_and_the_close_button_closes_it() {
-        let (engine, shared) = page();
-        let mut popups = PagePopups::default();
-        popups.sync(&shared);
-        engine.push_popup(1 << 30, "https://a.example/", 300, 300);
-        engine.push_popup((1 << 30) + 1, "https://b.example/", 10, 10);
-        popups.sync(&shared);
-        assert_eq!(
-            popups.width(1000.0),
-            Some(MIN_SIZE.0),
-            "the newest, no smaller than shown"
-        );
-        let first = engine.adopted(1 << 30).unwrap();
-        assert_eq!(Arc::strong_count(&first), 2);
-        popups.close.set(true);
-        assert!(popups.sync(&shared));
-        assert!(!popups.is_open());
-    }
+        phase a_popup_that_closes_itself_closes_the_panel;
+        {
+            let (engine, shared) = page();
+            let mut popups = PagePopups::default();
+            popups.sync(&shared);
+            engine.push_popup(1 << 30, "https://pay.example.com/", 0, 0);
+            popups.sync(&shared);
+            assert_eq!(popups.width(1000.0), Some(DEFAULT_SIZE.0));
+            engine
+                .adopted(1 << 30)
+                .unwrap()
+                .push_event(WebViewEvent::TabClosed);
+            assert!(popups.sync(&shared));
+            assert!(!popups.is_open());
+        }
 
-    #[test]
-    fn a_new_page_engine_is_asked_again_and_the_old_ones_popup_closes() {
-        let (engine, shared) = page();
-        let mut popups = PagePopups::default();
-        popups.sync(&shared);
-        engine.push_popup(1 << 30, "https://a.example/", 300, 300);
-        popups.sync(&shared);
-        let (restarted, restarted_shared) = page();
-        assert!(popups.sync(&restarted_shared));
-        assert!(restarted.accepts_popups());
-        assert!(!popups.is_open());
-    }
+        phase a_newer_popup_replaces_the_one_shown_and_the_close_button_closes_it;
+        {
+            let (engine, shared) = page();
+            let mut popups = PagePopups::default();
+            popups.sync(&shared);
+            engine.push_popup(1 << 30, "https://a.example/", 300, 300);
+            engine.push_popup((1 << 30) + 1, "https://b.example/", 10, 10);
+            popups.sync(&shared);
+            assert_eq!(
+                popups.width(1000.0),
+                Some(MIN_SIZE.0),
+                "the newest, no smaller than shown"
+            );
+            let first = engine.adopted(1 << 30).unwrap();
+            assert_eq!(Arc::strong_count(&first), 2);
+            popups.close.set(true);
+            assert!(popups.sync(&shared));
+            assert!(!popups.is_open());
+        }
 
-    #[test]
-    fn the_panel_follows_the_popup_to_another_site() {
-        let (engine, shared) = page();
-        let mut popups = PagePopups::default();
-        popups.sync(&shared);
-        engine.push_popup(1 << 30, "https://shop.example/", 400, 400);
-        popups.sync(&shared);
-        engine
-            .adopted(1 << 30)
-            .unwrap()
-            .push_event(WebViewEvent::UriChanged(
-                "https://bank.example/approve".into(),
-            ));
-        assert!(popups.sync(&shared));
-        assert_eq!(site_of(&popups.open.as_ref().unwrap().url), "bank.example");
+        phase a_new_page_engine_is_asked_again_and_the_old_ones_popup_closes;
+        {
+            let (engine, shared) = page();
+            let mut popups = PagePopups::default();
+            popups.sync(&shared);
+            engine.push_popup(1 << 30, "https://a.example/", 300, 300);
+            popups.sync(&shared);
+            let (restarted, restarted_shared) = page();
+            assert!(popups.sync(&restarted_shared));
+            assert!(restarted.accepts_popups());
+            assert!(!popups.is_open());
+        }
+
+        phase the_panel_follows_the_popup_to_another_site;
+        {
+            let (engine, shared) = page();
+            let mut popups = PagePopups::default();
+            popups.sync(&shared);
+            engine.push_popup(1 << 30, "https://shop.example/", 400, 400);
+            popups.sync(&shared);
+            engine
+                .adopted(1 << 30)
+                .unwrap()
+                .push_event(WebViewEvent::UriChanged(
+                    "https://bank.example/approve".into(),
+                ));
+            assert!(popups.sync(&shared));
+            assert_eq!(site_of(&popups.open.as_ref().unwrap().url), "bank.example");
+        }
     }
 }

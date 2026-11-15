@@ -1039,408 +1039,420 @@ mod tests {
             .collect()
     }
 
-    /// A read keeps a form's shape and none of what its fields hold.
-    #[test]
-    fn a_read_keeps_the_shape_and_no_value() {
-        let forms = read(&visa());
-        assert_eq!(forms.len(), 1);
-        assert_eq!(forms[0].id, "form1");
-        let shape = &forms[0].shape;
-        assert_eq!(shape.label, "Apply for a visitor visa");
-        assert_eq!(shape.submit, ["Send application"]);
-        assert_eq!(shape.questions.len(), 8);
-        assert_eq!(shape.questions[6].fallback, "secret_field");
-        assert_eq!(shape.questions[7].fallback, "needs_files");
-        let kept = serde_json::to_string(shape).unwrap();
-        for held in ["Ada Lovelace", "characters hidden", "d1e2"] {
-            assert!(!kept.contains(held), "{held} is no part of a form's shape");
-        }
-        // A form without a signature the engine could print is not one.
-        assert!(read(&serde_json::json!({"forms": [{"signature": "no good"}]})).is_empty());
-        assert!(read(&serde_json::json!({})).is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn a_read_keeps_a_forms_shape_and_names_its_parameters;
 
-    /// On a page that holds a sign-in the window's own read publishes a
-    /// form's questions without the answers they offer.
-    #[test]
-    fn a_read_without_offered_answers_keeps_every_question() {
-        let mut data = visa();
-        without_offered_answers(&mut data);
-        let forms = read(&data);
-        assert_eq!(forms[0].shape.questions.len(), 8);
-        assert!(
-            forms[0]
-                .shape
-                .questions
+        phase a_read_keeps_the_shape_and_no_value;
+        // A read keeps a form's shape and none of what its fields hold.
+        {
+            let forms = read(&visa());
+            assert_eq!(forms.len(), 1);
+            assert_eq!(forms[0].id, "form1");
+            let shape = &forms[0].shape;
+            assert_eq!(shape.label, "Apply for a visitor visa");
+            assert_eq!(shape.submit, ["Send application"]);
+            assert_eq!(shape.questions.len(), 8);
+            assert_eq!(shape.questions[6].fallback, "secret_field");
+            assert_eq!(shape.questions[7].fallback, "needs_files");
+            let kept = serde_json::to_string(shape).unwrap();
+            for held in ["Ada Lovelace", "characters hidden", "d1e2"] {
+                assert!(!kept.contains(held), "{held} is no part of a form's shape");
+            }
+            // A form without a signature the engine could print is not one.
+            assert!(read(&serde_json::json!({"forms": [{"signature": "no good"}]})).is_empty());
+            assert!(read(&serde_json::json!({})).is_empty());
+        }
+
+        phase a_read_without_offered_answers_keeps_every_question;
+        // On a page that holds a sign-in the window's own read publishes a
+        // form's questions without the answers they offer.
+        {
+            let mut data = visa();
+            without_offered_answers(&mut data);
+            let forms = read(&data);
+            assert_eq!(forms[0].shape.questions.len(), 8);
+            assert!(
+                forms[0]
+                    .shape
+                    .questions
+                    .iter()
+                    .all(|question| question.choices.is_empty())
+            );
+            let mut page = PageForms::default();
+            let at = place("https://visa.test/apply");
+            page.heard_read(&at, &data);
+            let answer = &page.actions(&at)[0];
+            let nationality = answer
+                .params()
                 .iter()
-                .all(|question| question.choices.is_empty())
-        );
-        let mut page = PageForms::default();
-        let at = place("https://visa.test/apply");
-        page.heard_read(&at, &data);
-        let answer = &page.actions(&at)[0];
-        let nationality = answer
-            .params()
-            .iter()
-            .find(|param| param.name == "nationality")
-            .expect("the question is still a parameter");
-        assert!(nationality.choices.is_empty());
-        // Data that is no forms read is left as it is.
-        let mut other = serde_json::json!({"forms": "none"});
-        without_offered_answers(&mut other);
-        assert_eq!(other, serde_json::json!({"forms": "none"}));
-    }
-
-    /// A parameter is named by its question's words, and two questions
-    /// never share a name.
-    #[test]
-    fn parameters_are_named_by_their_questions() {
-        assert_eq!(slug("Date of birth: Day"), "date_of_birth_day");
-        assert_eq!(slug("  E-mail (work)  "), "e_mail_work");
-        assert_eq!(slug("2nd name"), "q_2nd_name");
-        assert_eq!(slug("???"), "question");
-        assert_eq!(slug("Straße"), "straße");
-        let question = |name: &str, kind: &str| RememberedQuestion {
-            name: name.into(),
-            kind: kind.into(),
-            ..RememberedQuestion::default()
-        };
-        let twice = RememberedForm {
-            signature: "aa".into(),
-            questions: vec![
-                question("Name", "secret"),
-                question("name!", "text"),
-                question("Form", "text"),
-            ],
-            ..RememberedForm::default()
-        };
-        let named: Vec<String> = asked(&twice)
-            .into_iter()
-            .map(|(param, _)| param.name.to_string())
-            .collect();
-        assert_eq!(
-            named,
-            ["name_2", "form_2"],
-            "a question the typed path refuses keeps its name, and `form` is the action's own"
-        );
-    }
-
-    /// A read form is an action named after it with one typed parameter per
-    /// question; a secret and a file are no parameters and are said to take
-    /// their own actions.
-    #[test]
-    fn a_form_is_an_action_with_a_typed_parameter_per_question() {
-        let mut forms = PageForms::default();
-        let at = place("https://visa.test/apply");
-        forms.heard_read(&at, &visa());
-        let actions = forms.actions(&at);
-        let ids: Vec<&str> = actions.iter().map(|action| action.id.as_str()).collect();
-        assert_eq!(ids, ["form-5f1c2a9b", "send-form-5f1c2a9b"]);
-        let answer = &actions[0];
-        assert_eq!(answer.label, "Apply for a visitor visa");
-        assert_eq!(
-            params(answer),
-            [
-                ("full_name".to_owned(), ParamType::Text, true),
-                ("date_of_birth_day".to_owned(), ParamType::Number, false),
-                ("arrival".to_owned(), ParamType::Text, true),
-                ("nationality".to_owned(), ParamType::Text, false),
-                ("languages".to_owned(), ParamType::Array, false),
-                ("i_agree".to_owned(), ParamType::Boolean, true),
-            ]
-        );
-        assert_eq!(answer.params()[3].choices, ["Kenya", "Other"]);
-        let description = answer.description.clone().unwrap();
-        assert!(
-            description.contains("\"Passcode\" is a secret and takes fill-page-secret"),
-            "{description}"
-        );
-        assert!(
-            description.contains("\"Passport scan\" takes files, through fill-page-files"),
-            "{description}"
-        );
-        assert!(description.contains("send-form-5f1c2a9b sends the form"));
-        assert!(answer.contract.validate_declaration().is_empty());
-        assert!(answer.contract.availability.is_available());
-        assert!(answer.reaches_people() && answer.reaches_agents());
-
-        // Typed: a wrong type, an answer the question does not offer, a date
-        // that is none and a missing required answer are refused before
-        // anything reaches the page.
-        let full = serde_json::json!({
-            "full_name": "Ada Lovelace", "arrival": "2027-02-03", "i_agree": true,
-        });
-        let with = |name: &str, value: serde_json::Value| {
-            let mut args = full.as_object().unwrap().clone();
-            args.insert(name.into(), value);
-            answer.build_json(&args)
-        };
-        assert!(answer.build_json(full.as_object().unwrap()).is_ok());
-        assert!(with("i_agree", serde_json::json!("yes")).is_err());
-        assert!(with("nationality", serde_json::json!("Mars")).is_err());
-        assert!(with("languages", serde_json::json!(["Klingon"])).is_err());
-        assert!(with("arrival", serde_json::json!("next week")).is_err());
-        assert!(with("passcode", serde_json::json!("0000")).is_err());
-        assert!(
-            answer
-                .build_json(serde_json::json!({"full_name": "Ada"}).as_object().unwrap())
-                .is_err()
-        );
-    }
-
-    /// Running the action names the form by signature and answers it by
-    /// the names the form asks under; sending it is the other action.
-    #[test]
-    fn the_actions_run_as_answers_by_the_forms_own_names() {
-        let mut forms = PageForms::default();
-        let at = place("https://visa.test/apply");
-        forms.heard_read(&at, &visa());
-        let actions = forms.actions(&at);
-        let run = |action: &ActionSpec, args: serde_json::Value| {
-            let encoded = action.build_json(args.as_object().unwrap()).unwrap();
-            match BrowserEffect::from_payload(&encoded.payload)
-                .unwrap()
-                .operation()
-            {
-                crate::effects::BrowserOperation::Form(run) => run,
-                other => panic!("a form action runs a form, got {other:?}"),
-            }
-        };
-        let answered = run(
-            &actions[0],
-            serde_json::json!({
-                "full_name": "Ada Lovelace", "arrival": "2027-02-03", "i_agree": true,
-                "date_of_birth_day": 10, "languages": ["English", "German"],
-            }),
-        );
-        assert_eq!(answered.form, "5f1c2a9b");
-        assert!(answered.answers.contains_key("full_name"));
-        assert_eq!(
-            answered.request(forms.named(&at, &answered.form, &answered.answers)),
-            PageRequest::FillForm {
-                form: "5f1c2a9b".into(),
-                answers: serde_json::json!({
-                    "Full name": "Ada Lovelace", "Arrival": "2027-02-03", "I agree": true,
-                    "Date of birth: Day": 10, "Languages": ["English", "German"],
-                })
-                .as_object()
-                .unwrap()
-                .clone(),
-                submit: FormSubmit::No,
-                cross_origin: false,
-                frame: None,
-            }
-        );
-        let sent = run(&actions[1], serde_json::json!({"cross_origin": true}));
-        assert_eq!(
-            sent.request(forms.named(&at, &sent.form, &sent.answers)),
-            PageRequest::FillForm {
-                form: "5f1c2a9b".into(),
-                answers: serde_json::Map::new(),
-                submit: FormSubmit::First,
-                cross_origin: true,
-                frame: None,
-            }
-        );
-    }
-
-    /// What the engine tells of the page's forms is news only when it is
-    /// not what the page publishes: a form no read found, one that asks or
-    /// offers something else, one that is gone.
-    #[test]
-    fn what_the_engine_tells_of_a_form_is_news_only_when_the_page_publishes_otherwise() {
-        let told = |form: &str, signature: Option<&str>, offers: Option<&str>, gone: bool| {
-            [ui::webview::PageFormChange {
-                form: form.into(),
-                signature: signature.map(str::to_owned),
-                offers: offers.map(str::to_owned),
-                gone,
-            }]
-        };
-        let mut forms = PageForms::default();
-        let at = place("https://visa.test/apply");
-        assert!(!forms.told_otherwise(&at, &[]));
-        assert!(
-            forms.told_otherwise(&at, &told("form1", Some("5f1c2a9b"), None, false)),
-            "a page nobody read publishes nothing that was read"
-        );
-        let mut data = visa();
-        data["forms"][0]["offers"] = "aaaa1111".into();
-        forms.heard_read(&at, &data);
-        for (news, change) in [
-            (
-                false,
-                told("form1", Some("5f1c2a9b"), Some("aaaa1111"), false),
-            ),
-            (false, told("form1", Some("5f1c2a9b"), None, false)),
-            (
-                true,
-                told("form1", Some("0badc0de"), Some("aaaa1111"), false),
-            ),
-            (
-                true,
-                told("form1", Some("5f1c2a9b"), Some("bbbb2222"), false),
-            ),
-            (true, told("form1", None, None, true)),
-            (true, told("form2", Some("0a11ce00"), None, false)),
-            (false, told("form2", None, None, true)),
-        ] {
-            assert_eq!(forms.told_otherwise(&at, &change), news, "{change:?}");
+                .find(|param| param.name == "nationality")
+                .expect("the question is still a parameter");
+            assert!(nationality.choices.is_empty());
+            // Data that is no forms read is left as it is.
+            let mut other = serde_json::json!({"forms": "none"});
+            without_offered_answers(&mut other);
+            assert_eq!(other, serde_json::json!({"forms": "none"}));
         }
-        // Another page's forms are not this page's.
-        let elsewhere = place("https://visa.test/status");
-        assert!(forms.told_otherwise(
-            &elsewhere,
-            &told("form1", Some("5f1c2a9b"), Some("aaaa1111"), false)
-        ));
-    }
 
-    /// The actions follow the page: another page has none of them, and a
-    /// read that finds another form replaces them.
-    #[test]
-    fn the_actions_follow_the_page() {
-        let mut forms = PageForms::default();
-        let at = place("https://visa.test/apply");
-        forms.heard_read(&at, &visa());
-        assert_eq!(forms.actions(&at).len(), 2);
-        assert!(
-            forms
-                .actions(&place("https://visa.test/elsewhere"))
-                .is_empty()
-        );
-        assert!(forms.actions(&place("https://other.test/apply")).is_empty());
-        assert!(
-            forms.actions(&at).is_empty(),
-            "the page that was read went: its address opens another, unread"
-        );
-        forms.heard_read(&at, &visa());
-        assert_eq!(forms.actions(&at).len(), 2);
-        let mut changed = visa();
-        changed["forms"][0]["signature"] = "0badc0de".into();
-        changed["forms"][0]["submit"] = serde_json::json!([]);
-        forms.heard_read(&at, &changed);
-        let ids: Vec<String> = forms
-            .actions(&at)
-            .iter()
-            .map(|action| action.id.clone())
-            .collect();
-        assert_eq!(ids, ["form-0badc0de"], "a form with no button has no send");
-    }
-
-    /// An answer that makes the form ask more withdraws its action until
-    /// the page is read, which its window does next, and the shape it has
-    /// then grew from the one it had.
-    #[test]
-    fn a_form_that_asks_more_is_withdrawn_until_it_is_read_again() {
-        let mut forms = PageForms::default();
-        let at = place("https://visa.test/apply");
-        forms.heard_read(&at, &visa());
-        let heard = forms.heard_answer(
-            &at,
-            &serde_json::json!({
-                "form": "form1", "signature": "5f1c2a9b",
-                "results": [{"name": "Nationality", "ok": true}],
-                "set": [{"name": "Nationality", "value": "Other"}],
-                "submitted": false, "now_asks": ["Which country?"], "unanswered": [],
-            }),
-        );
-        assert!(heard.grew && heard.learned.is_none() && heard.then.is_empty());
-        assert_eq!(forms.standing(&at, "5f1c2a9b"), Some(Standing::Changed));
-        let withdrawn = &forms.actions(&at)[0];
-        assert!(!withdrawn.contract.availability.is_available());
-        let mut grown = visa();
-        grown["forms"][0]["signature"] = "0badc0de".into();
-        let shapes = forms.heard_read(&at, &grown);
-        assert_eq!(shapes[0].grew_from, "5f1c2a9b");
-        assert_eq!(forms.standing(&at, "0badc0de"), Some(Standing::Read));
-    }
-
-    /// What a field refused for what it is (an editor written by typing) is
-    /// taught once, and the question is no parameter from then on.
-    #[test]
-    fn a_field_the_typed_path_refused_is_no_parameter_afterwards() {
-        let mut forms = PageForms::default();
-        let at = place("https://visa.test/apply");
-        forms.heard_read(&at, &visa());
-        let heard = forms.heard_answer(
-            &at,
-            &serde_json::json!({
-                "form": "form1", "signature": "5f1c2a9b",
-                "results": [
-                    {"name": "Full name", "ok": false, "code": "needs_typing",
-                        "message": "\"Full name\" is written by typing", "element": "d1e2"},
-                    {"name": "Nationality", "ok": false, "code": "no_option",
-                        "message": "no answer \"Mars\""},
+        phase parameters_are_named_by_their_questions;
+        // A parameter is named by its question's words, and two questions
+        // never share a name.
+        {
+            assert_eq!(slug("Date of birth: Day"), "date_of_birth_day");
+            assert_eq!(slug("  E-mail (work)  "), "e_mail_work");
+            assert_eq!(slug("2nd name"), "q_2nd_name");
+            assert_eq!(slug("???"), "question");
+            assert_eq!(slug("Straße"), "straße");
+            let question = |name: &str, kind: &str| RememberedQuestion {
+                name: name.into(),
+                kind: kind.into(),
+                ..RememberedQuestion::default()
+            };
+            let twice = RememberedForm {
+                signature: "aa".into(),
+                questions: vec![
+                    question("Name", "secret"),
+                    question("name!", "text"),
+                    question("Form", "text"),
                 ],
-                "set": [], "submitted": false, "now_asks": [], "unanswered": [],
-            }),
-        );
-        let (learned_at, learned) = heard.learned.expect("the refusal is the field's own");
-        assert_eq!(learned_at, at);
-        assert_eq!(learned.questions[0].fallback, "needs_typing");
-        assert_eq!(
-            learned.questions[3].fallback, "",
-            "an answer the question does not offer says nothing of the field"
-        );
-        let answer = &forms.actions(&at)[0];
-        assert!(
-            !params(answer)
-                .iter()
-                .any(|(name, _, _)| name == "full_name")
-        );
-        assert!(
-            answer
-                .description
-                .clone()
-                .unwrap()
-                .contains("\"Full name\" is written by typing and takes fill-page")
-        );
+                ..RememberedForm::default()
+            };
+            let named: Vec<String> = asked(&twice)
+                .into_iter()
+                .map(|(param, _)| param.name.to_string())
+                .collect();
+            assert_eq!(
+                named,
+                ["name_2", "form_2"],
+                "a question the typed path refuses keeps its name, and `form` is the action's own"
+            );
+        }
     }
 
-    /// An answer says what the form became. One that became another form
-    /// grew, though it opened no question by name; one that asks the same
-    /// and offers other answers is to be read again; one that is what the
-    /// page publishes teaches nothing.
-    #[test]
-    fn an_answer_says_whether_the_form_became_another_or_offers_other_answers() {
-        let mut forms = PageForms::default();
-        let at = place("https://visa.test/apply");
-        let mut data = visa();
-        data["forms"][0]["offers"] = "aaaa1111".into();
-        forms.heard_read(&at, &data);
-        let answered = |became: serde_json::Value| {
-            serde_json::json!({"form": "form1", "signature": "5f1c2a9b", "results": [],
-                "set": [], "submitted": false, "now_asks": [], "unanswered": [],
-                "became": became})
-        };
-        for (became, grew, refresh) in [
-            (
-                serde_json::json!({"signature": "5f1c2a9b", "offers": "aaaa1111"}),
-                false,
-                false,
-            ),
-            (
-                serde_json::json!({"signature": "5f1c2a9b", "offers": "bbbb2222"}),
-                false,
-                true,
-            ),
-            // What no engine prints is not taken for a signature.
-            (
-                serde_json::json!({"signature": "no good", "offers": 7}),
-                false,
-                false,
-            ),
-            (serde_json::json!(null), false, false),
-        ] {
-            let heard = forms.heard_answer(&at, &answered(became.clone()));
-            assert_eq!((heard.grew, heard.refresh), (grew, refresh), "{became}");
-            assert_eq!(forms.standing(&at, "5f1c2a9b"), Some(Standing::Read));
+    tilo_test_env::scenario! {
+        fn a_form_is_published_as_actions_that_follow_the_page;
+
+        phase a_form_is_an_action_with_a_typed_parameter_per_question;
+        // A read form is an action named after it with one typed parameter per
+        // question; a secret and a file are no parameters and are said to take
+        // their own actions.
+        {
+            let mut forms = PageForms::default();
+            let at = place("https://visa.test/apply");
+            forms.heard_read(&at, &visa());
+            let actions = forms.actions(&at);
+            let ids: Vec<&str> = actions.iter().map(|action| action.id.as_str()).collect();
+            assert_eq!(ids, ["form-5f1c2a9b", "send-form-5f1c2a9b"]);
+            let answer = &actions[0];
+            assert_eq!(answer.label, "Apply for a visitor visa");
+            assert_eq!(
+                params(answer),
+                [
+                    ("full_name".to_owned(), ParamType::Text, true),
+                    ("date_of_birth_day".to_owned(), ParamType::Number, false),
+                    ("arrival".to_owned(), ParamType::Text, true),
+                    ("nationality".to_owned(), ParamType::Text, false),
+                    ("languages".to_owned(), ParamType::Array, false),
+                    ("i_agree".to_owned(), ParamType::Boolean, true),
+                ]
+            );
+            assert_eq!(answer.params()[3].choices, ["Kenya", "Other"]);
+            let description = answer.description.clone().unwrap();
+            assert!(
+                description.contains("\"Passcode\" is a secret and takes fill-page-secret"),
+                "{description}"
+            );
+            assert!(
+                description.contains("\"Passport scan\" takes files, through fill-page-files"),
+                "{description}"
+            );
+            assert!(description.contains("send-form-5f1c2a9b sends the form"));
+            assert!(answer.contract.validate_declaration().is_empty());
+            assert!(answer.contract.availability.is_available());
+            assert!(answer.reaches_people() && answer.reaches_agents());
+
+            // Typed: a wrong type, an answer the question does not offer, a date
+            // that is none and a missing required answer are refused before
+            // anything reaches the page.
+            let full = serde_json::json!({
+                "full_name": "Ada Lovelace", "arrival": "2027-02-03", "i_agree": true,
+            });
+            let with = |name: &str, value: serde_json::Value| {
+                let mut args = full.as_object().unwrap().clone();
+                args.insert(name.into(), value);
+                answer.build_json(&args)
+            };
+            assert!(answer.build_json(full.as_object().unwrap()).is_ok());
+            assert!(with("i_agree", serde_json::json!("yes")).is_err());
+            assert!(with("nationality", serde_json::json!("Mars")).is_err());
+            assert!(with("languages", serde_json::json!(["Klingon"])).is_err());
+            assert!(with("arrival", serde_json::json!("next week")).is_err());
+            assert!(with("passcode", serde_json::json!("0000")).is_err());
+            assert!(
+                answer
+                    .build_json(serde_json::json!({"full_name": "Ada"}).as_object().unwrap())
+                    .is_err()
+            );
         }
-        let heard = forms.heard_answer(
-            &at,
-            &answered(serde_json::json!({"signature": "0badc0de", "offers": "bbbb2222"})),
-        );
-        assert!(heard.grew && !heard.refresh);
-        assert_eq!(forms.standing(&at, "5f1c2a9b"), Some(Standing::Changed));
+
+        phase the_actions_run_as_answers_by_the_forms_own_names;
+        // Running the action names the form by signature and answers it by
+        // the names the form asks under; sending it is the other action.
+        {
+            let mut forms = PageForms::default();
+            let at = place("https://visa.test/apply");
+            forms.heard_read(&at, &visa());
+            let actions = forms.actions(&at);
+            let run = |action: &ActionSpec, args: serde_json::Value| {
+                let encoded = action.build_json(args.as_object().unwrap()).unwrap();
+                match BrowserEffect::from_payload(&encoded.payload)
+                    .unwrap()
+                    .operation()
+                {
+                    crate::effects::BrowserOperation::Form(run) => run,
+                    other => panic!("a form action runs a form, got {other:?}"),
+                }
+            };
+            let answered = run(
+                &actions[0],
+                serde_json::json!({
+                    "full_name": "Ada Lovelace", "arrival": "2027-02-03", "i_agree": true,
+                    "date_of_birth_day": 10, "languages": ["English", "German"],
+                }),
+            );
+            assert_eq!(answered.form, "5f1c2a9b");
+            assert!(answered.answers.contains_key("full_name"));
+            assert_eq!(
+                answered.request(forms.named(&at, &answered.form, &answered.answers)),
+                PageRequest::FillForm {
+                    form: "5f1c2a9b".into(),
+                    answers: serde_json::json!({
+                        "Full name": "Ada Lovelace", "Arrival": "2027-02-03", "I agree": true,
+                        "Date of birth: Day": 10, "Languages": ["English", "German"],
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    submit: FormSubmit::No,
+                    cross_origin: false,
+                    frame: None,
+                }
+            );
+            let sent = run(&actions[1], serde_json::json!({"cross_origin": true}));
+            assert_eq!(
+                sent.request(forms.named(&at, &sent.form, &sent.answers)),
+                PageRequest::FillForm {
+                    form: "5f1c2a9b".into(),
+                    answers: serde_json::Map::new(),
+                    submit: FormSubmit::First,
+                    cross_origin: true,
+                    frame: None,
+                }
+            );
+        }
+
+        phase what_the_engine_tells_of_a_form_is_news_only_when_the_page_publishes_otherwise;
+        // What the engine tells of the page's forms is news only when it is
+        // not what the page publishes: a form no read found, one that asks or
+        // offers something else, one that is gone.
+        {
+            let told = |form: &str, signature: Option<&str>, offers: Option<&str>, gone: bool| {
+                [ui::webview::PageFormChange {
+                    form: form.into(),
+                    signature: signature.map(str::to_owned),
+                    offers: offers.map(str::to_owned),
+                    gone,
+                }]
+            };
+            let mut forms = PageForms::default();
+            let at = place("https://visa.test/apply");
+            assert!(!forms.told_otherwise(&at, &[]));
+            assert!(
+                forms.told_otherwise(&at, &told("form1", Some("5f1c2a9b"), None, false)),
+                "a page nobody read publishes nothing that was read"
+            );
+            let mut data = visa();
+            data["forms"][0]["offers"] = "aaaa1111".into();
+            forms.heard_read(&at, &data);
+            for (news, change) in [
+                (
+                    false,
+                    told("form1", Some("5f1c2a9b"), Some("aaaa1111"), false),
+                ),
+                (false, told("form1", Some("5f1c2a9b"), None, false)),
+                (
+                    true,
+                    told("form1", Some("0badc0de"), Some("aaaa1111"), false),
+                ),
+                (
+                    true,
+                    told("form1", Some("5f1c2a9b"), Some("bbbb2222"), false),
+                ),
+                (true, told("form1", None, None, true)),
+                (true, told("form2", Some("0a11ce00"), None, false)),
+                (false, told("form2", None, None, true)),
+            ] {
+                assert_eq!(forms.told_otherwise(&at, &change), news, "{change:?}");
+            }
+            // Another page's forms are not this page's.
+            let elsewhere = place("https://visa.test/status");
+            assert!(forms.told_otherwise(
+                &elsewhere,
+                &told("form1", Some("5f1c2a9b"), Some("aaaa1111"), false)
+            ));
+        }
+
+        phase the_actions_follow_the_page;
+        // The actions follow the page: another page has none of them, and a
+        // read that finds another form replaces them.
+        {
+            let mut forms = PageForms::default();
+            let at = place("https://visa.test/apply");
+            forms.heard_read(&at, &visa());
+            assert_eq!(forms.actions(&at).len(), 2);
+            assert!(
+                forms
+                    .actions(&place("https://visa.test/elsewhere"))
+                    .is_empty()
+            );
+            assert!(forms.actions(&place("https://other.test/apply")).is_empty());
+            assert!(
+                forms.actions(&at).is_empty(),
+                "the page that was read went: its address opens another, unread"
+            );
+            forms.heard_read(&at, &visa());
+            assert_eq!(forms.actions(&at).len(), 2);
+            let mut changed = visa();
+            changed["forms"][0]["signature"] = "0badc0de".into();
+            changed["forms"][0]["submit"] = serde_json::json!([]);
+            forms.heard_read(&at, &changed);
+            let ids: Vec<String> = forms
+                .actions(&at)
+                .iter()
+                .map(|action| action.id.clone())
+                .collect();
+            assert_eq!(ids, ["form-0badc0de"], "a form with no button has no send");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn an_answer_changes_what_a_form_offers;
+
+        phase a_form_that_asks_more_is_withdrawn_until_it_is_read_again;
+        // An answer that makes the form ask more withdraws its action until
+        // the page is read, which its window does next, and the shape it has
+        // then grew from the one it had.
+        {
+            let mut forms = PageForms::default();
+            let at = place("https://visa.test/apply");
+            forms.heard_read(&at, &visa());
+            let heard = forms.heard_answer(
+                &at,
+                &serde_json::json!({
+                    "form": "form1", "signature": "5f1c2a9b",
+                    "results": [{"name": "Nationality", "ok": true}],
+                    "set": [{"name": "Nationality", "value": "Other"}],
+                    "submitted": false, "now_asks": ["Which country?"], "unanswered": [],
+                }),
+            );
+            assert!(heard.grew && heard.learned.is_none() && heard.then.is_empty());
+            assert_eq!(forms.standing(&at, "5f1c2a9b"), Some(Standing::Changed));
+            let withdrawn = &forms.actions(&at)[0];
+            assert!(!withdrawn.contract.availability.is_available());
+            let mut grown = visa();
+            grown["forms"][0]["signature"] = "0badc0de".into();
+            let shapes = forms.heard_read(&at, &grown);
+            assert_eq!(shapes[0].grew_from, "5f1c2a9b");
+            assert_eq!(forms.standing(&at, "0badc0de"), Some(Standing::Read));
+        }
+
+        phase a_field_the_typed_path_refused_is_no_parameter_afterwards;
+        // What a field refused for what it is (an editor written by typing) is
+        // taught once, and the question is no parameter from then on.
+        {
+            let mut forms = PageForms::default();
+            let at = place("https://visa.test/apply");
+            forms.heard_read(&at, &visa());
+            let heard = forms.heard_answer(
+                &at,
+                &serde_json::json!({
+                    "form": "form1", "signature": "5f1c2a9b",
+                    "results": [
+                        {"name": "Full name", "ok": false, "code": "needs_typing",
+                            "message": "\"Full name\" is written by typing", "element": "d1e2"},
+                        {"name": "Nationality", "ok": false, "code": "no_option",
+                            "message": "no answer \"Mars\""},
+                    ],
+                    "set": [], "submitted": false, "now_asks": [], "unanswered": [],
+                }),
+            );
+            let (learned_at, learned) = heard.learned.expect("the refusal is the field's own");
+            assert_eq!(learned_at, at);
+            assert_eq!(learned.questions[0].fallback, "needs_typing");
+            assert_eq!(
+                learned.questions[3].fallback, "",
+                "an answer the question does not offer says nothing of the field"
+            );
+            let answer = &forms.actions(&at)[0];
+            assert!(
+                !params(answer)
+                    .iter()
+                    .any(|(name, _, _)| name == "full_name")
+            );
+            assert!(
+                answer
+                    .description
+                    .clone()
+                    .unwrap()
+                    .contains("\"Full name\" is written by typing and takes fill-page")
+            );
+        }
+
+        phase an_answer_says_whether_the_form_became_another_or_offers_other_answers;
+        // An answer says what the form became. One that became another form
+        // grew, though it opened no question by name; one that asks the same
+        // and offers other answers is to be read again; one that is what the
+        // page publishes teaches nothing.
+        {
+            let mut forms = PageForms::default();
+            let at = place("https://visa.test/apply");
+            let mut data = visa();
+            data["forms"][0]["offers"] = "aaaa1111".into();
+            forms.heard_read(&at, &data);
+            let answered = |became: serde_json::Value| {
+                serde_json::json!({"form": "form1", "signature": "5f1c2a9b", "results": [],
+                    "set": [], "submitted": false, "now_asks": [], "unanswered": [],
+                    "became": became})
+            };
+            for (became, grew, refresh) in [
+                (
+                    serde_json::json!({"signature": "5f1c2a9b", "offers": "aaaa1111"}),
+                    false,
+                    false,
+                ),
+                (
+                    serde_json::json!({"signature": "5f1c2a9b", "offers": "bbbb2222"}),
+                    false,
+                    true,
+                ),
+                // What no engine prints is not taken for a signature.
+                (
+                    serde_json::json!({"signature": "no good", "offers": 7}),
+                    false,
+                    false,
+                ),
+                (serde_json::json!(null), false, false),
+            ] {
+                let heard = forms.heard_answer(&at, &answered(became.clone()));
+                assert_eq!((heard.grew, heard.refresh), (grew, refresh), "{became}");
+                assert_eq!(forms.standing(&at, "5f1c2a9b"), Some(Standing::Read));
+            }
+            let heard = forms.heard_answer(
+                &at,
+                &answered(serde_json::json!({"signature": "0badc0de", "offers": "bbbb2222"})),
+            );
+            assert!(heard.grew && !heard.refresh);
+            assert_eq!(forms.standing(&at, "5f1c2a9b"), Some(Standing::Changed));
+        }
     }
 }

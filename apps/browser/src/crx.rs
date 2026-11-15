@@ -432,45 +432,49 @@ mod tests {
     use super::fixtures::{Signer, crx};
     use super::*;
 
-    #[test]
-    fn verifies_ids_and_rejects_tampering_and_foreign_identities() {
-        let key = Signer::new();
-        let publisher = Signer::new();
-        let archive = b"PK-pretend-zip-bytes".to_vec();
+    tilo_test_env::scenario! {
+        fn crx_packages_verify_and_name_their_extension;
 
-        let package = crx(&key, &[&key, &publisher], &archive);
-        let verified = verify(&package).unwrap();
-        assert_eq!(verified.archive, &archive[..]);
-        assert_eq!(verified.id, extension_id(&key.spki));
-        assert!(is_extension_id(&verified.id));
-        assert_eq!(verified.public_key, key.spki);
+        phase verifies_ids_and_rejects_tampering_and_foreign_identities;
+        {
+            let key = Signer::new();
+            let publisher = Signer::new();
+            let archive = b"PK-pretend-zip-bytes".to_vec();
 
-        let mut tampered = package.clone();
-        *tampered.last_mut().unwrap() ^= 1;
-        assert_eq!(verify(&tampered).unwrap_err(), CrxError::BadSignature);
+            let package = crx(&key, &[&key, &publisher], &archive);
+            let verified = verify(&package).unwrap();
+            assert_eq!(verified.archive, &archive[..]);
+            assert_eq!(verified.id, extension_id(&key.spki));
+            assert!(is_extension_id(&verified.id));
+            assert_eq!(verified.public_key, key.spki);
 
-        let impostor = crx(&key, &[&publisher], &archive);
-        assert_eq!(verify(&impostor).unwrap_err(), CrxError::IdentityNotProven);
+            let mut tampered = package.clone();
+            *tampered.last_mut().unwrap() ^= 1;
+            assert_eq!(verify(&tampered).unwrap_err(), CrxError::BadSignature);
 
-        assert_eq!(verify(b"PK\x03\x04").unwrap_err(), CrxError::NotCrx);
-        assert_eq!(verify(&package[..10]).unwrap_err(), CrxError::Truncated);
-        let mut v2 = package.clone();
-        v2[4] = 2;
-        assert_eq!(verify(&v2).unwrap_err(), CrxError::Unsupported(2));
-        let mut oversized = package.clone();
-        oversized[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(matches!(verify(&oversized), Err(CrxError::Header(_))));
-        let mut short_header = package;
-        short_header[8..12].copy_from_slice(&1000u32.to_le_bytes());
-        assert!(verify(&short_header).is_err());
-    }
+            let impostor = crx(&key, &[&publisher], &archive);
+            assert_eq!(verify(&impostor).unwrap_err(), CrxError::IdentityNotProven);
 
-    #[test]
-    fn extension_ids_use_letters_a_to_p() {
-        assert_eq!(id_from_crx_id(&[0x01, 0x23, 0xef, 0xff]), "abcdoppp");
-        assert!(!is_extension_id("short"));
-        assert!(!is_extension_id(&"q".repeat(32)));
-        assert!(is_extension_id(&"a".repeat(32)));
+            assert_eq!(verify(b"PK\x03\x04").unwrap_err(), CrxError::NotCrx);
+            assert_eq!(verify(&package[..10]).unwrap_err(), CrxError::Truncated);
+            let mut v2 = package.clone();
+            v2[4] = 2;
+            assert_eq!(verify(&v2).unwrap_err(), CrxError::Unsupported(2));
+            let mut oversized = package.clone();
+            oversized[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+            assert!(matches!(verify(&oversized), Err(CrxError::Header(_))));
+            let mut short_header = package;
+            short_header[8..12].copy_from_slice(&1000u32.to_le_bytes());
+            assert!(verify(&short_header).is_err());
+        }
+
+        phase extension_ids_use_letters_a_to_p;
+        {
+            assert_eq!(id_from_crx_id(&[0x01, 0x23, 0xef, 0xff]), "abcdoppp");
+            assert!(!is_extension_id("short"));
+            assert!(!is_extension_id(&"q".repeat(32)));
+            assert!(is_extension_id(&"a".repeat(32)));
+        }
     }
 
     #[test]

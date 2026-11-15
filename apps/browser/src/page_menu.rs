@@ -249,129 +249,133 @@ mod tests {
         menu
     }
 
-    #[test]
-    fn menu_actions_keep_native_target_and_reject_stale_accessibility_requests() {
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture.clone();
-        let mut menu = opened(vec![command(26501, "Open link in new tab")]);
-        assert!(!menu.activate("browser.context:6:26501", &engine));
-        assert!(!menu.activate("browser.context:7:26502", &engine));
-        assert!(menu.activate("browser.context:7:26501", &engine));
-        assert_eq!(
-            capture.commands().last(),
-            Some(&WebViewCommand::ContextMenuAction {
-                id: 7,
-                command: 26501
-            })
-        );
-        assert!(!menu.menu.is_open());
-    }
+    tilo_test_env::scenario! {
+        fn the_pages_menu_shows_its_rows_and_sends_a_choice_to_the_page;
 
-    #[test]
-    fn checkbox_radio_and_submenu_rows_show_as_the_page_offers_them() {
-        let menu = opened(vec![
-            command(26501, "Save &As"),
-            ContextMenuItem::Separator,
-            ContextMenuItem::Command {
-                id: 27000,
-                label: "Remember the page".into(),
-                checked: Some(true),
-                enabled: true,
-            },
-            ContextMenuItem::Command {
-                id: 27001,
-                label: "Light".into(),
-                checked: Some(false),
-                enabled: false,
-            },
-            ContextMenuItem::Submenu {
-                label: "Copy && share".into(),
-                enabled: true,
-                items: vec![command(27003, "As text")],
-            },
-        ]);
-        let rows = menu.menu.items();
-        assert_eq!(
-            rows[0].label(),
-            Some("Save As"),
-            "a key marker is not shown"
-        );
-        assert_eq!(rows[0].checked(), None);
-        assert!(matches!(rows[1], MenuItem::Separator));
-        assert_eq!(rows[2].checked(), Some(true));
-        assert_eq!(rows[3].checked(), Some(false));
-        assert!(!rows[3].is_enabled(), "a disabled item is greyed");
-        assert_eq!(rows[4].label(), Some("Copy & share"));
-        let nested = rows[4].submenu_items().expect("a submenu");
-        assert_eq!(nested[0].label(), Some("As text"));
+        phase menu_actions_keep_native_target_and_reject_stale_accessibility_requests;
+        {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture.clone();
+            let mut menu = opened(vec![command(26501, "Open link in new tab")]);
+            assert!(!menu.activate("browser.context:6:26501", &engine));
+            assert!(!menu.activate("browser.context:7:26502", &engine));
+            assert!(menu.activate("browser.context:7:26501", &engine));
+            assert_eq!(
+                capture.commands().last(),
+                Some(&WebViewCommand::ContextMenuAction {
+                    id: 7,
+                    command: 26501
+                })
+            );
+            assert!(!menu.menu.is_open());
+        }
 
-        let tree = menu.accessibility().expect("open");
-        let names: Vec<_> = tree.children.iter().map(|node| node.name.clone()).collect();
-        assert_eq!(names.len(), 4, "separators are not announced: {names:?}");
-        assert_eq!(tree.children[1].state.checked, Some(true));
-        assert!(tree.children[2].state.disabled);
-        assert_eq!(
-            tree.children[3].children[0].action_target.as_deref(),
-            Some("browser.context:7:27003")
-        );
-    }
+        phase checkbox_radio_and_submenu_rows_show_as_the_page_offers_them;
+        {
+            let menu = opened(vec![
+                command(26501, "Save &As"),
+                ContextMenuItem::Separator,
+                ContextMenuItem::Command {
+                    id: 27000,
+                    label: "Remember the page".into(),
+                    checked: Some(true),
+                    enabled: true,
+                },
+                ContextMenuItem::Command {
+                    id: 27001,
+                    label: "Light".into(),
+                    checked: Some(false),
+                    enabled: false,
+                },
+                ContextMenuItem::Submenu {
+                    label: "Copy && share".into(),
+                    enabled: true,
+                    items: vec![command(27003, "As text")],
+                },
+            ]);
+            let rows = menu.menu.items();
+            assert_eq!(
+                rows[0].label(),
+                Some("Save As"),
+                "a key marker is not shown"
+            );
+            assert_eq!(rows[0].checked(), None);
+            assert!(matches!(rows[1], MenuItem::Separator));
+            assert_eq!(rows[2].checked(), Some(true));
+            assert_eq!(rows[3].checked(), Some(false));
+            assert!(!rows[3].is_enabled(), "a disabled item is greyed");
+            assert_eq!(rows[4].label(), Some("Copy & share"));
+            let nested = rows[4].submenu_items().expect("a submenu");
+            assert_eq!(nested[0].label(), Some("As text"));
 
-    #[test]
-    fn a_row_chosen_in_a_submenu_reaches_the_page_and_a_disabled_one_never_does() {
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture.clone();
-        let mut menu = opened(vec![
-            ContextMenuItem::Submenu {
-                label: "Translate".into(),
-                enabled: true,
-                items: vec![
-                    command(27001, "To German"),
-                    ContextMenuItem::Submenu {
-                        label: "More".into(),
-                        enabled: true,
-                        items: vec![command(27003, "To Danish")],
-                    },
-                ],
-            },
-            ContextMenuItem::Command {
-                id: 27004,
-                label: "Off here".into(),
-                checked: None,
-                enabled: false,
-            },
-        ]);
-        assert!(!menu.activate("browser.context:7:27004", &engine));
-        // As a person picks in a nested menu: the row's action runs and the whole menu
-        // closes.
-        let MenuItem::Action { submenu, .. } = &menu.menu.items()[0] else {
-            panic!("a submenu row");
-        };
-        let MenuItem::Action {
-            submenu: deeper, ..
-        } = &submenu.as_ref().unwrap()[1]
-        else {
-            panic!("a nested submenu row");
-        };
-        let MenuItem::Action { action, .. } = &deeper.as_ref().unwrap()[0] else {
-            panic!("a command row");
-        };
-        action();
-        menu.menu.close();
-        menu.settle(&engine);
-        assert_eq!(
-            capture.commands(),
-            vec![WebViewCommand::ContextMenuAction {
-                id: 7,
-                command: 27003
-            }]
-        );
-        // Closed with nothing chosen: the page hears so.
-        let mut menu = opened(vec![command(26501, "Open link in new tab")]);
-        menu.menu.close();
-        menu.settle(&engine);
-        assert_eq!(
-            capture.commands().last(),
-            Some(&WebViewCommand::ContextMenuAction { id: 7, command: 0 })
-        );
+            let tree = menu.accessibility().expect("open");
+            let names: Vec<_> = tree.children.iter().map(|node| node.name.clone()).collect();
+            assert_eq!(names.len(), 4, "separators are not announced: {names:?}");
+            assert_eq!(tree.children[1].state.checked, Some(true));
+            assert!(tree.children[2].state.disabled);
+            assert_eq!(
+                tree.children[3].children[0].action_target.as_deref(),
+                Some("browser.context:7:27003")
+            );
+        }
+
+        phase a_row_chosen_in_a_submenu_reaches_the_page_and_a_disabled_one_never_does;
+        {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture.clone();
+            let mut menu = opened(vec![
+                ContextMenuItem::Submenu {
+                    label: "Translate".into(),
+                    enabled: true,
+                    items: vec![
+                        command(27001, "To German"),
+                        ContextMenuItem::Submenu {
+                            label: "More".into(),
+                            enabled: true,
+                            items: vec![command(27003, "To Danish")],
+                        },
+                    ],
+                },
+                ContextMenuItem::Command {
+                    id: 27004,
+                    label: "Off here".into(),
+                    checked: None,
+                    enabled: false,
+                },
+            ]);
+            assert!(!menu.activate("browser.context:7:27004", &engine));
+            // As a person picks in a nested menu: the row's action runs and the whole menu
+            // closes.
+            let MenuItem::Action { submenu, .. } = &menu.menu.items()[0] else {
+                panic!("a submenu row");
+            };
+            let MenuItem::Action {
+                submenu: deeper, ..
+            } = &submenu.as_ref().unwrap()[1]
+            else {
+                panic!("a nested submenu row");
+            };
+            let MenuItem::Action { action, .. } = &deeper.as_ref().unwrap()[0] else {
+                panic!("a command row");
+            };
+            action();
+            menu.menu.close();
+            menu.settle(&engine);
+            assert_eq!(
+                capture.commands(),
+                vec![WebViewCommand::ContextMenuAction {
+                    id: 7,
+                    command: 27003
+                }]
+            );
+            // Closed with nothing chosen: the page hears so.
+            let mut menu = opened(vec![command(26501, "Open link in new tab")]);
+            menu.menu.close();
+            menu.settle(&engine);
+            assert_eq!(
+                capture.commands().last(),
+                Some(&WebViewCommand::ContextMenuAction { id: 7, command: 0 })
+            );
+        }
     }
 }

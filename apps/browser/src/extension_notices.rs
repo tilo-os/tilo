@@ -174,121 +174,125 @@ mod tests {
 
     const ID: &str = "abcdefghijklmnopabcdefghijklmnop";
 
-    #[test]
-    fn a_choice_names_its_extension_notification_and_button() {
-        for (notification, button) in [("copy", None), ("a b/c%d?é", Some(1)), ("", Some(0))] {
-            let uri = activation(ID, notification, button);
-            assert!(ui::notify::valid_activation(&uri), "{uri}");
+    tilo_test_env::scenario! {
+        fn an_extensions_notification_is_shown_tagged_and_answered;
+
+        phase a_choice_names_its_extension_notification_and_button;
+        {
+            for (notification, button) in [("copy", None), ("a b/c%d?é", Some(1)), ("", Some(0))] {
+                let uri = activation(ID, notification, button);
+                assert!(ui::notify::valid_activation(&uri), "{uri}");
+                assert_eq!(
+                    chosen(&uri),
+                    Some((ID.to_owned(), notification.to_owned(), button))
+                );
+            }
+            for bad in [
+                format!("{SCHEME}:notice/short/body/x"),
+                format!("{SCHEME}:notice/{ID}/2/x"),
+                format!("{SCHEME}:notice/{ID}/body/%zz"),
+                format!("other:notice/{ID}/body/x"),
+            ] {
+                assert_eq!(chosen(&bad), None, "{bad}");
+            }
+        }
+
+        phase a_tag_is_short_stable_and_apart_for_each_notification;
+        {
+            let tag = tag(ID, "copy");
+            assert_eq!(tag.len(), 15);
+            assert_eq!(tag, super::tag(ID, "copy"));
+            assert_ne!(tag, super::tag(ID, "copy2"));
+            assert_ne!(super::tag("ab", "c"), super::tag("a", "bc"));
+        }
+
+        phase a_notification_shows_its_text_progress_buttons_and_source;
+        {
+            let notice = ExtensionNotice {
+                title: "Copying".into(),
+                message: "Two files".into(),
+                context: "Downloads".into(),
+                items: vec![("First".into(), "done".into())],
+                buttons: vec!["Pause".into(), "Stop".into()],
+                progress: Some(40),
+                silent: false,
+            };
+            let shown = notification("Copier", ID, "copy", &notice);
+            assert_eq!(shown.title, "Copying");
+            assert_eq!(shown.tag, tag(ID, "copy"));
+            let lines: Vec<&str> = shown.body.lines().collect();
+            assert_eq!(lines[..3], ["Two files", "First done", "Downloads"]);
+            assert!(lines[3].contains("40"), "{lines:?}");
+            assert!(lines[4].contains("Copier"), "{lines:?}");
+            assert_eq!(shown.activation, Some(activation(ID, "copy", None)));
+            let buttons: Vec<(&str, Option<Choice>)> = shown
+                .buttons
+                .iter()
+                .map(|button| (button.label.as_str(), chosen(&button.activation)))
+                .collect();
             assert_eq!(
-                chosen(&uri),
-                Some((ID.to_owned(), notification.to_owned(), button))
+                buttons,
+                [
+                    ("Pause", Some((ID.into(), "copy".into(), Some(0)))),
+                    ("Stop", Some((ID.into(), "copy".into(), Some(1)))),
+                ]
+            );
+            let untitled = notification("Copier", ID, "copy", &ExtensionNotice::default());
+            assert_eq!(untitled.title, "Copier");
+            assert!(!shown.silent);
+        }
+
+        phase a_change_shows_quietly_and_a_button_name_on_two_lines_still_shows;
+        {
+            let notifier = Recording::default();
+            let notice = ExtensionNotice {
+                title: "Copying".into(),
+                buttons: vec!["\t".into(), "Stop\nnow\t".into()],
+                progress: Some(80),
+                silent: true,
+                ..ExtensionNotice::default()
+            };
+            notifier
+                .show(&notification("Copier", ID, "copy", &notice))
+                .expect("a control character refused it");
+            let shown = notifier.shown();
+            assert_eq!(shown.len(), 1);
+            assert!(shown[0].silent);
+            let buttons: Vec<(&str, Option<Choice>)> = shown[0]
+                .buttons
+                .iter()
+                .map(|button| (button.label.as_str(), chosen(&button.activation)))
+                .collect();
+            assert_eq!(
+                buttons,
+                [("Stop now", Some((ID.into(), "copy".into(), Some(1))))]
             );
         }
-        for bad in [
-            format!("{SCHEME}:notice/short/body/x"),
-            format!("{SCHEME}:notice/{ID}/2/x"),
-            format!("{SCHEME}:notice/{ID}/body/%zz"),
-            format!("other:notice/{ID}/body/x"),
-        ] {
-            assert_eq!(chosen(&bad), None, "{bad}");
+
+        phase a_change_shows_and_a_clearing_withdraws_under_one_tag;
+        {
+            let notifier = Recording::default();
+            let window = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = window.clone();
+            let notice = ExtensionNotice {
+                title: "Hello".into(),
+                ..ExtensionNotice::default()
+            };
+            announce(&notifier, &engine, "Greeter", ID, ("hi", Some(&notice)));
+            announce(&notifier, &engine, "Greeter", ID, ("hi", None));
+            assert_eq!(notifier.shown().len(), 1);
+            assert_eq!(notifier.shown()[0].tag, tag(ID, "hi"));
+            assert_eq!(notifier.withdrawn(), [tag(ID, "hi")]);
+            choose(&activation(ID, "hi", Some(1)));
+            assert!(
+                window
+                    .commands()
+                    .contains(&WebViewCommand::ExtensionNotificationChosen {
+                        id: ID.into(),
+                        notification: "hi".into(),
+                        button: Some(1),
+                    })
+            );
         }
-    }
-
-    #[test]
-    fn a_tag_is_short_stable_and_apart_for_each_notification() {
-        let tag = tag(ID, "copy");
-        assert_eq!(tag.len(), 15);
-        assert_eq!(tag, super::tag(ID, "copy"));
-        assert_ne!(tag, super::tag(ID, "copy2"));
-        assert_ne!(super::tag("ab", "c"), super::tag("a", "bc"));
-    }
-
-    #[test]
-    fn a_notification_shows_its_text_progress_buttons_and_source() {
-        let notice = ExtensionNotice {
-            title: "Copying".into(),
-            message: "Two files".into(),
-            context: "Downloads".into(),
-            items: vec![("First".into(), "done".into())],
-            buttons: vec!["Pause".into(), "Stop".into()],
-            progress: Some(40),
-            silent: false,
-        };
-        let shown = notification("Copier", ID, "copy", &notice);
-        assert_eq!(shown.title, "Copying");
-        assert_eq!(shown.tag, tag(ID, "copy"));
-        let lines: Vec<&str> = shown.body.lines().collect();
-        assert_eq!(lines[..3], ["Two files", "First done", "Downloads"]);
-        assert!(lines[3].contains("40"), "{lines:?}");
-        assert!(lines[4].contains("Copier"), "{lines:?}");
-        assert_eq!(shown.activation, Some(activation(ID, "copy", None)));
-        let buttons: Vec<(&str, Option<Choice>)> = shown
-            .buttons
-            .iter()
-            .map(|button| (button.label.as_str(), chosen(&button.activation)))
-            .collect();
-        assert_eq!(
-            buttons,
-            [
-                ("Pause", Some((ID.into(), "copy".into(), Some(0)))),
-                ("Stop", Some((ID.into(), "copy".into(), Some(1)))),
-            ]
-        );
-        let untitled = notification("Copier", ID, "copy", &ExtensionNotice::default());
-        assert_eq!(untitled.title, "Copier");
-        assert!(!shown.silent);
-    }
-
-    #[test]
-    fn a_change_shows_quietly_and_a_button_name_on_two_lines_still_shows() {
-        let notifier = Recording::default();
-        let notice = ExtensionNotice {
-            title: "Copying".into(),
-            buttons: vec!["\t".into(), "Stop\nnow\t".into()],
-            progress: Some(80),
-            silent: true,
-            ..ExtensionNotice::default()
-        };
-        notifier
-            .show(&notification("Copier", ID, "copy", &notice))
-            .expect("a control character refused it");
-        let shown = notifier.shown();
-        assert_eq!(shown.len(), 1);
-        assert!(shown[0].silent);
-        let buttons: Vec<(&str, Option<Choice>)> = shown[0]
-            .buttons
-            .iter()
-            .map(|button| (button.label.as_str(), chosen(&button.activation)))
-            .collect();
-        assert_eq!(
-            buttons,
-            [("Stop now", Some((ID.into(), "copy".into(), Some(1))))]
-        );
-    }
-
-    #[test]
-    fn a_change_shows_and_a_clearing_withdraws_under_one_tag() {
-        let notifier = Recording::default();
-        let window = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = window.clone();
-        let notice = ExtensionNotice {
-            title: "Hello".into(),
-            ..ExtensionNotice::default()
-        };
-        announce(&notifier, &engine, "Greeter", ID, ("hi", Some(&notice)));
-        announce(&notifier, &engine, "Greeter", ID, ("hi", None));
-        assert_eq!(notifier.shown().len(), 1);
-        assert_eq!(notifier.shown()[0].tag, tag(ID, "hi"));
-        assert_eq!(notifier.withdrawn(), [tag(ID, "hi")]);
-        choose(&activation(ID, "hi", Some(1)));
-        assert!(
-            window
-                .commands()
-                .contains(&WebViewCommand::ExtensionNotificationChosen {
-                    id: ID.into(),
-                    notification: "hi".into(),
-                    button: Some(1),
-                })
-        );
     }
 }

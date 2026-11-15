@@ -393,212 +393,216 @@ mod tests {
             .expect("the sign-in says who asks")
     }
 
-    #[test]
-    fn a_sign_in_names_who_asks_and_is_answered_once() {
-        let engine = TestEngine::new();
-        let page: SharedEngine = engine.clone();
-        let mut sign_in = PageSignIn::default();
-        assert!(!sign_in.sync(&page));
-        assert!(engine.accepts_http_auth(), "the page's sign-ins come here");
-        assert!(sign_in.apply(&asks(3, "https://staging.example.org", "Staff wiki"), &page));
+    tilo_test_env::scenario! {
+        fn a_sign_in_is_asked_by_its_origin_and_answered_once;
 
-        let row = sign_in.resource().expect("the sign-in is a row");
-        assert_eq!(row.label, "Sign in to staging.example.org");
-        assert_eq!(
-            preview(&sign_in),
-            "https://staging.example.org asks for a user name and password. In its own words: \
-             “Staff wiki”."
-        );
-        let ids: Vec<_> = row.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["answer-page-sign-in", "cancel-page-sign-in"]);
-        let labels: Vec<_> = row.actions.iter().map(|a| a.label.as_str()).collect();
-        assert_eq!(labels, ["Sign in", "Cancel"]);
-        let asked: Vec<_> = row.actions[0]
-            .params()
-            .iter()
-            .map(|param| (&*param.name, param.ty))
-            .collect();
-        assert_eq!(
-            asked,
-            [
-                ("username", ui::tilo_actions::ParamType::Text),
-                ("password", ui::tilo_actions::ParamType::Secret),
-            ],
-            "both are asked of whoever answers, the password as a secret; the sign-in is bound"
-        );
-        assert!(row.actions[1].params().is_empty());
+        phase a_sign_in_names_who_asks_and_is_answered_once;
+        {
+            let engine = TestEngine::new();
+            let page: SharedEngine = engine.clone();
+            let mut sign_in = PageSignIn::default();
+            assert!(!sign_in.sync(&page));
+            assert!(engine.accepts_http_auth(), "the page's sign-ins come here");
+            assert!(sign_in.apply(&asks(3, "https://staging.example.org", "Staff wiki"), &page));
 
-        let given = || Some(HttpAuthCredentials::new("ada", PASSWORD));
-        assert!(
-            sign_in.answer(&page, 2, given()).is_err(),
-            "an answer meant for another sign-in"
-        );
-        assert!(answers(&engine).is_empty(), "which sends nothing");
-        let answered = sign_in.answer(&page, 3, given()).unwrap();
-        assert!(answered.credentials);
-        assert!(
-            answered.said().contains("https://staging.example.org")
-                && !answered.said().contains(PASSWORD)
-                && !answered.said().contains("ada")
-        );
-        assert_eq!(
-            answers(&engine),
-            [(3, "https://staging.example.org".to_owned(), given())],
-            "the answer names the asker that was shown"
-        );
-        assert!(sign_in.widget().is_none() && sign_in.resource().is_none());
-        assert!(sign_in.answer(&page, 3, None).is_err(), "answered once");
-
-        // The engine stops waiting by itself: the prompt goes.
-        sign_in.apply(&asks(4, "https://staging.example.org", "Staff wiki"), &page);
-        assert!(!sign_in.apply(&WebViewEvent::HttpAuthClosed { id: 3 }, &page));
-        assert!(sign_in.apply(&WebViewEvent::HttpAuthClosed { id: 4 }, &page));
-        assert!(sign_in.current().is_none());
-
-        // Cancelling sends no credentials, and says so.
-        sign_in.apply(&asks(5, "https://staging.example.org", "Staff wiki"), &page);
-        let cancelled = sign_in.answer(&page, 5, None).unwrap();
-        assert!(!cancelled.credentials && cancelled.said().starts_with("Cancelled"));
-        assert_eq!(
-            answers(&engine)[1],
-            (5, "https://staging.example.org".to_owned(), None)
-        );
-
-        // A restarted engine is asked again; the old one's sign-in goes.
-        sign_in.apply(&asks(6, "https://staging.example.org", "Staff wiki"), &page);
-        let restarted = TestEngine::new();
-        let page: SharedEngine = restarted.clone();
-        assert!(sign_in.sync(&page));
-        assert!(restarted.accepts_http_auth() && sign_in.current().is_none());
-        assert!(answers(&restarted).is_empty());
-    }
-
-    #[test]
-    fn the_realm_is_the_servers_own_words_and_never_who_asks() {
-        let page: SharedEngine = TestEngine::new();
-        let mut sign_in = PageSignIn::default();
-        sign_in.sync(&page);
-
-        // A server that calls itself somebody else is still named by its
-        // own origin, and its words stand in quotes after it.
-        sign_in.apply(
-            &asks(
-                1,
-                "https://evil.example",
-                "bank.example \u{202e}needs your password",
-            ),
-            &page,
-        );
-        assert_eq!(sign_in.resource().unwrap().label, "Sign in to evil.example");
-        assert_eq!(
-            preview(&sign_in),
-            "https://evil.example asks for a user name and password. In its own words: \
-             “bank.example needs your password”.",
-            "without what would turn the text around"
-        );
-
-        // No realm, no words of the server's.
-        sign_in.apply(&asks(2, "https://example.org:8443", ""), &page);
-        assert_eq!(
-            sign_in.resource().unwrap().label,
-            "Sign in to example.org:8443"
-        );
-        assert_eq!(
-            preview(&sign_in),
-            "https://example.org:8443 asks for a user name and password."
-        );
-
-        // A password that crosses a network unprotected is said to.
-        sign_in.apply(&asks(3, "http://192.168.1.1", "Router"), &page);
-        assert_eq!(
-            preview(&sign_in),
-            "http://192.168.1.1 asks for a user name and password. In its own words: “Router”. \
-             This connection is not private: the password can be read on its way."
-        );
-        sign_in.apply(&asks(4, "http://127.0.0.1:8080", ""), &page);
-        assert!(!preview(&sign_in).contains("not private"), "this device");
-
-        // A proxy is named as one, by its host and port.
-        let mut proxy = challenge(5, "proxy.example:3128", "Office");
-        proxy.proxy = true;
-        sign_in.apply(&WebViewEvent::HttpAuth(proxy), &page);
-        assert_eq!(
-            sign_in.resource().unwrap().label,
-            "Sign in to the proxy proxy.example:3128"
-        );
-        assert_eq!(
-            preview(&sign_in),
-            "The proxy proxy.example:3128 asks for a user name and password. In its own words: \
-             “Office”."
-        );
-
-        // A name too long for a title is never cut: it stands in full below.
-        let long = format!("https://{}.example.org", "a".repeat(80));
-        sign_in.apply(&asks(6, &long, ""), &page);
-        assert_eq!(sign_in.resource().unwrap().label, "Sign in to this site");
-        assert!(preview(&sign_in).starts_with(&long));
-    }
-
-    #[test]
-    fn a_challenge_that_does_not_name_an_origin_is_shown_to_nobody() {
-        let engine = TestEngine::new();
-        let page: SharedEngine = engine.clone();
-        let mut sign_in = PageSignIn::default();
-        sign_in.sync(&page);
-        for (id, asker) in [
-            (1, "https://bank.example/@evil.example"),
-            (2, "https://ada@bank.example"),
-            (3, "bank.example"),
-            (4, ""),
-        ] {
-            assert!(!sign_in.apply(&asks(id, asker, "Staff"), &page), "{asker}");
-            assert!(sign_in.widget().is_none() && sign_in.resource().is_none());
+            let row = sign_in.resource().expect("the sign-in is a row");
+            assert_eq!(row.label, "Sign in to staging.example.org");
             assert_eq!(
-                answers(&engine).last(),
-                Some(&(id, asker.to_owned(), None)),
-                "it is cancelled, not left waiting"
+                preview(&sign_in),
+                "https://staging.example.org asks for a user name and password. In its own words: \
+             “Staff wiki”."
+            );
+            let ids: Vec<_> = row.actions.iter().map(|a| a.id.as_str()).collect();
+            assert_eq!(ids, ["answer-page-sign-in", "cancel-page-sign-in"]);
+            let labels: Vec<_> = row.actions.iter().map(|a| a.label.as_str()).collect();
+            assert_eq!(labels, ["Sign in", "Cancel"]);
+            let asked: Vec<_> = row.actions[0]
+                .params()
+                .iter()
+                .map(|param| (&*param.name, param.ty))
+                .collect();
+            assert_eq!(
+                asked,
+                [
+                    ("username", ui::tilo_actions::ParamType::Text),
+                    ("password", ui::tilo_actions::ParamType::Secret),
+                ],
+                "both are asked of whoever answers, the password as a secret; the sign-in is bound"
+            );
+            assert!(row.actions[1].params().is_empty());
+
+            let given = || Some(HttpAuthCredentials::new("ada", PASSWORD));
+            assert!(
+                sign_in.answer(&page, 2, given()).is_err(),
+                "an answer meant for another sign-in"
+            );
+            assert!(answers(&engine).is_empty(), "which sends nothing");
+            let answered = sign_in.answer(&page, 3, given()).unwrap();
+            assert!(answered.credentials);
+            assert!(
+                answered.said().contains("https://staging.example.org")
+                    && !answered.said().contains(PASSWORD)
+                    && !answered.said().contains("ada")
+            );
+            assert_eq!(
+                answers(&engine),
+                [(3, "https://staging.example.org".to_owned(), given())],
+                "the answer names the asker that was shown"
+            );
+            assert!(sign_in.widget().is_none() && sign_in.resource().is_none());
+            assert!(sign_in.answer(&page, 3, None).is_err(), "answered once");
+
+            // The engine stops waiting by itself: the prompt goes.
+            sign_in.apply(&asks(4, "https://staging.example.org", "Staff wiki"), &page);
+            assert!(!sign_in.apply(&WebViewEvent::HttpAuthClosed { id: 3 }, &page));
+            assert!(sign_in.apply(&WebViewEvent::HttpAuthClosed { id: 4 }, &page));
+            assert!(sign_in.current().is_none());
+
+            // Cancelling sends no credentials, and says so.
+            sign_in.apply(&asks(5, "https://staging.example.org", "Staff wiki"), &page);
+            let cancelled = sign_in.answer(&page, 5, None).unwrap();
+            assert!(!cancelled.credentials && cancelled.said().starts_with("Cancelled"));
+            assert_eq!(
+                answers(&engine)[1],
+                (5, "https://staging.example.org".to_owned(), None)
+            );
+
+            // A restarted engine is asked again; the old one's sign-in goes.
+            sign_in.apply(&asks(6, "https://staging.example.org", "Staff wiki"), &page);
+            let restarted = TestEngine::new();
+            let page: SharedEngine = restarted.clone();
+            assert!(sign_in.sync(&page));
+            assert!(restarted.accepts_http_auth() && sign_in.current().is_none());
+            assert!(answers(&restarted).is_empty());
+        }
+
+        phase the_realm_is_the_servers_own_words_and_never_who_asks;
+        {
+            let page: SharedEngine = TestEngine::new();
+            let mut sign_in = PageSignIn::default();
+            sign_in.sync(&page);
+
+            // A server that calls itself somebody else is still named by its
+            // own origin, and its words stand in quotes after it.
+            sign_in.apply(
+                &asks(
+                    1,
+                    "https://evil.example",
+                    "bank.example \u{202e}needs your password",
+                ),
+                &page,
+            );
+            assert_eq!(sign_in.resource().unwrap().label, "Sign in to evil.example");
+            assert_eq!(
+                preview(&sign_in),
+                "https://evil.example asks for a user name and password. In its own words: \
+             “bank.example needs your password”.",
+                "without what would turn the text around"
+            );
+
+            // No realm, no words of the server's.
+            sign_in.apply(&asks(2, "https://example.org:8443", ""), &page);
+            assert_eq!(
+                sign_in.resource().unwrap().label,
+                "Sign in to example.org:8443"
+            );
+            assert_eq!(
+                preview(&sign_in),
+                "https://example.org:8443 asks for a user name and password."
+            );
+
+            // A password that crosses a network unprotected is said to.
+            sign_in.apply(&asks(3, "http://192.168.1.1", "Router"), &page);
+            assert_eq!(
+                preview(&sign_in),
+                "http://192.168.1.1 asks for a user name and password. In its own words: “Router”. \
+             This connection is not private: the password can be read on its way."
+            );
+            sign_in.apply(&asks(4, "http://127.0.0.1:8080", ""), &page);
+            assert!(!preview(&sign_in).contains("not private"), "this device");
+
+            // A proxy is named as one, by its host and port.
+            let mut proxy = challenge(5, "proxy.example:3128", "Office");
+            proxy.proxy = true;
+            sign_in.apply(&WebViewEvent::HttpAuth(proxy), &page);
+            assert_eq!(
+                sign_in.resource().unwrap().label,
+                "Sign in to the proxy proxy.example:3128"
+            );
+            assert_eq!(
+                preview(&sign_in),
+                "The proxy proxy.example:3128 asks for a user name and password. In its own words: \
+             “Office”."
+            );
+
+            // A name too long for a title is never cut: it stands in full below.
+            let long = format!("https://{}.example.org", "a".repeat(80));
+            sign_in.apply(&asks(6, &long, ""), &page);
+            assert_eq!(sign_in.resource().unwrap().label, "Sign in to this site");
+            assert!(preview(&sign_in).starts_with(&long));
+        }
+
+        phase a_challenge_that_does_not_name_an_origin_is_shown_to_nobody;
+        {
+            let engine = TestEngine::new();
+            let page: SharedEngine = engine.clone();
+            let mut sign_in = PageSignIn::default();
+            sign_in.sync(&page);
+            for (id, asker) in [
+                (1, "https://bank.example/@evil.example"),
+                (2, "https://ada@bank.example"),
+                (3, "bank.example"),
+                (4, ""),
+            ] {
+                assert!(!sign_in.apply(&asks(id, asker, "Staff"), &page), "{asker}");
+                assert!(sign_in.widget().is_none() && sign_in.resource().is_none());
+                assert_eq!(
+                    answers(&engine).last(),
+                    Some(&(id, asker.to_owned(), None)),
+                    "it is cancelled, not left waiting"
+                );
+            }
+        }
+
+        phase a_newer_sign_in_takes_the_place_of_one_still_open_and_a_retry_says_so;
+        {
+            let engine = TestEngine::new();
+            let page: SharedEngine = engine.clone();
+            let mut sign_in = PageSignIn::default();
+            sign_in.sync(&page);
+            sign_in.apply(&asks(1, "https://one.example", "First"), &page);
+            sign_in.apply(&asks(2, "https://two.example", "Second"), &page);
+            assert_eq!(sign_in.current().map(|challenge| challenge.id), Some(2));
+            assert_eq!(sign_in.resource().unwrap().label, "Sign in to two.example");
+            assert!(
+                sign_in
+                    .answer(&page, 1, Some(HttpAuthCredentials::new("ada", PASSWORD)))
+                    .is_err(),
+                "an answer for the first reaches nobody"
+            );
+            assert!(answers(&engine).is_empty());
+            let prompt = sign_in.prompt().unwrap();
+            assert!(prompt.error().is_none());
+            assert_eq!(prompt.focused_field(), Some(FieldRole::Username));
+            assert!(
+                prompt.fields().all(|(_, field)| field.value().is_empty()),
+                "a prompt starts empty"
+            );
+
+            // Asked again because the credentials were not accepted: it says so.
+            let mut again = challenge(3, "https://two.example", "Second");
+            again.retry = true;
+            sign_in.apply(&WebViewEvent::HttpAuth(again), &page);
+            let prompt = sign_in.prompt().unwrap();
+            assert_eq!(
+                prompt.error(),
+                Some("That user name or password was not accepted.")
+            );
+            assert!(
+                prompt
+                    .field(FieldRole::Secret)
+                    .is_some_and(|field| field.is_secret() && field.value().is_empty())
             );
         }
-    }
-
-    #[test]
-    fn a_newer_sign_in_takes_the_place_of_one_still_open_and_a_retry_says_so() {
-        let engine = TestEngine::new();
-        let page: SharedEngine = engine.clone();
-        let mut sign_in = PageSignIn::default();
-        sign_in.sync(&page);
-        sign_in.apply(&asks(1, "https://one.example", "First"), &page);
-        sign_in.apply(&asks(2, "https://two.example", "Second"), &page);
-        assert_eq!(sign_in.current().map(|challenge| challenge.id), Some(2));
-        assert_eq!(sign_in.resource().unwrap().label, "Sign in to two.example");
-        assert!(
-            sign_in
-                .answer(&page, 1, Some(HttpAuthCredentials::new("ada", PASSWORD)))
-                .is_err(),
-            "an answer for the first reaches nobody"
-        );
-        assert!(answers(&engine).is_empty());
-        let prompt = sign_in.prompt().unwrap();
-        assert!(prompt.error().is_none());
-        assert_eq!(prompt.focused_field(), Some(FieldRole::Username));
-        assert!(
-            prompt.fields().all(|(_, field)| field.value().is_empty()),
-            "a prompt starts empty"
-        );
-
-        // Asked again because the credentials were not accepted: it says so.
-        let mut again = challenge(3, "https://two.example", "Second");
-        again.retry = true;
-        sign_in.apply(&WebViewEvent::HttpAuth(again), &page);
-        let prompt = sign_in.prompt().unwrap();
-        assert_eq!(
-            prompt.error(),
-            Some("That user name or password was not accepted.")
-        );
-        assert!(
-            prompt
-                .field(FieldRole::Secret)
-                .is_some_and(|field| field.is_secret() && field.value().is_empty())
-        );
     }
 }

@@ -509,32 +509,36 @@ impl BrowserWidget {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_bar_shows_the_site_at_rest() {
-        assert_eq!(
-            site_label("https://www.duckduckgo.com/?q=rust"),
-            "duckduckgo.com"
-        );
-        assert_eq!(site_label("http://127.0.0.1:42975/"), "127.0.0.1");
-        assert_eq!(site_label(""), "");
-    }
+    tilo_test_env::scenario! {
+        fn the_bar_names_the_site_and_how_it_came;
 
-    #[test]
-    fn the_bar_marks_a_page_that_came_unencrypted() {
-        for (uri, icon) in [
-            ("https://example.com/", Some("lock")),
-            ("http://neverssl.com/", Some("lock-open")),
-            ("http://192.168.1.1/", Some("lock-open")),
-            ("http://localhost:3000/", None),
-            ("http://app.localhost/", None),
-            ("http://127.0.0.1:8080/", None),
-            ("http://[::1]:8443/", None),
-            ("chrome-extension://abc/options.html", None),
-            ("", None),
-        ] {
-            assert_eq!(connection_icon(uri), icon, "{uri}");
-            if let Some(icon) = icon {
-                assert!(ui::icons::Icon::from_name(icon).is_some(), "{icon}");
+        phase the_bar_shows_the_site_at_rest;
+        {
+            assert_eq!(
+                site_label("https://www.duckduckgo.com/?q=rust"),
+                "duckduckgo.com"
+            );
+            assert_eq!(site_label("http://127.0.0.1:42975/"), "127.0.0.1");
+            assert_eq!(site_label(""), "");
+        }
+
+        phase the_bar_marks_a_page_that_came_unencrypted;
+        {
+            for (uri, icon) in [
+                ("https://example.com/", Some("lock")),
+                ("http://neverssl.com/", Some("lock-open")),
+                ("http://192.168.1.1/", Some("lock-open")),
+                ("http://localhost:3000/", None),
+                ("http://app.localhost/", None),
+                ("http://127.0.0.1:8080/", None),
+                ("http://[::1]:8443/", None),
+                ("chrome-extension://abc/options.html", None),
+                ("", None),
+            ] {
+                assert_eq!(connection_icon(uri), icon, "{uri}");
+                if let Some(icon) = icon {
+                    assert!(ui::icons::Icon::from_name(icon).is_some(), "{icon}");
+                }
             }
         }
     }
