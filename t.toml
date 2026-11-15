@@ -2480,7 +2480,9 @@ optional_needs = ["canary-ci-builder-browser-tests-x86_64"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
 outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
-on = ["main", "dispatch"]
+# Published on stable candidates and when dispatched: the checks that run in the builder pin
+# it by digest, and nothing reads a per-commit tag of it.
+on = ["stable", "dispatch"]
 id_token = ["tilo-dev-signing"]
 
 [[check]]
@@ -2493,7 +2495,9 @@ optional_needs = ["sign-ci-builder", "sign-dev-ci-builder", "canary-ci-builder-b
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/ci-builder/x86_64/receipt.json", "/target/publish/ci-builder/index/receipt.json"]
-on = ["main", "dispatch"]
+# Published on stable candidates and when dispatched: the checks that run in the builder pin
+# it by digest, and nothing reads a per-commit tag of it.
+on = ["stable", "dispatch"]
 id_token = ["registry.tilo.so"]
 
 [[check]]
