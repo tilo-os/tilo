@@ -13,7 +13,7 @@
 //! - What the turn spent comes back as the invocation's items, `{"spent": <micros>}`, and is
 //!   charged through [`crate::services::AgentSessions::spent`].
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -47,6 +47,8 @@ pub(super) struct Turns {
     answering: Mutex<HashMap<u64, Answering>>,
     /// The turn each session was last handed, by session.
     handed: Mutex<HashMap<String, Handed>>,
+    /// The questions on the person's sheet about a turn, by session.
+    asking: Mutex<BTreeMap<String, u32>>,
     /// A handed turn ended: another may go to its connection now.
     due: AtomicBool,
 }
@@ -69,6 +71,9 @@ struct Handed {
     owner: InvocationOwner,
     /// The turn's caller: its execution ends with the turn.
     caller: Caller,
+    /// Its answer ended as a failure: the session shows the person that nobody answered, and the
+    /// turn is not handed out again behind their back.
+    ended: bool,
 }
 
 impl Handed {
@@ -113,19 +118,100 @@ impl Turns {
         self.due.swap(false, Ordering::AcqRel)
     }
 
-    /// The session job `job` answers a turn in, and the turn's caller, if it answers one.
-    fn session_of(&self, job: u64) -> Option<(String, Caller)> {
+    /// The session job `job` answers a turn in, and the turn it answers, if it answers one.
+    fn session_of(&self, job: u64) -> Option<(String, Handed)> {
         self.handed
             .lock()
             .ok()?
             .iter()
-            .find_map(|(session, handed)| {
-                (handed.job == job).then(|| (session.clone(), handed.caller.clone()))
+            .find(|(_, handed)| handed.job == job)
+            .map(|(session, handed)| (session.clone(), handed.clone()))
+    }
+
+    /// The jobs whose turn waits on a person now.
+    pub(super) fn waiting(&self) -> BTreeSet<u64> {
+        let Ok(asking) = self.asking.lock() else {
+            return BTreeSet::new();
+        };
+        if asking.is_empty() {
+            return BTreeSet::new();
+        }
+        self.handed
+            .lock()
+            .map(|handed| {
+                handed
+                    .iter()
+                    .filter(|(session, _)| asking.contains_key(*session))
+                    .map(|(_, handed)| handed.job)
+                    .collect()
             })
+            .unwrap_or_default()
+    }
+}
+
+/// A question about `session`'s turn is on the person's sheet. Dropping it is their answer, or the
+/// sheet going away: with their last question answered, the turn counts its idle time from then on.
+pub(super) struct AskedPerson {
+    state: Arc<AppBrokerState>,
+    session: String,
+}
+
+impl Drop for AskedPerson {
+    fn drop(&mut self) {
+        self.state.answer_given(&self.session);
     }
 }
 
 impl AppBrokerState {
+    /// A question about what `session`'s turn is doing is put to the person. It is not idle while
+    /// they decide, however long they take.
+    pub(super) fn asks_person(self: &Arc<Self>, session: &str) -> AskedPerson {
+        if let Ok(mut asking) = self.turns.asking.lock() {
+            let asked = asking.entry(session.to_owned()).or_default();
+            *asked = asked.saturating_add(1);
+        }
+        self.local_turn.notify_one();
+        AskedPerson {
+            state: Arc::clone(self),
+            session: session.to_owned(),
+        }
+    }
+
+    /// The person answered one of the questions about `session`'s turn, or its sheet went away: the
+    /// turn counts its idle time from when the last of them is answered.
+    fn answer_given(&self, session: &str) {
+        let answered = if let Ok(mut asking) = self.turns.asking.lock() {
+            match asking.get_mut(session) {
+                Some(left) if *left > 1 => {
+                    *left = left.saturating_sub(1);
+                    false
+                }
+                _ => {
+                    asking.remove(session);
+                    true
+                }
+            }
+        } else {
+            false
+        };
+        if !answered {
+            return;
+        }
+        let job = self
+            .turns
+            .handed
+            .lock()
+            .ok()
+            .and_then(|handed| handed.get(session).map(|handed| handed.job));
+        if let Some(job) = job
+            && let Ok(mut pending) = self.pending_invocations.lock()
+            && let Some(pending) = pending.get_mut(&job)
+        {
+            pending.last_activity = tilo_clock::now();
+        }
+        self.local_turn.notify_one();
+    }
+
     /// Hand every turn the agent sessions list to a connection of its agent, and cancel the
     /// handed turns they no longer list.
     pub(super) fn refresh_turns(self: &Arc<Self>) {
@@ -180,7 +266,8 @@ impl AppBrokerState {
     }
 
     /// Hand `turn` to a connection of its agent that answers no other turn now, unless it was
-    /// handed already to one that is still there.
+    /// handed already to one that is still there, or its answer ended as a failure the session
+    /// shows.
     fn hand_turn(&self, workspace: &str, turn: &AgentTurn) -> Result<(), String> {
         let handed = self
             .turns
@@ -199,10 +286,9 @@ impl AppBrokerState {
             })
             .map(|(peer, _)| *peer)
             .collect::<Vec<_>>();
-        if handed
-            .get(&turn.session)
-            .is_some_and(|held| held.answers(turn) && answering.contains(&held.peer))
-        {
+        if handed.get(&turn.session).is_some_and(|held| {
+            held.answers(turn) && (held.ended || answering.contains(&held.peer))
+        }) {
             return Ok(());
         }
         let Some(peer) = answering
@@ -357,6 +443,7 @@ impl AppBrokerState {
             invocation,
             owner,
             caller,
+            ended: false,
         })
     }
 
@@ -375,9 +462,10 @@ impl AppBrokerState {
     }
 
     /// What job `id`'s new state `update` says of its turn, if it answers one: what it spent is
-    /// charged, and once it ends its connection may take the next.
+    /// charged, once it ends its connection may take the next, and an answer that ended as a
+    /// failure is the session's to show on the message.
     pub(super) fn turn_updated(&self, id: u64, update: &tilo_actions::InvocationUpdate) {
-        let Some((session, caller)) = self.turns.session_of(id) else {
+        let Some((session, handed)) = self.turns.session_of(id) else {
             return;
         };
         if let tilo_actions::InvocationUpdate::Item { value, .. } = update
@@ -387,7 +475,18 @@ impl AppBrokerState {
             sessions.spent(&session, spent);
         }
         if update.is_terminal() {
-            caller.retire_execution();
+            handed.caller.retire_execution();
+            if let (tilo_actions::InvocationUpdate::Failed { error, .. }, Some(sessions)) =
+                (update, self.services.agent_sessions.as_deref())
+            {
+                sessions.turn_failed(&session, &handed.turn, handed.attempt, &error.message);
+                if let Ok(mut held) = self.turns.handed.lock()
+                    && let Some(held) = held.get_mut(&session)
+                    && held.job == id
+                {
+                    held.ended = true;
+                }
+            }
             self.turns.due.store(true, Ordering::Release);
             self.local_turn.notify_one();
         }

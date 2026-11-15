@@ -415,6 +415,9 @@ turn-question-title = Den Agenten { $action } lassen
 turn-question-detail = { $action } auf { $resource }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
 turn-question-detail-here = { $action }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
 
+## A turn whose agent stopped before it answered the person's message.
+turn-unanswered = Der Agent hat aufgehört, bevor er antwortete
+
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
 mention-notice-channel = { $name } hat dich in { $channel } erwähnt

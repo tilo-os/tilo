@@ -3039,20 +3039,27 @@ impl AppBrokerState {
     /// in flight, so the accept loop parks instead of waking every 100 ms.
     fn next_invocation_deadline(&self) -> Option<std::time::Instant> {
         let opens = self.workspace_opens.next_deadline();
+        // A turn whose person is being asked has no idle deadline: their answer is not its
+        // silence. Its cancellation deadline still stands.
+        let waiting = self.turns.waiting();
         let pending = self.pending_invocations.lock().ok()?;
         pending
-            .values()
-            .filter_map(|invocation| {
-                let idle_at = invocation
-                    .last_activity
-                    .checked_add(Self::INVOCATION_IDLE_TIMEOUT)?;
+            .iter()
+            .filter_map(|(id, invocation)| {
+                let idle_at = (!waiting.contains(id))
+                    .then(|| {
+                        invocation
+                            .last_activity
+                            .checked_add(Self::INVOCATION_IDLE_TIMEOUT)
+                    })
+                    .flatten();
                 let cancel_at = invocation
                     .cancellation_requested_at
                     .and_then(|requested| requested.checked_add(Self::CANCELLATION_GRACE));
-                Some(match cancel_at {
-                    Some(cancel) if cancel < idle_at => cancel,
-                    _ => idle_at,
-                })
+                match (cancel_at, idle_at) {
+                    (Some(cancel), Some(idle)) => Some(cancel.min(idle)),
+                    (cancel, idle) => cancel.or(idle),
+                }
             })
             .chain(opens)
             .min()
@@ -3064,6 +3071,9 @@ impl AppBrokerState {
         idle_timeout: std::time::Duration,
         cancellation_grace: std::time::Duration,
     ) {
+        // A turn whose person is being asked is not idle, however long they take: only its
+        // cancellation ends it.
+        let waiting = self.turns.waiting();
         let expired = {
             let Ok(mut pending) = self.pending_invocations.lock() else {
                 return;
@@ -3082,8 +3092,8 @@ impl AppBrokerState {
                             .is_some_and(|requested| {
                                 now.saturating_duration_since(requested) >= cancellation_grace
                             });
-                    let idle_expired =
-                        now.saturating_duration_since(invocation.last_activity) >= idle_timeout;
+                    let idle_expired = !waiting.contains(id)
+                        && now.saturating_duration_since(invocation.last_activity) >= idle_timeout;
                     (cancellation_expired || idle_expired).then_some((*id, cancellation_expired))
                 })
                 .collect::<Vec<_>>();
@@ -3138,6 +3148,7 @@ impl AppBrokerState {
             }
             self.publish_activity(pending.activity.as_ref(), &update);
             self.record_completion(id, pending.completion_owner(), update.clone());
+            self.turn_updated(id, &update);
             if let Ok(mut requests) = self.cancellation_requests.lock() {
                 requests.remove(&id);
             }
@@ -3146,6 +3157,8 @@ impl AppBrokerState {
         }
     }
 
+    /// Keep `update` as `id`'s outcome, whoever ended it: its app, the deadline, or its connection
+    /// going away.
     fn record_completion(
         &self,
         id: u64,
@@ -6172,23 +6185,27 @@ impl AppBrokerState {
     /// before completing it: an unjournaled one fails, a journaled one's
     /// outcome is unknown.
     fn fail_pending_invocations_of(&self, peer_id: u64) {
-        if let Ok(mut pending) = self.pending_invocations.lock() {
+        let unfinished: Vec<(u64, PendingInvocation)> = {
+            let Ok(mut pending) = self.pending_invocations.lock() else {
+                return;
+            };
             let ids = pending
                 .iter()
                 .filter_map(|(id, invocation)| {
                     (invocation.peer_id == peer_id && !self.committing(*id)).then_some(*id)
                 })
                 .collect::<Vec<_>>();
-            for id in ids {
-                if let Some(invocation) = pending.remove(&id) {
-                    self.answer_unfinished(
-                        id,
-                        &invocation,
-                        "application disconnected before completing the action",
-                        "application outcome unknown after disconnect",
-                    );
-                }
-            }
+            ids.into_iter()
+                .filter_map(|id| pending.remove(&id).map(|invocation| (id, invocation)))
+                .collect()
+        };
+        for (id, invocation) in unfinished {
+            self.answer_unfinished(
+                id,
+                &invocation,
+                "application disconnected before completing the action",
+                "application outcome unknown after disconnect",
+            );
         }
     }
 
@@ -6265,6 +6282,7 @@ impl AppBrokerState {
         }
         self.publish_activity(invocation.activity.as_ref(), &update);
         self.record_completion(id, invocation.completion_owner(), update.clone());
+        self.turn_updated(id, &update);
         if let Ok(mut requests) = self.cancellation_requests.lock() {
             requests.remove(&id);
         }

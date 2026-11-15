@@ -212,6 +212,13 @@ impl AgentConnection {
         let label = asked.action_label.clone();
         let handle = asked.handle.clone();
         let answer = prompter.ask(asked).ok_or_else(nobody)?;
+        // A turn whose step the person is asked about is not idle while they decide, however long
+        // they take away from it: only the turn's own answer ends it.
+        let _asked_person = self
+            .0
+            .cert
+            .is_none()
+            .then(|| state.asks_person(&self.0.session));
         let mut asking = Asking {
             prompter,
             handle,

@@ -363,6 +363,11 @@ impl crate::Shared {
                 })
                 .collect(),
         );
+        // A turn whose answer ended without one: the person reads it on the message that asked.
+        for (agent, turn, attempt, reason) in self.agent_sessions.take_failed() {
+            self.conversations
+                .turn_failed(&agent, &turn, attempt, &reason);
+        }
         // A turn the person asked on the canvas stands where they asked once Chat said which
         // message it posted for the ask and its record holds it (canvas.md §3).
         let mut layout = self.layout.borrow_mut();

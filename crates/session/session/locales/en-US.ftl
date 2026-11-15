@@ -410,6 +410,9 @@ turn-question-title = Let the agent { $action }
 turn-question-detail = { $action } on { $resource }, as shown. It runs once, for this step only.
 turn-question-detail-here = { $action }, as shown. It runs once, for this step only.
 
+## A turn whose agent stopped before it answered the person's message.
+turn-unanswered = The agent stopped before it answered
+
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } mentioned you in ‘{ $place }’
 mention-notice-channel = { $name } mentioned you in { $channel }

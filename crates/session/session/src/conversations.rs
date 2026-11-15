@@ -205,6 +205,46 @@ impl Conversations {
         Err(unknown())
     }
 
+    /// Record on `turn` 's message that `agent` stopped before it answered it, through Chat's own
+    /// `record-work` as the agent records its work: the person reads the failure on the reply and
+    /// can ask the message again from there. Nothing is written over an answer the agent gave.
+    pub(crate) fn turn_failed(&self, agent: &str, turn: &Turn, attempt: u32, reason: &str) {
+        let summons = Id::from_raw(turn.message.clone());
+        let reply = chat::record::reply_id_at(&summons, &MemberId::agent(agent).key(), attempt);
+        // `Some(true)` where a workspace open here holds the message and has no answer for it
+        // yet: anywhere else there is nothing to write the failure to.
+        let record = {
+            let open = self.open.borrow();
+            open.values().find_map(|opened| {
+                let (_, part) = opened.part.as_ref()?;
+                opened.chat.as_ref()?;
+                let part = part.get();
+                // Asked again since: the failure belongs to the attempt it answered, which no
+                // message of the conversation waits on now.
+                let message = part.messages.get(&summons)?;
+                (message.attempts == attempt).then(|| unanswered(part.messages.get(&reply)))
+            })
+        };
+        if record != Some(true) {
+            return;
+        }
+        let arguments = serde_json::Map::from_iter([
+            ("message".to_owned(), serde_json::json!(turn.message)),
+            (
+                "work".to_owned(),
+                serde_json::json!({ "state": "refused", "detail": reason }),
+            ),
+            (
+                "say".to_owned(),
+                serde_json::json!(crate::i18n::t("turn-unanswered")),
+            ),
+        ]);
+        let invoker = tilo_actions::ActionInvoker::agent(agent);
+        if let Err(error) = self.record_work(&invoker, &turn.message, &arguments) {
+            tracing::warn!(%error, %agent, "a turn that ended without an answer is not recorded");
+        }
+    }
+
     /// Read each workspace's conversations as `person`, and hand the turns they give to the agent
     /// sessions.
     ///
@@ -739,6 +779,24 @@ fn message_of(resource: &str) -> Option<String> {
     bare.then(|| resource.to_owned())
 }
 
+/// Whether `reply` has yet to answer its summons: absent, or still working. A reply without work is
+/// a plain answer; one that keeps work is going until its work ends.
+fn unanswered(reply: Option<&chat::record::Message>) -> bool {
+    reply.is_none_or(|reply| {
+        reply.work.as_ref().is_some_and(|work| {
+            let streamed = work
+                .stream
+                .as_ref()
+                .is_some_and(|stream| stream.finish.is_some());
+            !streamed
+                && work
+                    .state
+                    .as_ref()
+                    .is_none_or(|transition| !transition.state.finished())
+        })
+    })
+}
+
 /// Every summons whose reply has no item Chat's window publishes yet: the person's messages an
 /// agent in the conversation has not answered, and that no held message of the part answers. The
 /// reply each names is the one its id and the agent's derive (`chat::record::reply_id`), so this
@@ -897,28 +955,11 @@ fn turns(
                 .filter(|(message_id, message)| {
                     (!message.text.trim().is_empty() || !message.attachments.is_empty())
                         && person_of(&message.author.0).is_some()
-                        && part
-                            .messages
-                            .get(&chat::record::reply_id_at(
-                                message_id,
-                                &key,
-                                message.attempts,
-                            ))
-                            // A reply without work is a plain answer; one that keeps work is
-                            // going until its work ends.
-                            .is_none_or(|reply| {
-                                reply.work.as_ref().is_some_and(|work| {
-                                    let streamed = work
-                                        .stream
-                                        .as_ref()
-                                        .is_some_and(|stream| stream.finish.is_some());
-                                    !streamed
-                                        && work
-                                            .state
-                                            .as_ref()
-                                            .is_none_or(|transition| !transition.state.finished())
-                                })
-                            })
+                        && unanswered(part.messages.get(&chat::record::reply_id_at(
+                            message_id,
+                            &key,
+                            message.attempts,
+                        )))
                 })
                 .max_by_key(|(message_id, message)| (message.ts, message_id.as_str()));
             let Some((message_id, message)) = summons else {

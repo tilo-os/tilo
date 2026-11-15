@@ -105,6 +105,17 @@ pub trait AgentSessions: Send + Sync {
     fn spent(&self, session: &str, total_micros: u64) {
         let _ = (session, total_micros);
     }
+    /// The answer `session` was giving `turn` ended without one, `attempt` being the time the
+    /// person asked, and `reason` why: nobody answered the person's message.
+    fn turn_failed(
+        &self,
+        session: &str,
+        turn: &tilo_action_policy::turn::Turn,
+        attempt: u32,
+        reason: &str,
+    ) {
+        let _ = (session, turn, attempt, reason);
+    }
 }
 
 /// An agent session while it goes.
