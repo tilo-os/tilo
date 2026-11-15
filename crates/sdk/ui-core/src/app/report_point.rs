@@ -330,6 +330,8 @@ mod tests {
             interface: false,
             kind: kind.map(str::to_owned),
             rect: vello::kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
+            value: None,
+            item: None,
         };
         for (name, kind, called) in [
             (None, None, "Notes"),

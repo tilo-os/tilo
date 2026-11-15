@@ -178,6 +178,23 @@ impl App {
             // press would name a control the map no longer reaches, and the
             // control it leaves would keep the keyboard.
             self.build_tree_before_input();
+            // A context-menu press or key names the item of the window it lands on (the focused
+            // one, for a key), for the menu it opens.
+            let pointed = (crate::widget::context_menu::context_gesture()
+                && matches!(
+                    event,
+                    WindowEvent::MouseInput { .. } | WindowEvent::KeyboardInput { .. }
+                ))
+            .then(|| {
+                let at = match event {
+                    WindowEvent::MouseInput { .. } => self.input.pointer.pressed_at,
+                    _ => self.keyboard_place().map(|place| place.center()),
+                }?;
+                let chain = crate::pick::targets_at(self.root_widget.as_ref(), at);
+                Some((at, crate::shared_selection::item_at(&chain)))
+            })
+            .flatten();
+            crate::shared_selection::set_pointed(pointed);
         }
         match &event {
             WindowEvent::KeyboardLayoutChanged(layout) => {

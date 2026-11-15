@@ -25,6 +25,10 @@ pub struct PickTarget {
     pub kind: Option<String>,
     /// Where it is, in the window's logical coordinates.
     pub rect: Rect,
+    /// What it holds: a paragraph's words, a field's contents.
+    pub value: Option<String>,
+    /// The item of its app's collection it shows ([`AccessNode::item`]).
+    pub item: Option<String>,
 }
 
 impl PickTarget {
@@ -94,6 +98,8 @@ fn target(path: String, node: &AccessNode, rect: Rect) -> PickTarget {
         interface: node.interface_name,
         kind: node.role_description.clone(),
         rect,
+        value: node.value.clone(),
+        item: node.item.clone(),
     }
 }
 

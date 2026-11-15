@@ -14,20 +14,10 @@ impl App {
         draft: Option<&str>,
         to: &[crate::floating_surface::Recipient],
     ) {
-        let keyboard = crate::widget::context_menu_area::keyboard_anchor;
         let anchor = bounds
             .filter(|bounds| bounds.iter().all(|value| value.is_finite()))
             .map(|[x0, y0, x1, y1]| vello::kurbo::Rect::new(x0, y0, x1, y1))
-            .or_else(|| {
-                self.focused_node
-                    .and_then(|node| {
-                        crate::host_core::HostCore::tree(self)
-                            .inspect_node(node, keyboard)
-                            .ok()
-                            .flatten()
-                    })
-                    .or_else(|| keyboard(self.root_widget.as_ref()))
-            });
+            .or_else(|| self.keyboard_place());
         let viewport = self
             .presence_ctx
             .viewport
@@ -36,6 +26,18 @@ impl App {
         self.window_box
             .open_window_box(about, anchor, draft, to, viewport);
         self.layout.layout_dirty = true;
+    }
+
+    /// Where the keyboard is: the item with it, deepest first, so a list answers for its focused
+    /// row rather than for itself.
+    pub(super) fn keyboard_place(&self) -> Option<vello::kurbo::Rect> {
+        let keyboard = crate::widget::context_menu_area::keyboard_anchor;
+        self.focused_node
+            .and_then(|node| {
+                let tree = crate::host_core::HostCore::tree(self);
+                tree.inspect_node(node, keyboard).ok().flatten()
+            })
+            .or_else(|| keyboard(self.root_widget.as_ref()))
     }
 
     /// Hand `event` to the box the window stands with no menu around it; whether it took it.

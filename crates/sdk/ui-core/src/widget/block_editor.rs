@@ -3687,6 +3687,7 @@ impl BlockEditor {
         }
         let group = AccessNode::new(Role::ListItem)
             .with_name(name)
+            .with_item(block.id.clone())
             .with_action_target(format!("notes.block:{}", block.id))
             .with_role_description(accessible_block_name(&block.kind, Some(ordinal)))
             .with_state(AccessState::new().selected(selected).focusable(true))

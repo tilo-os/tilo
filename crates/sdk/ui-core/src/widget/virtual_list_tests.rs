@@ -1563,37 +1563,22 @@ where
 }
 
 #[test]
-fn a_rows_menu_carries_what_the_app_names_for_the_row() {
-    use crate::shared_selection::{SharedSelection, set_send_host_available};
-    set_send_host_available(true);
-    fn open_item(_: &VecListModel<u32, u32>, _: Option<&u32>) -> Vec<MenuItem> {
-        vec![MenuItem::action("Open", || {})]
-    }
-    fn send_to_of(
-        list: &mut VirtualList<VecListModel<u32, u32>>,
-        typed: &str,
-    ) -> Vec<SharedSelection> {
-        let menu = list.menus.owned_mut().expect("the list owns its menu");
-        if !typed.is_empty() {
-            menu.context_menu_mut().set_query(typed);
-        }
-        let send_at = menu.context_menu().items().len() - 1;
-        menu.context_menu_mut().click_item(send_at);
-        let menu = menu.context_menu();
-        assert!(menu.is_open(), "the menu stays beside its box");
-        assert!(menu.send_to().is_open(), "the box opened");
-        menu.send_to().subjects().to_vec()
-    }
-    let mut list = plain_rows(10)
-        .with_context_menu(open_item, |_, _| {})
-        .with_row_about(|key: &u32| Some(SharedSelection::of_text(&format!("issue {key}"))));
-    right_click_row(&mut list, 3);
-    let subjects = send_to_of(&mut list, "a note");
-    assert_eq!(subjects.len(), 1, "the menu is about the row the app named");
-    assert_eq!(
-        subjects[0].anchor,
-        SharedSelection::of_text("issue 3").anchor
+fn a_rows_send_box_takes_the_typing_and_the_pointer() {
+    crate::shared_selection::set_send_host_available(true);
+    let mut list = plain_rows(10).with_context_menu(
+        |_: &VecListModel<u32, u32>, _| vec![MenuItem::action("Open", || {})],
+        |_, _| {},
     );
+    right_click_row(&mut list, 3);
+    let menu = list.menus.owned_mut().expect("the list owns its menu");
+    menu.context_menu_mut().set_query("a note");
+    let send_at = menu.context_menu().items().len() - 1;
+    menu.context_menu_mut().click_item(send_at);
+    assert!(
+        menu.context_menu().is_open(),
+        "the menu stays beside its box"
+    );
+    assert!(menu.context_menu().send_to().is_open(), "the box opened");
     let box_rect = list
         .menus
         .owned()
@@ -1622,14 +1607,7 @@ fn a_rows_menu_carries_what_the_app_names_for_the_row() {
         .text()
         .to_owned();
     assert_eq!(text, "a note!", "the box takes the typing");
-
-    let mut plain = plain_rows(3).with_context_menu(open_item, |_, _| {});
-    right_click_row(&mut plain, 0);
-    assert!(
-        send_to_of(&mut plain, "").is_empty(),
-        "a row the app does not name opens a menu with no subject"
-    );
-    set_send_host_available(false);
+    crate::shared_selection::set_send_host_available(false);
 }
 
 tilo_test_env::scenario! {
@@ -1863,15 +1841,13 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_right_click_opened_rows_menu_offers_to_send_after_the_release() {
-    use crate::shared_selection::{SharedSelection, set_send_host_available};
+    use crate::shared_selection::set_send_host_available;
 
     set_send_host_available(true);
-    let mut list = plain_rows(10)
-        .with_context_menu(
-            |_: &VecListModel<u32, u32>, _| vec![MenuItem::action("Open issue", || {})],
-            |_, _| {},
-        )
-        .with_row_about(|key: &u32| Some(SharedSelection::of_text(&format!("issue {key}"))));
+    let mut list = plain_rows(10).with_context_menu(
+        |_: &VecListModel<u32, u32>, _| vec![MenuItem::action("Open issue", || {})],
+        |_, _| {},
+    );
     right_click_row(&mut list, 3);
     assert!(list.context_menu_is_open(), "the menu stays open");
     let menu = list.menus.owned_mut().expect("the list owns its menu");
@@ -1886,11 +1862,6 @@ fn a_right_click_opened_rows_menu_offers_to_send_after_the_release() {
     assert!(
         menu.send_to().is_focused(),
         "the box is what takes the typing"
-    );
-    assert_eq!(menu.send_to().subjects().len(), 1);
-    assert_eq!(
-        menu.send_to().subjects()[0].anchor,
-        SharedSelection::of_text("issue 3").anchor
     );
     set_send_host_available(false);
 }

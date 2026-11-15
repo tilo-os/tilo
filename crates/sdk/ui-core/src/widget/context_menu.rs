@@ -455,6 +455,11 @@ thread_local! {
     static SHIFT: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Whether the last press or key was the context-menu gesture ([`note_input`]).
+pub(crate) fn context_gesture() -> bool {
+    CONTEXT_GESTURE.with(Cell::get)
+}
+
 /// Whether the person holds Shift right now, as the window's last
 /// modifier change said. Shift is how a person skips a confirmation that
 /// Undo makes unnecessary: a menu row that asks first runs at once, and

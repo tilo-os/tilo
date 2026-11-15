@@ -65,16 +65,15 @@ fn right_click(app: &mut App, at: Point) {
     frames(app);
 }
 
+fn menu(app: &App) -> &crate::widget::ContextMenu {
+    let root = app.root_widget.as_any();
+    let area = root.and_then(|any| any.downcast_ref::<ContextMenuArea>());
+    area.expect("the menu area is the root").menu()
+}
+
 fn menu_row(app: &App, index: usize) -> Point {
-    let root = app
-        .root_widget
-        .as_any()
-        .and_then(|any| any.downcast_ref::<ContextMenuArea>());
-    root.expect("the menu area is the root")
-        .menu()
-        .item_rect(index)
-        .expect("the row is laid out")
-        .center()
+    let row = menu(app).item_rect(index);
+    row.expect("the row is laid out").center()
 }
 
 fn press(app: &mut App, at: Point) {
@@ -98,4 +97,41 @@ fn a_menu_row_pressed_in_a_window_runs_when_the_button_comes_up() {
     frames(&mut app);
     release(&mut app);
     assert_eq!(chosen.get(), 2, "the release on the row runs it");
+}
+
+#[test]
+fn a_right_click_on_a_row_sends_about_that_row() {
+    crate::shared_selection::set_send_host_available(true);
+    let row = |id: &str, title| crate::widget::ListRow::new(id, title).item(format!("file-{id}"));
+    let rows = crate::widget::Column::new()
+        .push(Box::new(row("a", "Agenda")))
+        .push(Box::new(row("b", "Budget")));
+    let area = ContextMenuArea::new(Box::new(rows), |_| vec![MenuEntry::new("Open", || {})]);
+    let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(area));
+    frames(&mut app);
+    app.refresh_semantic_tree();
+    let budget = app
+        .semantic_tree()
+        .find_by_name("Budget")
+        .and_then(|node| node.bounds);
+    right_click(&mut app, budget.expect("the row").center());
+    let send_row = menu_row(
+        &app,
+        *menu(&app).shown_rows().last().expect("Send to… ends it"),
+    );
+    press(&mut app, send_row);
+    release(&mut app);
+    let about = crate::shared_selection::SharedSelection::of_text("Budget")
+        .at(tilo_actions::SelectionPlace::item("file-b"));
+    let subjects: Vec<_> = menu(&app)
+        .send_to()
+        .subjects()
+        .iter()
+        .map(|s| s.anchor.clone())
+        .collect();
+    assert_eq!(
+        subjects,
+        [about.anchor],
+        "the box is about the row right-clicked, not the window"
+    );
 }

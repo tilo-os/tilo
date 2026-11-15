@@ -275,8 +275,8 @@ pub fn subtree_selection(root: &dyn Widget) -> Option<SharedSelection> {
 
 /// The one subject rule for what pointing at `at` is about, given the `focused`
 /// selection: the selection when the person pointed inside it (or did not point at all,
-/// with the keyboard); `None` otherwise, for the caller to name the item under the
-/// pointer, else the window.
+/// with the keyboard); `None` otherwise, for the menu to name the item under the
+/// pointer ([`menu_subject`]), else the window.
 #[must_use]
 pub fn pointed_selection(
     focused: Option<SharedSelection>,
@@ -306,16 +306,14 @@ pub struct SendToRequest {
     pub text: String,
 }
 
-/// Where in the window a request points, and what it is about: the reference the app
-/// runner hands the session, resolved against what the window shows.
+/// What a request is about: `about`, else the `focused` selection, else the window — the
+/// reference the app runner hands the session, resolved against what the window shows.
 #[must_use]
 pub fn resolve_selection(
     about: Option<SharedSelection>,
-    at: Option<vello::kurbo::Point>,
     focused: Option<SharedSelection>,
     published: &[tilo_actions::ResourceSpec],
-) -> (Option<SharedSelection>, Option<[f64; 4]>) {
-    let focused = pointed_selection(focused, at);
+) -> Option<SharedSelection> {
     let mut about = about
         .filter(|about| !about.is_empty())
         .or(focused)
@@ -334,17 +332,7 @@ pub fn resolve_selection(
     if let Some(about) = about.as_mut() {
         about.resolve_resource(published);
     }
-    let pointed = at.map(|at| {
-        crate::floating_surface::protocol_rect_array(vello::kurbo::Rect::from_center_size(
-            at,
-            (1.0, 1.0),
-        ))
-    });
-    let bounds = about
-        .as_ref()
-        .and_then(SharedSelection::protocol_bounds)
-        .or(pointed);
-    (about, bounds)
+    about
 }
 
 thread_local! {
@@ -352,6 +340,52 @@ thread_local! {
     static HOSTED: Cell<bool> = const { Cell::new(false) };
     static FOCUSED: RefCell<Option<SharedSelection>> = const { RefCell::new(None) };
     static BOX_OPEN: Cell<bool> = const { Cell::new(false) };
+    static POINTED: RefCell<Option<(vello::kurbo::Point, Option<SharedSelection>)>> =
+        const { RefCell::new(None) };
+}
+
+/// Record where the person's last press or key landed: a context-menu press's point and the
+/// item under it ([`item_at`]), else `None`. The window sets it before
+/// the press reaches its widgets, so a menu the press opens names that item ([`menu_subject`]).
+pub(crate) fn set_pointed(pointed: Option<(vello::kurbo::Point, Option<SharedSelection>)>) {
+    POINTED.with(|slot| *slot.borrow_mut() = pointed);
+}
+
+/// What a menu opening now is about, given what its owner named: after a context-menu press or
+/// key ([`set_pointed`]), the owner's subject when the press landed inside it (or it is drawn
+/// nowhere), else the item under the press, else the owner's subject; otherwise the owner's.
+pub(crate) fn menu_subject(about: Option<SharedSelection>) -> Option<SharedSelection> {
+    let Some((at, item)) = POINTED.with(|slot| slot.borrow().clone()) else {
+        return about;
+    };
+    let inside = about
+        .clone()
+        .filter(|about| about.bounds.is_none_or(|bounds| bounds.contains(at)));
+    inside.or(item).or(about)
+}
+
+/// The item under the pointer, from what lies there (`pick::targets_at`, outermost first): the
+/// deepest part that shows an item of its app's collection, else the deepest row, list item,
+/// paragraph or heading — named as the window reads it, drawn where it stands.
+pub(crate) fn item_at(chain: &[crate::pick::PickTarget]) -> Option<SharedSelection> {
+    use crate::a11y::Role;
+    let words = |role: Role| matches!(role, Role::Paragraph | Role::Heading { .. });
+    let row = |role| matches!(role, Role::ListItem | Role::Row | Role::TreeItem) || words(role);
+    let deepest =
+        |keep: &dyn Fn(&crate::pick::PickTarget) -> bool| chain.iter().rev().find(|p| keep(p));
+    let part = deepest(&|part| part.item.is_some()).or_else(|| deepest(&|part| row(part.role)))?;
+    // A paragraph or heading reads as its words; a row as its name.
+    let text = (part.value.as_deref())
+        .filter(|_| words(part.role))
+        .or(part.name.as_deref())
+        .or(part.value.as_deref())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())?;
+    let selection = SharedSelection::of_text(text).within(part.rect);
+    Some(match part.item.as_deref() {
+        Some(item) => selection.at(SelectionPlace::item(item)),
+        None => selection,
+    })
 }
 
 /// Send what a box holds: the app runner hands it to the session, which acts on it as the
@@ -799,36 +833,21 @@ mod tests {
 
         phase the_reference_resolves_the_window_when_nothing_is_selected;
         {
-            let at = vello::kurbo::Point::new(200.0, 300.0);
-            let focused = SharedSelection::of_text("elsewhere")
-                .within(vello::kurbo::Rect::new(0.0, 0.0, 50.0, 20.0));
-            let (about, bounds) =
-                resolve_selection(None, Some(at), Some(focused.clone()), &published());
-            let about = about.expect("the window");
+            let about = resolve_selection(None, None, &published()).expect("the window");
             assert_eq!(
                 about.resource.as_ref().map(|resource| resource.id.as_str()),
                 Some("doc:1")
             );
             assert_eq!(about.anchor.place, Some(SelectionPlace::item("doc:1")));
-            assert_eq!(bounds, Some([199.5, 299.5, 200.5, 300.5]));
-            let (about, bounds) = resolve_selection(
-                None,
-                Some(vello::kurbo::Point::new(10.0, 10.0)),
-                Some(focused),
-                &published(),
-            );
-            let about = about.expect("the selection");
+            let focused = SharedSelection::of_text("elsewhere");
+            let about = resolve_selection(None, Some(focused), &published()).expect("the selection");
             assert_eq!(about.anchor.excerpt.as_deref(), Some("elsewhere"));
             assert_eq!(
                 about.resource.map(|resource| resource.id),
                 Some("doc:1".into())
             );
-            assert_eq!(bounds, Some([0.0, 0.0, 50.0, 20.0]));
             // An app that publishes nothing has only its window to point at.
-            assert_eq!(
-                resolve_selection(None, Some(at), None, &[]),
-                (None, Some([199.5, 299.5, 200.5, 300.5]))
-            );
+            assert_eq!(resolve_selection(None, None, &[]), None);
         }
     }
 

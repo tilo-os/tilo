@@ -1494,9 +1494,8 @@ impl App {
         let focused = crate::shared_selection::subtree_selection(self.root_widget.as_ref());
         let mut attached = Vec::with_capacity(request.about.len());
         for (index, about) in request.about.iter().enumerate() {
-            let (subject, _) = crate::shared_selection::resolve_selection(
+            let subject = crate::shared_selection::resolve_selection(
                 Some(about.clone()),
-                None,
                 // What the box added after its first chip was not what the
                 // person pointed at: it is named in its own right.
                 focused.clone().filter(|_| index == 0),

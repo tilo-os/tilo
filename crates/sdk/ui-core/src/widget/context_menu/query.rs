@@ -117,6 +117,8 @@ impl ContextMenu {
         self.pinned_top = None;
         self.asked = None;
         self.ask_at = at;
+        self.send_to
+            .set_about(crate::shared_selection::menu_subject(self.about.clone()));
         let long = self.items.len() > QUERY_MIN_ROWS;
         let takes_typing = self.owner_asks
             || self.owned_typing
@@ -162,12 +164,6 @@ impl ContextMenu {
             .map(|_| self.items.len() - 1)
     }
 
-    /// Whether the send row stands before anything is typed: the box it
-    /// opens can send, here or through the owner.
-    fn sends_untyped(&self) -> bool {
-        self.sends()
-    }
-
     /// The query's text, trimmed; empty without one.
     pub(super) fn needle(&self) -> String {
         self.query
@@ -197,7 +193,7 @@ impl ContextMenu {
         let needle = self.needle();
         if needle.is_empty() {
             self.shown = (0..owned).collect();
-            if let Some(ask) = self.ask_row().filter(|_| self.sends_untyped()) {
+            if let Some(ask) = self.ask_row().filter(|_| self.sends()) {
                 if let Some(MenuItem::Action { label, .. }) = self.items.get_mut(ask) {
                     *label = widget_text("menu-send");
                 }
@@ -284,7 +280,7 @@ impl ContextMenu {
             .as_ref()
             .map(|query| query.text.trim().to_owned())
             .unwrap_or_default();
-        if self.owner_asks && !(text.is_empty() && self.sends_untyped()) {
+        if self.owner_asks && !(text.is_empty() && self.sends()) {
             if text.is_empty() {
                 return;
             }
