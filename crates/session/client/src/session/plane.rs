@@ -147,6 +147,9 @@ pub(crate) struct Planes {
     asking: BTreeMap<WorkspaceId, Waiting>,
     /// Per workspace, how many asks in a row did not reach a plane.
     misses: BTreeMap<WorkspaceId, u8>,
+    /// Per workspace whose plane is due, why it was not asked for after all:
+    /// what this page still lacks before it can ask.
+    unasked: BTreeMap<WorkspaceId, &'static str>,
 }
 
 impl Planes {
@@ -162,6 +165,7 @@ impl Planes {
     pub(crate) fn leave(&mut self, workspace_id: WorkspaceId) -> Option<Joined> {
         self.asking.remove(&workspace_id);
         self.misses.remove(&workspace_id);
+        self.unasked.remove(&workspace_id);
         self.joined.remove(&workspace_id)
     }
 
@@ -199,6 +203,12 @@ impl Planes {
                 ),
             });
         }
+        for (workspace_id, why) in &self.unasked {
+            if self.joined.contains_key(workspace_id) || self.asking.contains_key(workspace_id) {
+                continue;
+            }
+            lines.push(format!("plane {workspace_id}: not asked. {why}"));
+        }
         lines.join("\n")
     }
 
@@ -211,6 +221,8 @@ impl Planes {
             .retain(|workspace_id, _| workspaces.contains(workspace_id));
         self.misses
             .retain(|workspace_id, _| workspaces.contains(workspace_id));
+        self.unasked
+            .retain(|workspace_id, _| workspaces.contains(workspace_id));
     }
 
     /// A new session: every plane of the last one ended with its grant, and
@@ -219,6 +231,7 @@ impl Planes {
         self.joined.clear();
         self.asking.clear();
         self.misses.clear();
+        self.unasked.clear();
     }
 
     /// Whether `workspace_id`'s plane is to be asked for at `now_ms`: it is
@@ -245,6 +258,7 @@ impl Planes {
         epoch: u64,
         members: &BTreeSet<[u8; 32]>,
     ) {
+        self.unasked.remove(&workspace_id);
         self.asking.insert(
             workspace_id,
             Waiting::Joining {
@@ -263,6 +277,7 @@ impl Planes {
     /// The plane of `workspace_id` opened.
     pub(crate) fn insert(&mut self, workspace_id: WorkspaceId, joined: Joined) {
         self.misses.remove(&workspace_id);
+        self.unasked.remove(&workspace_id);
         self.joined.insert(workspace_id, joined);
     }
 
@@ -277,6 +292,12 @@ impl Planes {
         // nothing count towards the note in the members' place.
         self.misses.remove(&workspace_id);
         self.asking.insert(workspace_id, Waiting::Refused { at_ms });
+    }
+
+    /// `workspace_id`'s plane was due and not asked for: `why` is what this
+    /// page still lacks, said in its channel diagnostics.
+    pub(crate) fn note_unasked(&mut self, workspace_id: WorkspaceId, why: &'static str) {
+        self.unasked.insert(workspace_id, why);
     }
 
     /// An ask for `workspace_id`'s plane reached no plane: how many asks in a
@@ -502,6 +523,8 @@ impl Task {
             .collect();
         for workspace_id in due {
             let Some((workspace, _)) = self.replicas.members(workspace_id) else {
+                self.planes
+                    .note_unasked(workspace_id, "This page holds none of its workspace yet.");
                 continue;
             };
             // The page asks for the workspace's keys through the plane's
@@ -509,9 +532,17 @@ impl Task {
             let route = route(&workspace);
             self.open_channel(&route);
             let Some(keys) = self.keys_of(&route) else {
+                self.planes.note_unasked(
+                    workspace_id,
+                    "This page holds no channel keys for its workspace yet.",
+                );
                 continue;
             };
             let Some(participants) = self.replicas.participants(&route) else {
+                self.planes.note_unasked(
+                    workspace_id,
+                    "Its workspace's governance names none of its devices here yet.",
+                );
                 continue;
             };
             let members: BTreeSet<[u8; 32]> = participants

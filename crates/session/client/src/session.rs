@@ -2432,6 +2432,20 @@ mod tests {
             1,
             "an answer starts the count again"
         );
+        // A plane never asked for at all says what the page still lacks.
+        let mut unasked = plane::Planes::default();
+        unasked.note_unasked(
+            WorkspaceId::from_u128(8),
+            "This page holds no channel keys for its workspace yet.",
+        );
+        assert_eq!(
+            unasked.describe(),
+            "plane 00000000-0000-0000-0000-000000000008: not asked. This page holds no channel \
+             keys for its workspace yet."
+        );
+        // Asked once, the lack is no longer what the page says.
+        unasked.began(WorkspaceId::from_u128(8), 1_000, 1, &BTreeSet::new());
+        assert!(!unasked.describe().contains("not asked"));
     }
 }
 
