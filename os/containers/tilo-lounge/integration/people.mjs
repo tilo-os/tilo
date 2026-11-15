@@ -356,6 +356,23 @@ const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 
 // answer are the previous query's. So Enter waits for the shell to have answered
 // *this* query, and for the row asked for to be the first one under the
 // palette's heading, which is where the highlight sits.
+/// What the open search offers with nothing typed, as the groups it lists: the
+/// page's own sources list apps and windows, the session's list settings, people
+/// and files, so which stands says how much of search is mounted here.
+const emptyCard = async (tab, command) => {
+  for (let tries = 0; tries < 3; tries++) {
+    if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen').catch(() => false)) break;
+    await key(tab, 'Escape');
+    await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', stepLimit(2)).catch(() => {});
+  }
+  if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen').catch(() => false)) {
+    await key(tab, 'k', command);
+  }
+  await tab.evaluate('globalThis.__tiloWait?.(() => globalThis.tiloMount?.state()?.searchSearching === false, 20000)').catch(() => false);
+  const card = JSON.parse(await tab.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.searchCard ?? null)').catch(() => 'null'));
+  return card?.rows?.map(entry => `${entry.title} [${entry.kind}]`) ?? null;
+};
+
 const search = async (tab, command, query, row, opens = null) => {
   const began = Date.now();
   const framesFrom = await presented(tab);
@@ -368,7 +385,8 @@ const search = async (tab, command, query, row, opens = null) => {
     const tick = () => {
       const s = globalThis.tiloMount?.state?.() ?? {};
       globalThis.__pressTrail.push([Math.round(performance.now() - began), s.phase ?? null,
-        !!s.searchOpen, s.frames ?? null, s.searchCard?.scope ?? null,
+        !!s.searchOpen, s.frames ?? null, s.desktopRevision ?? null,
+        s.searchCard?.scope ?? null,
         (document.activeElement?.nodeName ?? '') + (document.hasFocus() ? '+' : '-')]);
       if (globalThis.__pressTrail.length > 120) globalThis.__pressTrail.shift();
       if (performance.now() - began < 75000) requestAnimationFrame(tick);
@@ -437,7 +455,12 @@ const search = async (tab, command, query, row, opens = null) => {
       const rows = await paletteRows(tab);
       await dump(tab, `timeout-rows-for-${query}`);
       const offered = card.rows?.map(entry => `${entry.title} [${entry.kind}]`) ?? rows;
-      failed(`the palette offers no ${row} first for "${query}" in the ${card.scope ?? '?'} search: ${JSON.stringify(offered)}`);
+      // The groups an empty card lists say which sources the shell has at all:
+      // the page's own list apps and windows, the session's list settings, people
+      // and files. Which of them stands tells a search over no apps from one
+      // whose app list is empty.
+      const empty = await emptyCard(tab, command);
+      failed(`the palette offers no ${row} first for "${query}" in the ${card.scope ?? '?'} search: ${JSON.stringify(offered)}; with nothing typed it offers ${JSON.stringify(empty)}`);
     }
     last = read;
   }

@@ -684,12 +684,11 @@ fn windows(
             for group in &strip.window_groups {
                 for tab in &group.tabs {
                     let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile);
-                    let app_title = match &tab.tile {
-                        TileContent::LocalApp { label, .. } => label.clone(),
-                        _ => app.as_ref().map_or_else(String::new, |app| {
-                            tilo_desktop_search::names::app_name(app)
-                        }),
-                    };
+                    // The app's own name, never the place it shows: a window on "Sheet1" is a
+                    // Sheets window, and a person typing "sheets" finds it.
+                    let app_title = app
+                        .as_ref()
+                        .map_or_else(String::new, |app| tilo_desktop_search::names::app_name(app));
                     let place = holders
                         .get(&tab.id)
                         .map(|holder| holder.name.clone())

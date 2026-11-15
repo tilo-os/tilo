@@ -2032,3 +2032,41 @@ fn the_first_request_typed_into_search_makes_the_workspaces_agent_and_the_second
     assert_eq!(sends[0], first, "the first send reads as it was sent");
     assert_eq!(sends[1], second, "the second is the last carried out");
 }
+
+/// An app's own row leads a record its window shows, for the app's name: a person who types
+/// "sheets" gets Sheets, and the workbook the sheet window holds comes after it.
+#[test]
+fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let records = tilo_session::Records::of(home.data().to_path_buf());
+    let mut session = session_over(Rc::new(Host::default()), Some(records), None);
+    session.step(Duration::from_millis(1)).unwrap();
+    // The workbook the Sheets window shows, as its app's index of this workspace names it.
+    let here = workspace_in_front(&session);
+    let workbook = ui::record::RecordId::parse("sheets:1").expect("a record id");
+    let directory = app_state::workspace_index_directory(home.data(), "so.tilo.sheets", &here)
+        .expect("an index directory");
+    std::fs::create_dir_all(&directory).expect("the index's directory");
+    let mut index = automerge::AutoCommit::new();
+    assert!(ui::record::index::reference(
+        &mut index,
+        &workbook,
+        &ui::record::RecordKind::new("sheets.workbook")
+    ));
+    assert!(ui::record::index::set_name(
+        &mut index,
+        &workbook,
+        Some("Sheet1")
+    ));
+    std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+
+    find_row(&mut session, "sheets", "Sheet1");
+    search_for(&mut session, "sheets");
+    let labels: Vec<String> = rows(&session).into_iter().map(|row| row.label).collect();
+    assert_eq!(
+        labels.first().map(String::as_str),
+        Some("Sheets"),
+        "the app's row leads for its own name: {labels:?}"
+    );
+}

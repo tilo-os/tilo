@@ -381,3 +381,70 @@ fn an_open_window_under_another_name_does_not_take_the_apps_row_away() {
         "the app's row leads for its name, with its window open under another: {rows:?}"
     );
 }
+
+/// A window is found by the app it shows as well as by what it shows: a sheet window named after
+/// its workbook ("Sheet1") is a Sheets window, and a person typing "sheets" finds it under the
+/// app's own row.
+#[test]
+fn a_sheet_window_is_found_by_its_apps_name() {
+    let apps = page_apps();
+    let Some(sheets) = apps.iter().find(|app| app.title == "Sheets").cloned() else {
+        panic!("the page's catalogue lists Sheets");
+    };
+    let mut minter = IdMinter::new(7);
+    let tab = Tab {
+        id: minter.mint(),
+        title: "Sheet1".into(),
+        tile: TileContent::LocalApp {
+            app_id: sheets.id.clone(),
+            label: "Sheet1".into(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let tree = seed_tree(&mut minter, "Office", vec![tab]);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(WebApps(apps)));
+    handle.set_viewport_width(f64::from(WINDOW.0));
+    let mut shell = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        WINDOW,
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::MemberId::person("tester"),
+    );
+    shell.set_caller_palette_enabled(false);
+    shell.relayout();
+    let mut chrome = chrome_at(&handle, WINDOW);
+    chrome.set_platform_conventions(ui::platform::PlatformConventions::new(
+        ui::platform::Platform::Linux,
+    ));
+
+    chrome.set_modifiers(&["ctrl".into()]);
+    chrome.key("k");
+    chrome.set_modifiers(&[]);
+    chrome.relayout();
+    shell.relayout();
+    chrome.relayout();
+    assert!(handle.search_open(), "the search chord opened a search");
+    chrome.type_text("sheets");
+    chrome.relayout();
+    shell.relayout();
+    chrome.relayout();
+    assert!(
+        search_settled(&mut shell, &mut chrome, &handle),
+        "the search for \"sheets\" settled"
+    );
+    let rows = result_names(&chrome);
+    assert_eq!(
+        rows.first().map(String::as_str),
+        Some(sheets.title.as_str()),
+        "the app's row leads for its name: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row == "Sheet1 — Sheets"),
+        "the window on the workbook is found by its app's name: {rows:?}"
+    );
+}
