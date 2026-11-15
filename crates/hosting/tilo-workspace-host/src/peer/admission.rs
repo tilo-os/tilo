@@ -277,14 +277,14 @@ pub(crate) async fn enqueue_host_state(
 /// Admit `envelope`, sent by a host attached to `workspace`, through the
 /// workspace's ordered persistence owner, as a device's change is admitted.
 /// `sync` marks an anti-entropy answer, which is taken in but not fanned out
-/// again.
+/// again. Answers once the change is admitted; [`Kept::kept`] once it is kept.
 pub async fn enqueue_from_host(
     workspace: &SharedWorkspace,
     envelope: Envelope,
     source: StateSource,
     metrics: Arc<crate::metrics::Metrics>,
     sync: bool,
-) -> Result<(), PeerError> {
+) -> Result<Kept, PeerError> {
     Box::pin(enqueue_state_inner(
         workspace,
         envelope,
@@ -294,7 +294,25 @@ pub async fn enqueue_from_host(
         false,
     ))
     .await
-    .map(drop)
+    .map(|admitted| Kept(admitted.completion))
+}
+
+/// A change an attached host sent, admitted: kept once [`Self::kept`] says so.
+pub struct Kept(tokio::sync::oneshot::Receiver<Result<StateCommit, StoreError>>);
+
+impl Kept {
+    /// Wait until the change is kept and published here, or refused. Whether
+    /// it was kept.
+    pub async fn kept(self) -> bool {
+        match self.0.await {
+            Ok(Ok(_)) => true,
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "a change an attached host sent was not kept");
+                false
+            }
+            Err(_) => false,
+        }
+    }
 }
 
 /// What the capacity timings call a change's owner turn and publication:

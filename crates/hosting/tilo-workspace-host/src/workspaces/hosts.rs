@@ -495,7 +495,17 @@ impl Workspaces {
             },
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| match &error {
+            // A host refuses a session it does not trust by closing it
+            // unanswered; another person's host trusts one only when its
+            // operator takes workspaces it does not own.
+            tilo_relay_session::client::ClientError::NoHandshakeAnswer(_) => format!(
+                "the host refused this host's session: it holds no workspace of another \
+                 person unless its operator's setting takes that workspace (--hold-for, \
+                 TILO_WORKSPACES_HOLD_FOR) ({error})"
+            ),
+            other => other.to_string(),
+        })?;
         Ok(OtherHost {
             certificate: client.relay_peer.cert.clone(),
             client,

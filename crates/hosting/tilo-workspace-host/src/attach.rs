@@ -405,6 +405,10 @@ impl Session<'_> {
                     let (_, _, body) = crate::coedit::retention_view(delta)?;
                     Some((tap, *author_device_public_key, body.to_vec()))
                 });
+                // An upstream replays all it retains of the workspace at once,
+                // faster than this host keeps it: each change is kept before the
+                // next is taken, so a workspace with a long history fills no
+                // queue and the session holds.
                 crate::peer::enqueue_from_host(
                     &workspace,
                     envelope,
@@ -413,7 +417,9 @@ impl Session<'_> {
                     false,
                 )
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())?
+                .kept()
+                .await;
                 if let Some((tap, author, body)) = notice {
                     crate::peer::tell_governor(&workspace, &tap, author, body).await;
                 }
@@ -468,7 +474,10 @@ impl Session<'_> {
             true,
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?
+        .kept()
+        .await;
+        Ok(())
     }
 
     /// Ask the upstream for what `workspace_id` lacks: send its materialized

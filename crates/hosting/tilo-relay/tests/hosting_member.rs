@@ -302,6 +302,24 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     governor.stop().await;
 }
 
+/// The devices a held workspace's governance names besides its owner's own:
+/// a workspace people have used for a while, not a fresh one.
+const HELD_DEVICES: usize = 300;
+
+/// `workspace` as a workspace in use for a while is: its governance names
+/// hundreds of devices, and its history holds each admission, all of which a
+/// host it is handed to takes in.
+async fn used_for_a_while(
+    workspaces: &tilo_relay::workspaces::Workspaces,
+    person: &TestUser,
+    workspace: &str,
+) {
+    for device in 0..HELD_DEVICES {
+        let device = person.enrol(&format!("device {device}"), DeviceCapabilities::member());
+        workspaces.enter(workspace, &device.cert).await.unwrap();
+    }
+}
+
 /// A session of `device` to `host`, a host of `person`.
 async fn session_at(
     device: &crate::common::TestDevice,
@@ -383,7 +401,13 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
             refusing.host.node_addr(),
         )
         .await;
-    assert!(refused.is_err(), "{refused:?}");
+    // The operator hears why: the host takes no other person's workspace.
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.contains("its operator's setting takes that workspace")),
+        "{refused:?}"
+    );
     assert_eq!(
         workspaces.hosts(&workspace.workspace).await.unwrap().len(),
         1
@@ -414,6 +438,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
         .enter(&workspace.workspace, &phone.cert)
         .await
         .unwrap();
+    used_for_a_while(workspaces, &alice, &workspace.workspace).await;
     let mut takes = WorkSetting::own_person();
     takes.from =
         tilo_relay_protocol::WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());

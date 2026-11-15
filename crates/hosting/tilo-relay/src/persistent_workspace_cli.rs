@@ -838,21 +838,8 @@ fn hold_for(named: Option<&str>) -> anyhow::Result<tilo_relay_protocol::WorkSett
 /// ([`Workspaces::attach_host`]). Answers what the operator hears.
 async fn hold(workspaces: &Workspaces, own: &DeviceCert, workspace: &str, origin: &str) -> String {
     let held = async {
-        let client = tilo_net::Client::builder()
-            .build()
-            .map_err(|error| error.to_string())?;
-        let info = tilo_relay_client::https::host_info(&tilo_relay_client::https::Origin::new(
-            &client, origin,
-        ))
-        .await
-        .map_err(|error| format!("{origin} did not say who it is: {error}"))?;
-        let address = info
-            .address
-            .ok_or_else(|| format!("{origin} names no endpoint to dial"))?;
-        let device = info.host_cert.device_public_key;
-        workspaces
-            .attach_host(workspace, own, device, address.endpoint_addr)
-            .await?;
+        let (device, addr) = host_at(origin).await?;
+        workspaces.attach_host(workspace, own, device, addr).await?;
         Ok::<_, String>(device)
     }
     .await;
@@ -867,6 +854,53 @@ async fn hold(workspaces: &Workspaces, own: &DeviceCert, workspace: &str, origin
         },
     }
     .to_line()
+}
+
+/// Have the host at the origin `origin` hold `workspace` no more
+/// ([`Workspaces::detach_host`]). Answers what the operator hears.
+async fn unhold(
+    workspaces: &Workspaces,
+    own: &DeviceCert,
+    workspace: &str,
+    origin: &str,
+) -> String {
+    let unheld = async {
+        let (device, addr) = host_at(origin).await?;
+        let confirmed = workspaces
+            .detach_host(workspace, own, device, Some(addr))
+            .await?;
+        Ok::<_, String>((device, confirmed))
+    }
+    .await;
+    match unheld {
+        Ok((device, confirmed)) => OperatorEvent::Unheld {
+            workspace: workspace.to_owned(),
+            host_device: hex::encode(device),
+            confirmed,
+        },
+        Err(reason) => OperatorEvent::HoldRefused {
+            workspace: workspace.to_owned(),
+            reason,
+        },
+    }
+    .to_line()
+}
+
+/// The host at the origin `origin`, as it says at its origin: its device and
+/// where it is dialed.
+async fn host_at(origin: &str) -> Result<([u8; 32], iroh_base::EndpointAddr), String> {
+    let client = tilo_net::Client::builder()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let info = tilo_relay_client::https::host_info(&tilo_relay_client::https::Origin::new(
+        &client, origin,
+    ))
+    .await
+    .map_err(|error| format!("{origin} did not say who it is: {error}"))?;
+    let address = info
+        .address
+        .ok_or_else(|| format!("{origin} names no endpoint to dial"))?;
+    Ok((info.host_cert.device_public_key, address.endpoint_addr))
 }
 
 /// Declare the person `key` (their user root, hex) an owner of the workspace:
@@ -1829,6 +1863,9 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
             Ok(OperatorCommand::Hold { workspace, host }) => {
                 hold(&context.workspaces, &context.host_cert, &workspace, &host).await
             }
+            Ok(OperatorCommand::Unhold { workspace, host }) => {
+                unhold(&context.workspaces, &context.host_cert, &workspace, &host).await
+            }
             Ok(other) => OperatorEvent::OwnerRefused {
                 user_public_key: String::new(),
                 reason: format!(
@@ -1936,6 +1973,12 @@ async fn serve_operator(
                     println!(
                         "{}",
                         hold(&context.workspaces, &context.host_cert, &workspace, &host).await
+                    );
+                }
+                Some(Ok(OperatorCommand::Unhold { workspace, host })) => {
+                    println!(
+                        "{}",
+                        unhold(&context.workspaces, &context.host_cert, &workspace, &host).await
                     );
                 }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its door"),

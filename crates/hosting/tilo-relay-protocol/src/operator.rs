@@ -147,6 +147,15 @@ pub enum OperatorCommand {
         /// The other host's origin.
         host: String,
     },
+    /// Have the host at `host` hold `workspace` no more: it is no longer
+    /// named among the workspace's hosts, and is asked to let it go. The
+    /// child answers [`OperatorEvent::Unheld`] or [`OperatorEvent::HoldRefused`].
+    Unhold {
+        /// The workspace, as listing workspaces names it.
+        workspace: String,
+        /// The other host's origin.
+        host: String,
+    },
 }
 
 /// What the workspace relay reports to the workspace service.
@@ -196,7 +205,16 @@ pub enum OperatorEvent {
         /// The device key (hex) of the host holding it now.
         host_device: String,
     },
-    /// The host the operator named does not hold the workspace.
+    /// The host the operator named holds the workspace no more.
+    Unheld {
+        workspace: String,
+        /// The device key (hex) of the host that held it.
+        host_device: String,
+        /// Whether that host said it let the workspace go; one that could not
+        /// be reached is still no longer named.
+        confirmed: bool,
+    },
+    /// The host the operator named does not hold the workspace, or still does.
     HoldRefused {
         workspace: String,
         /// Why not.
@@ -557,6 +575,11 @@ mod tests {
             OperatorEvent::Held {
                 workspace: "w".into(),
                 host_device: "ab".repeat(32),
+            },
+            OperatorEvent::Unheld {
+                workspace: "w".into(),
+                host_device: "ab".repeat(32),
+                confirmed: true,
             },
             OperatorEvent::HoldRefused {
                 workspace: "w".into(),
