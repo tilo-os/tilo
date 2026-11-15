@@ -1025,7 +1025,7 @@ impl Service {
             Err(error) => Err(error),
         };
         if made.is_err()
-            && let Err(error) = remove_dir_if_present(&target.state)
+            && let Err(error) = remove_vm_dir(&target.state)
         {
             eprintln!(
                 "tilo-legacy hosted: {}/{}: what a failed branch left: {error}",
@@ -1072,11 +1072,11 @@ impl Service {
             stopped.map_err(EnsureError::Vm)?;
             entry.gone.store(true, Ordering::SeqCst);
             self.forget(&id, &entry);
-            let removed = remove_dir_if_present(&files.state);
+            let removed = remove_vm_dir(&files.state);
             drop(vm);
             removed.map_err(|error| EnsureError::Vm(error.into()))?;
         } else {
-            remove_dir_if_present(&files.state).map_err(|error| EnsureError::Vm(error.into()))?;
+            remove_vm_dir(&files.state).map_err(|error| EnsureError::Vm(error.into()))?;
         }
         let _ = remove_dir_if_present(&files.run);
         Ok(())
@@ -1412,6 +1412,16 @@ fn no_vm_yet(workspace: &str) -> String {
         "workspace {workspace} has no Linux VM yet, so there is nothing to branch: a new \
          workspace's VM starts as every workspace's does, at its first Linux command"
     )
+}
+
+/// Remove a VM's state directory, and its workspace's directory once it holds no other VM.
+fn remove_vm_dir(state: &Path) -> std::io::Result<()> {
+    remove_dir_if_present(state)?;
+    if let Some(workspace) = state.parent() {
+        // Only an empty one goes: another environment's VM keeps it.
+        let _ = std::fs::remove_dir(workspace);
+    }
+    Ok(())
 }
 
 fn remove_dir_if_present(dir: &Path) -> std::io::Result<()> {
@@ -2372,7 +2382,7 @@ mod tests {
             "{message}"
         );
         assert!(
-            !config.files("ws2", "default").state.exists(),
+            !config.state.join("vms").join("ws2").exists(),
             "no disk, no part of one and no meter for a later wake to take for a VM"
         );
         assert_eq!(service.status().len(), 1);
@@ -2420,6 +2430,10 @@ mod tests {
         assert!(
             !files.state.exists(),
             "its disk, snapshot and meter are gone"
+        );
+        assert!(
+            !config.state.join("vms").join("ws1").exists(),
+            "and its workspace's directory, which held no other VM"
         );
         assert!(service.entry("ws1", "default").is_none());
         assert_eq!(
