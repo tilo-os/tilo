@@ -64,6 +64,7 @@ agent-fail-local-only = Aufgaben können keine Aktion ausführen, die nur auf di
 agent-fail-arguments = Die Argumente der geplanten Aktion passen nicht: { $error }
 agent-fail-turn-not-finished = Der Modellzug war nicht rechtzeitig fertig
 agent-fail-native-outcome = Das Ergebnis der Aktion ist weiterhin unbekannt; prüfe den Verlauf, bevor du es erneut versuchst.
+agent-fail-spend-limit = { $agent } hat das heutige { $spent } aufgebraucht; bitte die Person, die es verwaltet, das Limit zu erhöhen
 
 # Was ein fehlgeschlagener Modellaufruf in der Antwort hinterlässt, die eine
 # Person liest: ein Satz dazu, was geschehen ist, in ihren Worten, und wenn es

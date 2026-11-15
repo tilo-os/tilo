@@ -62,6 +62,7 @@ agent-fail-local-only = Tasks can't run an action that only works on this device
 agent-fail-arguments = The planned action's arguments don't fit: { $error }
 agent-fail-turn-not-finished = The model turn did not finish in time
 agent-fail-native-outcome = The action's outcome is still unknown; check the history before trying again.
+agent-fail-spend-limit = { $agent } has used today's { $spent }; ask its keeper to raise it
 
 # What a failed model call leaves in the reply a person reads: one sentence
 # of what happened, in their own terms, and where there is a setting to look

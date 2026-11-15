@@ -160,6 +160,7 @@ mod tests {
             "agent-fail-arguments",
             "agent-fail-turn-not-finished",
             "agent-fail-native-outcome",
+            "agent-fail-spend-limit",
         ];
         for (locale, source) in [
             ("en-US", include_str!("../locales/en-US.ftl")),

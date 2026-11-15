@@ -765,9 +765,12 @@ impl Session {
         let left = spending.allowed.left(&ui::clock::today().to_string())?;
         (spending.run >= left).then(|| {
             let used = ui::format::money(spending.allowed.limit_micros.unwrap_or_default());
-            format!(
-                "{} has used today's {used}; ask its keeper to raise it",
-                self.cfg.name
+            crate::i18n::t_args(
+                "agent-fail-spend-limit",
+                &[
+                    ("agent", ui::i18n::ArgValue::from(self.cfg.name.as_str())),
+                    ("spent", ui::i18n::ArgValue::from(used)),
+                ],
             )
         })
     }
@@ -892,8 +895,9 @@ impl Session {
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     if turn.finished.is_none() {
-                        turn.finished =
-                            Some(Err(Failure::said("the model turn ended without an answer")));
+                        turn.finished = Some(Err(Failure::said(crate::i18n::t(
+                            "agent-failure-no-answer",
+                        ))));
                     }
                     break;
                 }
@@ -920,8 +924,9 @@ impl Session {
                 Ok(event) => turn.absorb(event),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
-                    turn.finished =
-                        Some(Err(Failure::said("the model turn ended without an answer")));
+                    turn.finished = Some(Err(Failure::said(crate::i18n::t(
+                        "agent-failure-no-answer",
+                    ))));
                 }
             }
         }
