@@ -850,16 +850,21 @@ impl Workspaces {
             return self
                 .invite_own_person(summary, person, role, request_id, expiry(now, seconds))
                 .await;
-        } else if name.is_none() && moving.is_some() && !mine.is_empty() {
-            // A workspace this host does not keep for them, asked for as one
-            // of theirs.
-            return Err(refused(&NOT_YOUR_OWN));
         } else if name.is_none()
-            && moving.is_none()
             && let Some(first) = mine.first()
+            && match moving {
+                None => true,
+                // A name no workspace here has: one a browser picked for the person's own before
+                // it knew they had one (a new browser, or one that forgot the site), which their
+                // agent's setup code names too. Both mean "my workspace".
+                Some(named) => self.workspace(named).await.is_err(),
+            }
         {
             // A plain ask for "my workspace" answers the first they made.
             self.summary(first).await.map_err(|error| refused(&error))?
+        } else if name.is_none() && moving.is_some() && !mine.is_empty() {
+            // Another's workspace this host keeps, asked for as one of theirs.
+            return Err(refused(&NOT_YOUR_OWN));
         } else if !makes {
             return Err(refused(&NOT_YOUR_OWN));
         } else if !self.let_in(&person, now).await {

@@ -1769,6 +1769,66 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
     relay.shutdown().await;
 }
 
+/// A browser names the person's own workspace before the host made it, so the
+/// agent it sets up is handed the same name. A browser that forgot the site (or
+/// one that never had it), signed in as a person who has a workspace already,
+/// names a fresh one: that is their workspace, the first they made, not a
+/// refusal and not a second one. A workspace the host keeps for someone else is
+/// still not theirs.
+#[tokio::test]
+async fn a_new_browsers_name_for_their_own_workspace_answers_the_one_they_have() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let home = open(workspaces).await;
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let_in(workspaces, &home, person).await;
+
+    let first = tab_of(&root, "Firefox on Linux");
+    let named = uuid::Uuid::new_v4().to_string();
+    let created = create_own(&host, &first, json!({"workspace": named}))
+        .await
+        .unwrap();
+    assert_eq!(
+        created.workspace.workspace, named,
+        "made under the name the page chose"
+    );
+    join(workspaces, &created, &first).await;
+
+    let later = tab_of(&root, "Firefox on Linux");
+    let fresh = uuid::Uuid::new_v4().to_string();
+    let entered = create_own(&host, &later, json!({"workspace": fresh}))
+        .await
+        .unwrap();
+    assert_eq!(
+        entered.workspace.workspace, named,
+        "the workspace they have"
+    );
+    assert_eq!(
+        workspaces.own_workspaces_of(&person),
+        std::slice::from_ref(&named),
+        "and no second one"
+    );
+
+    let other = SigningKey::from_bytes(&rand::random());
+    let_in(workspaces, &home, other.verifying_key().to_bytes()).await;
+    let theirs = create_own(&host, &tab_of(&other, "Chrome"), json!({}))
+        .await
+        .unwrap()
+        .workspace
+        .workspace;
+    let refused = create_own(&host, &later, json!({"workspace": theirs})).await;
+    assert!(
+        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        "{refused:?}"
+    );
+    relay.shutdown().await;
+}
+
 /// Someone the operator declares an owner of the home workspace holds it by
 /// their root from that moment: a server key of theirs lists the workspace,
 /// enters it, and invites the next person in, with no device of theirs ever
