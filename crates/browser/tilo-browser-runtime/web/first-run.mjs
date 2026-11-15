@@ -7,6 +7,12 @@
  * behind it. This module only wires it up, and costs nothing until a
  * button is used.
  *
+ * A visitor this browser knows nothing of is held back
+ * (`first-run.inline.js`): a site that takes people by invitation only
+ * turns them away to its wait list, and the setup is no way in there. The
+ * page shows the screen once the site's door let them in (`reveal`), and
+ * the visitor it turned away sees the wait list instead.
+ *
  * Everything an agent does for the person goes through a login code
  * (`K7Q-MX2P`, `tilo-relay-protocol`'s `login_code`): the tab asks its host
  * for one, the agent runs `tilo login <code>`, and the tab follows the code
@@ -279,9 +285,11 @@ function bounded(promise, ms, later, clear) {
  * the clipboard took it; `every(run, ms)` ticks; `later(run, ms)` and
  * `clear(timer)` time one thing; `site` is the origin the commands name;
  * `reload()` loads the page again; `online()` says whether the browser
- * thinks it is online.
+ * thinks it is online. `held`: the screen waits for the page's word before
+ * it may show (`reveal`).
  */
 export function createFirstRun({view: drawn, clipboard, storage = null, now = () => Date.now(), site = HOME_SITE,
+  held: heldAtPaint = false,
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
   later = (run, ms) => setTimeout(run, ms), clear = timer => clearTimeout(timer),
   reload = () => globalThis.location?.reload(), online = () => globalThis.navigator?.onLine !== false}) {
@@ -304,6 +312,11 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   let state = readSetup(storage) ?? {step: 'start'};
   if (held(state.step)) state = {step: 'start'};
   let closed = false;
+  // Whether the screen waits for the page to say the person may set Tilo up
+  // here: the first paint held a visit this browser knows nothing of, since
+  // a site taking people by invitation only may send them to its wait list
+  // instead (`reveal`).
+  let heldBack = Boolean(heldAtPaint);
   // What the screen shows now, kept with the setup for the next first paint.
   const frame = {offer: null, prompt: null, lines: null, heading: null, mode: 'setup', copied: false, handed: false};
   const keepFrame = () => {
@@ -374,6 +387,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     clear(leaveTimer);
     clear(slowTimer);
     closed = true;
+    heldBack = false;
     view.close();
   };
   // Open the person's own workspace, once leaving and the page can.
@@ -973,6 +987,16 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       askNow();
       for (const kind of Object.keys(codes)) if (codes[kind].error && codes[kind].make && !codes[kind].made) void prepare(kind);
     },
+    /** Whether the screen waits for the page to say the person may set
+     * Tilo up here, rather than being on the screen already. */
+    get held() { return heldBack && !closed; },
+    /** Show the screen: the page is in, so the setup is the person's. A
+     * screen the first paint already showed is left where it is. */
+    reveal() {
+      if (closed || !heldBack) return;
+      heldBack = false;
+      toStart(true);
+    },
     close,
     get closed() { return closed; },
   };
@@ -1012,6 +1036,8 @@ export function domView(document) {
   return {
     start() {
       state('');
+      // The screen is the page's now: nothing is held back any more.
+      root.removeAttribute('data-first-run-hold');
       // The start is the setup: a screen reopened for a person who is already
       // set up shows the setup's column, never the one a past sign-in left.
       $('first-run').dataset.mode = 'setup';
@@ -1177,12 +1203,20 @@ function copyBySelection(text, document) {
 
 /** The screen of this page, when it shows one: `null` otherwise. Its
  * buttons work from here on; the entry page offers setup and sign-in
- * once it can (`offerSetup`, `offerAgentSignIn`, `offerSignIn`). */
+ * once it can (`offerSetup`, `offerAgentSignIn`, `offerSignIn`).
+ *
+ * A first visit this browser knows nothing of is held
+ * (`data-first-run-hold`, first-run.inline.js) until the page says the site
+ * let the person in (`reveal`): a site taking people by invitation only may
+ * send them to its wait list, and the setup is not what they see first. */
 export function startFirstRun(document = globalThis.document, {storage} = {}) {
-  if (document?.documentElement?.dataset?.firstRun === undefined || !document.getElementById?.('first-run')) return null;
+  const root = document?.documentElement;
+  if (!document?.getElementById?.('first-run')) return null;
+  const held = root?.dataset?.firstRun === undefined && root?.dataset?.firstRunHold !== undefined;
+  if (root?.dataset?.firstRun === undefined && !held) return null;
   // This screen is the first visit's, not a setup reopened later.
   document.getElementById('first-run')?.removeAttribute('data-reopened');
-  return wireFirstRunScreen(document, storage);
+  return wireFirstRunScreen(document, storage, {held});
 }
 
 /**
@@ -1216,9 +1250,9 @@ export function openFirstRun(document = globalThis.document, {storage} = {}) {
 }
 
 /** The screen's buttons wired to a controller of its own. */
-function wireFirstRunScreen(document, storage) {
+function wireFirstRunScreen(document, storage, {held = false} = {}) {
   const run = createFirstRun({view: domView(document), clipboard: pageClipboard(), storage: storage ?? globalThis.localStorage,
-    site: globalThis.location?.origin});
+    site: globalThis.location?.origin, held});
   const on = (id, handler) => document.getElementById(id)?.addEventListener('click', handler);
   const text = id => document.getElementById(id).textContent;
   on('first-run-agent', () => run.copy());

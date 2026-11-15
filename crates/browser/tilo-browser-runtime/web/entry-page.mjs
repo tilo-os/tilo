@@ -1127,8 +1127,11 @@ export async function startEntryPage({mode}) {
       const kept = keptMembership(workspace);
       const identity = kept?.paired ? undefined : await browserPerson();
       // The first screen's codes need only the person and their host, not
-      // the workspace's session: made now, while the door lets them in.
-      if (firstRun && identity && !embed) {
+      // the workspace's session: made now, while the door lets them in. A
+      // first visit the first paint held (`firstRun.held`) has none made
+      // until it is in: a site taking people by invitation only may send it
+      // to its wait list, and no code is owed to a visitor it turns away.
+      if (firstRun && !firstRun.held && identity && !embed) {
         offerFirstRunCodes({origin: workspace.host.origin, identity, runtime, link: admitting?.link});
       }
       // A page that came back here by itself because the host turned it
@@ -2116,8 +2119,14 @@ function inputPause() {
  * passkey sign-in, and the person's own workspace made, so leaving the screen
  * opens it. The login codes came before (`offerFirstRunCodes`), unless the
  * page got in some way other than its home's door.
+ *
+ * A first visit whose site had not answered yet is shown now
+ * (`firstRun.reveal`): the page is in, so the setup is the person's. A visit
+ * the site's door turned away never gets here, and keeps the wait list it
+ * was sent to.
  */
 function offerFirstRun({page, identityActions, runtime}) {
+  firstRun.reveal();
   const peer = page.peer;
   if (identityActions) firstRun.offerSignIn(() => identityActions.perform(SIGN_IN.id));
   const identity = currentIdentity();

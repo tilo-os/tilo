@@ -4,7 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import {ASK_MS, codeWait, domView, setupLater, showPrompt, CONNECTED_MS, KEPT_LOST_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS,
   manualCommands, MCP_URL, OFFER_MS, openFirstRun, PASSKEY_WAIT_MS, RENEW_MS, readSetup, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
-  signInPrompt, stepLines, minutesLeft} from './first-run.mjs';
+  signInPrompt, startFirstRun, stepLines, minutesLeft} from './first-run.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const CODE = 'K7Q-MX2P';
@@ -38,11 +38,11 @@ function maker(...codes) {
   return {make, made};
 }
 
-function fixture({copy, site, stored = new Map(), online = () => true, clock = 0} = {}) {
+function fixture({copy, site, stored = new Map(), online = () => true, clock = 0, held = false} = {}) {
   const {view, said, names, last} = fakeView();
   const copied = [];
   const state = {clock, ticks: null, every: null, timers: new Map(), id: 0, reloads: 0};
-  const run = createFirstRun({view, site,
+  const run = createFirstRun({view, site, held,
     // The clipboard takes the text at once, as `writeText` does inside the click.
     clipboard: {copy: copy ?? (text => { copied.push(text); return Promise.resolve(); })},
     storage: {setItem: (key, value) => stored.set(key, value), getItem: key => stored.get(key) ?? null},
@@ -534,8 +534,9 @@ test('a passkey clicked before the page can ask waits for it, busy, then asks; a
 });
 
 /** first-run.inline.js against a page at `href`, with `stored` keys and the
- * scrubber's `secrets`: whether the first screen shows. */
-function shows(href, {stored = {}, secrets = {}, storage = true, step = false} = {}) {
+ * scrubber's `secrets`: whether the first screen shows, and whether it was
+ * held for the site's door to answer (`data-first-run-hold`). */
+function shows(href, {stored = {}, secrets = {}, storage = true, step = false, held = false} = {}) {
   const url = new URL(href);
   const attributes = new Map();
   const page = {
@@ -548,23 +549,57 @@ function shows(href, {stored = {}, secrets = {}, storage = true, step = false} =
   page.__tiloLinkSecrets = secrets;
   if (!storage) Object.defineProperty(page, 'localStorage', {get() { throw new Error('denied'); }});
   vm.runInNewContext(readFileSync(here('first-run.inline.js'), 'utf8'), page);
+  if (held) return attributes.has('data-first-run-hold');
   if (step) return attributes.get('data-first-run') ?? null;
   return attributes.has('data-first-run');
 }
 const kept = state => ({[SETUP]: JSON.stringify(state)});
 
-test('only a browser new here, opening the site itself, sees the first screen', () => {
-  assert.equal(shows('https://tilo.example/'), true);
-  assert.equal(shows('https://tilo.example/#/'), true);
-  assert.equal(shows('https://tilo.example/?debug'), true);
+test('only a browser new here, opening the site itself, is offered the first screen', () => {
+  // No screen and no setup kept: whether the setup is even the person's to
+  // take up is the site's door's to say, and a site taking people by
+  // invitation only sends them to its wait list. The page shows it once it
+  // is in, and the visitor the door turned away never sees it.
+  const fresh = {};
+  assert.equal(shows('https://tilo.example/', {stored: fresh}), false);
+  assert.equal(shows('https://tilo.example/#/'), false);
+  assert.equal(shows('https://tilo.example/?debug'), false);
+  assert.equal(shows('https://tilo.example/', {stored: fresh, held: true}), true, 'held for the door’s answer');
+  assert.equal(fresh[SETUP], undefined, 'and keeps no setup it has not started');
   assert.equal(shows('https://tilo.example/', {stored: kept({step: 'done'})}), false, 'set up already');
+  assert.equal(shows('https://tilo.example/', {stored: kept({step: 'done'}), held: true}), false, 'nothing to hold');
   assert.equal(shows('https://tilo.example/', {stored: {'tilo-host-memberships': '{}'}}), false, 'a host let it in before');
   assert.equal(shows('https://tilo.example/', {stored: {'tilo-entered-workspaces': '[]'}}), false);
   assert.equal(shows('https://tilo.example/', {secrets: {invite: 'x'}}), false, 'an invitation opens as it did');
+  assert.equal(shows('https://tilo.example/', {secrets: {invite: 'x'}, held: true}), false, 'and is no visitor to hold');
   assert.equal(shows('https://tilo.example/#/@workspaces.example/w/abc'), false, 'a link to a workspace');
   assert.equal(shows('https://tilo.example/?embed=1'), false, 'inside another site');
   assert.equal(shows('https://tilo.example/?workspaceName=Lounge'), false);
   assert.equal(shows('https://tilo.example/', {storage: false}), false, 'no storage: as it always opened');
+});
+
+test('a first visit the site may still turn away is held: the setup shows once the page is in', async () => {
+  const first = fixture({held: true});
+  assert.equal(first.run.held, true, 'the page has not said whether the setup is theirs');
+  assert.deepEqual(first.names(), ['offer'], 'nothing on the screen: the wait list may be what this visit is');
+  first.run.reveal();
+  assert.equal(first.run.held, false);
+  assert.deepEqual(first.names().slice(-2), ['start', 'offer'], 'shown, on its start');
+  assert.equal(first.kept()?.step, 'start', 'and kept from now on');
+  // The same visit, shown at the first paint: nothing is redrawn under the person.
+  const shown = fixture();
+  shown.run.offerSetup(maker(fakeCode()).make);
+  await settle();
+  const drawn = shown.names().length;
+  assert.equal(shown.run.held, false);
+  shown.run.reveal();
+  assert.equal(shown.names().length, drawn, 'left where it was');
+  // A page that turned the person away closes it, and it stays closed.
+  const away = fixture({held: true});
+  away.run.close();
+  away.run.reveal();
+  assert.equal(away.run.held, false);
+  assert.deepEqual(away.names(), ['offer', 'close'], 'nothing comes back over the wait list');
 });
 
 test('a newcomer by invitation joins first, and is set up later: on the site itself, never over a workspace', () => {
@@ -597,8 +632,10 @@ test('a newcomer by invitation joins first, and is set up later: on the site its
 
 test('the kept setup alone decides the step a bare entry opens on, whatever the page did behind the screen', () => {
   const fresh = {};
-  assert.equal(shows('https://tilo.example/', {stored: fresh, step: true}), '', 'a browser new here starts');
-  assert.equal(JSON.parse(fresh[SETUP]).step, 'start', 'and its setup is kept from the first paint');
+  assert.equal(shows('https://tilo.example/', {stored: fresh, step: true}), null,
+    'a browser new here is shown nothing until its site’s door says');
+  assert.equal(shows('https://tilo.example/', {stored: fresh, held: true}), true, 'its screen waits for that answer');
+  assert.equal(fresh[SETUP], undefined);
   const lounge = {'tilo-host-memberships': '{"x":{}}', 'tilo-entered-workspaces': '[{}]'};
   const code = {code: 'K7Q-MX2P', expiresAt: Date.now() + 300_000, follow: 'f'.repeat(64)};
   assert.equal(shows('https://tilo.example/', {stored: {...lounge, ...kept({step: 'start'})}, step: true}), '',
@@ -981,6 +1018,28 @@ test('a setup reopened from the card asks for a fresh code, not one an earlier v
   const run = openFirstRun(document, {storage});
   assert.ok(run);
   assert.equal(stored.at(-1)?.offer, null, 'the code an earlier visit kept is spent or run out, never offered again');
+});
+
+test('a first paint that held the screen shows it once the page says the site let the person in', () => {
+  const {document, root} = stubDocument();
+  root.dataset.firstRunHold = '';
+  const storage = {getItem: () => null, setItem() {}};
+  const run = startFirstRun(document, {storage});
+  assert.ok(run, 'the screen is wired while the door decides');
+  assert.equal(run.held, true);
+  assert.equal(root.dataset.firstRun, undefined, 'nothing painted: the wait list may take its place');
+  run.reveal();
+  assert.equal(root.dataset.firstRun, '', 'shown once the page is in');
+  assert.equal(run.held, false);
+  run.close();
+  // A screen the first paint showed is left where it was.
+  const painted = stubDocument();
+  painted.root.dataset.firstRun = 'waiting';
+  const paintedRun = startFirstRun(painted.document, {storage});
+  assert.equal(paintedRun.held, false);
+  paintedRun.reveal();
+  assert.equal(painted.root.dataset.firstRun, 'waiting');
+  assert.equal(startFirstRun(stubDocument().document, {storage}), null, 'a page with neither shows nothing');
 });
 
 test('a host that did not answer is named, and one on this computer is not blamed on the connection', () => {

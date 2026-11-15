@@ -16,7 +16,12 @@
 // nothing in their way: their own setup is kept for later (`later`), and
 // shows the next time they open the site itself, never over a workspace's
 // address (the workspace also offers it once they have used it a while,
-// identity-actions.mjs). Without storage the page opens as it always did.
+// identity-actions.mjs). A browser this site knows nothing of is not shown
+// the setup ahead of its door's answer: a site that takes people by
+// invitation only may send them to its wait list, and the setup is no way
+// in where they hold no invitation. The page shows the screen itself once
+// the door let them in (first-run.mjs `reveal`). Without storage the page
+// opens as it always did.
 var root=document.documentElement,secrets=globalThis.__tiloLinkSecrets||{};
 var fresh=function(){
  var kept=['tilo-host-memberships','tilo-entered-workspaces'];
@@ -35,8 +40,12 @@ try{
  if(!setup||typeof setup!=='object'||typeof setup.step!=='string'){
   setup=null;
   if(!bare||!fresh())return;
-  setup={step:'start',at:Date.now()};
-  localStorage.setItem('tilo-setup',JSON.stringify(setup));
+  // Nothing this browser kept: no setup, no host that let it in, no
+  // workspace it entered. Whether the setup is even theirs to take up is
+  // the site's door's to say (it may keep a wait list instead), so the
+  // screen is wired but held, and the page shows it once it is in.
+  root.setAttribute('data-first-run-hold','');
+  return;
  }else if(setup.step==='later'){
   // Shown on the site itself, and kept for later still: until they take
   // it up, a workspace's address opens the workspace.
