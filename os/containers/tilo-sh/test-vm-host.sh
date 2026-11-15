@@ -99,7 +99,10 @@ grep -q 'placing on vm-host-0, at most 1' "$state/placer.log" \
   || die 'the placer does not place on vm-host-0'
 
 # The guest the host boots is the image this check handed it, unpacked under
-# its digest, and its member device is the one the relay's root certified.
+# its digest, and its member device is the one the relay's root certified. The
+# host's log as it is now, by when the host has served a VM: the copy taken
+# right after `up` may hold only its first line.
+podman logs tilo-sh-vm-host-0 > "$state/host.log" 2>&1 || true
 grep -q "guest kernel .*hosted-$(tr -d '[:space:]' < "$guest/digest" | sed 's/^sha256://')" \
   "$state/host.log" || die 'the guest is not the local image this check handed it'
 grep -q 'installing the member identity of vm-host-0' "$state/host.log" \
