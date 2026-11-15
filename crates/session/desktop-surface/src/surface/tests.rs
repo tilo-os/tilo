@@ -213,7 +213,7 @@ fn hovering_a_window_leaves_every_window_where_it_was() {
     let rest = geometry(&frame);
     assert_eq!(rest.len(), 2, "two windows on the strip: {rest:?}");
     let (first, first_bar, first_body, _) = rest[0];
-    let (second, _, _, _) = rest[1];
+    let (second, second_bar, second_body, _) = rest[1];
     let gap_x = f64::midpoint(first.x1, second.x0);
     let spots = [
         ("bar", first_bar.center()),
@@ -232,6 +232,9 @@ fn hovering_a_window_leaves_every_window_where_it_was() {
         ("body", first_body.center()),
         ("gap", Point::new(gap_x, first_body.center().y)),
         ("gap at the bar", Point::new(gap_x, first_bar.center().y)),
+        // The other window: a pointer over it takes neither the focus nor a place.
+        ("other window's bar", second_bar.center()),
+        ("other window's body", second_body.center()),
     ];
     // How long after the step before it the next one comes, on the clock the desktop reads: the
     // approach and the settle last as long as they say, however fast or loaded the machine is.
