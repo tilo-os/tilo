@@ -72,6 +72,27 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
     fn save_workspaces(&self, _bytes: &[u8]) -> Result<(), String> {
         Ok(())
     }
+    /// A part of the record of the workspaces this device holds, kept apart
+    /// from its index so a publication writes only what changed
+    /// ([`tilo_peer_state::owner::Journaled`]). A store without them keeps the
+    /// workspaces it holds for the session only.
+    fn load_workspaces_part(&self, _name: &str) -> Option<Vec<u8>> {
+        None
+    }
+    /// Replace the part `name` of that record.
+    fn save_workspaces_part(&self, _name: &str, _bytes: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+    /// Append to the part `name` of that record, which need not exist yet.
+    fn append_workspaces_part(&self, _name: &str, _bytes: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+    /// Whether the parts [`Self::save_workspaces_part`] writes are kept at
+    /// all: a store that answers neither of the part calls holds the record
+    /// whole instead.
+    fn keeps_workspaces_parts(&self) -> bool {
+        false
+    }
     /// Keep `bytes` under `name` beside the record of the workspaces this device holds: a run of
     /// a workspace's outgoing custody waiting behind what the record keeps itself
     /// ([`tilo_peer_state::owner::Store::put_custody`]). `None` lets it go. A store without
@@ -107,6 +128,8 @@ pub struct MemoryPeerStore(
     Mutex<Option<Vec<u8>>>,
     Mutex<BTreeMap<String, Vec<u8>>>,
     bool,
+    /// The parts of the record of the workspaces this device holds, by name.
+    Mutex<BTreeMap<String, Vec<u8>>>,
 );
 
 impl Default for MemoryPeerStore {
@@ -118,6 +141,7 @@ impl Default for MemoryPeerStore {
             Mutex::default(),
             Mutex::default(),
             true,
+            Mutex::default(),
         )
     }
 }
@@ -183,6 +207,30 @@ impl PeerStore for MemoryPeerStore {
 
     fn keeps_workspaces(&self) -> bool {
         self.5
+    }
+
+    fn load_workspaces_part(&self, name: &str) -> Option<Vec<u8>> {
+        self.6.lock_recover().get(name).cloned()
+    }
+
+    fn save_workspaces_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        self.6
+            .lock_recover()
+            .insert(name.to_owned(), bytes.to_vec());
+        Ok(())
+    }
+
+    fn append_workspaces_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        self.6
+            .lock_recover()
+            .entry(name.to_owned())
+            .or_default()
+            .extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn keeps_workspaces_parts(&self) -> bool {
+        true
     }
 }
 

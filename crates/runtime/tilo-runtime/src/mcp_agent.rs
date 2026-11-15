@@ -1313,6 +1313,22 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Option<Level>, String> {
         let root = self.level(provider, "", levels).await?;
         let mut revision = root.revision.clone();
+        // A name the app's own level carries exactly is answered there. The
+        // containers hold the record's items, and asking each of them for a
+        // name it is not (the record's own name, most often) lists every item
+        // the record holds.
+        let mut exact = root
+            .children
+            .iter()
+            .filter(|node| node.answers_to(name) == Some(0));
+        if let (Some(only), None) = (exact.next(), exact.next()) {
+            return Ok(Some(Level {
+                own: Vec::new(),
+                children: vec![only.clone()],
+                revision,
+                pages: std::sync::Arc::default(),
+            }));
+        }
         let mut pool = root.children.clone();
         for container in root
             .children

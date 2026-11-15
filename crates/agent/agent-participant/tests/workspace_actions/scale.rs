@@ -132,7 +132,9 @@ const CALL_BUDGET: Duration = Duration::from_millis(1500);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "builds a thousand notes and five hundred issues one call at a time, which takes \
-            minutes; run it with --ignored, in a release build for its timings"]
+            minutes; run it with --ignored, in a release build for its timings. A write still \
+            grows with what the record holds: the headless app worker lays the whole record out \
+            again for every change it merges, about 1.5 ms for every note"]
 #[expect(
     clippy::too_many_lines,
     reason = "one move of a company's notes and issues, then every call timed"

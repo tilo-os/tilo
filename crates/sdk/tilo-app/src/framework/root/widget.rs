@@ -117,6 +117,35 @@ pub(crate) trait RootPublishes {
     ) -> Vec<tilo_actions::ResourceSpec>;
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec>;
     fn resources_past_page(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec>;
+    /// How many items stand past the published pages of the record's
+    /// collections: what [`Self::resources_past_page`] lists, counted without
+    /// building them.
+    fn past_page_len(&self, doc: &AutoCommit) -> usize {
+        self.resources_past_page(doc).len()
+    }
+    /// The items past the published pages as their id and label, read
+    /// without building a resource for each: what a name lookup scans.
+    fn past_page_labels(&self, doc: &AutoCommit) -> Vec<(String, String)> {
+        self.past_page_range(doc, 0, usize::MAX)
+            .into_iter()
+            .map(|resource| (resource.id.as_str().to_owned(), resource.label.clone()))
+            .collect()
+    }
+    /// The items past the published pages from `offset` on, at most `take`,
+    /// in [`Self::resources_past_page`]'s order and built alone, so a page pays
+    /// its window and not every item a record holds.
+    fn past_page_range(
+        &self,
+        doc: &AutoCommit,
+        offset: usize,
+        take: usize,
+    ) -> Vec<tilo_actions::ResourceSpec> {
+        self.resources_past_page(doc)
+            .into_iter()
+            .skip(offset)
+            .take(take)
+            .collect()
+    }
     fn resource_pending(&self, id: &str) -> bool;
     fn resource_for(
         &self,
@@ -488,6 +517,23 @@ impl PublishesResources for RootWidget {
 
     fn resources_past_page(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.0.resources_past_page(doc)
+    }
+
+    fn past_page_len(&self, doc: &AutoCommit) -> usize {
+        self.0.past_page_len(doc)
+    }
+
+    fn past_page_labels(&self, doc: &AutoCommit) -> Vec<(String, String)> {
+        self.0.past_page_labels(doc)
+    }
+
+    fn past_page_range(
+        &self,
+        doc: &AutoCommit,
+        offset: usize,
+        take: usize,
+    ) -> Vec<tilo_actions::ResourceSpec> {
+        self.0.past_page_range(doc, offset, take)
     }
 
     fn resource_pending(&self, id: &str) -> bool {

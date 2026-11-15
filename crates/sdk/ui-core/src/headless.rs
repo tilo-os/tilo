@@ -5891,6 +5891,31 @@ impl FrameHarness {
         crate::widget::resources_past_page(self.root.as_ref(), &self.state.doc)
     }
 
+    /// How many items this frame leaves out past each collection's published
+    /// page ([`crate::widget::past_page_len`]): counted without building them.
+    #[must_use]
+    pub fn past_page_len(&self) -> usize {
+        self.drain_component_wakes();
+        crate::widget::past_page_len(self.root.as_ref(), &self.state.doc)
+    }
+
+    /// The items this frame leaves out past each collection's published page,
+    /// by id and label, read without building them
+    /// ([`crate::widget::past_page_labels`]).
+    #[must_use]
+    pub fn past_page_labels(&self) -> Vec<(String, String)> {
+        self.drain_component_wakes();
+        crate::widget::past_page_labels(self.root.as_ref(), &self.state.doc)
+    }
+
+    /// The items this frame leaves out past each collection's published page
+    /// from `offset` on, built alone ([`crate::widget::past_page_range`]).
+    #[must_use]
+    pub fn past_page_range(&self, offset: usize, take: usize) -> Vec<tilo_actions::ResourceSpec> {
+        self.drain_component_wakes();
+        crate::widget::past_page_range(self.root.as_ref(), &self.state.doc, offset, take)
+    }
+
     /// Every action contract violation that would make the live host refuse
     /// to publish a mounted component's surface. The host withdraws a whole
     /// component when one of its actions breaks its contract, so a test

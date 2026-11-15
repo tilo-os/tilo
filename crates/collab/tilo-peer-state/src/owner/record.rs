@@ -42,6 +42,10 @@ impl NativeAuthorityStorage {
     pub fn holds(&self, workspace: WorkspaceId) -> bool {
         self.workspaces.contains_key(&workspace)
     }
+    /// The record of `workspace`, as this device holds it.
+    pub(crate) fn stored(&self, workspace: WorkspaceId) -> Option<&StoredWorkspace> {
+        self.workspaces.get(&workspace)
+    }
     /// Every workspace whose replica is installed here, with the workspace id the
     /// workspace's record names (the workspace's transport shard).
     pub fn held(&self) -> impl Iterator<Item = (WorkspaceId, WorkspaceId)> + '_ {

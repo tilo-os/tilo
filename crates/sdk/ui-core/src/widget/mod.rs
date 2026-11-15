@@ -762,6 +762,83 @@ pub fn resources_past_page(
     visit(widget, doc, None)
 }
 
+/// [`crate::resources::past_page_len`] of `widget`'s subtree: how many items
+/// the published pages leave out, counted without building them.
+pub fn past_page_len(widget: &dyn Widget, doc: &AutoCommit) -> usize {
+    visit_past_page(widget, doc, None, &mut |widget, doc| {
+        let len = crate::resources::past_page_len(widget, doc);
+        (len > 0).then_some(len)
+    })
+    .unwrap_or(0)
+}
+
+/// [`crate::resources::past_page_labels`] of `widget`'s subtree: the items the
+/// published pages leave out, by id and label, without building them.
+pub fn past_page_labels(widget: &dyn Widget, doc: &AutoCommit) -> Vec<(String, String)> {
+    visit_past_page(widget, doc, None, &mut |widget, doc| {
+        let labels = crate::resources::past_page_labels(widget, doc);
+        (!labels.is_empty()).then_some(labels)
+    })
+    .unwrap_or_default()
+}
+
+/// [`crate::resources::past_page_range`] of `widget`'s subtree: the items the
+/// published pages leave out from `offset` on, built alone.
+pub fn past_page_range(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    offset: usize,
+    take: usize,
+) -> Vec<tilo_actions::ResourceSpec> {
+    visit_past_page(widget, doc, None, &mut |widget, doc| {
+        if crate::resources::past_page_len(widget, doc) == 0 {
+            return None;
+        }
+        Some(crate::resources::past_page_range(widget, doc, offset, take))
+    })
+    .unwrap_or_default()
+}
+
+/// The first widget in `widget`'s subtree that publishes items past its
+/// published pages, as `ask` reads it: where a listing's past-page items
+/// stand, found without building them all.
+fn visit_past_page<T>(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    inherited: Option<crate::bound_dispatch::CallbackBinding>,
+    ask: &mut dyn FnMut(&dyn Widget, &AutoCommit) -> Option<T>,
+) -> Option<T> {
+    if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+        return None;
+    }
+    let boundary = widget.callback_binding();
+    let binding = boundary.clone().or(inherited);
+    let _entry = binding
+        .as_ref()
+        .map(crate::bound_dispatch::CallbackBinding::enter)
+        .transpose()
+        .ok()?;
+    if boundary.is_none() {
+        let found = match &binding {
+            Some(binding) => binding
+                .read_document(doc, |doc, _| ask(widget, doc))
+                .ok()
+                .flatten(),
+            None => ask(widget, doc),
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    let mut found = None;
+    widget.for_each_child(&mut |child| {
+        if found.is_none() {
+            found = visit_past_page(child, doc, binding.clone(), ask);
+        }
+    });
+    found
+}
+
 /// Every resource `widget`'s subtree publishes, as the host's action
 /// catalogue collects them. A host that embeds components under its own
 /// root (a shell surface) reads what its search offers through this.

@@ -52,11 +52,21 @@ fn fields_of(stored: &StoredWorkspace) -> Result<Arc<[u8]>, String> {
 /// What the first entry of a snapshot's journal is a delta of: `stored`,
 /// whose snapshot is `snapshot`. Its fields are read back from the snapshot,
 /// as a replay reads them.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn first(stored: &StoredWorkspace, snapshot: &[u8]) -> Result<Written, String> {
     let read: StoredWorkspace =
         serde_json::from_slice(snapshot).map_err(|error| error.to_string())?;
     Ok(Written {
         fields: fields_of(&read)?,
+        peer: stored.peer.parts().to_vec(),
+    })
+}
+
+/// What the next entry is a delta of, from the record itself: a store that
+/// decodes the record before it keeps it needs no second read of its snapshot.
+pub(super) fn first_of(stored: &StoredWorkspace) -> Result<Written, String> {
+    Ok(Written {
+        fields: fields_of(stored)?,
         peer: stored.peer.parts().to_vec(),
     })
 }

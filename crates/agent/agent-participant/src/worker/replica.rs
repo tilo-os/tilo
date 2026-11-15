@@ -110,6 +110,28 @@ fn worker_error(reason: impl Into<String>) -> AppError {
     AppError::Confinement(reason.into())
 }
 
+/// The changes `document` carries past `held`, as one run of change chunks: what a
+/// worker holding `held` lacks of it, so a whole document crosses as what it
+/// adds. `None` when `held` holds nothing, or holds heads `document` no longer
+/// carries (a folded or replaced history), and the whole document must cross.
+fn changes_since(document: &mut AutoCommit, held: &mut AutoCommit) -> Option<Vec<u8>> {
+    let heads = held.get_heads();
+    if heads.is_empty() {
+        return None;
+    }
+    if heads
+        .iter()
+        .any(|head| document.get_change_by_hash(head).is_none())
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    for change in document.get_changes(&heads) {
+        bytes.extend_from_slice(change.raw_bytes());
+    }
+    Some(bytes)
+}
+
 impl ConfinedReplica {
     /// Hold a record of `app_id` in `workspace` as `participant`, in a new
     /// confined worker: [`crate::Replica::open`].
@@ -999,7 +1021,7 @@ impl ConfinedReplica {
         // builds on nothing here only waits in the mirror's queue: the
         // mirror then holds more than the worker, never less, so the
         // worker's own changes still apply on top of it.
-        let candidate = if snapshot {
+        let mut candidate = if snapshot {
             let mut candidate = inner.mirror.clone();
             admit_incoming(&mut candidate, bytes)?;
             Some(candidate)
@@ -1007,13 +1029,17 @@ impl ConfinedReplica {
             admit_incoming(&mut inner.mirror, bytes)?;
             None
         };
-        let reply = self.call(
-            &mut inner,
-            &Request::Apply {
-                snapshot,
-                bytes: bytes.clone(),
+        // The worker holds this record too, and a whole document is sent to
+        // it as the changes it lacks: what crossed for a note added to a
+        // notebook of thousands is that note, never the notebook.
+        let (snapshot, bytes) = match &mut candidate {
+            Some(candidate) => match changes_since(candidate, &mut inner.mirror) {
+                Some(changes) => (false, changes),
+                None => (snapshot, bytes.clone()),
             },
-        );
+            None => (snapshot, bytes.clone()),
+        };
+        let reply = self.call(&mut inner, &Request::Apply { snapshot, bytes });
         let result = match reply {
             Ok(Reply::Done) => {
                 if let Some(candidate) = candidate {

@@ -189,6 +189,8 @@ struct DurablePeerStore {
     workspaces_key: durable_store::StorageKey,
     /// What the keys of the runs of custody kept beside the workspaces begin with.
     runs_prefix: String,
+    /// What the keys of the record's own parts, kept beside the workspaces' index, begin with.
+    parts_prefix: String,
     /// Seals the member state in `groups_key`. The page keeps it in the
     /// platform secret store ([`channel_vault`]), never in this one.
     channel_vault: [u8; 32],
@@ -205,6 +207,15 @@ impl DurablePeerStore {
             PEER_PACKAGE,
             crate::storage::PROFILE_WORKSPACE,
             format!("{}{name}", self.runs_prefix),
+        )
+    }
+
+    /// The key the record's part `name` is kept under.
+    fn part_key(&self, name: &str) -> durable_store::StorageKey {
+        durable_store::StorageKey::document(
+            PEER_PACKAGE,
+            crate::storage::PROFILE_WORKSPACE,
+            format!("{}{name}", self.parts_prefix),
         )
     }
 
@@ -239,6 +250,7 @@ impl DurablePeerStore {
                 format!("{}.workspaces", hex::encode(user_public_key)),
             ),
             runs_prefix: format!("{}.workspaces.", hex::encode(user_public_key)),
+            parts_prefix: format!("{}.workspaces.part.", hex::encode(user_public_key)),
             channel_vault,
         })
     }
@@ -314,6 +326,39 @@ impl PeerStore for DurablePeerStore {
     fn load_workspaces_run(&self, name: &str) -> Option<Vec<u8>> {
         use durable_store::DurableStore as _;
         Some(self.store.read(&self.run_key(name)).ok()??.bytes).filter(|bytes| !bytes.is_empty())
+    }
+
+    fn load_workspaces_part(&self, name: &str) -> Option<Vec<u8>> {
+        use durable_store::DurableStore as _;
+        Some(self.store.read(&self.part_key(name)).ok()??.bytes).filter(|bytes| !bytes.is_empty())
+    }
+
+    fn save_workspaces_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        use durable_store::DurableStore as _;
+        self.store
+            .write(
+                &self.part_key(name),
+                durable_store::WriteOp::Replace(bytes.to_vec()),
+                None,
+            )
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn append_workspaces_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        use durable_store::DurableStore as _;
+        self.store
+            .write(
+                &self.part_key(name),
+                durable_store::WriteOp::Append(bytes.to_vec()),
+                None,
+            )
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn keeps_workspaces_parts(&self) -> bool {
+        true
     }
 
     fn channel_vault(&self) -> Option<[u8; 32]> {

@@ -27,8 +27,8 @@ pub(crate) mod fixture;
 mod history_content;
 #[cfg(not(target_arch = "wasm32"))]
 mod join_service;
-#[cfg(not(target_arch = "wasm32"))]
 mod journal;
+mod journaled;
 mod limits;
 mod publication;
 mod record;
@@ -53,6 +53,7 @@ pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_fi
 pub use history_content::HistoryContent;
 #[cfg(not(target_arch = "wasm32"))]
 pub use join_service::OwnerJoinWorkspaces;
+pub use journaled::{JournalParts, Journaled};
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES};
 pub use publication::{
     HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites, SealedHistoryKeys,

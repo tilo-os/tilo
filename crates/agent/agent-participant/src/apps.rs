@@ -654,36 +654,43 @@ impl Replica {
     /// least the window's offset) and those from the `offset`th on, at most
     /// `take`, on a host that `can_render` or not.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one walk of a level: the tree as published, then the items it \
+                  leaves past its page, stopped where the page ends"
+    )]
     pub fn survey_page(
         &self,
         query: &tilo_actions::remote::CatalogueQuery,
         (can_render, (offset, take)): (bool, (usize, usize)),
     ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
-        let (resources, past_root) = self.survey_resources();
-        let in_chains = chain_resources(&resources);
+        // The tree the view publishes, and only the items past its pages the
+        // page reaches: a record holding thousands of notes costs a page its
+        // rows, not its notes.
+        let resources = self.view.resources();
+        let mut in_chains = chain_resources(&resources);
         let mut walk = SurveyWalk {
             query,
             can_render,
             offset,
             take,
-            // With no room on the page there is no row to stop at: the count
-            // a caller keeping its place needs is the whole of it.
-            end: if take == 0 {
-                usize::MAX
-            } else {
-                offset.saturating_add(take)
-            },
+            // The rows up to the window's end: the offset is what a caller
+            // keeping its place needs, and a window with no room needs only
+            // that.
+            end: offset.saturating_add(take),
             total: 0,
             rows: Vec::new(),
             offering: std::collections::HashSet::new(),
         };
-        let complete = tilo_actions::door::survey_placed_each(&resources, &mut |placed| {
+        let visit = |placed: tilo_actions::door::PlacedAction,
+                     walk: &mut SurveyWalk<'_>,
+                     in_chains: &std::collections::HashSet<String>| {
             let tilo_actions::door::PlacedAction {
                 parent,
                 has_children,
                 action,
             } = placed;
-            let action = self.offered(action, &in_chains);
+            let action = self.offered(action, in_chains);
             let Some(action) = action else {
                 return walk.total < walk.end;
             };
@@ -697,15 +704,88 @@ impl Replica {
                     action,
                 },
             ))
+        };
+        let mut complete = tilo_actions::door::survey_placed_each(&resources, &mut |placed| {
+            visit(placed, &mut walk, &in_chains)
         });
+        // The items past the published pages, built only as far as the page
+        // reaches; `past_root` is the record's own resource, which holds them.
+        let past_root = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == self.kind.kind())
+            .map(|resource| resource.id.as_str().to_owned());
+        // Items past the published pages are rows under the record's own
+        // resource, so only a query pinned to that level (or to an exact
+        // target, which admits at any level) can list one of them. Any other
+        // query — a top-level name, a level inside the record — would walk
+        // every item the record holds to admit none, so it is not walked.
+        let past_wanted = query.target.is_some()
+            || query
+                .parent_resource
+                .as_deref()
+                .is_some_and(|parent| past_root.as_deref() == Some(parent));
+        let mut past_built = Vec::new();
+        if let Some(root) = &past_root
+            && past_wanted
+            && complete
+            && walk.total < walk.end
+        {
+            // The tree on its own filled the page: the items past it are not
+            // counted for nothing.
+            // A query naming a resource is answered by the labels of the
+            // items past the page, building only those that match: a note
+            // named by its title costs its title, not the notebook.
+            if let Some(name) = query.resource_name.as_deref() {
+                for child in self.view.past_page_named(name) {
+                    in_chains.extend(chain_resources(std::slice::from_ref(&child)));
+                    complete =
+                        tilo_actions::door::survey_placed_under(&child, root, &mut |placed| {
+                            visit(placed, &mut walk, &in_chains)
+                        });
+                    past_built.push(child);
+                    if !complete || walk.total >= walk.end {
+                        break;
+                    }
+                }
+            }
+            let past_len = if query.resource_name.is_some() {
+                0
+            } else {
+                self.view.past_page_len()
+            };
+            let mut at = 0usize;
+            while complete && walk.total < walk.end && at < past_len {
+                // The rows the page still needs: each item may offer none, so
+                // the walk asks again from where this window ended.
+                let room = walk.end.saturating_sub(walk.total).max(1);
+                let children = self.view.past_page_range(at, room);
+                if children.is_empty() {
+                    break;
+                }
+                at = at.saturating_add(room).min(past_len);
+                for child in children {
+                    // A chain part keeps what it offers an agent, whichever
+                    // page of the record it is listed on.
+                    in_chains.extend(chain_resources(std::slice::from_ref(&child)));
+                    complete =
+                        tilo_actions::door::survey_placed_under(&child, root, &mut |placed| {
+                            visit(placed, &mut walk, &in_chains)
+                        });
+                    past_built.push(child);
+                    if !complete || walk.total >= walk.end {
+                        break;
+                    }
+                }
+            }
+        }
         if complete && walk.total < walk.end {
             let mut containers = Vec::new();
-            self.survey_containers(
-                &resources,
-                past_root.as_ref(),
-                &walk.offering,
-                &mut containers,
-            );
+            self.survey_containers(&resources, None, &walk.offering, &mut containers);
+            if let Some(root) = &past_root {
+                for child in &past_built {
+                    containers_into(child, root, &walk.offering, self.app_id(), &mut containers);
+                }
+            }
             for row in containers {
                 if !walk.admit(row) {
                     break;

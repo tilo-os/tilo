@@ -150,3 +150,34 @@ fn the_items_past_the_published_page_are_listed_apart() {
         .count();
     assert_eq!(on_page, tilo_resource::items::ITEM_PAGE);
 }
+
+/// The items past the published page are counted and listed in windows
+/// without building all of them: what a catalogue page of a record of
+/// thousands asks.
+#[test]
+fn the_items_past_the_published_page_are_counted_and_listed_in_windows() {
+    let mut app = TestApp::<LibraryApp>::new().unwrap();
+    let count = tilo_resource::items::ITEM_PAGE + 10;
+    app.invoke(Library::ADD_MANY.with(count)).unwrap();
+    let all: Vec<String> = app
+        .harness()
+        .resources_past_page()
+        .iter()
+        .map(|resource| resource.id.as_str().to_owned())
+        .collect();
+    assert_eq!(app.harness().past_page_len(), all.len());
+    let mut windowed = Vec::new();
+    for (offset, take) in [(0usize, 3usize), (3, 4), (7, 100)] {
+        windowed.extend(
+            app.harness()
+                .past_page_range(offset, take)
+                .into_iter()
+                .map(|resource| resource.id.as_str().to_owned()),
+        );
+    }
+    assert_eq!(windowed, all, "every item, once, in the order it stands");
+    assert!(
+        app.harness().past_page_range(all.len(), 4).is_empty(),
+        "a window past the last item is empty"
+    );
+}

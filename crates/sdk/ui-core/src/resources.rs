@@ -57,6 +57,38 @@ pub trait PublishesResources: Widget {
         Vec::new()
     }
 
+    /// How many items [`Self::resources_past_page`] lists: counted without
+    /// building them, so a caller paging a record of thousands asks its length
+    /// and not its items.
+    fn past_page_len(&self, doc: &AutoCommit) -> usize {
+        self.resources_past_page(doc).len()
+    }
+
+    /// The items past the published pages as their id and label, read
+    /// without building a resource for each: what a name lookup scans.
+    fn past_page_labels(&self, doc: &AutoCommit) -> Vec<(String, String)> {
+        self.resources_past_page(doc)
+            .into_iter()
+            .map(|resource| (resource.id.as_str().to_owned(), resource.label.clone()))
+            .collect()
+    }
+
+    /// The items [`Self::resources_past_page`] lists from `offset` on, at most
+    /// `take`, built alone: a page costs its window and not every item the
+    /// record holds.
+    fn past_page_range(
+        &self,
+        doc: &AutoCommit,
+        offset: usize,
+        take: usize,
+    ) -> Vec<tilo_actions::ResourceSpec> {
+        self.resources_past_page(doc)
+            .into_iter()
+            .skip(offset)
+            .take(take)
+            .collect()
+    }
+
     /// Whether `id`, which resolves to nothing now, may resolve once what the widget is reading off the
     /// UI thread lands (a row of a list not read yet). A caller resolving it is answered then, never
     /// kept waiting on a blocking read nor told it is unknown before the read ends.
@@ -282,6 +314,30 @@ pub fn resources_past_page(
 ) -> Vec<tilo_actions::ResourceSpec> {
     capability::<dyn PublishesResources>(widget)
         .map_or_else(Vec::new, |w| w.resources_past_page(doc))
+}
+
+/// [`PublishesResources::past_page_len`] of `widget`.
+pub fn past_page_len(widget: &(impl Widget + ?Sized), doc: &AutoCommit) -> usize {
+    capability::<dyn PublishesResources>(widget).map_or(0, |w| w.past_page_len(doc))
+}
+
+/// [`PublishesResources::past_page_labels`] of `widget`.
+pub fn past_page_labels(
+    widget: &(impl Widget + ?Sized),
+    doc: &AutoCommit,
+) -> Vec<(String, String)> {
+    capability::<dyn PublishesResources>(widget).map_or_else(Vec::new, |w| w.past_page_labels(doc))
+}
+
+/// [`PublishesResources::past_page_range`] of `widget`.
+pub fn past_page_range(
+    widget: &(impl Widget + ?Sized),
+    doc: &AutoCommit,
+    offset: usize,
+    take: usize,
+) -> Vec<tilo_actions::ResourceSpec> {
+    capability::<dyn PublishesResources>(widget)
+        .map_or_else(Vec::new, |w| w.past_page_range(doc, offset, take))
 }
 
 /// `widget`'s resources as `participant` sees them.

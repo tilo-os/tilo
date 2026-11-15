@@ -362,6 +362,47 @@ impl AttachedView {
             .collect()
     }
 
+    /// How many items the view's tree leaves out past each collection's
+    /// published page: counted without building them.
+    #[must_use]
+    pub fn past_page_len(&self) -> usize {
+        self.frame.past_page_len()
+    }
+
+    /// The items the view's tree leaves out past each collection's published
+    /// page whose label is `name`, built alone and only if the participant
+    /// may reach them: what a path naming one of them costs, however many
+    /// items the record holds.
+    #[must_use]
+    pub fn past_page_named(&self, name: &str) -> Vec<tilo_actions::ResourceSpec> {
+        let permissions = self.permissions.borrow();
+        self.frame
+            .past_page_labels()
+            .into_iter()
+            .filter(|(_, label)| label.eq_ignore_ascii_case(name))
+            .filter_map(|(id, _)| self.frame.resource(&id))
+            .filter_map(|resource| {
+                permissions.permitted_resource(self.definition.app_id(), resource)
+            })
+            .collect()
+    }
+
+    /// The items the view's tree leaves out past each collection's published
+    /// page from `offset` on, built alone as [`Self::resources_past_page`]
+    /// builds them, and only those the participant may reach: what a page
+    /// costs.
+    #[must_use]
+    pub fn past_page_range(&self, offset: usize, take: usize) -> Vec<tilo_actions::ResourceSpec> {
+        let permissions = self.permissions.borrow();
+        self.frame
+            .past_page_range(offset, take)
+            .into_iter()
+            .filter_map(|resource| {
+                permissions.permitted_resource(self.definition.app_id(), resource)
+            })
+            .collect()
+    }
+
     /// The resource `id` the view publishes for this participant, resolved
     /// without building every other one: what an invocation on an address
     /// already known asks for.

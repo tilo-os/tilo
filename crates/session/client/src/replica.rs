@@ -34,7 +34,8 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{
-    Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, Store,
+    Change, JournalParts, Journaled, NativeAuthorityStorage, NativeCommittedView,
+    NativeWorkspaceOwner, Store,
 };
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
@@ -52,6 +53,90 @@ struct PageWorkspaces {
     /// The runs of custody this page keeps beside its record, by name: those the record it last
     /// kept names, and those put since. A store without runs of its own reads them from here.
     runs: std::sync::Mutex<BTreeMap<String, Option<Vec<u8>>>>,
+    /// The record kept as an index and per-workspace parts, so a publication
+    /// writes what it changed rather than the record. `None` when the store
+    /// keeps the record whole ([`PeerStore::keeps_workspaces_parts`]).
+    journaled: std::sync::Mutex<Option<Journaled>>,
+    /// Whether the store keeps the record of the workspaces it holds at all.
+    keeps: bool,
+    /// Whether the store keeps the record's parts at all.
+    parts: bool,
+    /// The record was read from the whole-record copy an earlier build wrote,
+    /// which the first publication in parts lets go.
+    legacy: AtomicBool,
+}
+
+/// The record's parts as the page's store keeps them
+/// ([`PeerStore::load_workspaces_part`] and its siblings).
+struct StoreParts(Arc<dyn PeerStore>);
+
+impl JournalParts for StoreParts {
+    fn read_part(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.0.load_workspaces_part(name))
+    }
+
+    fn write_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        self.0.save_workspaces_part(name, bytes)
+    }
+
+    fn append_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        self.0.append_workspaces_part(name, bytes)
+    }
+}
+
+impl PageWorkspaces {
+    fn new(store: Arc<dyn PeerStore>) -> Self {
+        let keeps = store.keeps_workspaces();
+        let parts = keeps && store.keeps_workspaces_parts();
+        Self {
+            store,
+            healthy: AtomicBool::new(true),
+            runs: std::sync::Mutex::default(),
+            journaled: std::sync::Mutex::default(),
+            keeps,
+            parts,
+            legacy: AtomicBool::new(false),
+        }
+    }
+
+    fn parts(&self) -> StoreParts {
+        StoreParts(Arc::clone(&self.store))
+    }
+
+    /// The record this store kept, in whichever form it kept it, and the
+    /// journaled form of it the next publication writes in. A record of the
+    /// older whole-JSON form is read as it is and written apart from the next
+    /// publication on.
+    fn kept(&self) -> Option<NativeAuthorityStorage> {
+        if !self.keeps {
+            return None;
+        }
+        if self.parts {
+            match Journaled::open(&self.parts()) {
+                Ok(Some((journaled, record))) => {
+                    *self.journaled.lock_recover() = Some(journaled);
+                    return Some(record);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "the workspaces this page holds did not read");
+                    return None;
+                }
+            }
+        }
+        let record = self
+            .store
+            .load_workspaces()
+            .and_then(|bytes| serde_json::from_slice::<NativeAuthorityStorage>(&bytes).ok())?;
+        if self.parts {
+            *self.journaled.lock_recover() = Some(Journaled::start(&record));
+            // The whole-record copy an earlier build wrote is let go once a
+            // publication has written the record in parts: until then it is
+            // the only copy there is.
+            self.legacy.store(true, Ordering::Release);
+        }
+        Some(record)
+    }
 }
 
 impl Store for PageWorkspaces {
@@ -90,18 +175,37 @@ impl Store for PageWorkspaces {
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
-        _change: Change,
+        change: Change,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
-        let keeps = self.store.keeps_workspaces();
         // Made only for a store that keeps it: the record holds every record of every workspace,
-        // and a device writing a large folder makes it after each write.
-        if keeps {
-            let bytes = serde_json::to_vec(next).map_err(|error| error.to_string())?;
-            if let Err(error) = self.store.save_workspaces(&bytes) {
-                self.healthy.store(false, Ordering::Release);
-                return Err(error);
+        // and a device writing a large folder makes it after each write. A store that keeps its
+        // parts writes only what this publication changed.
+        let written = if !self.keeps {
+            Ok(())
+        } else if self.parts {
+            let parts = self.parts();
+            let mut journaled = self.journaled.lock_recover();
+            if journaled.is_none() {
+                *journaled = Some(Journaled::start(next));
             }
+            match journaled.as_mut() {
+                Some(journaled) => journaled.publish(&parts, next, &change),
+                None => Ok(()),
+            }
+        } else {
+            serde_json::to_vec(next)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| self.store.save_workspaces(&bytes))
+        };
+        if let Err(error) = written {
+            self.healthy.store(false, Ordering::Release);
+            return Err(error);
+        }
+        if self.legacy.swap(false, Ordering::AcqRel)
+            && let Err(error) = self.store.save_workspaces(&[])
+        {
+            tracing::warn!(%error, "the workspaces' older copy was kept");
         }
         install();
         // A run the record no longer names moved to custody's head.
@@ -116,7 +220,7 @@ impl Store for PageWorkspaces {
             runs.retain(|name, _| named.contains(name));
             gone
         };
-        for name in gone.into_iter().filter(|_| keeps) {
+        for name in gone.into_iter().filter(|_| self.keeps) {
             if let Err(error) = self.store.save_workspaces_run(&name, None) {
                 tracing::warn!(%error, "a run of custody the record no longer names was kept");
             }
@@ -139,19 +243,14 @@ impl Replicas {
     /// its workspaces back.
     pub(crate) fn new(device: DeviceCert, store: Arc<dyn PeerStore>) -> Self {
         let now = tilo_clock::wall();
-        let kept = store
-            .load_workspaces()
-            .and_then(|bytes| serde_json::from_slice::<NativeAuthorityStorage>(&bytes).ok());
+        let workspaces = Arc::new(PageWorkspaces::new(store));
+        let kept = workspaces.kept();
         let runs = kept
             .iter()
             .flat_map(NativeAuthorityStorage::custody_runs)
             .map(|name| (name, None))
             .collect();
-        let workspaces = Arc::new(PageWorkspaces {
-            store,
-            healthy: AtomicBool::new(true),
-            runs: std::sync::Mutex::new(runs),
-        });
+        *workspaces.runs.lock_recover() = runs;
         let owner = kept
             .and_then(|kept| NativeWorkspaceOwner::restore(workspaces.clone(), kept, now).ok())
             .filter(|owner| {
@@ -412,4 +511,59 @@ impl Replicas {
 /// as of its own timestamp, and in the clear only before its record sealed.
 fn relayed(author: [u8; 32]) -> TransportOrigin {
     TransportOrigin::RetainedRelayDelta(author)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+    use tilo_peer_state::owner::testing;
+
+    fn device() -> (SigningKey, DeviceCert) {
+        let root = SigningKey::from_bytes(&[41; 32]);
+        let key = SigningKey::from_bytes(&[42; 32]);
+        (
+            key.clone(),
+            testing::certificate(&root, &key, "A's browser"),
+        )
+    }
+
+    /// A workspace this page holds is read back after the page restarts from
+    /// what its store kept: the durability a page's writable state must have.
+    #[test]
+    fn the_workspace_this_page_holds_survives_a_restart() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (key, certificate) = device();
+        let store: Arc<dyn PeerStore> = Arc::new(crate::MemoryPeerStore::default());
+        let now = testing::now();
+        let workspace = {
+            let replicas = Replicas::new(certificate.clone(), Arc::clone(&store));
+            let owner = replicas.owner();
+            let workspace =
+                pollster::block_on(testing::founded(&owner, "Company", &certificate, &key, now))?;
+            if !owner.storage().held().any(|(held, _)| held == workspace) {
+                return Err("the page does not hold the workspace it founded".into());
+            }
+            workspace
+        };
+
+        // The page starts again with what its store kept between.
+        let reopened = Replicas::new(certificate, Arc::clone(&store));
+        if reopened.workspace(workspace).is_none() {
+            return Err("the workspace is not held after a restart".into());
+        }
+        let (name, members) = reopened
+            .members(workspace)
+            .ok_or("its governance does not read")?;
+        if members.map(|people| people.len()) != Some(1) {
+            return Err(format!("{name} does not list its one person").into());
+        }
+        let joined = reopened
+            .member_joined(workspace)
+            .ok_or("its admissions do not read")?;
+        if joined.len() != 1 {
+            return Err("the founder's admission is not held".into());
+        }
+        Ok(())
+    }
 }

@@ -522,6 +522,17 @@ pub fn survey_placed_each(
         .all(|resource| placed_each(resource, "", visit))
 }
 
+/// [`survey_placed_each`] for one resource's subtree, as a child of
+/// `parent`: the items a listing keeps past the published page, walked as
+/// the tree would walk them.
+pub fn survey_placed_under(
+    resource: &ResourceSpec,
+    parent: &str,
+    visit: &mut dyn FnMut(PlacedAction) -> bool,
+) -> bool {
+    placed_each(resource, parent, visit)
+}
+
 fn placed_each(
     resource: &ResourceSpec,
     parent: &str,
