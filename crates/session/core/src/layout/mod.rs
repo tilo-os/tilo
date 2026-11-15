@@ -17,7 +17,7 @@ use std::rc::Rc;
 use tilo_actions::ResourceSpec;
 use tilo_actions::remote::session_actions;
 use tilo_desktop_model::{
-    Layout as Tree, LayoutKind, FloatPlace, GroupId, Strip, StripId, Tab, TabId, TileContent,
+    FloatPlace, GroupId, Layout as Tree, LayoutKind, Strip, StripId, Tab, TabId, TileContent,
     WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::DesktopHandle;
@@ -32,7 +32,7 @@ use sizing::canvas_size;
 use sizing::width_in_view;
 mod published;
 use published::{
-    layout_resource, hash_resources, place_actions, place_label, record_resource, row_label,
+    hash_resources, layout_resource, place_actions, place_label, record_resource, row_label,
     strip_actions, strip_label,
 };
 pub use published::{place_kind_resource, resources, row_kind_resource, strip_kind_resource};
@@ -1534,12 +1534,7 @@ impl Layout {
     /// waits ([`Self::waiting`]) and runs when they end. Returns whether it ran now.
     /// # Errors
     /// Why the action names something the layout does not hold.
-    pub fn ask(
-        &mut self,
-        asked: &str,
-        action: LayoutAction,
-        busy: Busy,
-    ) -> Result<bool, String> {
+    pub fn ask(&mut self, asked: &str, action: LayoutAction, busy: Busy) -> Result<bool, String> {
         if busy.holds() {
             self.waiting
                 .borrow_mut()

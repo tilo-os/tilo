@@ -106,14 +106,8 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     // the actions it offers.
     let words: tilo_session_core::layout::Words = std::rc::Rc::new(crate::i18n::word);
     out.push((tilo_session_core::layout::row_kind_resource(), None));
-    out.push((
-        tilo_session_core::layout::strip_kind_resource(&words),
-        None,
-    ));
-    out.push((
-        tilo_session_core::layout::place_kind_resource(&words),
-        None,
-    ));
+    out.push((tilo_session_core::layout::strip_kind_resource(&words), None));
+    out.push((tilo_session_core::layout::place_kind_resource(&words), None));
     out
 }
 

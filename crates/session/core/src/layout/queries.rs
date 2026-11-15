@@ -5,8 +5,8 @@ use tilo_actions::{ActionSpec, Noun, ParamType, ResourceSpec, ResourceType, Reso
 
 use super::published::{action, count_of, required, text};
 use super::{
-    LayoutAction, LayoutQueryReading, LayoutRefReading, Item, QUERY_KIND,
-    SearchOutcome, Target, Words,
+    Item, LayoutAction, LayoutQueryReading, LayoutRefReading, QUERY_KIND, SearchOutcome, Target,
+    Words,
 };
 
 pub(super) fn query_state_from_outcome(outcome: SearchOutcome) -> (String, String) {

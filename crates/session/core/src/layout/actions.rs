@@ -8,8 +8,8 @@ use serde_json::Value as Json;
 use tilo_actions::ResourceSpec;
 
 use super::{
-    Layout, LayoutAction, Ask, AskOrigin, Busy, CanvasRect, Find, Found, Pointed,
-    RECORD_RESOURCE, RESOURCE,
+    Ask, AskOrigin, Busy, CanvasRect, Find, Found, Layout, LayoutAction, Pointed, RECORD_RESOURCE,
+    RESOURCE,
 };
 
 /// The answer an layout action that asks the record gives: complete, with nothing for the

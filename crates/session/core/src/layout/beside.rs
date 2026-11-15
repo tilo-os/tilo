@@ -9,7 +9,7 @@ use tilo_desktop_model::CanvasPlace;
 
 use super::turns::CanvasRect;
 use super::{
-    Layout, LayoutAction, DEFAULT_HEIGHT, DEFAULT_WIDTH, LayoutActions, Item, clamp_side, locate,
+    DEFAULT_HEIGHT, DEFAULT_WIDTH, Item, Layout, LayoutAction, LayoutActions, clamp_side, locate,
 };
 
 /// What an answer's view stands beside: a turn's place, or the rectangle a turn will take
@@ -207,12 +207,12 @@ impl LayoutActions {
                 "a place cannot stand beside itself".to_owned(),
             ));
         }
-        let (at_x, at_y) = layout
-            .point_beside(anchor, Some(place))
-            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+        let (at_x, at_y) = layout.point_beside(anchor, Some(place)).ok_or_else(|| {
+            tilo_actions::DoorError::Unavailable {
                 code: "nowhere_to_place".to_owned(),
                 reason: format!("{beside} stands on no canvas"),
-            })?;
+            }
+        })?;
         *x = at_x;
         *y = at_y;
         Ok(())

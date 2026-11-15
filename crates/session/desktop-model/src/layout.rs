@@ -1206,8 +1206,7 @@ impl crate::workspace::Workspace {
             .flat_map(|strip| &strip.window_groups)
             .map(|group| group.id)
             .collect();
-        self.layout
-            .retain_groups(|group| live.contains(&group));
+        self.layout.retain_groups(|group| live.contains(&group));
     }
 }
 
@@ -1699,9 +1698,7 @@ mod workspace_layout_tests {
             Some(900 - 24 - 300),
             "narrowed to the room before the inbox"
         );
-        let width = layout
-            .free_width_at((300, 600), 720, 520)
-            .expect("room");
+        let width = layout.free_width_at((300, 600), 720, 520).expect("room");
         assert!(!CanvasPlace::new(300, 600, width, 520).crowds_on_canvas(&inbox));
         assert_eq!(
             layout.free_width_at((-1000, 600), 720, 520),

@@ -2,7 +2,7 @@
 //! finds, and hugs what it shows up to it (canvas.md §1, §7).
 
 use super::turns::CanvasRect;
-use super::{Layout, DEFAULT_HEIGHT, DEFAULT_WIDTH, clamp_coord, clamp_side};
+use super::{DEFAULT_HEIGHT, DEFAULT_WIDTH, Layout, clamp_coord, clamp_side};
 
 /// How wide a thing standing at canvas x `x` with no rectangle of its own stands as far as the
 /// view goes: `want`, or the room from `x` to the trailing edge of what the person sees (`seen`)

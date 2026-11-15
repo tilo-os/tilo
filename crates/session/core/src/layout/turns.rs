@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use serde_json::Value as Json;
 
-use super::{Layout, LayoutAction, Asked, Busy, LayoutActions, locate};
+use super::{Asked, Busy, Layout, LayoutAction, LayoutActions, locate};
 
 /// The view a turn stands on the canvas through (canvas.md §3): the person's line, the agent's
 /// reply under it, its steps folded.
@@ -440,10 +440,7 @@ impl LayoutActions {
         else {
             return Ok(false);
         };
-        let covered = self
-            .layout
-            .borrow()
-            .turn_covered_by(action, names_strip);
+        let covered = self.layout.borrow().turn_covered_by(action, names_strip);
         let Some(turn) = covered else {
             return Ok(false);
         };
