@@ -1629,56 +1629,56 @@ tilo_test_env::scenario! {
             "other devices' sealed writes travel as themselves, never republished"
         );
     }
-}
 
-#[test]
-fn the_governor_acknowledges_sealed_writes_without_a_cleartext_checkpoint() {
-    let f = fixture();
-    let now = f.now;
-    let keys = f.keys();
-    let mut host = f.host.clone();
-    let before = host.clone();
-    let mut author = Author::new(&host);
-    let sealed = write(&host, &f.editor, &keys, &author.edit("value", "1"), now);
-    admit(&mut host, &f.editor, sealed.clone(), now);
-    let watermark = |peer: &StatePeer| {
-        crate::durability::entries(peer.admitted_workspace().unwrap())
-            .unwrap()
-            .get(&crate::coverage::route_key(APP, RECORD))
-            .and_then(|receipt| {
-                receipt
-                    .coverage
-                    .watermarks
-                    .get(&hex::encode(f.editor.verifying_key().to_bytes()))
-                    .copied()
-            })
-    };
-    let documents = |messages: &[NeighbourMsg]| {
-        messages
-            .iter()
-            .any(|message| matches!(message, NeighbourMsg::AppDocument { record_id, .. } if record_id == RECORD))
-    };
+    phase the_governor_acknowledges_sealed_writes_without_a_cleartext_checkpoint;
+    {
+        let f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut host = f.host.clone();
+        let before = host.clone();
+        let mut author = Author::new(&host);
+        let sealed = write(&host, &f.editor, &keys, &author.edit("value", "1"), now);
+        admit(&mut host, &f.editor, sealed.clone(), now);
+        let watermark = |peer: &StatePeer| {
+            crate::durability::entries(peer.admitted_workspace().unwrap())
+                .unwrap()
+                .get(&crate::coverage::route_key(APP, RECORD))
+                .and_then(|receipt| {
+                    receipt
+                        .coverage
+                        .watermarks
+                        .get(&hex::encode(f.editor.verifying_key().to_bytes()))
+                        .copied()
+                })
+        };
+        let documents = |messages: &[NeighbourMsg]| {
+            messages
+                .iter()
+                .any(|message| matches!(message, NeighbourMsg::AppDocument { record_id, .. } if record_id == RECORD))
+        };
 
-    let mut published = host.clone();
-    let messages = published
-        .publication_mut()
-        .durable_mutation_messages(&before, &f.owner, now, 2)
-        .unwrap();
-    assert!(
-        !documents(&messages),
-        "a cleartext checkpoint would downgrade the encrypted record"
-    );
-    assert_eq!(watermark(&published), Some(envelope_of(&sealed).seq));
-    assert_eq!(held(&published), vec![envelope_of(&sealed)]);
-    f.restore(&published.durable().unwrap()).unwrap();
+        let mut published = host.clone();
+        let messages = published
+            .publication_mut()
+            .durable_mutation_messages(&before, &f.owner, now, 2)
+            .unwrap();
+        assert!(
+            !documents(&messages),
+            "a cleartext checkpoint would downgrade the encrypted record"
+        );
+        assert_eq!(watermark(&published), Some(envelope_of(&sealed).seq));
+        assert_eq!(held(&published), vec![envelope_of(&sealed)]);
+        f.restore(&published.durable().unwrap()).unwrap();
 
-    let mut bootstrapped = published.clone();
-    let messages = bootstrapped
-        .publication_mut()
-        .durable_bootstrap_messages(&f.owner, now, 3)
-        .unwrap();
-    assert!(!documents(&messages));
-    assert_eq!(watermark(&bootstrapped), Some(envelope_of(&sealed).seq));
+        let mut bootstrapped = published.clone();
+        let messages = bootstrapped
+            .publication_mut()
+            .durable_bootstrap_messages(&f.owner, now, 3)
+            .unwrap();
+        assert!(!documents(&messages));
+        assert_eq!(watermark(&bootstrapped), Some(envelope_of(&sealed).seq));
+    }
 }
 
 tilo_test_env::scenario! {

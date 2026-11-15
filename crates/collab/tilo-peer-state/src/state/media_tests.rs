@@ -422,6 +422,45 @@ tilo_test_env::scenario! {
             .is_err()
         );
     }
+
+    phase workspace_media_restore_rejects_governed_certificate_replacement;
+    {
+        let (mut peer, key, now) = fixture();
+        let value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        let mut workspace = peer.admitted_workspace().unwrap().clone();
+        let ids = workspace
+            .get(ROOT, "peer_identities_v1")
+            .unwrap()
+            .unwrap()
+            .1;
+        let id = hex::encode(peer.owner_certificates()[0].device_public_key);
+        let mut row =
+            GovernedIdentity::decode(&workspace::governance_of(Some(&workspace)).identities[&id])
+                .unwrap();
+        row.device_cert.device_label = "replacement certificate".into();
+        sign_device_cert(&mut row.device_cert, &SigningKey::from_bytes(&[101; 32])).unwrap();
+        workspace
+            .put(
+                &ids,
+                id,
+                automerge::ScalarValue::Bytes(row.encode().unwrap()),
+            )
+            .unwrap();
+        media::refresh_authorization(peer.admitted_workspace().unwrap(), &mut workspace).unwrap();
+        peer.core.workspace_doc = Some(workspace.into());
+        assert!(
+            StatePeer::restore(
+                &peer.durable().unwrap(),
+                WORKSPACE,
+                peer.owner_certificates()[0].clone(),
+                vec![],
+                RevocationList::new(),
+                now
+            )
+            .is_err()
+        );
+    }
 }
 fn policy(peer: &StatePeer) -> media::WorkspaceMediaV1 {
     let chat = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
@@ -906,6 +945,67 @@ tilo_test_env::scenario! {
         assert_ne!(initial, media::security_basis(&workspace, &[]).unwrap());
     }
 
+    phase workspace_media_governance_role_removal_and_enrollment_refresh_once;
+    {
+        let (mut peer, key, members, now) = members();
+        let value = policy(&peer);
+        install_policy(&mut peer, &key, now, &value).unwrap();
+        // Public removal already authenticates the exact governor. It must update
+        // the enabled media policy in the same candidate before native receive.
+        assert!(
+            peer.governance_mut()
+                .remove_member(members[0].1.user_public_key, &key, now)
+                .unwrap()
+        );
+        assert_eq!(
+            peer.validated_media_policy()
+                .unwrap()
+                .unwrap()
+                .authorization_revision,
+            2
+        );
+        assert!(
+            !peer
+                .governance_mut()
+                .remove_member(members[0].1.user_public_key, &key, now)
+                .unwrap()
+        );
+        assert_eq!(
+            peer.validated_media_policy()
+                .unwrap()
+                .unwrap()
+                .authorization_revision,
+            2
+        );
+        let (_, cert) = member(101, 104);
+        assert!(peer.admit_certificate(cert.clone(), &key, now).unwrap());
+        assert_eq!(
+            peer.validated_media_policy()
+                .unwrap()
+                .unwrap()
+                .authorization_revision,
+            3
+        );
+        assert!(!peer.admit_certificate(cert, &key, now).unwrap());
+        assert_eq!(
+            peer.validated_media_policy()
+                .unwrap()
+                .unwrap()
+                .authorization_revision,
+            3
+        );
+        peer.publication_mut()
+            .bootstrap_messages(&key, now)
+            .unwrap();
+        assert_eq!(
+            peer.validated_media_policy()
+                .unwrap()
+                .unwrap()
+                .authorization_revision,
+            3
+        );
+    }
+
     phase workspace_media_verified_independent_revocation_denies_before_promotion;
     {
         let (mut peer, key, members, now) = members();
@@ -971,102 +1071,4 @@ tilo_test_env::scenario! {
             2
         );
     }
-}
-#[test]
-fn workspace_media_governance_role_removal_and_enrollment_refresh_once() {
-    let (mut peer, key, members, now) = members();
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    // Public removal already authenticates the exact governor. It must update
-    // the enabled media policy in the same candidate before native receive.
-    assert!(
-        peer.governance_mut()
-            .remove_member(members[0].1.user_public_key, &key, now)
-            .unwrap()
-    );
-    assert_eq!(
-        peer.validated_media_policy()
-            .unwrap()
-            .unwrap()
-            .authorization_revision,
-        2
-    );
-    assert!(
-        !peer
-            .governance_mut()
-            .remove_member(members[0].1.user_public_key, &key, now)
-            .unwrap()
-    );
-    assert_eq!(
-        peer.validated_media_policy()
-            .unwrap()
-            .unwrap()
-            .authorization_revision,
-        2
-    );
-    let (_, cert) = member(101, 104);
-    assert!(peer.admit_certificate(cert.clone(), &key, now).unwrap());
-    assert_eq!(
-        peer.validated_media_policy()
-            .unwrap()
-            .unwrap()
-            .authorization_revision,
-        3
-    );
-    assert!(!peer.admit_certificate(cert, &key, now).unwrap());
-    assert_eq!(
-        peer.validated_media_policy()
-            .unwrap()
-            .unwrap()
-            .authorization_revision,
-        3
-    );
-    peer.publication_mut()
-        .bootstrap_messages(&key, now)
-        .unwrap();
-    assert_eq!(
-        peer.validated_media_policy()
-            .unwrap()
-            .unwrap()
-            .authorization_revision,
-        3
-    );
-}
-#[test]
-fn workspace_media_restore_rejects_governed_certificate_replacement() {
-    let (mut peer, key, now) = fixture();
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let mut workspace = peer.admitted_workspace().unwrap().clone();
-    let ids = workspace
-        .get(ROOT, "peer_identities_v1")
-        .unwrap()
-        .unwrap()
-        .1;
-    let id = hex::encode(peer.owner_certificates()[0].device_public_key);
-    let mut row =
-        GovernedIdentity::decode(&workspace::governance_of(Some(&workspace)).identities[&id])
-            .unwrap();
-    row.device_cert.device_label = "replacement certificate".into();
-    sign_device_cert(&mut row.device_cert, &SigningKey::from_bytes(&[101; 32])).unwrap();
-    workspace
-        .put(
-            &ids,
-            id,
-            automerge::ScalarValue::Bytes(row.encode().unwrap()),
-        )
-        .unwrap();
-    media::refresh_authorization(peer.admitted_workspace().unwrap(), &mut workspace).unwrap();
-    peer.core.workspace_doc = Some(workspace.into());
-    assert!(
-        StatePeer::restore(
-            &peer.durable().unwrap(),
-            WORKSPACE,
-            peer.owner_certificates()[0].clone(),
-            vec![],
-            RevocationList::new(),
-            now
-        )
-        .is_err()
-    );
 }

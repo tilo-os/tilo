@@ -203,161 +203,220 @@ tilo_test_env::scenario! {
         );
         assert!(peer.governance().governed_sandbox().unwrap().is_empty());
     }
-}
 
-#[test]
-fn an_administrator_grant_on_the_workspaces_resource_is_rewritten_once() {
-    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
-    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
-    let person = hex::encode(user);
-    let owner = Grantee::person(hex::encode(peer.owner()));
-    // The grant as workspaces held it before: on the workspace's resource, where the
-    // Editor's Deny at the same node outranks it.
-    let legacy = Grant::new(
-        roles::administrator_grant_id(&person).as_str(),
-        Grantee::person(person.clone()),
-        roles::workspace_resource(peer.workspace_id()),
-        KindSet::ALL,
-        Answer::Allow,
-        owner.clone(),
-    );
-    assert!(roles::is_legacy_administrator_grant(
-        peer.workspace_id(),
-        &legacy
-    ));
-    peer.governance_mut()
-        .put_governed_grants(std::slice::from_ref(&legacy), &host_key, now)
-        .unwrap();
-    assert!(is_administrator(&peer, user, now));
-    assert_eq!(
-        governs(&peer, editor.device_public_key, now),
-        0,
-        "the Editor's Deny outranks the grant where it sits"
-    );
-
-    assert!(
+    phase a_moderator_renames_the_workspace_and_a_grant_on_a_set_assigns_only_it;
+    // A Moderator names the workspace by their role; a grant on one saved set's
+    // assign node lets an editor assign that set, and nothing else.
+    {
+        use crate::workspace_membership::SettingsChange;
+        let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+        let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
         peer.governance_mut()
-            .reconcile_administrator_grants(&host_key, now)
-            .unwrap()
-    );
-    assert_eq!(governs(&peer, editor.device_public_key, now), EVERY);
-    assert!(is_administrator(&peer, user, now));
-    let held = peer.permissions(editor.device_public_key, now).unwrap();
-    let rewritten = held
-        .policy
-        .grants
-        .iter()
-        .filter(|grant| grant.id == legacy.id)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        rewritten,
-        [&roles::administrator_grant(
-            peer.workspace_id(),
-            &person,
-            owner
-        )]
-    );
-    assert!(
-        !peer
-            .governance_mut()
-            .reconcile_administrator_grants(&host_key, now)
-            .unwrap()
-    );
-}
-
-#[test]
-fn reconciling_a_workspace_without_old_grants_writes_nothing_and_needs_no_writer() {
-    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
-    crate::admission_tests::add_editor(&mut peer, &host_key, now);
-    let stranger = SigningKey::from_bytes(&[77; 32]);
-    assert!(
-        !peer
-            .governance_mut()
-            .reconcile_administrator_grants(&stranger, now)
-            .unwrap()
-    );
-}
-
-#[test]
-fn a_members_membership_command_is_signed_by_their_own_device_and_decided_by_their_grants() {
-    use crate::workspace_membership::WorkspaceMembershipCommand;
-    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
-    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
-    let editor_key = SigningKey::from_bytes(&[6; 32]);
-    let demote = WorkspaceMembershipCommand::Member {
-        change: tilo_action_policy::Change::SetRole {
-            person: hex::encode(user),
-            role: Role::Viewer,
-        },
-    };
-    assert!(
-        peer.clone()
-            .workspace_mut()
-            .apply_workspace_membership_command(&editor, &demote, &editor_key, now)
-            .is_err(),
-        "an editor's grants change no role"
-    );
-    peer.governance_mut()
-        .set_member_administrator(user, None, &host_key, now)
-        .unwrap();
-    assert!(
-        peer.clone()
-            .workspace_mut()
-            .apply_workspace_membership_command(
+            .put_governed_presets(&[readers()], &host_key, now)
+            .unwrap();
+        let assign = SettingsChange::AssignPreset {
+            preset: "Readers".into(),
+            subject: tilo_action_policy::Grantee::agent("scribe"),
+            lifetime: tilo_action_policy::Lifetime::UntilRevoked,
+        };
+        assert!(change_settings(&mut peer.clone(), &editor, assign.clone(), now).is_err());
+        let owner = hex::encode(peer.owner());
+        let on_set = tilo_action_policy::Grant::new(
+            "assign-readers",
+            tilo_action_policy::Grantee::person(hex::encode(user)),
+            tilo_desktop_model::preset_assign_node(peer.workspace_id(), "Readers"),
+            KindSet::OUTSIDE,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(owner),
+        );
+        peer.governance_mut()
+            .put_governed_grants(&[on_set], &host_key, now)
+            .unwrap();
+        assert!(change_settings(&mut peer, &editor, assign, now).unwrap());
+        assert!(
+            change_settings(
+                &mut peer.clone(),
                 &editor,
-                &demote,
-                &SigningKey::from_bytes(&[7; 32]),
+                SettingsChange::SavePreset { preset: readers() },
                 now
             )
             .is_err(),
-        "another key does not sign for the caller's device"
-    );
-    assert!(
-        peer.workspace_mut()
-            .apply_workspace_membership_command(&editor, &demote, &editor_key, now)
-            .unwrap()
-    );
-    assert_eq!(
-        peer.role(&editor.device_public_key, now).unwrap(),
-        Role::Viewer
-    );
+            "assigning one set saves none"
+        );
+
+        let rename = SettingsChange::Rename {
+            name: "Plans".into(),
+        };
+        assert!(change_settings(&mut peer.clone(), &editor, rename.clone(), now).is_err());
+        peer.governance_mut()
+            .set_member_role(user, crate::join::Role::Moderator, &host_key, now)
+            .unwrap();
+        assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
+        assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));
+    }
 }
 
-/// An administrator's own device lets an app author the workspace, as a grant
-/// of their own; an editor's cannot, and letting it again changes nothing.
-/// A member leaves the workspace on their own device: leaving is nobody's
-/// grant, and the workspace they leave takes their device rows with them.
-#[test]
-fn a_members_own_device_leaves_the_workspace() {
-    use crate::workspace_membership::WorkspaceMembershipCommand;
-    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
-    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
-    let editor_key = SigningKey::from_bytes(&[6; 32]);
-    let leave = WorkspaceMembershipCommand::Member {
-        change: tilo_action_policy::Change::RemoveMember {
-            person: hex::encode(user),
-        },
-    };
-    assert!(peer.permissions(editor.device_public_key, now).is_ok());
-    assert!(
-        peer.workspace_mut()
-            .apply_workspace_membership_command(&editor, &leave, &editor_key, now)
-            .unwrap(),
-        "the editor left"
-    );
-    assert!(
-        peer.permissions(editor.device_public_key, now).is_err(),
-        "a device whose person left is no member's"
-    );
-    assert!(
-        peer.governance()
-            .governed_members(now)
-            .unwrap()
-            .members
+tilo_test_env::scenario! {
+    fn administrator_grants_of_earlier_builds_are_reconciled_once;
+
+    phase an_administrator_grant_on_the_workspaces_resource_is_rewritten_once;
+    {
+        let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+        let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+        let person = hex::encode(user);
+        let owner = Grantee::person(hex::encode(peer.owner()));
+        // The grant as workspaces held it before: on the workspace's resource, where the
+        // Editor's Deny at the same node outranks it.
+        let legacy = Grant::new(
+            roles::administrator_grant_id(&person).as_str(),
+            Grantee::person(person.clone()),
+            roles::workspace_resource(peer.workspace_id()),
+            KindSet::ALL,
+            Answer::Allow,
+            owner.clone(),
+        );
+        assert!(roles::is_legacy_administrator_grant(
+            peer.workspace_id(),
+            &legacy
+        ));
+        peer.governance_mut()
+            .put_governed_grants(std::slice::from_ref(&legacy), &host_key, now)
+            .unwrap();
+        assert!(is_administrator(&peer, user, now));
+        assert_eq!(
+            governs(&peer, editor.device_public_key, now),
+            0,
+            "the Editor's Deny outranks the grant where it sits"
+        );
+
+        assert!(
+            peer.governance_mut()
+                .reconcile_administrator_grants(&host_key, now)
+                .unwrap()
+        );
+        assert_eq!(governs(&peer, editor.device_public_key, now), EVERY);
+        assert!(is_administrator(&peer, user, now));
+        let held = peer.permissions(editor.device_public_key, now).unwrap();
+        let rewritten = held
+            .policy
+            .grants
             .iter()
-            .all(|member| member.root() != Some(user)),
-        "the member and their device rows are off the roster"
-    );
+            .filter(|grant| grant.id == legacy.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rewritten,
+            [&roles::administrator_grant(
+                peer.workspace_id(),
+                &person,
+                owner
+            )]
+        );
+        assert!(
+            !peer
+                .governance_mut()
+                .reconcile_administrator_grants(&host_key, now)
+                .unwrap()
+        );
+    }
+
+    phase reconciling_a_workspace_without_old_grants_writes_nothing_and_needs_no_writer;
+    {
+        let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+        crate::admission_tests::add_editor(&mut peer, &host_key, now);
+        let stranger = SigningKey::from_bytes(&[77; 32]);
+        assert!(
+            !peer
+                .governance_mut()
+                .reconcile_administrator_grants(&stranger, now)
+                .unwrap()
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_members_own_device_signs_what_the_member_asks_of_the_membership;
+
+    phase a_members_membership_command_is_signed_by_their_own_device_and_decided_by_their_grants;
+    {
+        use crate::workspace_membership::WorkspaceMembershipCommand;
+        let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+        let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+        let editor_key = SigningKey::from_bytes(&[6; 32]);
+        let demote = WorkspaceMembershipCommand::Member {
+            change: tilo_action_policy::Change::SetRole {
+                person: hex::encode(user),
+                role: Role::Viewer,
+            },
+        };
+        assert!(
+            peer.clone()
+                .workspace_mut()
+                .apply_workspace_membership_command(&editor, &demote, &editor_key, now)
+                .is_err(),
+            "an editor's grants change no role"
+        );
+        peer.governance_mut()
+            .set_member_administrator(user, None, &host_key, now)
+            .unwrap();
+        assert!(
+            peer.clone()
+                .workspace_mut()
+                .apply_workspace_membership_command(
+                    &editor,
+                    &demote,
+                    &SigningKey::from_bytes(&[7; 32]),
+                    now
+                )
+                .is_err(),
+            "another key does not sign for the caller's device"
+        );
+        assert!(
+            peer.workspace_mut()
+                .apply_workspace_membership_command(&editor, &demote, &editor_key, now)
+                .unwrap()
+        );
+        assert_eq!(
+            peer.role(&editor.device_public_key, now).unwrap(),
+            Role::Viewer
+        );
+    }
+
+    phase a_members_own_device_leaves_the_workspace;
+    // An administrator's own device lets an app author the workspace, as a grant
+    // of their own; an editor's cannot, and letting it again changes nothing.
+    // A member leaves the workspace on their own device: leaving is nobody's
+    // grant, and the workspace they leave takes their device rows with them.
+    {
+        use crate::workspace_membership::WorkspaceMembershipCommand;
+        let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+        let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+        let editor_key = SigningKey::from_bytes(&[6; 32]);
+        let leave = WorkspaceMembershipCommand::Member {
+            change: tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(user),
+            },
+        };
+        assert!(peer.permissions(editor.device_public_key, now).is_ok());
+        assert!(
+            peer.workspace_mut()
+                .apply_workspace_membership_command(&editor, &leave, &editor_key, now)
+                .unwrap(),
+            "the editor left"
+        );
+        assert!(
+            peer.permissions(editor.device_public_key, now).is_err(),
+            "a device whose person left is no member's"
+        );
+        assert!(
+            peer.governance()
+                .governed_members(now)
+                .unwrap()
+                .members
+                .iter()
+                .all(|member| member.root() != Some(user)),
+            "the member and their device rows are off the roster"
+        );
+    }
 }
 
 /// The workspace's own settings an editor's device writes as `change`.
@@ -385,57 +444,6 @@ fn readers() -> tilo_action_policy::Preset {
             tilo_action_policy::Answer::Allow,
         )],
     )
-}
-
-/// A Moderator names the workspace by their role; a grant on one saved set's
-/// assign node lets an editor assign that set, and nothing else.
-#[test]
-fn a_moderator_renames_the_workspace_and_a_grant_on_a_set_assigns_only_it() {
-    use crate::workspace_membership::SettingsChange;
-    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
-    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
-    peer.governance_mut()
-        .put_governed_presets(&[readers()], &host_key, now)
-        .unwrap();
-    let assign = SettingsChange::AssignPreset {
-        preset: "Readers".into(),
-        subject: tilo_action_policy::Grantee::agent("scribe"),
-        lifetime: tilo_action_policy::Lifetime::UntilRevoked,
-    };
-    assert!(change_settings(&mut peer.clone(), &editor, assign.clone(), now).is_err());
-    let owner = hex::encode(peer.owner());
-    let on_set = tilo_action_policy::Grant::new(
-        "assign-readers",
-        tilo_action_policy::Grantee::person(hex::encode(user)),
-        tilo_desktop_model::preset_assign_node(peer.workspace_id(), "Readers"),
-        KindSet::OUTSIDE,
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person(owner),
-    );
-    peer.governance_mut()
-        .put_governed_grants(&[on_set], &host_key, now)
-        .unwrap();
-    assert!(change_settings(&mut peer, &editor, assign, now).unwrap());
-    assert!(
-        change_settings(
-            &mut peer.clone(),
-            &editor,
-            SettingsChange::SavePreset { preset: readers() },
-            now
-        )
-        .is_err(),
-        "assigning one set saves none"
-    );
-
-    let rename = SettingsChange::Rename {
-        name: "Plans".into(),
-    };
-    assert!(change_settings(&mut peer.clone(), &editor, rename.clone(), now).is_err());
-    peer.governance_mut()
-        .set_member_role(user, crate::join::Role::Moderator, &host_key, now)
-        .unwrap();
-    assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
-    assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));
 }
 
 mod made_and_invited {

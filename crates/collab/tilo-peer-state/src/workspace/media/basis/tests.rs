@@ -66,6 +66,36 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase media_basis_preserves_verified_earliest_revocation_and_canonical_tie_order;
+    {
+        let (mut doc, root, device) = fixture();
+        let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+        let original = super::super::strict_bytes(&doc, &identities, &device).unwrap();
+        let mut row = crate::state::GovernedIdentity::decode(&original).unwrap();
+        row.revocations = vec![revocation(&root, 20), revocation(&root, 10)];
+        doc.put(
+            &identities,
+            &device,
+            ScalarValue::Bytes(row.encode().unwrap()),
+        )
+        .unwrap();
+        doc.commit();
+        let mut tie = revocation(&root, 10);
+        tie.reason = RevocationReason::Lost;
+        tilo_user_identity::sign_revocation_entry(&mut tie, &root).unwrap();
+        for extra in [
+            vec![],
+            vec![tie.clone(), revocation(&root, 5)],
+            vec![revocation(&root, 5), tie],
+        ] {
+            let expected = historical_basis(&doc, &extra).unwrap();
+            assert_eq!(basis(&doc, &extra), Ok(expected));
+        }
+        let mut invalid = revocation(&root, 1);
+        invalid.signature[0] ^= 1;
+        assert_eq!(basis(&doc, &[invalid]), Err(MediaPolicyError::Binding));
+    }
+
     phase media_basis_matches_original_malformed_container_conflict_and_certificate_rejections;
     {
         for mode in 0..6 {
@@ -202,35 +232,6 @@ tilo_test_env::scenario! {
         assert_eq!(basis(&doc, &[]), Ok(expected));
         let _ = root;
     }
-}
-#[test]
-fn media_basis_preserves_verified_earliest_revocation_and_canonical_tie_order() {
-    let (mut doc, root, device) = fixture();
-    let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    let original = super::super::strict_bytes(&doc, &identities, &device).unwrap();
-    let mut row = crate::state::GovernedIdentity::decode(&original).unwrap();
-    row.revocations = vec![revocation(&root, 20), revocation(&root, 10)];
-    doc.put(
-        &identities,
-        &device,
-        ScalarValue::Bytes(row.encode().unwrap()),
-    )
-    .unwrap();
-    doc.commit();
-    let mut tie = revocation(&root, 10);
-    tie.reason = RevocationReason::Lost;
-    tilo_user_identity::sign_revocation_entry(&mut tie, &root).unwrap();
-    for extra in [
-        vec![],
-        vec![tie.clone(), revocation(&root, 5)],
-        vec![revocation(&root, 5), tie],
-    ] {
-        let expected = historical_basis(&doc, &extra).unwrap();
-        assert_eq!(basis(&doc, &extra), Ok(expected));
-    }
-    let mut invalid = revocation(&root, 1);
-    invalid.signature[0] ^= 1;
-    assert_eq!(basis(&doc, &[invalid]), Err(MediaPolicyError::Binding));
 }
 
 // Frozen original algorithm is the independent byte/error oracle.

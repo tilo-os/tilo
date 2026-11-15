@@ -95,297 +95,49 @@ pub(super) fn installation(program: &str, installed_by: &str) -> Installation {
     }
 }
 
-#[test]
-fn a_bot_row_acts_only_with_its_own_live_installation() {
-    let (_, _, _, _, now) = crate::admission_tests::seeded();
-    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let installer = person();
-    let (_, cert) = bot_device(&installer, 8);
-    let row = GovernedDelegateRow {
-        delegation: bot_delegation(&installer, cert.device_public_key, BOT, workspace, now),
-        withdrawn_at_ns: None,
-        installation: Some(installation(&"a".repeat(64), &person_hex())),
-    };
-    assert_eq!(row.acting(&cert, workspace, ns(now)), Ok(()));
-
-    let mut missing = row.clone();
-    missing.installation = None;
-    assert_eq!(
-        missing.acting(&cert, workspace, ns(now)),
-        Err(super::delegates::DelegateInactive::Mismatch)
-    );
-
-    let mut other = row.clone();
-    other.delegation = bot_delegation(
-        &installer,
-        cert.device_public_key,
-        "7f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6",
-        workspace,
-        now,
-    );
-    assert_eq!(
-        other.acting(&cert, workspace, ns(now)),
-        Err(super::delegates::DelegateInactive::Mismatch)
-    );
-
-    let mut adopted_elsewhere = row;
-    adopted_elsewhere.installation = Some(installation(&"a".repeat(64), &"f".repeat(64)));
-    assert_eq!(
-        adopted_elsewhere.acting(&cert, workspace, ns(now)),
-        Err(super::delegates::DelegateInactive::InstallerMismatch)
-    );
-}
-
-fn chat_post() -> TreePath {
-    TreePath::root()
-        .any(Level::Workspace)
-        .app("so.tilo.chat")
-        .kind("chat.workspace")
-        .any(Level::Resource)
-        .action("post")
-}
-
-fn program(grant: Vec<Rule>) -> String {
-    program_invoking(
-        tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
-        grant,
-    )
-}
-
-/// A one-step program invoking `action` on the first resource of its kind,
-/// holding `grant`.
-pub(crate) fn program_invoking(action: tilo_actions::ActionKey, grant: Vec<Rule>) -> String {
-    let kind = action.kind.clone();
-    let shortcut = tilo_automation::Shortcut {
-        id: "bridge".into(),
-        name: "Discord Bridge".into(),
-        inputs: vec![],
-        steps: vec![tilo_automation::Step::new(
-            "act",
-            tilo_automation::StepKind::Invoke {
-                action,
-                resource: tilo_automation::Selector::FirstOfKind(kind),
-                args: std::collections::BTreeMap::default(),
-                appearance: None,
-            },
-        )],
-        step_timeout_secs: None,
-        output: None,
-        grant,
-        triggers: vec![],
-        saved_by: None,
-        saved_proof: None,
-    };
-    String::from_utf8(tilo_automation::program::canonical_bytes(&shortcut).unwrap()).unwrap()
-}
-
-fn post_rule() -> Rule {
-    Rule::new(chat_post(), KindSet::READ_UNDOABLE, Answer::Allow)
-}
-
-fn install_command(
-    peer: &StatePeer,
-    program_text: &str,
-    seed: u8,
-    now: SystemTime,
-) -> (Box<BotInstall>, DeviceCert) {
-    let installer = person();
-    let (_, cert) = bot_device(&installer, seed);
-    let hash = tilo_automation::program::program_hash(program_text.as_bytes());
-    let install = Box::new(BotInstall {
-        installation: installation(&hash, &person_hex()),
-        program: program_text.into(),
-        device: Some(BotDevice {
-            delegation: bot_delegation(
-                &installer,
-                cert.device_public_key,
-                BOT,
-                peer.workspace_id(),
-                now,
-            ),
-            cert: cert.clone(),
-        }),
-    });
-    (install, cert)
-}
-
-fn update_command(text: &str) -> Command {
-    Command::InstallBot(Box::new(BotInstall {
-        installation: installation(
-            &tilo_automation::program::program_hash(text.as_bytes()),
-            &person_hex(),
-        ),
-        program: text.into(),
-        device: None,
-    }))
-}
-
-fn post_in(peer: &StatePeer) -> TreePath {
-    TreePath::workspace(peer.workspace_id())
-        .app("so.tilo.chat")
-        .kind("chat.workspace")
-        .resource("chat:1")
-        .action("post")
-}
-
-/// A grant of governance action `action` to the fixture's person.
-fn governance_grant(peer: &StatePeer, id: &str, action: &str) -> tilo_action_policy::Grant {
-    tilo_action_policy::Grant::new(
-        id,
-        tilo_action_policy::Grantee::person(person_hex()),
-        tilo_action_policy::roles::governance_action(peer.workspace_id(), action),
-        KindSet::OUTSIDE,
-        Answer::Allow,
-        tilo_action_policy::Grantee::person(hex::encode(
-            crate::admission_tests::other_owner().1.user_public_key,
-        )),
-    )
-}
-
-tilo_test_env::scenario! {
-    fn installing_a_bot_needs_its_delegation_its_program_and_the_privilege;
-
-    phase the_owner_installs_a_bot_in_one_governed_change;
-    {
-        let (mut governor, authority, _, owner_device, now) = crate::admission_tests::seeded();
-        let text = program(vec![post_rule()]);
-        let (install, cert) = install_command(&governor, &text, 8, now);
-        let command = Command::InstallBot(install);
-        assert_eq!(
-            governor.workspace_mut().apply_workspace_membership_command(
-                &owner_device,
-                &command,
-                &authority,
-                now
-            ),
-            Ok(true)
-        );
-        let bots = governor.governance().installations(now).unwrap();
-        assert_eq!(bots.len(), 1);
-        assert!(bots[0].acting);
-        assert_eq!(bots[0].device_public_key, cert.device_public_key);
-        assert_eq!(
-            governor
-                .governance()
-                .bot_program(&bots[0].installation.program),
-            Some(text)
-        );
-        assert_eq!(
-            governor
-                .governance()
-                .installation(BOT, now)
-                .map(|bot| bot.device_public_key),
-            Some(cert.device_public_key)
-        );
-        let member = governor.permissions(cert.device_public_key, now).unwrap();
-        assert!(member.allows(&post_in(&governor), ActionKind::Undoable, now));
-        let notes = TreePath::workspace(governor.workspace_id())
-            .app("so.tilo.notes")
-            .action("append");
-        assert!(!member.allows(&notes, ActionKind::Undoable, now));
-        let grant = tilo_action_policy::roles::governance_action(
-            governor.workspace_id(),
-            tilo_action_policy::roles::governance::GRANT,
-        );
-        assert!(!member.allows(&grant, tilo_action_policy::roles::GOVERNANCE_KIND, now));
-    }
-
-    phase install_refuses_a_delegation_for_another_installation_or_workspace;
-    {
-        let (mut governor, authority, _, owner_device, now) = crate::admission_tests::seeded();
-        let text = program(vec![post_rule()]);
-        let (mut install, cert) = install_command(&governor, &text, 8, now);
-        let installer = person();
-        let other_workspace = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-        for delegation in [
-            bot_delegation(
-                &installer,
-                cert.device_public_key,
-                "7f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6",
-                governor.workspace_id(),
-                now,
-            ),
-            bot_delegation(
-                &installer,
-                cert.device_public_key,
-                BOT,
-                other_workspace,
-                now,
-            ),
-            bot_delegation(&installer, [42; 32], BOT, governor.workspace_id(), now),
-        ] {
-            install.device.as_mut().unwrap().delegation = delegation;
-            let command = Command::InstallBot(install.clone());
-            assert!(
-                governor
-                    .workspace_mut()
-                    .apply_workspace_membership_command(&owner_device, &command, &authority, now)
-                    .is_err()
-            );
-        }
-        assert!(governor.governance().installations(now).unwrap().is_empty());
-    }
-
-    phase install_refuses_a_program_with_unused_rules;
-    {
-        let (mut governor, authority, _, owner_device, now) = crate::admission_tests::seeded();
-        let delete = Rule::new(
-            TreePath::root()
-                .any(Level::Workspace)
-                .app("so.tilo.chat")
-                .kind("chat.workspace")
-                .any(Level::Resource)
-                .action("delete"),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-        );
-        let text = program(vec![post_rule(), delete]);
-        let (install, _) = install_command(&governor, &text, 8, now);
-        let command = Command::InstallBot(install);
-        let refused = governor
-            .workspace_mut()
-            .apply_workspace_membership_command(&owner_device, &command, &authority, now)
-            .unwrap_err();
-        assert!(refused.contains("none of its steps"), "{refused}");
-    }
-
-    phase install_refuses_a_program_that_does_not_match_its_hash;
-    {
-        let (mut governor, authority, _, owner_device, now) = crate::admission_tests::seeded();
-        let text = program(vec![post_rule()]);
-        let (mut install, _) = install_command(&governor, &text, 8, now);
-        install.installation.program = "b".repeat(64);
-        assert!(
-            governor
-                .workspace_mut()
-                .apply_workspace_membership_command(
-                    &owner_device,
-                    &Command::InstallBot(install),
-                    &authority,
-                    now
-                )
-                .is_err()
-        );
-    }
-
-    phase an_editor_cannot_install_by_default;
-    {
-        let (mut governor, authority, _, editor_device, now) = crate::admission_tests::seeded_editor();
-        let text = program(vec![post_rule()]);
-        let (install, _) = install_command(&governor, &text, 8, now);
-        let command = Command::InstallBot(install);
-        assert!(
-            governor
-                .workspace_mut()
-                .apply_workspace_membership_command(&editor_device, &command, &authority, now)
-                .is_err()
-        );
-        assert!(governor.governance().installations(now).unwrap().is_empty());
-    }
-}
-
 tilo_test_env::scenario! {
     fn an_installed_bot_acts_and_changes_within_its_installers_authority;
+
+    phase a_bot_row_acts_only_with_its_own_live_installation;
+    {
+        let (_, _, _, _, now) = crate::admission_tests::seeded();
+        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let installer = person();
+        let (_, cert) = bot_device(&installer, 8);
+        let row = GovernedDelegateRow {
+            delegation: bot_delegation(&installer, cert.device_public_key, BOT, workspace, now),
+            withdrawn_at_ns: None,
+            installation: Some(installation(&"a".repeat(64), &person_hex())),
+        };
+        assert_eq!(row.acting(&cert, workspace, ns(now)), Ok(()));
+
+        let mut missing = row.clone();
+        missing.installation = None;
+        assert_eq!(
+            missing.acting(&cert, workspace, ns(now)),
+            Err(super::delegates::DelegateInactive::Mismatch)
+        );
+
+        let mut other = row.clone();
+        other.delegation = bot_delegation(
+            &installer,
+            cert.device_public_key,
+            "7f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6",
+            workspace,
+            now,
+        );
+        assert_eq!(
+            other.acting(&cert, workspace, ns(now)),
+            Err(super::delegates::DelegateInactive::Mismatch)
+        );
+
+        let mut adopted_elsewhere = row;
+        adopted_elsewhere.installation = Some(installation(&"a".repeat(64), &"f".repeat(64)));
+        assert_eq!(
+            adopted_elsewhere.acting(&cert, workspace, ns(now)),
+            Err(super::delegates::DelegateInactive::InstallerMismatch)
+        );
+    }
 
     phase an_update_wider_than_the_old_grant_needs_install_bot;
     {
@@ -761,6 +513,254 @@ tilo_test_env::scenario! {
     }
 }
 
+fn chat_post() -> TreePath {
+    TreePath::root()
+        .any(Level::Workspace)
+        .app("so.tilo.chat")
+        .kind("chat.workspace")
+        .any(Level::Resource)
+        .action("post")
+}
+
+fn program(grant: Vec<Rule>) -> String {
+    program_invoking(
+        tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
+        grant,
+    )
+}
+
+/// A one-step program invoking `action` on the first resource of its kind,
+/// holding `grant`.
+pub(crate) fn program_invoking(action: tilo_actions::ActionKey, grant: Vec<Rule>) -> String {
+    let kind = action.kind.clone();
+    let shortcut = tilo_automation::Shortcut {
+        id: "bridge".into(),
+        name: "Discord Bridge".into(),
+        inputs: vec![],
+        steps: vec![tilo_automation::Step::new(
+            "act",
+            tilo_automation::StepKind::Invoke {
+                action,
+                resource: tilo_automation::Selector::FirstOfKind(kind),
+                args: std::collections::BTreeMap::default(),
+                appearance: None,
+            },
+        )],
+        step_timeout_secs: None,
+        output: None,
+        grant,
+        triggers: vec![],
+        saved_by: None,
+        saved_proof: None,
+    };
+    String::from_utf8(tilo_automation::program::canonical_bytes(&shortcut).unwrap()).unwrap()
+}
+
+fn post_rule() -> Rule {
+    Rule::new(chat_post(), KindSet::READ_UNDOABLE, Answer::Allow)
+}
+
+fn install_command(
+    peer: &StatePeer,
+    program_text: &str,
+    seed: u8,
+    now: SystemTime,
+) -> (Box<BotInstall>, DeviceCert) {
+    let installer = person();
+    let (_, cert) = bot_device(&installer, seed);
+    let hash = tilo_automation::program::program_hash(program_text.as_bytes());
+    let install = Box::new(BotInstall {
+        installation: installation(&hash, &person_hex()),
+        program: program_text.into(),
+        device: Some(BotDevice {
+            delegation: bot_delegation(
+                &installer,
+                cert.device_public_key,
+                BOT,
+                peer.workspace_id(),
+                now,
+            ),
+            cert: cert.clone(),
+        }),
+    });
+    (install, cert)
+}
+
+fn update_command(text: &str) -> Command {
+    Command::InstallBot(Box::new(BotInstall {
+        installation: installation(
+            &tilo_automation::program::program_hash(text.as_bytes()),
+            &person_hex(),
+        ),
+        program: text.into(),
+        device: None,
+    }))
+}
+
+fn post_in(peer: &StatePeer) -> TreePath {
+    TreePath::workspace(peer.workspace_id())
+        .app("so.tilo.chat")
+        .kind("chat.workspace")
+        .resource("chat:1")
+        .action("post")
+}
+
+/// A grant of governance action `action` to the fixture's person.
+fn governance_grant(peer: &StatePeer, id: &str, action: &str) -> tilo_action_policy::Grant {
+    tilo_action_policy::Grant::new(
+        id,
+        tilo_action_policy::Grantee::person(person_hex()),
+        tilo_action_policy::roles::governance_action(peer.workspace_id(), action),
+        KindSet::OUTSIDE,
+        Answer::Allow,
+        tilo_action_policy::Grantee::person(hex::encode(
+            crate::admission_tests::other_owner().1.user_public_key,
+        )),
+    )
+}
+
+tilo_test_env::scenario! {
+    fn installing_a_bot_needs_its_delegation_its_program_and_the_privilege;
+
+    phase the_owner_installs_a_bot_in_one_governed_change;
+    {
+        let (mut governor, authority, _, owner_device, now) = crate::admission_tests::seeded();
+        let text = program(vec![post_rule()]);
+        let (install, cert) = install_command(&governor, &text, 8, now);
+        let command = Command::InstallBot(install);
+        assert_eq!(
+            governor.workspace_mut().apply_workspace_membership_command(
+                &owner_device,
+                &command,
+                &authority,
+                now
+            ),
+            Ok(true)
+        );
+        let bots = governor.governance().installations(now).unwrap();
+        assert_eq!(bots.len(), 1);
+        assert!(bots[0].acting);
+        assert_eq!(bots[0].device_public_key, cert.device_public_key);
+        assert_eq!(
+            governor
+                .governance()
+                .bot_program(&bots[0].installation.program),
+            Some(text)
+        );
+        assert_eq!(
+            governor
+                .governance()
+                .installation(BOT, now)
+                .map(|bot| bot.device_public_key),
+            Some(cert.device_public_key)
+        );
+        let member = governor.permissions(cert.device_public_key, now).unwrap();
+        assert!(member.allows(&post_in(&governor), ActionKind::Undoable, now));
+        let notes = TreePath::workspace(governor.workspace_id())
+            .app("so.tilo.notes")
+            .action("append");
+        assert!(!member.allows(&notes, ActionKind::Undoable, now));
+        let grant = tilo_action_policy::roles::governance_action(
+            governor.workspace_id(),
+            tilo_action_policy::roles::governance::GRANT,
+        );
+        assert!(!member.allows(&grant, tilo_action_policy::roles::GOVERNANCE_KIND, now));
+    }
+
+    phase install_refuses_a_delegation_for_another_installation_or_workspace;
+    {
+        let (mut governor, authority, _, owner_device, now) = crate::admission_tests::seeded();
+        let text = program(vec![post_rule()]);
+        let (mut install, cert) = install_command(&governor, &text, 8, now);
+        let installer = person();
+        let other_workspace = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        for delegation in [
+            bot_delegation(
+                &installer,
+                cert.device_public_key,
+                "7f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6",
+                governor.workspace_id(),
+                now,
+            ),
+            bot_delegation(
+                &installer,
+                cert.device_public_key,
+                BOT,
+                other_workspace,
+                now,
+            ),
+            bot_delegation(&installer, [42; 32], BOT, governor.workspace_id(), now),
+        ] {
+            install.device.as_mut().unwrap().delegation = delegation;
+            let command = Command::InstallBot(install.clone());
+            assert!(
+                governor
+                    .workspace_mut()
+                    .apply_workspace_membership_command(&owner_device, &command, &authority, now)
+                    .is_err()
+            );
+        }
+        assert!(governor.governance().installations(now).unwrap().is_empty());
+    }
+
+    phase install_refuses_a_program_with_unused_rules;
+    {
+        let (mut governor, authority, _, owner_device, now) = crate::admission_tests::seeded();
+        let delete = Rule::new(
+            TreePath::root()
+                .any(Level::Workspace)
+                .app("so.tilo.chat")
+                .kind("chat.workspace")
+                .any(Level::Resource)
+                .action("delete"),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+        );
+        let text = program(vec![post_rule(), delete]);
+        let (install, _) = install_command(&governor, &text, 8, now);
+        let command = Command::InstallBot(install);
+        let refused = governor
+            .workspace_mut()
+            .apply_workspace_membership_command(&owner_device, &command, &authority, now)
+            .unwrap_err();
+        assert!(refused.contains("none of its steps"), "{refused}");
+    }
+
+    phase install_refuses_a_program_that_does_not_match_its_hash;
+    {
+        let (mut governor, authority, _, owner_device, now) = crate::admission_tests::seeded();
+        let text = program(vec![post_rule()]);
+        let (mut install, _) = install_command(&governor, &text, 8, now);
+        install.installation.program = "b".repeat(64);
+        assert!(
+            governor
+                .workspace_mut()
+                .apply_workspace_membership_command(
+                    &owner_device,
+                    &Command::InstallBot(install),
+                    &authority,
+                    now
+                )
+                .is_err()
+        );
+    }
+
+    phase an_editor_cannot_install_by_default;
+    {
+        let (mut governor, authority, _, editor_device, now) = crate::admission_tests::seeded_editor();
+        let text = program(vec![post_rule()]);
+        let (install, _) = install_command(&governor, &text, 8, now);
+        let command = Command::InstallBot(install);
+        assert!(
+            governor
+                .workspace_mut()
+                .apply_workspace_membership_command(&editor_device, &command, &authority, now)
+                .is_err()
+        );
+        assert!(governor.governance().installations(now).unwrap().is_empty());
+    }
+}
+
 /// Install a bot running `program_text` in `peer` as the person of
 /// `caller` (the fixture's root), with `appearance`; its device key and
 /// certificate.
@@ -912,6 +912,23 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase an_editor_cannot_ask_for_a_bot_by_default;
+    {
+        let (mut governor, authority, _, editor_device, now) = crate::admission_tests::seeded_editor();
+        assert!(
+            governor
+                .workspace_mut()
+                .apply_workspace_membership_command(
+                    &editor_device,
+                    &Command::RequestBot(standup("1.2.0")),
+                    &authority,
+                    now
+                )
+                .is_err()
+        );
+        assert!(governor.governance().bot_requests().is_empty());
+    }
+
     phase the_workspaces_bots_are_its_installed_bots_and_the_requests_none_answers_yet;
     {
         let (_, _, _, _, now) = crate::admission_tests::seeded();
@@ -976,21 +993,4 @@ tilo_test_env::scenario! {
             ["so.tilo.bots.standup"]
         );
     }
-}
-
-#[test]
-fn an_editor_cannot_ask_for_a_bot_by_default() {
-    let (mut governor, authority, _, editor_device, now) = crate::admission_tests::seeded_editor();
-    assert!(
-        governor
-            .workspace_mut()
-            .apply_workspace_membership_command(
-                &editor_device,
-                &Command::RequestBot(standup("1.2.0")),
-                &authority,
-                now
-            )
-            .is_err()
-    );
-    assert!(governor.governance().bot_requests().is_empty());
 }
