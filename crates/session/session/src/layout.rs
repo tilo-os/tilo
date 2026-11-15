@@ -2208,72 +2208,76 @@ mod tests {
         }
     }
 
-    /// A view that did not move is not written again: the look that finds it writes nothing.
-    #[test]
-    fn a_view_that_did_not_move_is_not_written() {
-        let written = view(11);
-        let mut held = Held {
-            read: true,
-            written: Some(Written::View(written.clone())),
-            ..Held::default()
-        };
-        assert_eq!(rested(&mut held, &written, false), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_view_is_written_only_once_it_rests_and_between_writes;
 
-    /// A view is written once it rests, not on the look that found it move: a drag or a burst of
-    /// switches changes it on every look and is one write when it is over.
-    #[test]
-    fn a_view_is_written_once_it_rests() {
-        let mut held = Held {
-            read: true,
-            ..Held::default()
-        };
-        assert_eq!(
-            rested(&mut held, &view(11), false),
-            None,
-            "the look that found it"
-        );
-        assert_eq!(
-            rested(&mut held, &view(11), false),
-            Some(view(11)),
-            "the look after it, unchanged"
-        );
-        assert_eq!(
-            rested(&mut held, &view(12), false),
-            None,
-            "a look that moved it again writes nothing yet"
-        );
-        assert_eq!(rested(&mut held, &view(12), false), Some(view(12)));
-    }
+        phase a_view_that_did_not_move_is_not_written;
+        // A view that did not move is not written again: the look that finds it writes nothing.
+        {
+            let written = view(11);
+            let mut held = Held {
+                read: true,
+                written: Some(Written::View(written.clone())),
+                ..Held::default()
+            };
+            assert_eq!(rested(&mut held, &written, false), None);
+        }
 
-    /// A write of the view under way holds the look back, and a record this device has not read is
-    /// not written over.
-    #[test]
-    fn a_view_is_written_only_between_writes_and_after_a_read() {
-        let mut held = Held::default();
-        assert_eq!(
-            rested(&mut held, &view(11), false),
-            None,
-            "the record was not read"
-        );
-        held.read = true;
-        held.writing = Some(Going::View(Box::new(Publishing {
-            writing: crate::engine_write::Writing::write(
-                std::sync::Arc::new(|| {}) as tilo_service::Wake,
-                async { Err("the test writes nothing".to_owned()) },
-            ),
-            candidate: automerge::AutoCommit::new(),
-            replaced: None,
-            revision: None,
-        })));
-        assert_eq!(
-            rested(&mut held, &view(11), false),
-            None,
-            "a write is under way"
-        );
-        held.writing = None;
-        let _ = rested(&mut held, &view(11), false);
-        assert_eq!(rested(&mut held, &view(11), false), Some(view(11)));
+        phase a_view_is_written_once_it_rests;
+        // A view is written once it rests, not on the look that found it move: a drag or a burst of
+        // switches changes it on every look and is one write when it is over.
+        {
+            let mut held = Held {
+                read: true,
+                ..Held::default()
+            };
+            assert_eq!(
+                rested(&mut held, &view(11), false),
+                None,
+                "the look that found it"
+            );
+            assert_eq!(
+                rested(&mut held, &view(11), false),
+                Some(view(11)),
+                "the look after it, unchanged"
+            );
+            assert_eq!(
+                rested(&mut held, &view(12), false),
+                None,
+                "a look that moved it again writes nothing yet"
+            );
+            assert_eq!(rested(&mut held, &view(12), false), Some(view(12)));
+        }
+
+        phase a_view_is_written_only_between_writes_and_after_a_read;
+        // A write of the view under way holds the look back, and a record this device has not read is
+        // not written over.
+        {
+            let mut held = Held::default();
+            assert_eq!(
+                rested(&mut held, &view(11), false),
+                None,
+                "the record was not read"
+            );
+            held.read = true;
+            held.writing = Some(Going::View(Box::new(Publishing {
+                writing: crate::engine_write::Writing::write(
+                    std::sync::Arc::new(|| {}) as tilo_service::Wake,
+                    async { Err("the test writes nothing".to_owned()) },
+                ),
+                candidate: automerge::AutoCommit::new(),
+                replaced: None,
+                revision: None,
+            })));
+            assert_eq!(
+                rested(&mut held, &view(11), false),
+                None,
+                "a write is under way"
+            );
+            held.writing = None;
+            let _ = rested(&mut held, &view(11), false);
+            assert_eq!(rested(&mut held, &view(11), false), Some(view(11)));
+        }
     }
 
     fn workspace_id() -> WorkspaceId {
