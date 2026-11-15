@@ -200,8 +200,13 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
      * `onCaptureLost(error)`: the microphone went away and no other could
      * take its place; capture is off, playback goes on. `onInputChanged(id)`:
      * capture moved to another microphone (`undefined`: the default).
+     * `onStage(stage)` hears how far starting got (`support`, `resume`,
+     * `worklet`, `worker`, `capture`, then `ready`): a start that never
+     * finishes says which step it is waiting on.
      */
-    async start({inputId, muted = true, onFrame, onLevels = () => {}, onError = () => {}, onCaptureLost = () => {}, onInputChanged = () => {}, signal} = {}) {
+    async start({inputId, muted = true, onFrame, onLevels = () => {}, onError = () => {}, onCaptureLost = () => {}, onInputChanged = () => {}, onStage = () => {}, signal} = {}) {
+      let stage = 'starting';
+      const at = next => { stage = next; try { onStage(next); } catch {} };
       if (typeof onFrame !== 'function') throw new TypeError('onFrame must be a function');
       if (signal?.aborted) throw abortError(signal);
       if (['AudioEncoder', 'AudioDecoder', 'AudioData', 'EncodedAudioChunk'].some(name => typeof environment[name] !== 'function')) {
@@ -514,11 +519,14 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
       signal?.addEventListener('abort', abortListener, {once: true});
 
       try {
+        at('support');
         const support = await Promise.race([capabilities(), aborted]);
         if (!support.supported) throw new Error(support.reason);
+        at('resume');
         await Promise.race([resumePromise, aborted]);
         if (signal?.aborted) throw abortError(signal);
 
+        at('worklet');
         await Promise.race([
           context.audioWorklet.addModule(new URL('./voice-audio-worklet.mjs', import.meta.url)),
           aborted,
@@ -553,12 +561,13 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
           void stop().catch(closeError => report({type: 'error', stage: 'audio-context-close', error: closeError.message}));
         });
         worker.postMessage({type: 'init', encoderConfig: support.dtx ? dtxEncoderConfig : encoderConfig, decoderConfig});
+        at(captureMuted ? 'worker' : 'capture');
         await Promise.race([Promise.all([workerReady, captureMuted ? Promise.resolve() : attachInput(selectedInputId)]), aborted]);
         if (signal?.aborted) throw abortError(signal);
+        at('ready');
 
         return {
-          async setMuted(value) {
-            if (stopped) return;
+          async setMuted(value) {            if (stopped) return;
             const nextMuted = Boolean(value);
             if (nextMuted === captureMuted && !(nextMuted && unmuteOperation)) return;
             if (nextMuted) {
@@ -646,6 +655,8 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
           },
           get deafened() { return output?.gain.value === 0; },
           get captureActive() { return !stopped && !captureMuted && Boolean(currentStream); },
+          /** How far this session's start got: `ready` once it runs. */
+          get stage() { return stage; },
           get muted() { return captureMuted; },
           get inputId() { return selectedInputId; },
           removePublisher(publisherId) {

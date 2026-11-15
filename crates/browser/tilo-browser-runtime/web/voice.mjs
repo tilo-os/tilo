@@ -100,6 +100,9 @@ export function createVoiceCall({
   let grant;
   let audioSession;
   let audioStarting;
+  /** How far the audio start got (`support`, `resume`, `worklet`, `worker`,
+   * `capture`, `ready`), which a start still pending says. */
+  let audioStage = null;
   let audioController;
   /** The call's app and record: the channel they and the workspace name
    * seals its frames. */
@@ -244,7 +247,13 @@ export function createVoiceCall({
       inputId = id;
       update({inputId: id ?? null});
     };
-    audioStarting = audio.start({inputId, muted: startingMuted, onFrame, onLevels, onCaptureLost, onInputChanged, signal: controller.signal, onError: error => {
+    // How far this call's audio start has got, for the call's own diagnostics:
+    // a start still waiting on the browser says on which step.
+    const onStage = stage => {
+      if (audioController !== controller || controller.signal.aborted) return;
+      audioStage = stage;
+    };
+    audioStarting = audio.start({inputId, muted: startingMuted, onFrame, onLevels, onCaptureLost, onInputChanged, onStage, signal: controller.signal, onError: error => {
       if (audioController !== controller || controller.signal.aborted) return;
       report({type: 'voice-audio-error', error});
       const call = state.call;
@@ -533,6 +542,7 @@ export function createVoiceCall({
     audioController?.abort();
     audioController = undefined;
     audioStarting = undefined;
+    audioStage = null;
     if (session) void session.stop();
   }
 
@@ -666,8 +676,19 @@ export function createVoiceCall({
     },
     /** Why this browser cannot take part in calls, or null when it can. */
     unsupported: () => null,
-    /** What left and arrived over the plane, for diagnostics and tests. */
-    stats: () => ({phase: state.phase, captureActive: audioSession?.captureActive === true, counters: {...counters}}),
+    /** What left and arrived over the plane, for diagnostics and tests; the
+     * audio ones say why a microphone that is not running is not: still
+     * starting, muted by the person, or refused by the browser (`micIssue`). */
+    stats: () => ({
+      phase: state.phase,
+      captureActive: audioSession?.captureActive === true,
+      muted: state.muted,
+      micIssue: state.micIssue ?? null,
+      canPublish: grant?.directions.publish ?? null,
+      audioStarting: Boolean(audioStarting) && !audioSession,
+      audioStage: audioSession?.stage ?? audioStage,
+      counters: {...counters},
+    }),
     networkChanged,
     dispose() {
       this.leave();
