@@ -562,6 +562,10 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
             ("account/keys#mint", json!({"workspace": b})),
             ("account/keys#revoke", json!({"grant": b_grant})),
             ("account/workspaces#create", json!({"name": "cus_c"})),
+            (
+                "account/workspaces#branch",
+                json!({"workspace": b, "name": "cus_c"}),
+            ),
         ] {
             let answer = session.tilo_do(json!({"path": action, "args": args})).await;
             assert_ne!(
