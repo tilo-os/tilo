@@ -8,8 +8,8 @@
 //! scenario, which [`tilo_session::seeded_apps::seeded`] does.
 //! The packages are copied to a scratch directory before they are built: a build writes each
 //! package's ids lock and source catalogue, and a test never writes the tree it runs from.
-//! The build is made once for every test process that would make the same one ([`built`]): a run
-//! starts a process per test, and each built the same six packages again before its first line.
+//! The build is made once for the test processes of a run ([`built`]): a run starts a process
+//! per test, and each built the same six packages again before its first line.
 //! Every process still installs the packages into a store of its own.
 
 use std::hash::{Hash as _, Hasher as _};
@@ -49,7 +49,8 @@ const PUBLISHER: &str = "publisher.json";
 const BUILT: &str = "apps";
 
 /// How long a build is kept once another takes its place: a build is made anew whenever the
-/// packages or this program change, and the ones before it are of no use to anyone.
+/// packages or this program change, and for every run ([`revision`]), so the ones before it are
+/// of no use to anyone. No run lasts as long, so none is removed under a process that reads it.
 const KEPT: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The publisher key every package of the run is built and signed with: the test run's own, kept
@@ -67,8 +68,8 @@ struct Built {
     apps: Vec<(String, PathBuf)>,
 }
 
-/// [`APPS`] built from this tree into signed `.tapp`s, once for every test process that would
-/// build the same: the build stands in a directory named for what it is made from
+/// [`APPS`] built from this tree into signed `.tapp`s, once for every test process of a run that
+/// would build the same: the build stands in a directory named for what it is made from
 /// ([`revision`]), under the build tree's own temporary directory, which the processes of a run
 /// share. A process that finds it whole reads it. One that does not builds the packages where a
 /// test's own files go, as every process did, copies what it built beside the others and moves
@@ -128,9 +129,9 @@ fn builds() -> PathBuf {
 }
 
 /// What a build is made from, as one word: every file of the packages under `apps/tl` , by its
-/// path and what it holds, and the program that compiles them, which is this test binary. Two
-/// processes answer the same word only where they would build the same packages with the same
-/// compiler.
+/// path and what it holds, the program that compiles them, which is this test binary, and the
+/// run the process is one of, where the runner names it. Two processes answer the same word only
+/// where they would build the same packages with the same compiler in the same run.
 fn revision() -> String {
     fn files_below(dir: &Path, files: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("the packages read") {
@@ -148,6 +149,13 @@ fn revision() -> String {
     program.hash(&mut hasher);
     compiled.len().hash(&mut hasher);
     compiled.modified().ok().hash(&mut hasher);
+    // The run, as nextest names it to every test process it starts. A build is then read by the
+    // run that made it and by none after: a program whose path, size and time do not tell it
+    // from the one before it is never handed the packages that one's compiler made, and a build
+    // old enough to be removed ([`forget_old`]) has no reader left. Run without it (`cargo
+    // test`, one process for all of a binary's tests), the packages and the program name the
+    // build.
+    std::env::var_os("NEXTEST_RUN_ID").hash(&mut hasher);
     let packages = packages();
     let mut files = Vec::new();
     files_below(&packages, &mut files);
