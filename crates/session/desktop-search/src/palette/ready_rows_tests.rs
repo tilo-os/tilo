@@ -166,9 +166,23 @@ tilo_test_env::scenario! {
         // apps, actions and places that were ready marked "still
         // searching" — for 14 s on api-tester, 57 s on calendar, measured on
         // the page shell. The rows that are ready are the search's answer.
+        // The desktop's own sources (the apps, the windows, the actions)
+        // answer on workers in moments: the search is over once they are in,
+        // with the content still out.
+        let now = ui::time::now();
+        let deadline = now.checked_add(Duration::from_secs(10)).unwrap_or(now);
+        while !search.settled() && ui::time::now() < deadline {
+            frame(&mut search);
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(
             search.settled(),
             "the rows that are ready are not held behind a source still out"
+        );
+        assert!(
+            !titles(&search).iter().any(|title| title.contains("this week")),
+            "and the content is still out: {:?}",
+            titles(&search)
         );
         assert!(
             !search.palette().is_searching(),

@@ -28,6 +28,8 @@ mod rows;
 #[cfg(test)]
 mod no_match_tests;
 #[cfg(test)]
+mod own_sources_tests;
+#[cfg(test)]
 mod pressed_row_tests;
 #[cfg(test)]
 mod ready_rows_tests;
@@ -282,6 +284,8 @@ pub struct DesktopSearch {
     /// The sources this search asks, in the order it asks them, and where
     /// each stands in the empty palette.
     order: Vec<(String, (u8, usize))>,
+    /// How many sources at the head of this search are the desktop's own ([`rows::own_count`]).
+    own_sources: usize,
     /// How many rows the palette cut its rows to, and whether that is the
     /// card's real room: when the card grew or shrank since, the groups are
     /// cut again.
@@ -345,6 +349,7 @@ impl DesktopSearch {
             stream: None,
             workers: SearchWorkers::new(),
             order: Vec::new(),
+            own_sources: 0,
             rows_room: RowRoom::Guess(0),
             shown_two_lines: false,
             kept_choice: None,
@@ -540,7 +545,16 @@ impl DesktopSearch {
         self.sources.is_none()
             || (self.shown_query.as_deref() == Some(self.palette.query())
                 && self.rows_placed()
+                && !self.own_sources_owe()
                 && (!self.rows.is_empty() || !self.expecting()))
+    }
+
+    /// Whether one of the desktop's own sources ([`rows::own_count`]) is still to answer the
+    /// query shown: a row of another source in before them is not the search's answer.
+    fn own_sources_owe(&self) -> bool {
+        self.stream
+            .as_ref()
+            .is_some_and(|stream| stream.owes_any_before(self.own_sources))
     }
 
     /// Whether rows are still expected to join the ones shown: a source has
@@ -577,9 +591,10 @@ impl DesktopSearch {
         }
         // The rows shown are the query's answer, as for an Enter on rows already shown: a source
         // still answering, or an app's answer that may never come, must not hold the key or cost
-        // the open their frames. Only a query with no rows yet waits for its first.
+        // the open their frames. Only a query with no rows waits, and any for the desktop's own.
         if self.shown_query.as_deref() != Some(query.as_str())
             || (self.rows.is_empty() && (self.waiting() || self.answering()))
+            || self.own_sources_owe()
             || !ui::search::engine_ready()
         {
             return;
@@ -678,6 +693,7 @@ impl DesktopSearch {
         });
         drop(all);
         self.order = order;
+        self.own_sources = rows::own_count(sources, &self.recents);
         Some(stream)
     }
 
@@ -994,14 +1010,17 @@ impl DesktopSearch {
                 });
                 self.palette.close();
             } else if outcome.argument.is_none()
-                && self.shown_query.as_deref() != Some(self.palette.query())
+                && (self.shown_query.as_deref() != Some(self.palette.query())
+                    || (self.own_sources_owe()
+                        && self.auto_selected.as_deref() == Some(outcome.id.as_str())))
             {
                 // Enter came in the same batch of input as the keys before it, ahead of the frame
                 // that answers them: the rows on screen are an earlier query's, and the row it
                 // named is one of those ("canvas" and Enter started a call, the top row of the
                 // empty search). Enter waits for the typed query's answer and takes its top row. A
                 // row's own line (an action's argument) is typed in the field after its query, so
-                // an Enter that carries one is never this.
+                // an Enter that carries one is never this. So is one on the row put first while the
+                // desktop's own sources are still out: the person pressed for the best row.
                 self.choose_top_of_typed_query();
             } else if let Some(hit) = pressed_hit(self, &outcome.id) {
                 self.choose_hit(hit, outcome.argument, self.palette.chosen_with());

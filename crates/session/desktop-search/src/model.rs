@@ -709,6 +709,9 @@ pub struct SearchStream {
     here: Vec<usize>,
     /// The sources whose answer has not come back yet.
     outstanding: usize,
+    /// Each source by its place in `sources`: whether it is still to answer
+    /// this search, asked or not. What [`Self::owes_any_before`] reads.
+    owed: Vec<bool>,
     /// The rows so far, each with its strength on the shared scale.
     merged: Vec<(Hit, f32)>,
     /// Where the row of a thing stands in `merged`, so two sources offering
@@ -771,6 +774,12 @@ impl SearchStream {
         } else {
             Vec::new()
         };
+        let mut owed = vec![false; asked.len()];
+        for &at in to_ask.iter().chain(&here) {
+            if let Some(slot) = owed.get_mut(at) {
+                *slot = true;
+            }
+        }
         Self {
             needle: needle.to_owned(),
             row_budget,
@@ -778,6 +787,7 @@ impl SearchStream {
             to_ask,
             here,
             outstanding: 0,
+            owed,
             merged: Vec::new(),
             things: HashMap::new(),
             answers,
@@ -790,6 +800,15 @@ impl SearchStream {
     #[must_use]
     pub fn pending(&self) -> bool {
         !self.to_ask.is_empty() || !self.here.is_empty() || self.outstanding > 0
+    }
+
+    /// Whether one of the first `count` sources the search was made from is
+    /// still to answer it. A palette whose own sources lead the list asks
+    /// this of them: their rows are the ones a typed name is for, so the
+    /// search is not over until they are in.
+    #[must_use]
+    pub fn owes_any_before(&self, count: usize) -> bool {
+        self.owed.iter().take(count).any(|owed| *owed)
     }
 
     /// Whether a source that holds the frame's state is still to ask: the
@@ -862,6 +881,7 @@ impl SearchStream {
             self.to_ask.clear();
             self.here.clear();
             self.outstanding = 0;
+            self.owed.fill(false);
             while self.answers.try_recv().is_ok() {}
             return false;
         }
@@ -888,6 +908,9 @@ impl SearchStream {
         let mut changed = false;
         if let Some(index) = self.here.first().copied() {
             self.here.remove(0);
+            if let Some(slot) = self.owed.get_mut(index) {
+                *slot = false;
+            }
             if let Some(source) = sources.get(index).copied() {
                 changed |= self.ask_here(source, used);
             }
@@ -943,6 +966,9 @@ impl SearchStream {
     /// stronger answer of a thing keeping its place.
     fn collect(&mut self, answer: Answer, used: &dyn Fn(&Hit) -> f32) -> bool {
         self.outstanding = self.outstanding.saturating_sub(1);
+        if let Some(slot) = self.owed.get_mut(answer.source) {
+            *slot = false;
+        }
         let Some((_, Asking::Moved(moved))) = self.sources.get(answer.source) else {
             return false;
         };

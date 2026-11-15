@@ -298,6 +298,24 @@ pub(super) fn asked_sources<'a>(
     }
 }
 
+/// How many of [`asked_sources`] lead it as the desktop's own: the window
+/// searched, or the apps, windows, actions, commands and answers the desktop
+/// holds in memory. Each answers at once, so the search is not over before
+/// they are in; the host's sources after them (files, a service, an index
+/// still being built) may join the rows later.
+pub(super) fn own_count(sources: &Sources, recents: &Arc<Recents>) -> usize {
+    let own: Vec<&dyn Source> = if let Some(window) = &sources.window {
+        vec![window as &dyn Source]
+    } else {
+        let mut own = switchable(sources, recents);
+        own.truncate(own.len().saturating_sub(sources.host.len()));
+        own
+    };
+    own.into_iter()
+        .filter(|source| sources.preferences.enabled(source.id()))
+        .count()
+}
+
 /// The sources a search over everything asks, in the order it asks them:
 /// the desktop's own, the ones the host adds, and the row that switches
 /// each of them off and on again — `switches`, which the search builds once

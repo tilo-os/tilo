@@ -73,11 +73,14 @@ tilo_test_env::scenario! {
         search.palette_mut().set_query("notes");
         search.palette_mut().activate_selected();
         search.observe();
-        // The shell's passes after the batch, up to the first that shows rows for "notes".
+        // The shell's passes after the batch, up to the first that shows the rows of the desktop's
+        // own sources for "notes": they answer at once, and the row a name is for is among them.
         for _ in 0..50 {
             search.refresh();
             if !search.is_open()
-                || (search.shown_query.as_deref() == Some("notes") && !search.rows.is_empty())
+                || (search.shown_query.as_deref() == Some("notes")
+                    && !search.rows.is_empty()
+                    && !search.own_sources_owe())
             {
                 break;
             }
