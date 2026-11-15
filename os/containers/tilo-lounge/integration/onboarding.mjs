@@ -582,7 +582,7 @@ try {
   await stranger.tab.navigate(inviteLink);
   const invitedCard = await until(stranger.tab, `(() => {
     const text = (document.body.innerText || '').replace(/\\s+/g, ' ').trim();
-    return text.includes('invites you to') ? text : '';
+    return text.includes('invited you to') ? text : '';
   })()`, 'the invitation naming who invited them', stepLimit(6));
   report.invitationCard = String(invitedCard).slice(0, 400);
   await dump(stranger.tab, '4-invitation');

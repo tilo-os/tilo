@@ -699,7 +699,7 @@ const followLink = async (name, link) => {
   const deadline = Date.now() + stepLimit(3);
   for (;;) {
     const card = await pageText(tab);
-    if (card.includes('invites you to')) {
+    if (card.includes('invited you to')) {
       writeFileSync(`${out}/${name}-card.txt`, card);
       const buttons = JSON.parse(await tab.evaluate(
         `JSON.stringify([...document.querySelectorAll('button')].map(button => button.textContent.trim()))`));
@@ -1648,8 +1648,10 @@ try {
     // invitation, not from the link alone.
     const c = await followLink('C', made);
     invited = c;
-    for (const expected of [`${ownName} invites you to`, listedNow.name,
-      'Commenter — you can add comments, but not edit shared work.']) {
+    for (const expected of [`${ownName} invited you to`, listedNow.name,
+      // The role the host verified, and the one sentence the workspace's own
+      // settings say it lets a person do.
+      'Commenter Can view shared work and add comments, but cannot edit it.']) {
       if (!c.card.includes(expected)) {
         await failed(`the invitation card does not say "${expected}": ${c.card.slice(0, 400)}`, c.tab);
       }
