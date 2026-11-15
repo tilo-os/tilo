@@ -2144,98 +2144,6 @@ mod tests {
             );
         }
 
-        phase a_page_s_search_finds_a_note_by_its_title_and_its_words_and_opens_that_note;
-        // The page's search over the notebook its store holds, as the page's replication took it in
-        // and with no window of Notes open: a note is offered by its title, and by what is written in
-        // it, within a moment, and choosing it opens that very note in Notes.
-        {
-            let _settled = ui::motion::testing::settled();
-            let mut minter = tilo_desktop_model::IdMinter::new(7);
-            let tree = tilo_desktop_surface::seed_tree(&mut minter, "My workspace", Vec::new());
-            let workspace = tree
-                .active_workspace()
-                .map(|held| held.id().to_string())
-                .expect("the shell shows a workspace");
-            let home = tilo_test_env::TestHome::new().expect("a home");
-            let (store, hello, handbook) = a_page_s_notebook(&home, &workspace);
-
-            let invoked = Rc::new(std::cell::RefCell::new(Vec::new()));
-            let search = Rc::new(SessionSearch::new(
-                SearchOptions {
-                    records: Some(crate::records::Records::over(
-                        store,
-                        crate::platform::records::Changes::default(),
-                    )),
-                    ..SearchOptions::default()
-                },
-                None,
-                "ada",
-                Some(Rc::new(Revealing(Rc::clone(&invoked))) as Rc<dyn AppActions>),
-                None,
-                None,
-            ));
-            let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(
-                tree,
-                7,
-                Box::new(RecordWindows(Rc::new(std::cell::RefCell::new(Vec::new())))),
-            );
-            handle.set_viewport_width(1200.0);
-            handle.set_search_host(Rc::clone(&search) as Rc<dyn SearchHost>);
-            let mut frame = ui::headless::FrameHarness::for_root(
-                ui::State::new(),
-                surface,
-                (1200, 800),
-                ui::Theme::dark(),
-            );
-
-            for (query, title, note) in [
-                ("net 30", "Hello from Claude Code", &hello),
-                ("handbook", "files/notes/handbook.md", &handbook),
-            ] {
-                handle.open_search(Scope::Workspace, Some(query.into()));
-                let started = Instant::now();
-                let at = loop {
-                    frame.relayout();
-                    let (_, rows) = handle.search_rows();
-                    if let Some(at) = rows.iter().position(|row| row.title == title) {
-                        break at;
-                    }
-                    assert!(
-                        started.elapsed() < tilo_test_env::hang_bound(),
-                        "{query:?} offers the note {title:?}: {rows:?}"
-                    );
-                    std::thread::park_timeout(Duration::from_millis(5));
-                };
-                let took = started.elapsed();
-                assert!(
-                    took < Duration::from_secs(1),
-                    "{query:?} offered {title:?} only after {took:?}"
-                );
-                handle.choose_search_row(at, None);
-                for _ in 0..3 {
-                    frame.relayout();
-                }
-                assert!(
-                    search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
-                    "the row runs"
-                );
-                let (provider, resource, action, _) = invoked
-                    .borrow_mut()
-                    .pop()
-                    .unwrap_or_else(|| panic!("choosing {title:?} opens something"));
-                assert_eq!(
-                    tilo_actions::remote::application_provider(&provider).map(|(_, app)| app),
-                    Some(NOTES_APP),
-                    "{title:?} opens in Notes"
-                );
-                assert_eq!(
-                    (resource.as_str(), action.as_str()),
-                    (note.as_str(), "open"),
-                    "{title:?} opens that note"
-                );
-            }
-        }
-
         phase a_file_record_chosen_in_search_is_brought_here_and_opened;
         // A record kept as a file is brought here and opened: the row a person chose in search leaves
         // the workspace naming the record *and* shows them the document, in the app that takes its
@@ -2309,6 +2217,98 @@ mod tests {
                     Err(DoorError::Failed(ref reason)) if reason.contains("is gone")
                 ),
                 "a record whose file is gone is still held, and the launch says why it does not open"
+            );
+        }
+    }
+
+    /// The page's search over the notebook its store holds, as the page's replication took it in
+    /// and with no window of Notes open: a note is offered by its title, and by what is written in
+    /// it, within a moment, and choosing it opens that very note in Notes.
+    #[test]
+    fn a_page_s_search_finds_a_note_by_its_title_and_its_words_and_opens_that_note() {
+        let _settled = ui::motion::testing::settled();
+        let mut minter = tilo_desktop_model::IdMinter::new(7);
+        let tree = tilo_desktop_surface::seed_tree(&mut minter, "My workspace", Vec::new());
+        let workspace = tree
+            .active_workspace()
+            .map(|held| held.id().to_string())
+            .expect("the shell shows a workspace");
+        let home = tilo_test_env::TestHome::new().expect("a home");
+        let (store, hello, handbook) = a_page_s_notebook(&home, &workspace);
+
+        let invoked = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let search = Rc::new(SessionSearch::new(
+            SearchOptions {
+                records: Some(crate::records::Records::over(
+                    store,
+                    crate::platform::records::Changes::default(),
+                )),
+                ..SearchOptions::default()
+            },
+            None,
+            "ada",
+            Some(Rc::new(Revealing(Rc::clone(&invoked))) as Rc<dyn AppActions>),
+            None,
+            None,
+        ));
+        let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(
+            tree,
+            7,
+            Box::new(RecordWindows(Rc::new(std::cell::RefCell::new(Vec::new())))),
+        );
+        handle.set_viewport_width(1200.0);
+        handle.set_search_host(Rc::clone(&search) as Rc<dyn SearchHost>);
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            surface,
+            (1200, 800),
+            ui::Theme::dark(),
+        );
+
+        for (query, title, note) in [
+            ("net 30", "Hello from Claude Code", &hello),
+            ("handbook", "files/notes/handbook.md", &handbook),
+        ] {
+            handle.open_search(Scope::Workspace, Some(query.into()));
+            let started = Instant::now();
+            let at = loop {
+                frame.relayout();
+                let (_, rows) = handle.search_rows();
+                if let Some(at) = rows.iter().position(|row| row.title == title) {
+                    break at;
+                }
+                assert!(
+                    started.elapsed() < tilo_test_env::hang_bound(),
+                    "{query:?} offers the note {title:?}: {rows:?}"
+                );
+                std::thread::park_timeout(Duration::from_millis(5));
+            };
+            let took = started.elapsed();
+            assert!(
+                took < Duration::from_secs(1),
+                "{query:?} offered {title:?} only after {took:?}"
+            );
+            handle.choose_search_row(at, None);
+            for _ in 0..3 {
+                frame.relayout();
+            }
+            assert!(
+                search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
+                "the row runs"
+            );
+            let (provider, resource, action, _) = invoked
+                .borrow_mut()
+                .pop()
+                .unwrap_or_else(|| panic!("choosing {title:?} opens something"));
+            assert_eq!(
+                tilo_actions::remote::application_provider(&provider).map(|(_, app)| app),
+                Some(NOTES_APP),
+                "{title:?} opens in Notes"
+            );
+            assert_eq!(
+                (resource.as_str(), action.as_str()),
+                (note.as_str(), "open"),
+                "{title:?} opens that note"
             );
         }
     }
