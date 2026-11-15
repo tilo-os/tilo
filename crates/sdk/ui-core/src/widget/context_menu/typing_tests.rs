@@ -239,6 +239,14 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_beside_the_menu() {
         1,
         "one field takes the typing"
     );
+    // Tab reaches whom it goes to: the message is where the keyboard is, and
+    // the recipient field is one Tab from it.
+    dispatch(&mut menu, &named_key(NamedKey::Tab));
+    assert_eq!(
+        menu.send_to().focus(),
+        crate::widget::SendToFocus::Recipients,
+        "Tab reaches the recipient field"
+    );
     // Escape puts the box away and leaves the menu; a second closes it.
     dispatch(&mut menu, &named_key(NamedKey::Escape));
     assert!(!menu.send_to().is_open() && menu.is_open());

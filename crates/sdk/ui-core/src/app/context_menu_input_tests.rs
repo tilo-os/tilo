@@ -100,7 +100,7 @@ fn a_menu_row_pressed_in_a_window_runs_when_the_button_comes_up() {
 }
 
 #[test]
-fn a_right_click_on_a_row_sends_about_that_row() {
+fn a_right_click_on_a_row_sends_about_that_row_and_the_typing_is_the_message() {
     crate::shared_selection::set_send_host_available(true);
     let row = |id: &str, title| crate::widget::ListRow::new(id, title).item(format!("file-{id}"));
     let rows = crate::widget::Column::new()
@@ -134,4 +134,18 @@ fn a_right_click_on_a_row_sends_about_that_row() {
         [about.anchor],
         "the box is about the row right-clicked, not the window"
     );
+    // The row names whom the message goes to, so the keyboard is in the
+    // message: what the person types is what they wrote.
+    assert_eq!(
+        menu(&app).send_to().focus(),
+        crate::widget::SendToFocus::Message,
+        "the box opens with the keyboard in the message"
+    );
+    send(&mut app, &crate::synthetic_input::char_key("h"));
+    assert_eq!(
+        menu(&app).send_to().text(),
+        "h",
+        "a typed key is the message, never a search for a recipient"
+    );
+    crate::shared_selection::set_send_host_available(false);
 }

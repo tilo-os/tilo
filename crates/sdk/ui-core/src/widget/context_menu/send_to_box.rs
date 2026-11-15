@@ -39,12 +39,7 @@ impl ContextMenu {
         // Whom it goes to is named as it opens — the people or the place the
         // asker named, else a new agent — so the person's next keystroke is
         // the message's, after the sentence it may carry.
-        let draft: String = draft
-            .unwrap_or_default()
-            .chars()
-            .take(crate::shared_selection::MAX_SEND_CHARS)
-            .collect();
-        self.send_to.open(Some(&draft), to);
+        self.send_to.open(draft, to);
         self.send_to.stand_at_rest();
         self.send_to.place(anchor, self.viewport);
         self.dirty = true;

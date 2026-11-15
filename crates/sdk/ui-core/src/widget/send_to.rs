@@ -268,6 +268,10 @@ impl SendToBox {
     /// `to` when the session names whom it goes to — the people here, the one
     /// place a report goes — else to the agent a message makes, which the
     /// person may change.
+    ///
+    /// The keyboard is in the message from the first frame: whom it goes to
+    /// is named already, so what a person types is what they wrote, never a
+    /// search for a recipient. Tab reaches the recipient field.
     pub fn open(&mut self, draft: Option<&str>, to: &[Recipient]) {
         self.open = true;
         // It arrives on its own: a box whose host stops drawing it once open
@@ -293,17 +297,13 @@ impl SendToBox {
         self.hovered = None;
         self.answered = false;
         self.ask_search();
-        self.focus = if draft.is_some() || self.reporting() {
-            SendToFocus::Message
-        } else {
-            SendToFocus::Recipients
-        };
-        if let Some(text) = draft {
-            text.clone_into(&mut self.text);
-            self.text_selection = Selection::collapsed(self.text.len());
-        } else {
-            self.text.clear();
-        }
+        self.focus = SendToFocus::Message;
+        self.text = draft
+            .unwrap_or_default()
+            .chars()
+            .take(crate::shared_selection::MAX_SEND_CHARS)
+            .collect();
+        self.text_selection = Selection::collapsed(self.text.len());
     }
 
     /// Put it away: it leaves as it stood, so what it showed is kept until
