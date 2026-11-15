@@ -49,6 +49,14 @@ fn page_titles_and_empty_state_are_accessible_rename_boundaries() {
             &mut Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
+        // The field publishes the set value as its control's change action;
+        // the host runs it, as after any input, and that is the rename.
+        let started = ui::widget::controls::start_pending_control_invocations(
+            &mut panel,
+            &mut Edits::lend(&mut doc),
+            &automerge::ROOT,
+        );
+        assert_eq!(started, 1, "the set value is the title's published action");
         assert_eq!(
             panel.take_title_rename().as_deref(),
             Some("Launch plan"),

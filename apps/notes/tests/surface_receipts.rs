@@ -211,30 +211,34 @@ fn typing_into_a_notes_body_is_decided_by_the_committed_surface() {
 /// itself: a claim naming an app guessed from the action type
 /// (`org.tilo.Notes`) is one the record's app does not publish, and the
 /// identity service refused it and turned the window's collaboration off.
+///
+/// Each keystroke in the title is one rename, so the page tree, the window's
+/// bar and its tab follow the note as it is named. Each is a report of one
+/// call of the published action, and a report admits one call: every one of
+/// them needs, and gets, its own admitted receipt.
 #[test]
 fn renaming_a_note_from_its_title_is_decided_by_the_committed_surface() {
-    use ui::synthetic_input::{char_key, mouse_input, named_key};
-    use ui::winit::event::{ElementState, MouseButton};
-    use ui::winit::keyboard::NamedKey;
-
-    let (mut app, _) = crate::framework_support::with_note("Welcome", "Hello");
+    let (mut app, page) = crate::framework_support::with_note("Welcome", "Hello");
     app.harness().relayout_at((1200, 800)).unwrap();
     let before = app.peer_document().get_heads();
     let title = app
         .surface_mut::<notes::NotesApp>()
         .main_title_center_for_test();
-    let modifiers = ui::winit::event::Modifiers::default();
-    let mut events = vec![
-        ui::synthetic_input::cursor_moved(title.x, title.y),
-        mouse_input(ElementState::Pressed, MouseButton::Left),
-        mouse_input(ElementState::Released, MouseButton::Left),
-    ];
-    events.extend(["R", "o", "a", "d"].map(char_key));
-    events.push(named_key(NamedKey::Enter));
-    for event in &events {
-        app.harness().dispatch_to_root_with(event, &modifiers);
-        app.harness().relayout();
-    }
+    // The title's edit is its control's published view action: entered and
+    // typed through the window, as a person does.
+    app.harness().click_at(title.x, title.y);
+    app.harness().type_text("Road");
+    app.harness().key("Enter");
+    let named = app
+        .read_document(notes::read::list_pages)
+        .into_iter()
+        .find(|shown| shown.id == page)
+        .map(|shown| shown.title);
+    assert_eq!(
+        named.as_deref(),
+        Some("Road"),
+        "what is typed in the title names the note"
+    );
     let mut doc = app.peer_document();
     let verbs: Vec<String> = doc
         .get_changes(&before)
@@ -254,14 +258,16 @@ fn renaming_a_note_from_its_title_is_decided_by_the_committed_surface() {
                 .collect::<Vec<_>>()
         })
         .collect();
-    assert!(
-        !verbs.is_empty()
-            && verbs
-                .iter()
-                .all(|verb| verb == "so.tilo.notes/notes.notebook/rename"),
-        "each title edit renamed the note as Notes' own verb: {verbs:?}"
+    // One rename per keystroke: the page tree, the window's bar and its tab
+    // follow the note as it is named. Each is a report of one call of a
+    // published action, so each needs its own receipt.
+    assert_eq!(
+        verbs, ["so.tilo.notes/notes.notebook/rename"; 4],
+        "each title edit renamed the note as Notes' own verb"
     );
-    for (kind, receipt) in receipts_since(&doc, &before) {
+    let receipts = receipts_since(&doc, &before);
+    assert_eq!(receipts.len(), 4, "one change per keystroke, each decided");
+    for (kind, receipt) in receipts {
         assert_eq!(receipt, Ok(Receipt::Admit), "a `{kind}` change was refused");
     }
 }

@@ -272,7 +272,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
 
     eprintln!("phase editing_the_in_page_title_renames_the_page_and_updates_the_sidebar");
     {
-        // Clicking the prominent title opens an inline rename; committing it renames
+        // Clicking the prominent title opens an inline rename; each keystroke renames
         // the page in the model AND re-syncs the sidebar row — the in-note title and
         // the tree stay in step.
         let mut app = starter();
@@ -281,21 +281,19 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         app.harness().relayout_at((1200, 800)).unwrap();
         assert_eq!(n(&mut app).sidebar_row_title_for_test(0), Some("Welcome"));
 
-        // Click the title band → begin editing (whole title selected).
+        // Click the title band → begin editing (whole title selected). The
+        // title's edit is its control's published view action, so it is
+        // driven through the window, which runs what the control queued.
         let c = n(&mut app).main_title_center_for_test();
-        let no_mods = Modifiers::default();
-        dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
-        dispatch(&mut app, no_mods, &mouse_press());
+        app.harness().click_at(c.x, c.y);
         assert!(
             n(&mut app).main_title_editing_for_test(),
             "clicking the title opens the inline rename"
         );
 
         // Type a new name — select-all means it replaces the old value — then Enter.
-        for ch in ["R", "o", "a", "d", "m", "a", "p"] {
-            dispatch(&mut app, no_mods, &char_key(ch));
-        }
-        dispatch(&mut app, no_mods, &named_key(NamedKey::Enter));
+        app.harness().type_text("Roadmap");
+        app.harness().key("Enter");
 
         assert!(
             !n(&mut app).main_title_editing_for_test(),
@@ -321,12 +319,9 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         // Escape ends the edit and keeps what was typed: each keystroke
         // already renamed the note.
         let c = n(&mut app).main_title_center_for_test();
-        dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
-        dispatch(&mut app, no_mods, &mouse_press());
-        for ch in ["N", "o", "p", "e"] {
-            dispatch(&mut app, no_mods, &char_key(ch));
-        }
-        dispatch(&mut app, no_mods, &named_key(NamedKey::Escape));
+        app.harness().click_at(c.x, c.y);
+        app.harness().type_text("Nope");
+        app.harness().key("Escape");
         assert!(
             !n(&mut app).main_title_editing_for_test(),
             "Escape ends the edit"
