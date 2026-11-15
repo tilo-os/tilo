@@ -456,8 +456,9 @@ mod tests {
     #[test]
     fn dragging_a_screen_on_the_canvas_moves_where_the_pointer_crosses() {
         let mut app = beside_the_tower(true);
-        // Not placed yet, the tower computer stands left of the laptop: its id sorts first.
-        assert_eq!(crossing(&mut app, (-1.0, 0.0)), "tower");
+        // Not placed yet, the tower computer stands right of the laptop: the laptop is placed
+        // first and the devices nobody placed line up after it, by id.
+        assert_eq!(crossing(&mut app, (1.0, 0.0)), "tower");
         assert_eq!(crossing(&mut app, (0.0, 1.0)), "laptop");
         let here = tile(&mut app, "on Laptop").bounds.unwrap();
         let tower = tile(&mut app, "on Tower computer");

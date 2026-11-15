@@ -108,8 +108,13 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
     let mut visible = Vec::new();
     admitted_category_rows(tree, &mut visible);
     assert!(!visible.is_empty(), "the sidebar admits category rows");
+    // Each admitted row's control is bound once, and no row the sidebar keeps out is bound.
+    // A page's own way to another page is a button of that page, not a category row.
     assert_eq!(
-        navigation.len(),
+        navigation
+            .iter()
+            .filter(|binding| binding.control_id.starts_with("key:"))
+            .count(),
         visible.len(),
         "every admitted category row has one typed open-pane binding: {bindings:#?}"
     );

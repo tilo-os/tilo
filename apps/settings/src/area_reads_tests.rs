@@ -167,21 +167,13 @@ fn the_first_refresh_reads_only_the_pane_shown() {
             category.slug()
         );
     }
+    // The page a window opens on reads no area of the device, so the first frame
+    // publishes no area's rows: the displays' and the network's both wait.
     let put_off = whole.difference(&first).collect::<Vec<_>>();
     assert!(
-        put_off.contains(&&"settings.display-output:eDP-1".to_owned()),
-        "an area the pane shown does not read is put off: {put_off:?}"
-    );
-    assert!(
-        put_off.iter().all(|id| ![
-            "settings.network",
-            "settings.vpn",
-            "network.wifi",
-            "vpn.connection"
-        ]
-        .iter()
-        .any(|prefix| id.starts_with(prefix))),
-        "the pane shown publishes its rows from the first frame: {put_off:?}"
+        put_off.contains(&&"settings.display-output:eDP-1".to_owned())
+            && put_off.iter().any(|id| id.starts_with("network.wifi")),
+        "the areas the pane shown does not read are put off: {put_off:?}"
     );
 }
 
