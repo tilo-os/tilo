@@ -203,6 +203,11 @@ pub struct SearchRow {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ShownSearch {
     pub query: String,
+    /// What the search reaches: the workspace in front, every workspace, one
+    /// app's own, or the apps a window group can show. A person's search and a
+    /// window's are different searches of the same shell, so what the shell
+    /// publishes says which one answered.
+    pub scope: String,
     pub rows: Vec<SearchRow>,
     /// The rows shown are not the search's answer yet: they are not cut to
     /// the card, or nothing is ready to show. What the shell publishes as a
@@ -214,6 +219,21 @@ pub(crate) struct ShownSearch {
     /// looks again for, so a late row is drawn when it arrives, without
     /// calling the ready rows "still searching".
     pub expecting: bool,
+}
+
+/// What a search reaches, as the shell publishes it: `workspace`,
+/// `everywhere`, `app:<package id>` for one app's own search, or `new-tab`
+/// for the apps a window group can show.
+fn scope_name(scope: &Scope) -> String {
+    match scope {
+        Scope::Workspace => "workspace".to_owned(),
+        Scope::Everywhere => "everywhere".to_owned(),
+        Scope::InApp(app) => app
+            .app
+            .as_deref()
+            .map_or_else(|| "window".to_owned(), |app| format!("app:{app}")),
+        Scope::WindowGroup(_) => "new-tab".to_owned(),
+    }
 }
 
 const CLOSE_WINDOW: &str = "desktop.close-window";
@@ -528,6 +548,15 @@ impl DesktopHandle {
             shared.shown_search.query.clone(),
             shared.shown_search.rows.clone(),
         )
+    }
+
+    /// What the open search reaches (`workspace`, `everywhere`, one app's own
+    /// search, the apps a group shows): a window's search and the shell's are
+    /// different searches, and a page or a test reading what the shell
+    /// published can tell them apart. `None` while search is closed.
+    pub fn search_scope(&self) -> Option<String> {
+        let shared = self.shared.borrow();
+        (!shared.shown_search.scope.is_empty()).then(|| shared.shown_search.scope.clone())
     }
 
     /// Whether the open search is still filling in, as of the last update pass: a source has still
@@ -1145,7 +1174,23 @@ impl DesktopSurface {
             }
             (Some(SearchRequest::Open { scope, query }), _) => self.open_search(doc, scope, query),
             (Some(SearchRequest::Toggle), false) => self.open_search(doc, Scope::Workspace, None),
-            (Some(SearchRequest::Toggle | SearchRequest::Close), true) => self.close_search(),
+            // The person's chord is Search all Tilo (Ctrl+K in a browser,
+            // where the Super chords do not reach the page): over one app's
+            // own search — a window's field a press inside the window left
+            // up — it opens the shell's search, and closes the shell's own,
+            // as a toggle does.
+            (Some(SearchRequest::Toggle), true) => {
+                let shell = {
+                    let search = self.search.borrow();
+                    matches!(search.scope(), Scope::Workspace | Scope::Everywhere)
+                };
+                if shell {
+                    self.close_search();
+                } else {
+                    self.open_search(doc, Scope::Workspace, None);
+                }
+            }
+            (Some(SearchRequest::Close), true) => self.close_search(),
             (Some(SearchRequest::Close | SearchRequest::Again) | None, _) => {}
         }
         let choices = std::mem::take(&mut self.shared.borrow_mut().search_asks);
@@ -1211,6 +1256,11 @@ impl DesktopSurface {
         } else {
             String::new()
         };
+        let scope = if open {
+            scope_name(&search.scope())
+        } else {
+            String::new()
+        };
         let typed = if open {
             typed_field(&search)
         } else {
@@ -1218,6 +1268,7 @@ impl DesktopSurface {
         };
         let shown = ShownSearch {
             query,
+            scope,
             rows,
             searching: open && !search.settled(),
             expecting: open && search.expecting(),

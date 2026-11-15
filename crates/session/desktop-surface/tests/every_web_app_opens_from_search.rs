@@ -317,3 +317,67 @@ fn every_app_the_page_offers_opens_from_search_on_the_next_frame() {
         missed.join("\n  ")
     );
 }
+
+/// An app's window open under another name — a sheet window called "Sheet1",
+/// as the workbook names it — still leaves the app's own row first for its
+/// name: the window is where the person already was, and the app is what they
+/// typed.
+#[test]
+fn an_open_window_under_another_name_does_not_take_the_apps_row_away() {
+    let apps = page_apps();
+    let Some(sheets) = apps.iter().find(|app| app.title == "Sheets").cloned() else {
+        panic!("the page's catalogue lists Sheets");
+    };
+    let mut minter = IdMinter::new(7);
+    let tab = Tab {
+        id: minter.mint(),
+        title: "Sheet1".into(),
+        tile: TileContent::LocalApp {
+            app_id: sheets.id.clone(),
+            label: "Sheet1".into(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let tree = seed_tree(&mut minter, "Office", vec![tab]);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(WebApps(apps)));
+    handle.set_viewport_width(f64::from(WINDOW.0));
+    let mut shell = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        WINDOW,
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::MemberId::person("tester"),
+    );
+    shell.set_caller_palette_enabled(false);
+    shell.relayout();
+    let mut chrome = chrome_at(&handle, WINDOW);
+    chrome.set_platform_conventions(ui::platform::PlatformConventions::new(
+        ui::platform::Platform::Linux,
+    ));
+
+    chrome.set_modifiers(&["ctrl".into()]);
+    chrome.key("k");
+    chrome.set_modifiers(&[]);
+    chrome.relayout();
+    shell.relayout();
+    chrome.relayout();
+    assert!(handle.search_open(), "the search chord opened a search");
+    chrome.type_text("sheets");
+    chrome.relayout();
+    shell.relayout();
+    chrome.relayout();
+    assert!(
+        search_settled(&mut shell, &mut chrome, &handle),
+        "the search for \"sheets\" settled"
+    );
+    let rows = result_names(&chrome);
+    assert_eq!(
+        rows.first().map(String::as_str),
+        Some(sheets.title.as_str()),
+        "the app's row leads for its name, with its window open under another: {rows:?}"
+    );
+}

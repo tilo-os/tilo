@@ -122,3 +122,44 @@ fn every_open_from_the_search_in_a_row_shows_its_window_and_the_shell_keeps_draw
         settle_still(&mut driver);
     }
 }
+
+/// The person's chord is Search all Tilo: pressed while one window's own
+/// search is up, it opens the shell's search over the workspace, and only the
+/// press after that closes it.
+#[test]
+fn the_desktops_chord_opens_the_desktops_search_over_a_windows_own() {
+    let (mut driver, handle, _) = mount();
+    driver.relayout();
+
+    // A window's own search, as a press in its field leaves it up.
+    handle.open_search(
+        Scope::InApp(ui::search::AppScope::of("so.tilo.notes")),
+        None,
+    );
+    driver.relayout();
+    assert!(handle.search_open(), "the window's search opened");
+    assert_eq!(
+        handle.search_scope().as_deref(),
+        Some("app:so.tilo.notes"),
+        "the search in the window is the window's"
+    );
+
+    handle.toggle_search();
+    driver.relayout();
+    assert!(
+        handle.search_open(),
+        "the chord kept a search up: it is Search all Tilo, not a close of the app's"
+    );
+    assert_eq!(
+        handle.search_scope().as_deref(),
+        Some("workspace"),
+        "the chord opened the shell's search over the workspace"
+    );
+
+    handle.toggle_search();
+    driver.relayout();
+    assert!(
+        !handle.search_open(),
+        "a press over the shell's own search closes it"
+    );
+}

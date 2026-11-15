@@ -858,6 +858,7 @@ impl Mount {
         let (query, rows) = desktop.handle.search_rows();
         Some(serde_json::json!({
             "query": query,
+            "scope": desktop.handle.search_scope(),
             "rows": rows.into_iter().take(16).map(|row| serde_json::json!({
                 "title": row.title,
                 "subtitle": row.subtitle,
