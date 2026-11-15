@@ -241,7 +241,10 @@ impl<'a> FactsFace<'a> {
                 None => {}
             }
             if let Some(named) = &fact.label {
-                let spare = crate::num::f32_of_f64((rect.x1 - x).max(0.0));
+                // The value is the thing itself, so the label gives way first: it is
+                // elided to what the value and its gap leave.
+                let value = f64::from(ctx.text.measure_style(&fact.text, None, &m.style).0);
+                let spare = crate::num::f32_of_f64((rect.x1 - x - value - m.label_gap).max(0.0));
                 let label = ctx.text.elide_to_width_style(named, spare, &m.style);
                 let w = f64::from(ctx.text.measure_style(&label, None, &m.style).0);
                 ctx.text.draw_style(
