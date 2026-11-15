@@ -1070,6 +1070,12 @@ impl Repl {
 }
 
 /// Press the portal sheet's `effect` , as its control does.
+///
+/// A press names the request the sheet shows, and a question is on the sheet only once a pass of
+/// the session's loop put it there: one seen pending the moment a service asked it is not shown
+/// yet, and the sheet drops a press that names no request. So the loop runs until the sheet shows
+/// a request, and the press names that one.
+#[track_caller]
 pub fn press_sheet(session: &mut Session, effect: &str, args: &Value) {
     fn publisher(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
@@ -1080,14 +1086,18 @@ pub fn press_sheet(session: &mut Session, effect: &str, args: &Value) {
             }
         })
     }
+    let handle = wait_for(
+        session,
+        "the sheet to show the question to press",
+        |session| {
+            session
+                .portal()
+                .and_then(tilo_sheets::portal::PortalSeat::dialog)
+                .map(|dialog| dialog.handle)
+        },
+    );
     let mut args = args.as_object().cloned().unwrap_or_default();
-    if let Some(handle) = session
-        .portal()
-        .and_then(tilo_sheets::portal::PortalSeat::dialog)
-        .map(|dialog| dialog.handle)
-    {
-        args.insert("handle".to_owned(), handle.into());
-    }
+    args.insert("handle".to_owned(), handle.into());
     let sheet = publisher(&session.resources(), effect).expect("the sheet publishes that");
     session.invoke(&sheet, effect, &args).expect("press");
     session.step(Duration::from_millis(1)).expect("step");
