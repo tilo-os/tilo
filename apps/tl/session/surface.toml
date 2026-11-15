@@ -635,6 +635,11 @@ required = false
 type = "int"
 
 [[resources.verbs.params]]
+name = "beside"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
 name = "width"
 required = false
 type = "int"
@@ -658,11 +663,6 @@ type = "int"
 name = "dy"
 required = false
 type = "int"
-
-[[resources.verbs.params]]
-name = "beside"
-required = false
-type = "text"
 
 [[resources.verbs]]
 id = "place-found"
