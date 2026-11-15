@@ -509,8 +509,10 @@ group = { from_toml = "tools/ci/suites.toml", key = "group" }
 [[check.matrix.set]]
 when = { group = "os" }
 isolation = "vm"
-needs = ["vm-test-binaries"]
-env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin", TILO_STAGING_HANDOFF_BIN = "/target/debug/tilo-staging-handoff" }
+# The runtime font payload's test prepares the SDK catalog: it reads the build's font
+# seed, as this group runs without network.
+needs = ["vm-test-binaries", "font-seed"]
+env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin", TILO_STAGING_HANDOFF_BIN = "/target/debug/tilo-staging-handoff", TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1" }
 on = ["dispatch", "idle"]
 heavy = true
 
@@ -5442,7 +5444,8 @@ name = "run-headless"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh cargo run --locked -q -p tilo-local -- headless --check --no-build --apps notes"
 needs = ["nested-session"]
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
+# The session's apps read no NTFS image, whose set takes a minute to build.
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1200
@@ -5453,7 +5456,8 @@ name = "run-desktop"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh cargo run --locked -q -p tilo-local -- desktop --check --no-build --apps notes"
 needs = ["nested-session"]
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
+# The window's apps read no NTFS image, whose set takes a minute to build.
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1200
