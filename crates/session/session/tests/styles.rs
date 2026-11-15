@@ -281,7 +281,7 @@ fn a_style_whose_package_does_not_load_shows_the_strips_and_a_notice_and_keeps_t
             .log()
             .active()
             .iter()
-            .any(|notice| notice.title == "Your layout style could not be shown")
+            .any(|notice| notice.title == "Your style could not be shown")
     });
     // The layout shows the built-in strips, not a blank screen: the strips' own dock and bar stand
     // (the broken style draws nothing of the layout), and the bar keeps naming the person's choice
@@ -435,7 +435,7 @@ fn a_style_whose_view_traps_shows_the_strips_and_a_notice() {
             .log()
             .active()
             .iter()
-            .any(|notice| notice.title == "Your layout style could not be shown")
+            .any(|notice| notice.title == "Your style could not be shown")
     });
     until(&mut session, |session| {
         let labels = session.accessible_labels();

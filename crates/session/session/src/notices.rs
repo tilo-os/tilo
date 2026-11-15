@@ -1381,11 +1381,11 @@ mod tests {
         assert_eq!(
             german,
             [
-                "Research hat deine Fensteranordnung nicht übernommen",
-                "Ein Arbeitsbereich ohne Namen hat deine Fensteranordnung nicht übernommen",
-                "Ein Arbeitsbereich ohne Namen hat deine Fensteranordnung nicht übernommen",
-                "Ein Arbeitsbereich, in dem dieses Gerät nicht mehr ist, hat deine \
-                 Fensteranordnung nicht übernommen",
+                "Research hat dein Layout nicht übernommen",
+                "Ein Arbeitsbereich ohne Namen hat dein Layout nicht übernommen",
+                "Ein Arbeitsbereich ohne Namen hat dein Layout nicht übernommen",
+                "Ein Arbeitsbereich, in dem dieses Gerät nicht mehr ist, hat dein Layout nicht \
+                 übernommen",
             ]
         );
         for title in english.iter().chain(&german) {
