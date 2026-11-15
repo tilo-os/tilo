@@ -736,13 +736,15 @@ mod window_tests {
         ContentHash, Ed25519PublicKey, FileActor, FileAttributionV1, FileProvenance,
         FileVersionAttributionV1, FileVersionId, FileVersionV1,
     };
-    use ui::automerge::transaction::Transactable as _;
-    use ui::automerge::{AutoCommit, ObjType, ReadDoc as _, Value};
+    use ui::automerge::{AutoCommit, ObjType};
 
     const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000f1";
 
     /// A version of `record_id` written by an agent session for the person at `[7; 32]`.
     fn write_version(doc: &mut AutoCommit, record_id: fs_protocol::FileRecordId, id: u128) {
+        use ui::automerge::ScalarValue;
+        use ui::tilo_resource::Slot;
+
         let version = FileVersionV1 {
             id: FileVersionId(uuid::Uuid::from_u128(id)),
             record_id,
@@ -756,22 +758,21 @@ mod window_tests {
             metadata_hash: ContentHash([2; 32]),
             provenance: FileProvenance::Edit,
         };
-        let root = match doc.get(ui::automerge::ROOT, "history") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(ui::automerge::ROOT, "history", ObjType::Map)
-                .unwrap(),
-        };
-        let record = doc
-            .put_object(&root, record_id.0.to_string(), ObjType::Map)
+        let root = Slot::Key(&ui::automerge::ROOT, "history")
+            .object(doc, ObjType::Map)
             .unwrap();
-        let versions = doc.put_object(&record, "versions", ObjType::Map).unwrap();
-        doc.put(
-            &versions,
-            version.id.0.to_string(),
-            fs_protocol::canonical::canonical_bytes(&version).unwrap(),
-        )
-        .unwrap();
+        let record = Slot::Key(&root, &record_id.0.to_string())
+            .object(doc, ObjType::Map)
+            .unwrap();
+        let versions = Slot::Key(&record, "versions")
+            .object(doc, ObjType::Map)
+            .unwrap();
+        Slot::Key(&versions, &version.id.0.to_string())
+            .put_scalar(
+                doc,
+                ScalarValue::Bytes(fs_protocol::canonical::canonical_bytes(&version).unwrap()),
+            )
+            .unwrap();
         let attributed = FileVersionAttributionV1 {
             version_id: version.id,
             attribution: FileAttributionV1 {
@@ -780,15 +781,15 @@ mod window_tests {
                 color: [10, 20, 30],
             },
         };
-        let map = doc
-            .put_object(&record, "attributions", ObjType::Map)
+        let map = Slot::Key(&record, "attributions")
+            .object(doc, ObjType::Map)
             .unwrap();
-        doc.put(
-            &map,
-            version.id.0.to_string(),
-            fs_protocol::canonical::canonical_bytes(&attributed).unwrap(),
-        )
-        .unwrap();
+        Slot::Key(&map, &version.id.0.to_string())
+            .put_scalar(
+                doc,
+                ScalarValue::Bytes(fs_protocol::canonical::canonical_bytes(&attributed).unwrap()),
+            )
+            .unwrap();
         doc.commit();
     }
 
