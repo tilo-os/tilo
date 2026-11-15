@@ -1218,4 +1218,171 @@ mod tests {
         assert!(!power.suspend_held(), "nothing of theirs holds the machine");
         assert!(nobody.0.remote_use.lock_recover().is_none());
     }
+
+    /// A failure this device names for an answer of the other device's that brought no outcome of
+    /// the action's own: one the app may try again.
+    fn ours(code: &str, message: &str) -> OwnDeviceOutcome {
+        Err(Box::new(ActionFailure {
+            code: code.to_owned(),
+            message: message.to_owned(),
+            details: None,
+            retryable: true,
+        }))
+    }
+
+    /// The failure this device names for `update`, an answer that ended the following without
+    /// settling the action.
+    fn unsettled(update: &InvocationUpdate) -> OwnDeviceOutcome {
+        ours(
+            "unsettled",
+            &format!("the action on that device did not settle: {update:?}"),
+        )
+    }
+
+    /// What the app here observes for each way the other device's answer can end: the action's
+    /// output or its own failure exactly as that device gave them, and a failure this device names
+    /// for an answer that was cancelled, came out of turn, was refused, or never arrived.
+    #[test]
+    fn every_answer_of_the_other_device_is_the_outcome_the_app_observes() {
+        let invocation = InvocationId::new();
+        let output = ActionOutput {
+            value: Some(serde_json::json!({"appended": 3})),
+            resources: vec!["notes.note:1".to_owned()],
+        };
+        let theirs = ActionFailure {
+            code: "note_locked".to_owned(),
+            message: "the note is locked there".to_owned(),
+            details: Some(serde_json::json!({"note": "1"})),
+            retryable: false,
+        };
+        let stopped = Some("the person stopped it".to_owned());
+        let accepted = InvocationUpdate::Accepted { invocation };
+        let item = InvocationUpdate::Item {
+            invocation,
+            sequence: 1,
+            value: serde_json::json!("a line"),
+        };
+        let unavailable = ActionHostError::Unavailable {
+            reason: "this device is not serving its actions".to_owned(),
+        };
+        let rows = [
+            (
+                "succeeded",
+                Some(Ok(InvocationUpdate::Succeeded {
+                    invocation,
+                    output: output.clone(),
+                })),
+                Ok(output),
+            ),
+            (
+                "failed there",
+                Some(Ok(InvocationUpdate::Failed {
+                    invocation,
+                    error: theirs.clone(),
+                })),
+                Err(Box::new(theirs)),
+            ),
+            (
+                "cancelled with a word",
+                Some(Ok(InvocationUpdate::Cancelled {
+                    invocation,
+                    message: stopped,
+                })),
+                ours("cancelled", "the person stopped it"),
+            ),
+            (
+                "cancelled without one",
+                Some(Ok(InvocationUpdate::Cancelled {
+                    invocation,
+                    message: None,
+                })),
+                ours("cancelled", "the action was cancelled on that device"),
+            ),
+            (
+                "accepted, and no more",
+                Some(Ok(accepted.clone())),
+                unsettled(&accepted),
+            ),
+            (
+                "an item, and no more",
+                Some(Ok(item.clone())),
+                unsettled(&item),
+            ),
+            (
+                "not permitted there",
+                Some(Err(ActionHostError::NotPermitted)),
+                ours(
+                    "own_device_refused",
+                    "the caller may not invoke this action",
+                ),
+            ),
+            (
+                "not serving there",
+                Some(Err(unavailable)),
+                ours(
+                    "own_device_refused",
+                    "remote actions are unavailable: this device is not serving its actions",
+                ),
+            ),
+            (
+                "never answered",
+                None,
+                ours(
+                    "own_device_abandoned",
+                    "the device's answer was dropped before it arrived",
+                ),
+            ),
+        ];
+        for (row, answer, expected) in rows {
+            assert_eq!(outcome_of(answer), expected, "{row}");
+        }
+    }
+
+    /// A device is reached in the workspace that reports it connected and in no other, and only
+    /// while that report stands: what one workspace says of a device is nothing another may ask
+    /// it by, and knowing where a device lives is not reaching it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_device_is_reached_only_in_the_workspace_that_reports_it_and_while_it_does() {
+        const ELSEWHERE: &str = "another workspace of the person's";
+        let root = SigningKey::from_bytes(&[0xa1; 32]);
+        let here = device(&root, 0xa2, "This device");
+        let there = device(&root, 0xa3, "Their other device");
+        let other = there.0.verifying_key().to_bytes();
+        let stranger = [0xa4; 32];
+        let lives = EndpointAddr::new(
+            EndpointId::from_bytes(&other).expect("the other device's key is an endpoint's"),
+        );
+        let (endpoint, actions) = asking(&here.0, &here.1, lives).await;
+        assert!(
+            !actions.reachable(WORKSPACE, other),
+            "told where the device lives, and by no workspace that it is connected"
+        );
+
+        actions.here(WORKSPACE, BTreeSet::from([other]));
+        assert!(actions.reachable(WORKSPACE, other));
+        assert!(
+            !actions.reachable(ELSEWHERE, other),
+            "a workspace that did not report the device does not reach it"
+        );
+        assert!(
+            !actions.reachable(WORKSPACE, stranger),
+            "nor does the workspace reach a device it did not report"
+        );
+
+        actions.here(ELSEWHERE, BTreeSet::from([stranger]));
+        assert!(
+            actions.reachable(WORKSPACE, other) && !actions.reachable(WORKSPACE, stranger),
+            "what another workspace reports changes nothing of this one"
+        );
+        assert!(actions.reachable(ELSEWHERE, stranger));
+
+        // A workspace's next report replaces what was known of it, and of it alone.
+        actions.here(WORKSPACE, BTreeSet::new());
+        assert!(
+            !actions.reachable(WORKSPACE, other),
+            "a device that left is not reached"
+        );
+        assert!(actions.reachable(ELSEWHERE, stranger));
+        endpoint.close().await;
+    }
 }
