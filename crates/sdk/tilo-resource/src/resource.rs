@@ -800,6 +800,15 @@ fn field_ops(field: &crate::FieldShape, rich: bool) -> Vec<&'static str> {
     }
 }
 
+/// Whether a field's type takes edits of its own that a read-only field still
+/// accepts: each invoker's own reaction, or the outside settling its outbox
+/// entry, as the record's table allows them.
+fn takes_own_verbs(field: &crate::FieldShape) -> bool {
+    let ops = field_ops(field, false);
+    ops.iter()
+        .any(|op| matches!(*op, "react" | "unreact" | "settle" | "forget"))
+}
+
 /// The vocabulary the value at `at` has of its own (a rich text's), when it
 /// has one.
 fn rich_schema_at<'a>(
@@ -908,8 +917,13 @@ fn edit_paths(
     };
     let item = step_schema("item", serde_json::json!({ "type": "string" }));
     // A read-only field is changed only by the record's verbs: no path an
-    // edit could take.
-    for field in shape.fields().iter().filter(|field| !field.readonly) {
+    // edit could take, save the verbs its own type keeps that a field edit
+    // still applies (a reaction, a settled outbox entry).
+    for field in shape
+        .fields()
+        .iter()
+        .filter(|field| !field.readonly || takes_own_verbs(field))
+    {
         let mut here = steps.to_vec();
         here.push(step_schema(
             "field",

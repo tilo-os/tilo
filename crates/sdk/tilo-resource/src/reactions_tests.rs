@@ -198,3 +198,27 @@ tilo_test_env::scenario! {
         assert!(!super::valid_custom_emoji_name(&"a".repeat(33)));
     }
 }
+
+/// A read-only item still takes its reactions, so its reactions are among the paths
+/// the record publishes: a caller builds the reaction from the descriptor alone.
+#[test]
+fn a_read_only_items_reactions_are_published_as_paths() {
+    let schema = crate::resource::edit_schema(crate::vocabulary::<Board>());
+    let ops = schema
+        .pointer("/properties/op/enum")
+        .and_then(serde_json::Value::as_array)
+        .expect("the published operations");
+    for op in ["react", "unreact"] {
+        assert!(
+            ops.iter().any(|offered| offered == op),
+            "a read-only item takes `{op}`: {ops:?}"
+        );
+    }
+    let paths = schema["description"]
+        .as_str()
+        .expect("the editable paths are listed");
+    assert!(
+        paths.contains("`cards.*.reactions`: react"),
+        "the card's reactions are a listed path: {paths}"
+    );
+}
