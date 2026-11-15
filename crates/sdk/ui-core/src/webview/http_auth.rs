@@ -74,12 +74,14 @@ impl HttpAuthChallenge {
         } else {
             site.rsplit_once(':').map_or(site, |(host, _)| host)
         };
-        let this_device = host == "localhost"
-            || host.ends_with(".localhost")
-            || host == "[::1]"
-            || host
-                .parse::<std::net::Ipv4Addr>()
-                .is_ok_and(|address| address.is_loopback());
+        let this_device = match url::Host::parse(host) {
+            Ok(url::Host::Domain(domain)) => {
+                domain == "localhost" || domain.ends_with(".localhost")
+            }
+            Ok(url::Host::Ipv4(address)) => address.is_loopback(),
+            Ok(url::Host::Ipv6(address)) => address.is_loopback(),
+            Err(_) => false,
+        };
         !this_device
     }
 
