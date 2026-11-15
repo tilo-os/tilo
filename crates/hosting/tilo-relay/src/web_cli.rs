@@ -1369,15 +1369,15 @@ mod tests {
             .unwrap()
     }
 
-    /// A browser's signed request to be certified under `user`.
-    fn browser_request(user: [u8; 32]) -> CertificationRequest {
+    /// A browser named `label`'s signed request to be certified under `user`.
+    fn browser_request(user: [u8; 32], label: &str) -> CertificationRequest {
         let device = key();
         let now = tilo_clock::unix_now_ns();
         CertificationRequest {
             version: CERTIFICATION_SCHEMA_VERSION,
             user_public_key: user,
             device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Browser".into(),
+            device_label: label.into(),
             requested: DeviceCapabilities::member(),
             nonce: rand::random(),
             invite: [0; 16],
@@ -1389,9 +1389,10 @@ mod tests {
         .unwrap()
     }
 
-    /// A browser asks the host for a certificate; the dev approver answers.
-    async fn certify_a_browser(relay: &Relay, user: [u8; 32]) -> CertificationOutcome {
-        let request = browser_request(user);
+    /// A browser named `label` asks the host for a certificate; the dev
+    /// approver answers.
+    async fn certify_a_browser(relay: &Relay, user: [u8; 32], label: &str) -> CertificationOutcome {
+        let request = browser_request(user, label);
         let browser = endpoint().await;
         let outcome = tokio::time::timeout(
             Duration::from_secs(20),
@@ -1468,14 +1469,16 @@ mod tests {
 
         let first = sessions.recv().await.unwrap();
         assert!(matches!(
-            certify_a_browser(&relay, user).await,
+            certify_a_browser(&relay, user, "Browser").await,
             CertificationOutcome::Issued { .. }
         ));
 
         first.close().await;
 
+        // Another browser of the person asks: the host names it apart from the
+        // one already certified, as it does every computer set up alike.
         assert!(matches!(
-            certify_a_browser(&relay, user).await,
+            certify_a_browser(&relay, user, "Browser 2").await,
             CertificationOutcome::Issued { .. }
         ));
         assert!(
@@ -1489,7 +1492,7 @@ mod tests {
 
     /// A pending browser request as the approver lists it, showing `code`.
     fn pending(code: &str) -> tilo_relay::certify::PendingCertification {
-        let request = browser_request(key().verifying_key().to_bytes());
+        let request = browser_request(key().verifying_key().to_bytes(), "Browser");
         tilo_relay::certify::PendingCertification {
             request_digest: request.digest().unwrap(),
             pairing_code: code.into(),
@@ -1652,7 +1655,7 @@ mod tests {
             .await
         });
 
-        let request = browser_request(user);
+        let request = browser_request(user, "Browser");
         let device = hex::encode(request.device_public_key);
         let (shown, code) = tokio::sync::oneshot::channel();
         let browser = endpoint().await;
