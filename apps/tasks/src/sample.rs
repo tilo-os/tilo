@@ -160,7 +160,11 @@ pub(crate) fn migrated(person: &str) -> Tracker {
             "version": 1, "source": "linear", "key": identifier, "identifier": identifier,
             "title": title, "body": format!("Moved from Linear.\n\n{title}, as the team wrote it."),
             "status": status, "labels": [], "assignee": null, "comments": [], "links": [],
-            "parent": null, "url": page(identifier)
+            "parent": null, "url": page(identifier),
+            // Who wrote it there and when, as a migration brings them: the header shows
+            // the author, the tool and the day as its provenance row.
+            "author": { "name": "Grace Hopper", "handle": "grace" },
+            "created_at": "2026-11-02T09:00:00Z"
         });
         if let (Some(entry), serde_json::Value::Object(extra)) = (entry.as_object_mut(), extra) {
             entry.extend(extra);
