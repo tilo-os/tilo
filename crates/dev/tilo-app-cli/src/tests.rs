@@ -3077,9 +3077,19 @@ fn creation_inputs_are_validated_and_printed_safely() {
         let outcome = create_app(req).expect("preview app");
         assert!(outcome.dry_run);
         assert!(!destination.exists());
-        assert_eq!(outcome.files.len(), 15);
+        assert_eq!(outcome.files.len(), 17);
         assert!(outcome.files.contains(&PathBuf::from("AGENTS.md")));
         assert!(outcome.files.contains(&PathBuf::from("surface.toml")));
+        assert!(
+            outcome
+                .files
+                .contains(&PathBuf::from("workspace-hack/Cargo.toml"))
+        );
+        assert!(
+            outcome
+                .files
+                .contains(&PathBuf::from("workspace-hack/src/lib.rs"))
+        );
     }
 
     {
@@ -4965,7 +4975,18 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
             assert_eq!(patches[name]["rev"].as_str(), Some(rev), "{name}");
         }
         pinned_as_workspace(patches);
-        assert!(patches.values().all(|patch| patch.get("path").is_none()));
+        assert!(
+            patches
+                .iter()
+                .filter(|(name, _)| name.as_str() != "workspace-hack")
+                .all(|(_, patch)| patch.get("path").is_none()),
+            "{patches:#?}"
+        );
+        assert_eq!(
+            patches["workspace-hack"]["path"].as_str(),
+            Some("workspace-hack"),
+            "the SDK's crates name the empty crate written beside the app: {patches:#?}"
+        );
         let report = doctor_app(&app).unwrap();
         assert!(report.is_ready(), "{}", report.summary());
         assert!(report.summary().contains(rev), "{}", report.summary());
