@@ -70,7 +70,9 @@ impl Store for PageWorkspaces {
     fn put_custody(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
         let hash = *blake3::hash(bytes).as_bytes();
         let name = tilo_peer_state::owner::custody_run_name(workspace, hash);
-        self.store.save_workspaces_run(&name, Some(bytes))?;
+        if self.store.keeps_workspaces() {
+            self.store.save_workspaces_run(&name, Some(bytes))?;
+        }
         self.runs.lock_recover().insert(name, Some(bytes.to_vec()));
         Ok(hash)
     }
@@ -91,10 +93,15 @@ impl Store for PageWorkspaces {
         _change: Change,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
-        let bytes = serde_json::to_vec(next).map_err(|error| error.to_string())?;
-        if let Err(error) = self.store.save_workspaces(&bytes) {
-            self.healthy.store(false, Ordering::Release);
-            return Err(error);
+        let keeps = self.store.keeps_workspaces();
+        // Made only for a store that keeps it: the record holds every record of every workspace,
+        // and a device writing a large folder makes it after each write.
+        if keeps {
+            let bytes = serde_json::to_vec(next).map_err(|error| error.to_string())?;
+            if let Err(error) = self.store.save_workspaces(&bytes) {
+                self.healthy.store(false, Ordering::Release);
+                return Err(error);
+            }
         }
         install();
         // A run the record no longer names moved to custody's head.
@@ -109,7 +116,7 @@ impl Store for PageWorkspaces {
             runs.retain(|name, _| named.contains(name));
             gone
         };
-        for name in gone {
+        for name in gone.into_iter().filter(|_| keeps) {
             if let Err(error) = self.store.save_workspaces_run(&name, None) {
                 tracing::warn!(%error, "a run of custody the record no longer names was kept");
             }

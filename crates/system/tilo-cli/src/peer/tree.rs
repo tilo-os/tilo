@@ -429,7 +429,7 @@ impl Sync {
             .held_writes()
             .lock()
             .contains_key(&self.route)
-            && self.link.snapshot().outgoing_pending == 0;
+            && self.link.outgoing_pending() == 0;
         let mut standing = self.standing.lock_recover();
         if let Some((files, bytes)) = counted {
             standing.files = files;

@@ -573,6 +573,14 @@ impl Link {
         self.reports.status()
     }
 
+    /// How many of this device's writes its hosts have not admitted yet, as the session counted
+    /// them last: read without copying the status or reading what custody holds, so a caller
+    /// may ask after every change it hears of.
+    #[must_use]
+    pub fn outgoing_pending(&self) -> usize {
+        self.reports.read(|status| status.outgoing_pending)
+    }
+
     /// Whose each member device of `workspace` is, as [`PeerStatus::workspace_devices`] says: device
     /// (hex) to person (root key, hex), read without copying the rest of the status. Empty until
     /// the workspace's governance admitted its members.

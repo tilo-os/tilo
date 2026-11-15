@@ -67,7 +67,7 @@ impl Device {
     /// A session for the device `config` certifies, in no workspace yet.
     #[must_use]
     pub fn over(config: PeerConfig, signer: Arc<dyn DeviceSigner>, label: &str) -> Self {
-        let store = Arc::new(MemoryPeerStore::default()) as Arc<dyn PeerStore>;
+        let store = Arc::new(MemoryPeerStore::for_session()) as Arc<dyn PeerStore>;
         Self::of(
             crate::session::start_session(config.clone(), signer, store),
             config.cert,
@@ -86,7 +86,7 @@ impl Device {
         label: &str,
         lent: crate::Lent,
     ) -> Self {
-        let store = Arc::new(MemoryPeerStore::default()) as Arc<dyn PeerStore>;
+        let store = Arc::new(MemoryPeerStore::for_session()) as Arc<dyn PeerStore>;
         Self::of(
             crate::session::start_session_lent(config.clone(), signer, store, lent),
             config.cert,

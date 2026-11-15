@@ -83,6 +83,12 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
     fn load_workspaces_run(&self, _name: &str) -> Option<Vec<u8>> {
         None
     }
+    /// Whether [`Self::save_workspaces`] keeps what it is handed for a later session. A store that
+    /// keeps nothing is handed nothing: the record of a device's workspaces holds every record it
+    /// replicates, and making it after each write costs as much as all of them.
+    fn keeps_workspaces(&self) -> bool {
+        false
+    }
     /// The key channel state is sealed under at rest, kept apart from that
     /// state: in the page, wrapped by a non-extractable `WebCrypto` key. A
     /// store without one seals channel state under a key of the session's
@@ -92,13 +98,15 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
     }
 }
 
-/// An in-memory [`PeerStore`] for native peers and tests.
+/// An in-memory [`PeerStore`] for native peers and tests: by default it keeps the record of the
+/// device's workspaces for a session started again over it, as a page's profile does.
 pub struct MemoryPeerStore(
     Mutex<Option<PeerRecord>>,
     Mutex<Option<Vec<u8>>>,
     [u8; 32],
     Mutex<Option<Vec<u8>>>,
     Mutex<BTreeMap<String, Vec<u8>>>,
+    bool,
 );
 
 impl Default for MemoryPeerStore {
@@ -109,7 +117,20 @@ impl Default for MemoryPeerStore {
             rand::random(),
             Mutex::default(),
             Mutex::default(),
+            true,
         )
+    }
+}
+
+impl MemoryPeerStore {
+    /// A store for one session, which no later session starts over: it keeps no record of the
+    /// device's workspaces, which the session holds itself while it runs.
+    #[must_use]
+    pub fn for_session() -> Self {
+        Self {
+            5: false,
+            ..Self::default()
+        }
     }
 }
 
@@ -158,6 +179,10 @@ impl PeerStore for MemoryPeerStore {
 
     fn load_workspaces_run(&self, name: &str) -> Option<Vec<u8>> {
         self.4.lock_recover().get(name).cloned()
+    }
+
+    fn keeps_workspaces(&self) -> bool {
+        self.5
     }
 }
 

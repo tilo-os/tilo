@@ -282,6 +282,10 @@ impl PeerStore for DurablePeerStore {
         Some(self.store.read(&self.workspaces_key).ok()??.bytes)
     }
 
+    fn keeps_workspaces(&self) -> bool {
+        true
+    }
+
     fn save_workspaces(&self, bytes: &[u8]) -> Result<(), String> {
         use durable_store::DurableStore as _;
         self.store
