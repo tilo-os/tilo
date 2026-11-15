@@ -2323,6 +2323,11 @@ mod tests {
         a.receive(&a_key, short, hello(&short_cert, Vec::new()), at)
             .unwrap();
         assert_eq!(handed(&mut a, short, at), (true, true));
+        // It holds through its last nanosecond, and has run out at its end.
+        let ends = at + Duration::from_secs(60);
+        let last = ends.checked_sub(Duration::from_nanos(1)).unwrap();
+        assert_eq!(handed(&mut a, short, last), (true, true));
+        assert_eq!(handed(&mut a, short, ends), (false, false));
         let later = at + Duration::from_secs(120);
         assert_eq!(handed(&mut a, short, later), (false, false));
 
