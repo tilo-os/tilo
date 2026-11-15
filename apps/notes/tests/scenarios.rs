@@ -207,7 +207,7 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
 fn shown_title(scenario: Option<&str>) -> Option<&'static str> {
     match scenario {
         Some("rename_commit") => Some("Launch checklist v2"),
-        Some("title_edit") => Some("Launch checklist"),
+        Some("title_edit") => Some("Launch checklist notes"),
         _ => notes::scenario::shown_note(scenario),
     }
 }

@@ -197,6 +197,44 @@ fn a_note_without_metadata_keeps_its_body_gap_under_the_title() {
     );
 }
 
+/// A long title wraps onto more lines as a heading does, rather than eliding
+/// or scrolling sideways: its band grows by the lines it takes and the body
+/// starts under it.
+#[test]
+fn a_long_title_wraps_and_the_body_starts_under_it() {
+    let band = |title: &str| {
+        let mut panel = MainPanel::new();
+        panel.load_page(Uuid::new_v4(), title, "Just text.\n");
+        let mut framed = Framed::with_options(
+            ui::State::new(),
+            panel,
+            (420, 800),
+            FrameOptions {
+                text: Some(crate::component_support::renderer()),
+                ..FrameOptions::default()
+            },
+        );
+        for _ in 0..2 {
+            Framed::harness_mut(&mut framed)
+                .relayout_at((420, 800))
+                .unwrap();
+        }
+        let (panel, _) = Framed::split(&mut framed);
+        let title = panel.title_rect_for_test();
+        assert!(
+            panel.body_top_for_test() > title.y1,
+            "the body starts under the title: {title:?}"
+        );
+        title.height()
+    };
+    let one_line = band("Friday plan");
+    let wrapped = band("Friday plan: book the room, order lunch and send the agenda to everyone");
+    assert!(
+        wrapped > one_line * 1.5,
+        "a long title takes more lines: {one_line} then {wrapped}"
+    );
+}
+
 /// Press the widget `id` and return the resource and action the press
 /// invoked. The events go to the panel directly so the invocation is left
 /// for this test to read instead of being dispatched by the harness.

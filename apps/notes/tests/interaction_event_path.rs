@@ -318,7 +318,8 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
             "the rename propagates into the sidebar row"
         );
 
-        // Escape must cancel without renaming.
+        // Escape ends the edit and keeps what was typed: each keystroke
+        // already renamed the note.
         let c = n(&mut app).main_title_center_for_test();
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
@@ -332,10 +333,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         );
         let pages = n(&mut app).workspace_pages_for_test();
         let after = pages.iter().find(|p| p.id == welcome).unwrap();
-        assert_eq!(
-            after.title, "Roadmap",
-            "Escape cancels — the title is unchanged"
-        );
+        assert_eq!(after.title, "Nope", "Escape keeps the typed title");
     }
 
     eprintln!("phase hash_space_promotes_paragraph_to_heading_through_the_event_path");

@@ -178,11 +178,15 @@ fn the_sidebar_plus_creates_a_root_note() {
 }
 
 /// The header's "+" opens the new note with its title taking the keyboard,
-/// as Ctrl+N does: what is typed next names the note.
+/// as Ctrl+N does, and what is typed names the note as it is typed: the
+/// notebook, the page tree and the window's bar read it before Enter, and
+/// Escape keeps it.
 #[test]
-fn the_header_plus_opens_the_new_note_to_be_named() {
+fn the_header_plus_opens_the_new_note_and_typing_names_it() {
     use crate::framework_support::surface;
+    const TITLE: &str = "Friday plan: book the room and order lunch.";
     let mut app = fresh();
+    ui::window_toolbar::set_hosted(true);
     let plus = app.harness().targets()["new-note"];
     app.harness().click_at(plus.center().x, plus.center().y);
     app.settle();
@@ -190,10 +194,32 @@ fn the_header_plus_opens_the_new_note_to_be_named() {
         surface(&mut app, |notes| notes.main_title_editing_for_test()),
         "the new note's title takes the keyboard"
     );
-    app.harness().type_text("Groceries");
-    app.harness().key("Enter");
+    app.harness().type_text(TITLE);
     app.settle();
-    assert_eq!(app.read_document(read::list_pages)[0].title, "Groceries");
+    let shown = |app: &mut TestApp<NotesShell>| {
+        let notebook = app.read_document(read::list_pages)[0].title.clone();
+        let row = surface(app, |notes| {
+            notes.sidebar_row_title_for_test(0).map(str::to_owned)
+        });
+        let bar = ui::window_toolbar::declared()
+            .and_then(|bar| bar.location)
+            .map(|location| location.label);
+        (notebook, row, bar)
+    };
+    let typed = (
+        TITLE.to_owned(),
+        Some(TITLE.to_owned()),
+        Some(TITLE.to_owned()),
+    );
+    assert_eq!(
+        shown(&mut app),
+        typed,
+        "the note is named while it is typed"
+    );
+    app.harness().key("Escape");
+    app.settle();
+    assert!(!surface(&mut app, |notes| notes.main_title_editing_for_test()));
+    assert_eq!(shown(&mut app), typed, "Escape keeps the typed title");
 }
 
 /// A note another participant makes never opens this person's title. The

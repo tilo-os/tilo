@@ -49,12 +49,11 @@ fn page_titles_and_empty_state_are_accessible_rename_boundaries() {
             &mut Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        assert!(
-            panel.take_title_rename().is_none(),
-            "typing remains an uncommitted inline rename"
+        assert_eq!(
+            panel.take_title_rename().as_deref(),
+            Some("Launch plan"),
+            "a title set by assistive technology renames the note at once"
         );
-        panel.title_label.commit();
-        assert_eq!(panel.take_title_rename().as_deref(), Some("Launch plan"));
     }
 
     eprintln!("phase empty_state_primary_action_is_a_focused_accessible_button");

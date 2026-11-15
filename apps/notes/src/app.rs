@@ -2230,8 +2230,8 @@ impl NotesApp {
         true
     }
 
-    /// Commit either a keyboard/pointer title edit or an accessibility value
-    /// change through the notebook's rename, the one page-title action route.
+    /// Apply each title edit, typed or set by assistive technology, through
+    /// the notebook's rename, the one page-title action route.
     /// Kept callable from sync because semantic actions target `MainPanel`
     /// directly and naturally request a subsequent sync rather than
     /// travelling through `handle_event`.
@@ -2247,7 +2247,8 @@ impl NotesApp {
             .workspace
             .get(id)
             .is_some_and(|meta| meta.title != trimmed);
-        if trimmed.is_empty() || !changed {
+        // A cleared title leaves the note unnamed, as its heading then reads.
+        if !changed {
             return;
         }
         // The title band is the note's own: it applies the rename as its
@@ -2878,6 +2879,7 @@ impl Widget for NotesApp {
     /// for since the last frame, applied through the notebook's actions.
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         self.drain_title_rename(edits);
+        self.main.show_held_title();
         self.follow_page_tree();
         self.drain_pasted_images(edits);
         self.drain_slash_request(edits);

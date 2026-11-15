@@ -58,7 +58,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{BlockEditor, EditOutcome, EditableLabel, EmptyState, EmptyStateContent};
+use ui::widget::{BlockEditor, EmptyState, EmptyStateContent, TextInput, TextInputKind};
 use ui::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 
 use crate::model::PageId;
@@ -110,7 +110,8 @@ struct Metrics {
     header_gap: f64,
     /// The gap between the header and the first block of the body.
     body_gap: f64,
-    /// The title band: its line plus room for the focus ring.
+    /// The title band for a one-line title: its line plus room for the
+    /// focus ring.
     title: f64,
     /// The scroll bar's track width and its inset from the panel edge.
     scroll_width: f64,
@@ -391,11 +392,20 @@ pub struct MainPanel {
     /// repeated here.
     parent_path: String,
     tooltips_suppressed: bool,
-    /// The note's prominent, inline-editable title. A shared [`EditableLabel`]
-    /// so the rename gets real selection / clipboard / caret for free; a
-    /// committed edit is queued in `pending_rename` for the host to apply as a
-    /// page rename (which re-syncs the sidebar).
-    title_label: EditableLabel,
+    /// The note's title: the toolkit's title field, wrapping as a heading
+    /// does. Each edit lands in `title_edit` for the host to apply as the
+    /// note's rename, so the page tree, the window's bar and other devices
+    /// follow the typing.
+    title: TextInput,
+    /// The title edit the host has not applied yet.
+    title_edit: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    /// The note's title as the notebook holds it, which the field shows
+    /// again once it is left (a refused rename does not stay typed).
+    title_held: String,
+    /// The title band's height for the lines the title wraps onto, and
+    /// where those lines stand in it.
+    title_band: f64,
+    title_lines: Rect,
     /// Rect the title occupies (pinned above the scrolled body), used to
     /// hit-test a click into the title band since press events carry no
     /// position.
@@ -403,9 +413,6 @@ pub struct MainPanel {
     /// Latest pointer position (logical), tracked so a press can be classified
     /// as "in the title" without the event carrying coordinates.
     last_pointer: Point,
-    /// Rising-edge: a committed title edit that should rename the page. The
-    /// host drains it via [`take_title_rename`](Self::take_title_rename).
-    pending_rename: Option<String>,
     /// The open title edit names a note just made: leaving it from the
     /// keyboard puts the caret at the start of the body.
     naming_new: bool,
@@ -538,6 +545,15 @@ pub struct MainPanel {
 impl MainPanel {
     pub fn new() -> Self {
         crate::metadata::register_messages();
+        let title_edit = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let edited = std::rc::Rc::clone(&title_edit);
+        let mut title = TextInput::local()
+            .with_kind(TextInputKind::Name)
+            .as_title()
+            .with_id("note_title")
+            .on_change(move |text| *edited.borrow_mut() = Some(text.to_owned()));
+        title.set_placeholder(&CATALOG.t("notes-title-placeholder"));
+        title.set_accessible_name(CATALOG.t("notes-a11y-page-title"));
         Self {
             page_id: None,
             date_index: crate::metadata::NoteDateIndex::default(),
@@ -546,14 +562,13 @@ impl MainPanel {
             clock: None,
             parent_path: String::new(),
             tooltips_suppressed: false,
-            title_label: EditableLabel::new("")
-                .with_text_role(TextRole::LargeTitle)
-                .with_placeholder(CATALOG.t("notes-title-placeholder"))
-                .with_id("note_title")
-                .with_accessible_name(CATALOG.t("notes-a11y-page-title")),
+            title,
+            title_edit,
+            title_held: String::new(),
+            title_band: 0.0,
+            title_lines: Rect::ZERO,
             title_rect: Rect::ZERO,
             last_pointer: Point::ZERO,
-            pending_rename: None,
             naming_new: false,
             pending_tag_open: None,
             header: NoteHeader::default(),
@@ -606,20 +621,28 @@ impl MainPanel {
         }
     }
 
-    /// Set the committed title value shown by the idle label, cancelling any
-    /// in-flight rename first (a page swap should never carry an open editor
-    /// or a stale pending rename into the next page).
+    /// Show a note's title, leaving any title edit first (a page swap never
+    /// carries an open field or an unapplied edit into the next page).
     fn set_title_value(&mut self, title: &str) {
         self.scrollbar.release();
         self.scrollbar.set_hover(false);
         self.scroll_focused = false;
-        self.title_label.cancel();
-        let _ = self.title_label.take_outcome();
-        self.title_label.set_value(title);
-        self.title_label
+        self.title.set_focus(false);
+        self.title.set_text(title);
+        title.clone_into(&mut self.title_held);
+        self.title
             .set_semantic_target(self.page_id.map(|page| format!("notes:page-title:{page}")));
-        self.pending_rename = None;
+        self.title_edit.borrow_mut().take();
         self.naming_new = false;
+        self.measure_title();
+        self.dirty = true;
+    }
+
+    /// Give the keyboard back to the body from the title.
+    fn leave_title(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.title.set_focus(false);
+        self.editor.set_focus(true);
+        self.finish_editing_title(event, ctx);
         self.dirty = true;
     }
 
@@ -640,14 +663,11 @@ impl MainPanel {
         }
     }
 
-    /// Rising-edge: a committed title edit that renames the current page. The
-    /// host drains this after each event and applies it as a rename. Cleared
-    /// on read.
+    /// Rising-edge: a title edit that renames the current page. The host
+    /// drains this after each event and applies it as a rename. Cleared on
+    /// read.
     pub fn take_title_rename(&mut self) -> Option<String> {
-        if let EditOutcome::Committed(value) = self.title_label.take_outcome() {
-            self.pending_rename = Some(value);
-        }
-        self.pending_rename.take()
+        self.title_edit.borrow_mut().take()
     }
 
     /// Load a page into the panel. The body is parsed and handed to
@@ -793,7 +813,7 @@ impl MainPanel {
         self.scroll_y = scroll;
     }
     pub(crate) fn title_focused(&self) -> bool {
-        self.title_label.is_editing()
+        self.title.is_focused()
     }
     /// Give the panel back the keyboard the window's saved view names.
     ///
@@ -806,9 +826,8 @@ impl MainPanel {
     /// writes) gives back the note's body instead, which is where the person
     /// stands.
     pub(crate) fn finish_local_focus(&mut self, focus: crate::local_view::NotesFocus) {
-        self.title_label.cancel();
-        let _ = self.title_label.take_outcome();
-        self.pending_rename = None;
+        self.title.set_focus(false);
+        self.title_edit.borrow_mut().take();
         self.empty_action_focused = false;
         self.editor.set_focus(false);
         if self.page_id.is_some()
@@ -831,12 +850,7 @@ impl MainPanel {
     /// Give an explicitly opened note its body focus without discarding a
     /// pending title edit or moving the existing caret.
     pub(crate) fn focus_note_body(&mut self) {
-        if self.title_label.is_editing() {
-            self.title_label.commit();
-            if let EditOutcome::Committed(title) = self.title_label.take_outcome() {
-                self.pending_rename = Some(title);
-            }
-        }
+        self.title.set_focus(false);
         self.editor.set_focus(true);
         self.scroll_focused = false;
         self.dirty = true;
@@ -883,11 +897,20 @@ impl MainPanel {
     /// while the title is itself being edited, so a model echo doesn't stomp
     /// the user's in-flight typing.
     pub fn set_title(&mut self, title: Option<String>) {
-        if let Some(t) = title
-            && !self.title_label.is_editing()
-            && self.title_label.value() != t
+        if let Some(t) = title {
+            self.title_held = t;
+            self.show_held_title();
+        }
+    }
+
+    /// Show the note's title in the field unless it is being typed in.
+    pub(crate) fn show_held_title(&mut self) {
+        if !self.title.is_focused()
+            && self.title_edit.borrow().is_none()
+            && self.title.value() != self.title_held
         {
-            self.title_label.set_value(&t);
+            self.title.set_text(&self.title_held);
+            self.measure_title();
             self.dirty = true;
         }
     }
@@ -1299,7 +1322,33 @@ impl MainPanel {
 
     /// The title band, pinned above the scrolling document.
     fn title_height(&self) -> f64 {
-        self.metrics.title
+        self.title_band.max(self.metrics.title)
+    }
+
+    /// Size the title band to the lines the title wraps onto at its width,
+    /// with the lines centred in it; a band that grows or shrinks lays the
+    /// document out again under it.
+    fn measure_title(&mut self) {
+        let band = self.title_rect;
+        if band.width() <= 0.0 {
+            return;
+        }
+        let lines = ui::text_render::with_layout_renderer(&self.layout_theme, |text| {
+            self.title.place_wrapped(
+                Rect::new(band.x0, band.y0, band.x1, band.y0),
+                text,
+                &self.layout_theme,
+            )
+        });
+        let height = lines.max(self.metrics.title);
+        let top = band.y0 + (height - lines) / 2.0;
+        self.title_lines = Rect::new(band.x0, top, band.x1, top + lines);
+        self.title.apply_layout_external(self.title_lines);
+        if (height - self.title_height()).abs() > 0.5 {
+            self.title_band = height;
+            self.tag_layout_dirty = true;
+            self.dirty = true;
+        }
     }
 
     fn parent_path_label(&self) -> String {
@@ -1315,10 +1364,10 @@ impl MainPanel {
     pub fn begin_title_edit(&mut self, naming: bool) {
         if self.page_id.is_some() {
             self.editor.set_focus(false);
-            if naming {
-                self.title_label.begin_blank_edit();
-            } else {
-                self.title_label.begin_edit();
+            self.title.set_focus(true);
+            self.title.request_focus();
+            if !naming {
+                self.title.select_all();
             }
             self.naming_new = naming;
             self.dirty = true;
@@ -1502,7 +1551,7 @@ impl MainPanel {
     /// Currently displayed title, if any. `None` when no page is open.
     pub fn title(&self) -> Option<&str> {
         if self.page_id.is_some() {
-            Some(self.title_label.value())
+            Some(self.title.value())
         } else {
             None
         }
@@ -1572,7 +1621,7 @@ impl MainPanel {
 
     /// Modal overlays own the visible caret while retaining the underlying edit.
     pub fn suppress_caret_paint(&mut self, suppressed: bool) {
-        self.title_label.suppress_caret_paint(suppressed);
+        self.title.suppress_caret_paint(suppressed);
         self.editor.editor_mut().suppress_caret_paint(suppressed);
     }
 
@@ -1669,13 +1718,13 @@ impl MainPanel {
     /// Test hook: whether the title is in its editing state.
     #[doc(hidden)]
     pub fn title_is_editing_for_test(&self) -> bool {
-        self.title_label.is_editing()
+        self.title.is_focused()
     }
 
     /// Test hook: what the title's field holds while it is edited.
     #[doc(hidden)]
     pub fn title_draft_for_test(&self) -> String {
-        self.title_label.current_text().to_owned()
+        self.title.value().to_owned()
     }
 
     /// Test hook: centre of the first-note call to action after a layout pass.
@@ -1715,7 +1764,7 @@ impl Widget for MainPanel {
         if self.page_id.is_none() {
             return Vec::new();
         }
-        let mut children: Vec<&dyn Widget> = vec![&self.title_label];
+        let mut children: Vec<&dyn Widget> = vec![&self.title];
         if let Some(header) = self.header.built() {
             children.push(header);
         }
@@ -1727,7 +1776,7 @@ impl Widget for MainPanel {
         if self.page_id.is_none() {
             return Vec::new();
         }
-        let mut children: Vec<&mut dyn Widget> = vec![&mut self.title_label];
+        let mut children: Vec<&mut dyn Widget> = vec![&mut self.title];
         if let Some(header) = self.header.built_mut() {
             children.push(header);
         }
@@ -1737,7 +1786,7 @@ impl Widget for MainPanel {
 
     /// The title, header and editor keep their nodes with no page open.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        visitor(&self.title_label);
+        visitor(&self.title);
         if let Some(header) = self.header.built() {
             visitor(header);
         }
@@ -1839,7 +1888,7 @@ impl Widget for MainPanel {
         self.editor_node = Some(editor_node);
         // Retained child order must agree with the layout tree for bound
         // accessibility dispatch. Geometry and painting remain panel-owned.
-        let title_node = self.title_label.build_layout(taffy, theme, node_map);
+        let title_node = self.title.build_layout(taffy, theme, node_map);
         if let Ok(existing) = taffy.style(title_node).cloned() {
             let _ = taffy.set_style(
                 title_node,
@@ -1931,9 +1980,6 @@ impl Widget for MainPanel {
         } else {
             Rect::ZERO
         };
-        // A title that does not fit its line steps down one role instead of
-        // eliding, so a phone at 200% text still reads the whole name. This
-        // is responsive type, not cancellation of the text scale.
         // The editor and header were built at the last width's column; a
         // new width that moves the column builds them again at once.
         // A width that grows or shrinks the note's type builds it again at
@@ -1952,24 +1998,16 @@ impl Widget for MainPanel {
         }
         let gutter = self.metrics.gutter + side;
         let text_edge = self.metrics.text_edge + side;
-        let line_width = (self.rect.width() - text_edge - gutter).max(0.0);
-        let fits = ui::text_render::with_layout_renderer(&self.layout_theme, |text| {
-            let style = self.layout_theme.text(TextRole::LargeTitle);
-            f64::from(text.measure_style(self.title_label.value(), None, &style).0) <= line_width
-        });
-        self.title_label.set_text_role(if fits {
-            TextRole::LargeTitle
-        } else {
-            TextRole::Title
-        });
-        // Title band pinned to the top of the panel, above the scrolled body.
+        // Title band pinned to the top of the panel, above the scrolled body,
+        // as tall as the lines the title wraps onto.
         self.title_rect = Rect::new(
             self.rect.x0 + text_edge,
             self.rect.y0 + self.metrics.gutter,
             (self.rect.x1 - gutter).max(self.rect.x0 + text_edge),
-            self.rect.y0 + self.metrics.gutter + self.title_height(),
+            self.rect.y0 + self.metrics.gutter,
         );
-        self.title_label.apply_layout_external(self.title_rect);
+        self.measure_title();
+        self.title_rect.y1 = self.title_rect.y0 + self.title_height();
         let prior_metadata = self.metadata_height;
         self.measure_header(taffy);
         if (self.metadata_height - prior_metadata).abs() > f64::EPSILON {
@@ -2158,15 +2196,11 @@ impl Widget for MainPanel {
             // Prominent, editable page title, drawn OUTSIDE the scroll clip so
             // it stays pinned while the body scrolls under it.
             // Its own part: naming the note repaints the title, not the page.
-            self.title_label.apply_layout_external(self.title_rect);
+            self.title
+                .place_wrapped(self.title_lines, text_renderer, theme);
             let mut title_scene = Scene::new();
-            self.title_label.draw_child(
-                &mut title_scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
+            self.title
+                .draw_child(&mut title_scene, transform, text_renderer, theme, presence);
             // Once the document has moved under the pinned title, one hairline
             // says where the title stops and the document is cut off.
             let pinned = Rect::new(
@@ -2310,7 +2344,7 @@ impl Widget for MainPanel {
             let title_reach = f64::from(theme.tokens.spacing.s2);
             // A correction chip the field floats past its band, where it is
             // and where it was.
-            self.title_overhang = self.title_label.overhang();
+            self.title_overhang = self.title.overhang();
             let mut title_damage = vec![self.title_rect.inflate(title_reach, title_reach)];
             title_damage.extend(self.title_overhang);
             title_damage.extend(self.drawn_title_overhang);
@@ -2454,44 +2488,61 @@ impl Widget for MainPanel {
             }
         }
 
-        // Title editing. A left press in the title band opens an inline rename
-        // (whole title selected, ready to replace or reposition); while
-        // editing, the title owns typing / Enter / Esc, and a click elsewhere
-        // blur-commits. A committed edit is queued for the host to apply as a
-        // page rename.
-        let press_in_title = matches!(
+        // Title editing. While the title has the keyboard it owns typing, and
+        // Enter or Escape gives the keyboard back to the body. A press
+        // elsewhere leaves the title and goes on to place the caret there.
+        // Each edit is queued for the host to apply as the rename.
+        let press = matches!(
             event,
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             }
-        ) && self.title_rect.contains(self.last_pointer);
-        if !self.title_label.is_editing() && press_in_title {
+        );
+        let press_in_title = press && self.title_rect.contains(self.last_pointer);
+        // The first press selects the whole title, ready to replace or
+        // reposition, as renaming in place does.
+        if !self.title.is_focused() && press_in_title {
             self.begin_title_edit(false);
             *ctx.focus_target = self.title_node;
             *ctx.handled = true;
             return;
         }
-        if self.title_label.is_editing() {
-            self.title_label.apply_layout_external(self.title_rect);
-            self.title_label
-                .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
-            let outcome = self.title_label.take_outcome();
-            if !matches!(outcome, EditOutcome::None) {
-                if let EditOutcome::Committed(new) = outcome {
-                    self.pending_rename = Some(new);
+        if self.title.is_focused() {
+            let escape = matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: winit::event::KeyEvent {
+                        logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
                 }
+            );
+            if press && !press_in_title {
+                self.title.set_focus(false);
                 self.editor.set_focus(true);
-                self.finish_editing_title(event, ctx);
                 self.dirty = true;
-            }
-            // Typing / Enter / Esc are consumed by the field; stop so they
-            // never reach the body. A blur-commit press outside the title is
-            // deliberately NOT consumed, so it falls through to place the
-            // caret in the body below.
-            if *ctx.handled {
-                return;
+            } else {
+                let was = *ctx.handled;
+                self.title
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+                if matches!(event, WindowEvent::CursorMoved { .. }) && !self.title.is_dragging() {
+                    *ctx.handled = was;
+                }
+                self.measure_title();
+                // Escape the field did not take (a popup it closed) leaves it.
+                if self.title.take_submit() || (escape && !*ctx.handled) {
+                    self.leave_title(event, ctx);
+                    *ctx.handled = true;
+                }
+                self.dirty = true;
+                if *ctx.handled || press_in_title {
+                    *ctx.handled = true;
+                    return;
+                }
             }
         }
 
@@ -2664,13 +2715,13 @@ impl Widget for MainPanel {
         let mut children = vec![
             AccessNode::new(Role::TextInput)
                 .with_name(CATALOG.t("notes-a11y-note-title"))
-                .with_value(self.title_label.current_text())
+                .with_value(self.title.value())
                 .with_action_target("notes.page-title")
                 .with_bounds(self.title_rect)
                 .with_state(
                     AccessState::new()
                         .focusable(true)
-                        .focused(self.title_label.is_editing()),
+                        .focused(self.title.is_focused()),
                 ),
         ];
         if let Some(thumb) = self.scroll_thumb() {
@@ -2712,8 +2763,7 @@ impl Widget for MainPanel {
             [1] => self.focus_scrollbar(),
             [0] => {
                 self.scroll_focused = false;
-                self.title_label.begin_edit();
-                self.dirty = true;
+                self.begin_title_edit(false);
                 true
             }
             _ => false,
@@ -2775,7 +2825,11 @@ impl Widget for MainPanel {
             return self.perform_action(action, &[], state, path);
         }
         if target == "notes.page-title" {
-            return Widget::perform_action(&mut self.title_label, action, &[], state, path);
+            if matches!(action, ui::a11y::Action::Focus | ui::a11y::Action::Activate) {
+                self.begin_title_edit(false);
+                return true;
+            }
+            return Widget::perform_action(&mut self.title, action, &[], state, path);
         }
         false
     }
@@ -2881,9 +2935,9 @@ impl MainPanel {
         (target - self.scroll_y).abs() > f64::EPSILON
             && self.page_id.is_some()
             && self.scroll_viewport().contains(self.last_pointer)
-            && !self.title_label.is_editing()
+            && !self.title.is_focused()
             && !self.has_editor_popup()
-            && self.pending_rename.is_none()
+            && self.title_edit.borrow().is_none()
             && self.pending_tag_open.is_none()
             && self.pending_backlink_open.is_none()
     }

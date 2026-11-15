@@ -325,6 +325,11 @@ pub struct TextInput {
     /// there instead of painting it again.
     moved: bool,
     focus_wanted: bool,
+    /// The title of the document the window is for ([`Self::as_title`]).
+    title: bool,
+    /// What assistive technology addresses the field by, when its owner
+    /// names what it edits ([`Self::set_semantic_target`]).
+    semantic_target: Option<String>,
     on_change: Option<TextChangeCallback>,
     action: Option<ActionEmitter<Edited>>,
     last_notified_text: String,
@@ -702,6 +707,8 @@ impl TextInput {
             repaint: true,
             moved: true,
             focus_wanted: false,
+            title: false,
+            semantic_target: None,
             on_change: None,
             action: None,
             last_notified_text: String::new(),
@@ -2594,7 +2601,7 @@ impl TextInput {
         gutter
     }
 
-    pub(crate) fn suppress_caret_paint(&mut self, suppressed: bool) {
+    pub fn suppress_caret_paint(&mut self, suppressed: bool) {
         self.caret_paint_suppressed = suppressed;
     }
 
@@ -3270,7 +3277,7 @@ impl TextInput {
     pub(crate) fn accessibility_state(&self) -> TextAccessibilityState {
         TextAccessibilityState {
             secret: self.holds_secret(),
-            multiline: self.multiline,
+            multiline: self.multiline && !self.title,
             disabled: self.effectively_disabled(),
             focused: self.is_focused,
             invalid: self.invalid,
@@ -3621,6 +3628,29 @@ impl TextInput {
     pub fn wants_focus(mut self) -> Self {
         self.focus_wanted = true;
         self
+    }
+
+    /// Ask the window to give the field the keyboard.
+    pub fn request_focus(&mut self) {
+        self.focus_wanted = true;
+    }
+
+    /// The title of the document the window is for: set large and wrapping as a heading does,
+    /// with Enter leaving it and no line breaks in it, so it is announced as a one-line field.
+    #[must_use]
+    pub fn as_title(mut self) -> Self {
+        self.title = true;
+        self.core.set_filter(Some(|ch| ch != '\n' && ch != '\r'));
+        self.with_text_role(TextRole::LargeTitle)
+            .with_plain_chrome()
+            .multiline(true)
+            .with_enter_submits(true)
+    }
+
+    /// Address the field by `target` (what it edits, such as one note's title), so an action
+    /// sent for a target it no longer edits is refused.
+    pub fn set_semantic_target(&mut self, target: Option<String>) {
+        self.semantic_target = target;
     }
 
     /// Set the stable label announced for this field by assistive technology.
@@ -5776,7 +5806,7 @@ impl Widget for TextInput {
         // tree — it reports `protected` and a `None` value instead.
         let secret = self.holds_secret();
         let value = (!secret).then(|| self.text.clone());
-        let role = if self.multiline {
+        let role = if self.multiline && !self.title {
             Role::MultilineTextInput
         } else {
             Role::TextInput
@@ -5788,12 +5818,16 @@ impl Widget for TextInput {
                 focused: self.is_focused(),
                 disabled: self.effectively_disabled(),
                 protected: secret,
-                multiline: self.multiline,
+                multiline: self.multiline && !self.title,
                 invalid: self.invalid,
                 autofill: self.autofill(),
                 ..Default::default()
             });
-        if !self.id.is_empty() {
+        if let Some(target) = &self.semantic_target {
+            node = node
+                .with_semantic_key(target.clone())
+                .with_action_target(target.clone());
+        } else if !self.id.is_empty() {
             node = node.with_semantic_key(&self.id);
         }
         if self.action.is_none() && self.on_change.is_none() && self.change_verb.is_none() {
@@ -5845,9 +5879,12 @@ impl Widget for TextInput {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _root: &ModelPath,
+        state: &mut crate::widget::Edits<'_>,
+        root: &ModelPath,
     ) -> bool {
+        if self.semantic_target.as_deref() == Some(target) {
+            return self.perform_action(action, &[], state, root);
+        }
         if target != ACCESSORY_TARGET
             || !matches!(action, crate::a11y::Action::Activate)
             || !self.accessory_ready()
@@ -5870,9 +5907,14 @@ impl Widget for TextInput {
         if self.effectively_disabled() {
             return false;
         }
+        // A title is typed in where it stands: an edit or a selection set on it takes the
+        // keyboard there, as a press on it does.
+        if self.title && matches!(action, Action::SetValue(_) | Action::SetSelection { .. }) {
+            self.focus_wanted = true;
+        }
         match action {
             Action::SetValue(value) => {
-                let cleaned = if self.multiline {
+                let cleaned = if self.multiline && !self.title {
                     value
                         .replace("\r\n", "\n")
                         .replace('\r', "\n")

@@ -163,11 +163,7 @@ impl Described for TextInput {
                 .with_min_lines(usize::try_from(lines.max(1)).unwrap_or(1));
         }
         if title {
-            input = input
-                .with_text_role(TextRole::LargeTitle)
-                .with_plain_chrome()
-                .multiline(true)
-                .with_enter_submits(true);
+            input = input.as_title();
         }
         if entry {
             input = input.with_entry(true);
@@ -228,6 +224,7 @@ impl Described for TextInput {
         if autofocus {
             self.focus_wanted = true;
         }
+        self.title = title;
         self.set_multiline(title || lines.is_some());
         self.min_lines = lines.map_or(0, |lines| usize::try_from(lines.max(1)).unwrap_or(1));
         self.set_text_role(if title {

@@ -32,8 +32,18 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
         .unwrap();
         a.expect(&SemanticExpectation::named("note_title").value("Launch"))
             .unwrap();
-        a.type_text("uncommitted title draft");
-        assert_eq!(revision(&f, &checkout), 0);
+        // What is typed in the title names the note at once.
+        a.type_text("Draft ");
+        let title = f
+            .records
+            .read(&checkout.id, |doc| {
+                read::list_pages(doc)
+                    .into_iter()
+                    .find(|page| page.id == f.child)
+                    .map(|page| page.title)
+            })
+            .unwrap();
+        assert_eq!(title.as_deref(), Some("Draft Launch"));
         a.close_components();
         let reports = a.take_component_close_reports();
         assert_eq!(reports.len(), 1);
