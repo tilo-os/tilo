@@ -491,26 +491,20 @@ impl Widget for SearchOverlay {
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let search = self.handle.search_palette();
         let search = search.borrow();
-        // A search still filling in is looked for again shortly: its rows arrive off the frame (a
-        // worker's answer wakes the shell; an application's answer comes on the host's clock), and
-        // a shell with nothing else to draw presents none. The shell's own schedule is not the
-        // chrome's — the palette is drawn from here — so the deadline goes with the card's. A
-        // search that never asked for it shows the rows it had when the person stopped typing,
-        // and Enter on an app's row comes long after the person pressed it.
-        // Rows are still expected to join what the search shows (a window's
-        // content index being built, an app's server still looking): look
-        // again shortly, so a late row is drawn when it arrives. This is not
-        // "still searching": the rows already shown are the search's answer,
-        // and a fresh window's content must not keep them drawn as if it
-        // were.
-        let expecting = (self.handle.search_open() && self.handle.search_expecting())
+        // The card still owes rows: a source to ask on the frame, rows to cut to the card's room,
+        // a worker's answer to take in, or an app's answer coming on the host's clock. All of them
+        // arrive off the frame, and a page with nothing else to draw presents none. The palette is
+        // drawn from here, so the frame that finishes it is asked for here: without that it shows
+        // the rows it had when the person stopped typing, and Enter on an app's row comes on the
+        // bar's next minute.
+        let owed = (search.is_open() && (search.filling_in() || search.expecting()))
             .then(|| ui::time::now().checked_add(tilo_desktop_search::ANSWER_POLL))
             .flatten();
         search
             .palette()
             .and_then(ui::Widget::next_wake_deadline)
             .into_iter()
-            .chain(expecting)
+            .chain(owed)
             .min()
     }
 
