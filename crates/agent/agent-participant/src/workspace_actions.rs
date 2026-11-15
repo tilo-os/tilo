@@ -2866,6 +2866,12 @@ fn log_outcome(
 /// person (Files' tree of the workspace's folder), is read where it is kept, never mounted as the
 /// app's, which refuses it as not the app's workspace record.
 fn opens_as_its_own(app: &ui::application::ApplicationDefinition, record: &str) -> bool {
+    // The empty route is the app's own record where it keeps one per workspace, and its index of
+    // the workspace's named records where it keeps none: the index is read where it is kept,
+    // never mounted as the app's record.
+    if record.is_empty() {
+        return app.keeps_workspace_record();
+    }
     !app.keeps_workspace_record() || collab_types::person_record_kind(record).is_none()
 }
 
