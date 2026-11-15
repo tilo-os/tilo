@@ -111,7 +111,7 @@ impl Windows {
             let persons = RefCell::new(HashMap::new());
             tabs.publish_window_warmth(
                 |app| self.warmth.appearance_of(tree, app, &self.theme),
-                |app| workspace_sync(tree, app, person, &persons),
+                |app, instance| workspace_sync(tree, app, instance, person, &persons),
                 &self.theme,
                 network,
             );
@@ -119,15 +119,31 @@ impl Windows {
     }
 }
 
-/// Where the workspace `app` 's window stands with its peers, and whether that window may write it:
-/// the same answer that opened the app writable.
+/// Where the workspace the window `instance` names stands with its peers, and whether that
+/// window may write it: the same answer that opened the app writable.
+///
+/// The window's own workspace answers, never another window's: an app may have a window in a
+/// workspace its person writes and another in one they only read, and being told the other's
+/// answer shows "View only" over a record they may edit. `None` falls back to `app`, for a
+/// connection that has not named its window yet.
 fn workspace_sync(
     tree: &Layout,
     app: &str,
+    instance: Option<u64>,
     person: &str,
     persons: &RefCell<HashMap<WorkspaceId, String>>,
 ) -> Option<WorkspaceSync> {
-    let workspace = tree.workspace_holding_app(app)?;
+    let workspace = instance
+        .and_then(|instance| {
+            tree.workspaces.iter().find(|workspace| {
+                workspace.tabs().any(|shown| {
+                    shown.id == instance
+                        && tilo_desktop_model::apps::canonical_app_id(&shown.tile)
+                            .is_some_and(|id| tilo_desktop_policy::app_ids_match(&id, app))
+                })
+            })
+        })
+        .or_else(|| tree.workspace_holding_app(app))?;
     let workspace_id = workspace.id();
     let person = persons
         .borrow_mut()
@@ -200,6 +216,87 @@ impl crate::Session {
             &self.shared.person,
             network,
             ui::time::now(),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_action_policy::Role;
+    use tilo_desktop_model::ids::{GroupId, StripId, TabId};
+    use tilo_desktop_model::{Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace};
+
+    const APP: &str = "so.tilo.tasks";
+    const PERSON: &str = "ada";
+
+    /// A workspace named `name` holding one window of [`APP`], where `PERSON` holds `role`.
+    fn workspace(id: u64, name: &str, tab: TabId, role: Role) -> Workspace {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(u128::from(id)), name);
+        if role == Role::Owner {
+            workspace.set_owner(PERSON);
+        } else {
+            workspace.admit(PERSON, role);
+        }
+        let mut strip = Strip::new(StripId::from(id), name);
+        strip.window_groups.push(WindowGroup {
+            id: GroupId::from(id),
+            tabs: vec![Tab {
+                id: tab,
+                title: "Tasks".into(),
+                tile: TileContent::LocalApp {
+                    app_id: APP.into(),
+                    label: "Tasks".into(),
+                    note: String::new(),
+                },
+                app_title: None,
+                view: String::new(),
+                pinned: false,
+            }],
+            active_tab: tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        workspace.strips.push(strip);
+        workspace
+    }
+
+    /// Two windows of one app: the person writes in their own workspace and only reads in a
+    /// shared one. Each window hears what its own workspace says — an agent that opened the app
+    /// in the shared workspace is no reason for the person's own window to read "View only".
+    #[test]
+    fn a_window_is_told_its_own_workspaces_answer_never_another_windows() {
+        let shared = workspace(2, "Shared", 200, Role::Viewer);
+        let mine = workspace(1, "Mine", 100, Role::Owner);
+        // The shared workspace stands first, as an app's other window does when the answer was
+        // read from the app alone: the person's own window reads "View only" over what they may
+        // edit.
+        let tree = Layout {
+            workspaces: vec![shared, mine],
+            ..Layout::default()
+        };
+        let persons = RefCell::new(HashMap::from([
+            (WorkspaceId::from_u128(1), PERSON.to_owned()),
+            (WorkspaceId::from_u128(2), PERSON.to_owned()),
+        ]));
+        let writes = |instance| {
+            workspace_sync(&tree, APP, Some(instance), PERSON, &persons).map(|told| told.writable)
+        };
+        assert_eq!(
+            writes(100),
+            Some(Some(true)),
+            "the person's own window writes where they do"
+        );
+        assert_eq!(
+            writes(200),
+            Some(Some(false)),
+            "the shared workspace's window is told it may only read"
+        );
+        assert_eq!(
+            writes(999),
+            Some(Some(false)),
+            "a connection that named no window falls back to the first workspace holding the app"
         );
     }
 }

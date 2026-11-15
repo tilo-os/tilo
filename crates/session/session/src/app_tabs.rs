@@ -637,17 +637,21 @@ impl AppTabs {
     /// workspace, the person's colour, the theme, and its workspace's sync state, each when it
     /// differs from what that window was last told. A window opens with one, and gets another
     /// whenever any of it changes; a pass that changes nothing writes nothing.
+    ///
+    /// `sync_of` is told the instance (the tab) the window names as well as its app: an app may
+    /// have a window in a workspace its person writes and another where they only read, and
+    /// every window is told what its own workspace says, never another window of the app.
     pub fn publish_window_warmth(
         &mut self,
         appearance_of: impl Fn(&str) -> WindowAppearance,
-        sync_of: impl Fn(&str) -> Option<WorkspaceSync>,
+        sync_of: impl Fn(&str, Option<u64>) -> Option<WorkspaceSync>,
         theme: &Theme,
         network: HostNetworkStatus,
     ) {
         for link in self.links.values_mut() {
             let network = link.network_allowed.then_some(network);
             let window = appearance_of(&link.app);
-            let sync = sync_of(&link.app);
+            let sync = sync_of(&link.app, link.instance.or(link.named));
             let unchanged = link.told.as_ref().is_some_and(|last| {
                 last.window == window
                     && last.theme == theme.document
