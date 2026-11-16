@@ -117,8 +117,8 @@ impl DictationLink {
     /// Ask for a dictation; nothing records until the person allows it.
     ///
     /// # Errors
-    /// [`DictationError::Busy`] while another dictation or its transcript owns
-    /// the seat.
+    /// [`DictationError::Busy`] while another dictation or its transcript holds
+    /// the microphone.
     pub fn begin(&self, now: Instant) -> Result<SessionId, DictationError> {
         self.dictation.borrow_mut().begin(now)
     }

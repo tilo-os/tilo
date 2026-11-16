@@ -26,7 +26,7 @@ impl SessionId {
 /// transcript bytes or field contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DictationError {
-    /// Another dictation, its preparation or its recovery still owns the seat.
+    /// Another dictation, its preparation or its recovery still holds the microphone.
     Busy,
     /// No field has the focus and asks for typing.
     NoEditableField,
@@ -152,7 +152,7 @@ impl DictationStatus {
         }
     }
 
-    /// Whether a dictation still owns the seat: from consent until its worker
+    /// Whether a dictation still holds the microphone: from consent until its worker
     /// is gone.
     #[must_use]
     pub const fn running(self) -> bool {

@@ -41,9 +41,8 @@ pub fn device_certificate(
     // The certificate the workspace's selected identity presents for this
     // device: the one its apps join the workspace with and the one the
     // workspace admitted. The device owner's system-facing certificate is
-    // issued separately for the same key, so comparing a session's admission
-    // against it refused every native action ("native seat differs from
-    // original certified admission").
+    // issued separately for the same key, so a session's admission never
+    // matches it.
     let (_, certificate) = tilo_identity_host::broker::trusted_current_device(workspace)
         .map_err(|error| error.to_string())?;
     if tilo_action_broker::collab_app_broker::person_id_for_root(certificate.user_public_key)
@@ -79,7 +78,7 @@ pub enum Readiness {
     Refused(String),
 }
 
-/// [`device_certificate`], asked the way the seat asks it before it acts: whether this device's
+/// [`device_certificate`], asked the way the session asks it before it acts: whether this device's
 /// identity names the person yet.
 ///
 /// A session started by a login reads its identity directory while that login is still writing
@@ -108,7 +107,7 @@ pub fn device_readiness(workspace: &str, person: &str) -> Readiness {
     }
 }
 
-/// The seat a session's own actions are taken under: an action the person at
+/// The identity a session's own actions are taken under: an action the person at
 /// this device starts, without an app or a peer asking for it.
 ///
 /// The broker admits such an action only with the certificate it is taken
