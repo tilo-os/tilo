@@ -1055,21 +1055,22 @@ impl Workspace {
                 Event::RecordOpened {
                     ws: opened,
                     route: Some(route),
-                    frames,
+                    answer,
                     ..
                 } if opened == workspace_id => {
                     tracing::debug!(
                         app = %route.app_id,
                         record = %route.record,
-                        frames,
+                        ?answer,
                         asked = self.asked.contains(&route),
                         "workspace actions: the workspace answered for a record"
                     );
                     // The host sent all it holds of a record this member
                     // asked for, and sends its changes from now on: none
-                    // means it holds none of it.
+                    // means it holds none of it. Another person's own record
+                    // is answered as theirs: not absent, never founded here.
                     if self.asked.remove(&route) {
-                        if frames == 0 {
+                        if answer == (tilo_session_client::RecordAnswer::Sent { frames: 0 }) {
                             self.absent.insert(route.clone());
                         }
                         self.answered.insert(route);

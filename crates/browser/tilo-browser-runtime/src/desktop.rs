@@ -484,14 +484,13 @@ impl Shared {
 
     /// The tab showing `app`'s record `record`, by route. The empty route is
     /// the app's own record here: the workspace's, or the person's own of an
-    /// app each member keeps their own of (the only member record this page
-    /// opens is its person's).
+    /// app whose manifest says each member keeps their own (the only one this
+    /// page opens is its person's).
     pub fn tab_on(&self, app: &str, record: &str) -> Option<TabId> {
-        let kind = application(app)?.record_kind.clone();
-        let shows = |route: &str| {
-            route == record
-                || (record.is_empty() && tilo_action_policy::member_record(route).is_some())
-        };
+        let definition = application(app)?;
+        let kind = definition.record_kind.clone();
+        let own = definition.member_record;
+        let shows = |route: &str| route == record || (record.is_empty() && own);
         self.records
             .borrow()
             .iter()
@@ -935,9 +934,7 @@ impl Tiles {
         let (target, named_new) = self.launch_target(definition, &store, tab.id)?;
         // A member's own record is theirs to start whatever their role; the
         // workspace's record waits for someone who writes there.
-        let own = named_new
-            .as_ref()
-            .is_some_and(|id| tilo_action_policy::member_record(id.as_str()).is_some());
+        let own = named_new.as_ref().is_some_and(|id| id.owner().is_some());
         if !own && (named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew)) {
             self.may_start_record(tab)?;
         }

@@ -33,6 +33,8 @@ optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files",
 
 [resources]
 kinds = ["mail.mailbox", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text", "mail.copies", "mail.trusted-senders"]
+# Each member keeps their own; nobody else in the workspace receives it.
+own = ["mail.mailbox"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

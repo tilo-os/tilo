@@ -185,8 +185,8 @@ impl Task {
             Envelope::RecordOpened {
                 workspace_id,
                 channel,
-                frames,
-            } => self.record_opened(workspace_id, channel, frames),
+                answer,
+            } => self.record_opened(workspace_id, channel, answer),
             Envelope::CompactRequest {
                 workspace_id,
                 request,

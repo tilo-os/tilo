@@ -420,10 +420,10 @@ impl Seat {
                 Event::RecordOpened {
                     ws,
                     channel,
-                    frames,
+                    answer,
                     ..
                 } => {
-                    link.record_opened(*ws, *channel, *frames);
+                    link.record_opened(*ws, *channel, *answer);
                 }
                 _ => {}
             }

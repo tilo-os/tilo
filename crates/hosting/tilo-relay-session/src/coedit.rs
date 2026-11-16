@@ -108,7 +108,8 @@ impl RelayCoeditSession {
     /// replay, or any record of a workspace that sends them all only when
     /// they are opened ([`Self::records_when_opened`]). The host sends what
     /// it retains of it as [`Inbound::Delta`]s, then [`Inbound::RecordOpened`]
-    /// saying how many frames that was, and its changes from then on.
+    /// saying how many frames that was, and its changes from then on; or it
+    /// answers that the record is not this device's to open.
     ///
     /// A record this session opened already is not asked for again; a
     /// resubscription asks for every opened record again
@@ -600,9 +601,9 @@ impl RelayCoeditSession {
             Envelope::RecordOpened {
                 workspace_id,
                 channel,
-                frames,
+                answer,
             } if workspace_id == self.workspace_id => {
-                Some(Inbound::RecordOpened { channel, frames })
+                Some(Inbound::RecordOpened { channel, answer })
             }
             Envelope::VoiceCallResult {
                 workspace_id,

@@ -161,7 +161,8 @@ impl KeyService {
 /// The records this device asked a workspace's hosts for, by the workspace's topic and the record's
 /// retained channel, and what each answered: `None` while the answer is owed, the frames the host
 /// sent once it came.
-type AskedRecords = std::collections::HashMap<(Topic, [u8; 32]), Option<u32>>;
+type AskedRecords =
+    std::collections::HashMap<(Topic, [u8; 32]), Option<tilo_relay_protocol::RecordAnswer>>;
 
 /// The workspace transport the channels' governance travels on: what this session's collaboration
 /// plane hears and says, reached from the thread that settles the groups.
@@ -492,21 +493,30 @@ impl KeyLink {
         })
     }
 
-    /// The host of the workspace on topic `ws` sent everything it retains of the record on
-    /// `channel`, `frames` of them — none when the workspace has none of it, and then the record is
-    /// new to whoever opens it.
-    pub fn record_opened(&self, ws: Topic, channel: [u8; 32], frames: u32) {
+    /// The host of the workspace on topic `ws` answered the record on `channel`: it sent
+    /// everything it retains of it — none when the workspace has none of it, and then the record is
+    /// new to whoever opens it — or it is another person's own, which this device never opens.
+    pub fn record_opened(
+        &self,
+        ws: Topic,
+        channel: [u8; 32],
+        answer: tilo_relay_protocol::RecordAnswer,
+    ) {
         self.records
             .lock_recover()
-            .insert((ws, channel), Some(frames));
+            .insert((ws, channel), Some(answer));
         self.answers
             .send_modify(|count| *count = count.wrapping_add(1));
         self.park.poke();
     }
 
     /// What the hosts of `workspace` answered about the record on `channel`: `None` while the
-    /// answer is owed, the frames they sent once it came.
-    pub fn record_answer(&self, workspace: ModelWorkspaceId, channel: &[u8; 32]) -> Option<u32> {
+    /// answer is owed.
+    pub fn record_answer(
+        &self,
+        workspace: ModelWorkspaceId,
+        channel: &[u8; 32],
+    ) -> Option<tilo_relay_protocol::RecordAnswer> {
         self.records
             .lock_recover()
             .get(&(topic_of(workspace), *channel))

@@ -1167,7 +1167,7 @@ impl DirectSync {
             if !dialing {
                 // The other device asks for the history as the link starts,
                 // and again whenever it wants what it let go.
-                self.answer_store(&mut control, &answered).await?;
+                self.answer_store(&mut control, remote, &answered).await?;
                 self.0.caught_up.send_replace(true);
                 return std::future::pending().await;
             }
@@ -1266,6 +1266,7 @@ impl DirectSync {
     async fn answer_store(
         &self,
         control: &mut Control,
+        remote: [u8; 32],
         answered: &watch::Sender<bool>,
     ) -> Result<(), String> {
         // The history this answers is decided by the other device against the
@@ -1297,8 +1298,11 @@ impl DirectSync {
             // A frame the store keeps names its own author; one that does not
             // is this device's.
             let own = self.device();
+            let reaches = self.reach_of(remote);
+            frames.retain(|(_, message)| reaches(message));
             frames.extend(
                 kept.into_iter()
+                    .filter(|message| reaches(message))
                     .map(|message| (store::author_of(&message).unwrap_or(own), message)),
             );
             tracing::debug!(
@@ -1329,6 +1333,27 @@ impl DirectSync {
     /// workspace says from then on, and what it sends is no longer taken.
     fn removed(&self, device: [u8; 32]) -> bool {
         self.0.replica.lock().governance().removed_device(device)
+    }
+
+    /// What `device` may be sent: a person's own record goes to that person's
+    /// devices alone, never to another member's, whatever its role. Every
+    /// other frame reaches it.
+    fn reach_of(&self, device: [u8; 32]) -> impl Fn(&NeighbourMsg) -> bool + use<> {
+        let person = self
+            .0
+            .replica
+            .lock()
+            .certificates()
+            .into_iter()
+            .find(|certificate| certificate.device_public_key == device)
+            .map(|certificate| hex::encode(certificate.user_public_key));
+        move |message| match message {
+            NeighbourMsg::AppDocument { record_id, .. } => {
+                tilo_action_policy::member_record(record_id)
+                    .is_none_or(|(owner, _)| person.as_deref() == Some(owner))
+            }
+            _ => true,
+        }
     }
 
     /// Whether `device` may sync with this replica: a certified device of
@@ -2435,7 +2460,11 @@ async fn send_authored(
         mut first_answer,
     } = sending;
     let own = link.device();
-    for authored in &catch_up {
+    let reaches = link.reach_of(remote);
+    for authored in catch_up
+        .iter()
+        .filter(|authored| reaches(&authored.message))
+    {
         write_authored(&mut send, authored).await?;
     }
     link.0.catch_up_written.send_replace(true);
@@ -2466,7 +2495,9 @@ async fn send_authored(
                 }
                 if waiting.contains(&OnlyHere::Answer) {
                     for state in link.answer_state_request().await {
-                        write_authored(&mut send, &state).await?;
+                        if reaches(&state.message) {
+                            write_authored(&mut send, &state).await?;
+                        }
                     }
                 }
                 continue;
@@ -2474,7 +2505,8 @@ async fn send_authored(
             next = live.recv() => next,
         };
         match next {
-            Ok(authored) if already_theirs(&authored, remote, own) => {}
+            Ok(authored)
+                if already_theirs(&authored, remote, own) || !reaches(&authored.message) => {}
             Ok(authored) => {
                 // The governance that removes the device is the last frame it
                 // is sent, whichever path told this device of the removal.

@@ -17550,6 +17550,7 @@ dependencies = [
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
+ "app-fleet",
  "collab-types",
  "durable-store",
  "fs-protocol",
@@ -18774,6 +18775,7 @@ dependencies = [
 name = "tilo-desktop-model"
 version = "0.1.0"
 dependencies = [
+ "app-fleet",
  "blake3",
  "collab-types",
  "desktop-policy",

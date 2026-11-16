@@ -108,6 +108,8 @@ pub enum ManifestError {
     BadProviderScheme(String),
     #[error("invalid resource kind {0:?}")]
     BadResourceKind(String),
+    #[error("resources.own names {0:?}, which resources.kinds does not declare")]
+    UndeclaredOwnKind(String),
     #[error("offers: {0}")]
     BadOffer(String),
     #[error("sandbox.services: {0}")]
@@ -528,6 +530,14 @@ fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
         if !valid_resource_kind(kind) {
             return Err(ManifestError::BadResourceKind(kind.clone()));
         }
+    }
+    if let Some(own) = m
+        .resources
+        .own
+        .iter()
+        .find(|own| !m.resources.kinds.contains(own))
+    {
+        return Err(ManifestError::UndeclaredOwnKind(own.clone()));
     }
     validate_offers(&m.offers)?;
     for (name, req) in &m.sandbox.services {
@@ -1633,6 +1643,14 @@ mode = "off"
                     Err(ManifestError::BadResourceKind(bad.to_owned()))
                 );
             }
+            m.resources.kinds = vec!["example.note".into()];
+            m.resources.own = vec!["example.note".into()];
+            assert_eq!(validate_manifest(&m), Ok(()));
+            m.resources.own = vec!["example.todo".into()];
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::UndeclaredOwnKind("example.todo".into()))
+            );
         }
     }
 

@@ -184,6 +184,13 @@ impl RecordId {
         Self::parse(&crate::member_record_id(&person.to_ascii_lowercase(), kind))
     }
 
+    /// The person whose own record this is ([`Self::of_member`]), as the lowercase hex of their
+    /// user root key; `None` for a record of the workspace.
+    #[must_use]
+    pub fn owner(&self) -> Option<&str> {
+        crate::member_record(&self.0).map(|(person, _)| person)
+    }
+
     /// The record of the pair two people share in a workspace
     /// ([`crate::direct_pair_id`]): an ordinary record of the
     /// workspace, named by the two people so either derives it. `None` for a

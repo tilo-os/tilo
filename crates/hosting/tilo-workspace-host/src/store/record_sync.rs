@@ -76,6 +76,9 @@ struct Classes {
     when_opened: bool,
     /// Each chain's head: its highest part and that part's channel.
     heads: HashMap<ChainKey, (u64, [u8; 32])>,
+    /// The person (their user root key) whose own record each channel
+    /// carries: only their devices are sent it.
+    owners: HashMap<[u8; 32], [u8; 32]>,
     /// The chain each chain's head channel ([`neighbour_wire::chain_head`])
     /// names, for every chain with a part.
     chains: HashMap<[u8; 32], ChainKey>,
@@ -90,6 +93,9 @@ impl Classes {
     fn learn(&mut self, channel: [u8; 32], app: &str, record: &str) {
         if self.channels.contains_key(&channel) {
             return;
+        }
+        if let Some(owner) = owner_of(record) {
+            self.owners.insert(channel, owner);
         }
         let class = match neighbour_wire::record_sync(record) {
             // Nothing is published under a chain's head: it names one.
@@ -150,6 +156,16 @@ impl Classes {
             .get(self.chains.get(chain)?)
             .map(|(_, head)| *head)
     }
+}
+
+/// The user root key of the person whose own record `record` is
+/// ([`tilo_action_policy::member_record`]); `None` for a record of the
+/// workspace.
+pub(crate) fn owner_of(record: &str) -> Option<[u8; 32]> {
+    let (person, _) = tilo_action_policy::member_record(record)?;
+    let mut root = [0; 32];
+    hex::decode_to_slice(person, &mut root).ok()?;
+    Some(root)
 }
 
 /// What a retained lineage's frames say about its record.
@@ -245,6 +261,30 @@ impl WorkspaceStore {
         let mut classes = self.classes();
         classes.learn(*channel, &route.app_id, &route.record_id);
         classes.reach(channel).unwrap_or(Reach::Everyone)
+    }
+
+    /// The person (their user root key) whose own record `channel` carries, if
+    /// it carries one: only that person's devices are sent its frames, and
+    /// nobody else opens it. A channel this store has not seen yet is learned
+    /// from `body`, the co-edit body of a frame on it, when one is given.
+    pub(crate) fn record_owner(&self, channel: &[u8; 32], body: Option<&[u8]>) -> Option<[u8; 32]> {
+        if let Some(owner) = self.classes().owners.get(channel) {
+            return Some(*owner);
+        }
+        let (route, _) = self.payloads.open_document(body?)?;
+        let mut classes = self.classes();
+        classes.learn(*channel, &route.app_id, &route.record_id);
+        classes.owners.get(channel).copied()
+    }
+
+    /// Whether a device of the person whose user root key is `person` may be
+    /// sent the record `channel` carries: any device for a record of the
+    /// workspace, only that person's for a person's own record.
+    pub(crate) fn reaches_person(&self, channel: &[u8; 32], person: &[u8; 32]) -> bool {
+        self.classes()
+            .owners
+            .get(channel)
+            .is_none_or(|owner| owner == person)
     }
 
     /// Learn the record of `channel` from `bytes`, a frame about to be

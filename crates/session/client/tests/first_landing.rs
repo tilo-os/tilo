@@ -141,7 +141,7 @@ impl Reader {
         for event in self.events.drain() {
             if let Event::RecordOpened {
                 route: Some(route),
-                frames,
+                answer: tilo_session_client::RecordAnswer::Sent { frames },
                 ..
             } = event
             {

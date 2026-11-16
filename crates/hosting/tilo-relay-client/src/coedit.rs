@@ -207,14 +207,14 @@ pub enum Inbound {
     },
     /// The workspace's governor answered about one of its calls.
     Voice(VoiceEvent),
-    /// The host sent everything it retains of an on-demand record this
-    /// device opened, as [`Inbound::Delta`]s before this event; its changes
-    /// keep arriving from now on.
+    /// The host answered an on-demand record this device opened: it sent
+    /// everything it retains of it, as [`Inbound::Delta`]s before this event,
+    /// and its changes keep arriving from now on; or the record is not this
+    /// device's to open.
     RecordOpened {
         /// The record's retained channel.
         channel: [u8; 32],
-        /// How many frames the host sent.
-        frames: u32,
+        answer: tilo_relay_protocol::RecordAnswer,
     },
     /// The host keeps the write this session sent as commit `op`: it is
     /// durable there. A resent commit it already kept is answered so too.

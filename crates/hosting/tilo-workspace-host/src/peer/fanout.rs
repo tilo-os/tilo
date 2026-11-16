@@ -38,6 +38,9 @@ pub(super) struct LiveFrame<'a> {
     asks_admission: bool,
     /// Who holds the frame's record ([`crate::store::record_sync`]).
     reach: crate::store::record_sync::Reach,
+    /// The person whose own record the frame changes: only their devices
+    /// are sent it.
+    owner: Option<[u8; 32]>,
 }
 
 impl<'a> LiveFrame<'a> {
@@ -62,7 +65,7 @@ impl<'a> LiveFrame<'a> {
                 .is_some_and(|(_, _, body)| payloads.asks_admission(body)),
             _ => false,
         };
-        let reach = record_reach(runtime, envelope);
+        let (reach, owner) = record_reach(runtime, envelope);
         Self {
             envelope,
             budget,
@@ -71,26 +74,31 @@ impl<'a> LiveFrame<'a> {
             audience,
             asks_admission,
             reach,
+            owner,
         }
     }
 }
 
 /// Who holds the record a live frame changes: a document frame on a channel
-/// whose record is on-demand reaches only the devices that hold it.
+/// whose record is on-demand reaches only the devices that hold it; and the
+/// person whose own record it is, if it is one.
 fn record_reach(
     runtime: &crate::workspace::WorkspaceRuntime,
     envelope: &Arc<Envelope>,
-) -> crate::store::record_sync::Reach {
+) -> (crate::store::record_sync::Reach, Option<[u8; 32]>) {
     use crate::coedit::CoeditPayload;
     let Envelope::Delta { delta, .. } = &**envelope else {
-        return Reach::Everyone;
+        return (Reach::Everyone, None);
     };
     match CoeditPayload::decode(delta) {
         Some(
             CoeditPayload::Checkpoint { channel, body }
             | CoeditPayload::RetainedDelta { channel, body },
-        ) => runtime.store.frame_reach(&channel, &body),
-        None => Reach::Everyone,
+        ) => (
+            runtime.store.frame_reach(&channel, &body),
+            runtime.store.record_owner(&channel, Some(&body)),
+        ),
+        None => (Reach::Everyone, None),
     }
 }
 
@@ -172,6 +180,17 @@ impl LiveFanout<'_> {
             }
         };
         if !held && !runtime.attached(recipient) {
+            return None;
+        }
+        // A person's own record goes to their devices alone: no other member's
+        // device is sent it, whatever its role. A host the workspace is
+        // attached to keeps all of the workspace.
+        if self
+            .frame
+            .owner
+            .is_some_and(|owner| owner != target.peer.user_public_key)
+            && !runtime.attached(recipient)
+        {
             return None;
         }
         Some((sub, target))

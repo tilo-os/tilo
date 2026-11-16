@@ -258,6 +258,43 @@ tilo_test_env::scenario! {
         assert_eq!(checkout.id, own);
     }
 
+    phase a_window_on_a_record_the_workspace_will_not_send_says_so;
+    // A link to another person's own record: the workspace answers it as theirs, and the
+    // window says whose it is instead of showing it arriving for good. A record the workspace
+    // holds none of that the window may not start (a link to one deleted since) says it is
+    // missing.
+    {
+        let definition = definition(false);
+        let (_memory, store) = page(&definition);
+        let theirs = RecordId::of_member(&"b0".repeat(32), definition.record_kind.as_str()).unwrap();
+        let Opening::Target(LaunchTarget::Record { checkout, .. }) = opening(
+            &definition,
+            &store,
+            Some(theirs.as_str()),
+            false,
+            INSTANCE,
+            &author(),
+        )
+        .unwrap() else {
+            panic!("the link names the record");
+        };
+        assert!(matches!(
+            store.try_open_record(&checkout),
+            Err(RecordOpenError::Arriving)
+        ));
+        store.note_workspace_answer(theirs, ui::record::WorkspaceAnswer::NotYours);
+        let error = store.try_open_record(&checkout).unwrap_err();
+        assert!(matches!(error, RecordOpenError::NotYours));
+        let Unbuilt::Failed(said) = Unbuilt::of(ui::launch::LaunchError::Record(error)) else {
+            panic!("a record that is not theirs is no arrival");
+        };
+        assert!(said.contains("someone else"), "{said}");
+        assert!(matches!(
+            Unbuilt::of(ui::launch::LaunchError::Record(RecordOpenError::MissingRecord)),
+            Unbuilt::Failed(_)
+        ));
+    }
+
     phase a_window_on_a_record_still_on_its_way_waits_for_it;
     // A layout window saved on a record the workspace still sends (one a shared layout names) is
     // loading, not a failure: preparing it says so, asks the workspace for it, and prepares once it

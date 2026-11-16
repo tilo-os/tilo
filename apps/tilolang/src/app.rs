@@ -56,13 +56,9 @@ impl ResourceApp for TlApp {
             id: &meta.app,
             title: &meta.title,
             icon: meta.icon.as_deref().map(crate::icon_name),
+            // A package declaring `records: .own` keeps each member's records in their own.
+            own_records: meta.own_records,
         })
-    }
-
-    // A package whose records are each member's own (`records: .own`) keeps them in the
-    // person's own record of the workspace.
-    fn member_record() -> bool {
-        crate::installed_bundle().is_some_and(|bundle| bundle.meta.own_records)
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {

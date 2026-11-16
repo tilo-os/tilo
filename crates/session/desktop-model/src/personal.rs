@@ -1,10 +1,10 @@
 //! Windows that are a person's own, whatever layout they open on.
 //!
-//! Some apps show a person's own things rather than a workspace's: Settings
-//! holds their appearance, their devices and access, their keys and billing,
-//! and Mail their mailbox, kept in their own records whichever workspace the
-//! window opens in, which nobody else in the workspace may read. A window
-//! of such an app belongs to the person who opened it. It stands on their own
+//! Some apps show a person's own things rather than a workspace's: their
+//! manifest declares the kind of record a window opens one each member keeps
+//! as their own (`[resources] own`), which nobody else in the workspace
+//! receives or reads (Settings, Mail). A window of such an app belongs to the
+//! person who opened it. It stands on their own
 //! layout, and a workspace's shared desktop never holds it: nobody else in the
 //! workspace sees it, opens it, or finds it on their layout later.
 //!
@@ -17,19 +17,13 @@ use crate::layout::{Tab, TileContent};
 use crate::ownership::SharedDesktop;
 use crate::tree::Layout;
 
-/// The apps whose windows are a person's own: their profile, devices and
-/// access, keys and billing are pages of Settings, and their mail is Mail's.
-/// Each app that keeps a record per member (`member_record`) is one: a
-/// window of it on the shared desktop would name one person's record to
-/// everyone, who could neither read it nor open their own in its place.
-pub const PERSONAL_APPS: &[&str] = &["so.tilo.settings", "so.tilo.mail"];
-
-/// Whether a window of `app_id` is a person's own.
+/// Whether a window of `app_id` is a person's own: its manifest declares the
+/// record it opens each member's own ([`app_fleet::windows_are_own`]). On a
+/// shared desktop it would name one person's record to everyone, who could
+/// neither read it nor open their own in its place.
 #[must_use]
 pub fn is_personal_app(app_id: &str) -> bool {
-    PERSONAL_APPS
-        .iter()
-        .any(|personal| personal.eq_ignore_ascii_case(app_id))
+    app_fleet::windows_are_own(app_id)
 }
 
 /// Whether `tile` shows an app whose windows are a person's own.

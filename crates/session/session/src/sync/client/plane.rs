@@ -40,12 +40,12 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
         NetEvent::HostRecordOpened {
             ws,
             channel,
-            frames,
+            answer,
         } => Event::RecordOpened {
             ws,
             channel,
             route: None,
-            frames,
+            answer,
         },
         NetEvent::HostMember {
             ws,

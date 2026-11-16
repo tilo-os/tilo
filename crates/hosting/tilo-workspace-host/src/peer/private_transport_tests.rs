@@ -1395,7 +1395,11 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
             let Some(EnvelopeV2::State(frame)) = reader.read_next().await.unwrap() else {
                 continue;
             };
-            if let Envelope::RecordOpened { frames, .. } = frame {
+            if let Envelope::RecordOpened {
+                answer: tilo_relay_protocol::RecordAnswer::Sent { frames },
+                ..
+            } = frame
+            {
                 return (frames, answer.unwrap_or_default());
             }
             if channel_of(&frame) == Some(record) {

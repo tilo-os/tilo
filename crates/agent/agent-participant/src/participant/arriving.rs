@@ -19,12 +19,25 @@ impl AgentParticipant {
     /// Take the workspace's answer about a record this agent asked for: the
     /// host sent `frames` of it, and none means the workspace holds none of
     /// it, so it is the agent's to make ([`Self::record_on_its_way`]).
-    pub(super) fn record_answered(&mut self, route: DocumentRoute, frames: u32) {
+    pub(super) fn record_answered(
+        &mut self,
+        route: DocumentRoute,
+        answer: tilo_session_client::RecordAnswer,
+    ) {
         // Answered once: it is not asked again, whatever the answer.
         if !self.asked_records.contains(&route) {
             return;
         }
-        if frames == 0 {
+        if answer == tilo_session_client::RecordAnswer::NotYours {
+            // Another person's own record: never this agent's, and never one it founds.
+            tracing::debug!(
+                app = %route.app_id,
+                record = %route.record,
+                "agent: the record is another person's own"
+            );
+            return;
+        }
+        if answer == (tilo_session_client::RecordAnswer::Sent { frames: 0 }) {
             tracing::debug!(
                 app = %route.app_id,
                 record = %route.record,

@@ -551,8 +551,9 @@ pub struct RecordSet {
     /// Records of this store's trees peers wrote that it does not hold yet
     /// ([`RecordStore::announce`]).
     announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
-    /// Records the workspace's hosts sent everything they hold of, until something of them arrives.
-    answered: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
+    /// Records the workspace's hosts answered for, and what they answered, until something of them
+    /// arrives.
+    answered: std::cell::RefCell<std::collections::BTreeMap<RecordId, WorkspaceAnswer>>,
     /// This store's records come from its workspace's hosts
     /// ([`RecordStore::ask_workspace_for_missing`]): a record not here is
     /// asked for and new only once they answered they hold none of it.
@@ -1862,6 +1863,15 @@ pub enum RecordOpenOutcome {
     AlreadyOpen,
 }
 
+/// What a workspace's hosts answered of a record a store asked them for and does not hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkspaceAnswer {
+    /// They hold none of it: it is new to whoever may start it.
+    HoldsNone,
+    /// It is another person's own record, which they send that person's devices alone.
+    NotYours,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RecordOpenError {
     #[error(transparent)]
@@ -1885,6 +1895,10 @@ pub enum RecordOpenError {
     /// it.
     #[error("the record is on its way from the workspace")]
     Arriving,
+    /// The record is another person's own: the workspace's hosts send it to that person's devices
+    /// alone, and nobody else opens it.
+    #[error("this is someone else's own record, which only they open")]
+    NotYours,
     /// The record left this workspace (see [`transfer`]); its history stays, but
     /// it is never opened as a live document again.
     #[error("record was moved out of this workspace")]
@@ -2696,6 +2710,11 @@ impl RecordStore {
             .map_err(|_| RecordOpenError::Busy)?
             .try_open_record(want);
         match opened {
+            Err(RecordOpenError::MissingRecord)
+                if self.workspace_answer(&want.id) == Some(WorkspaceAnswer::NotYours) =>
+            {
+                Err(RecordOpenError::NotYours)
+            }
             Err(RecordOpenError::MissingRecord) if self.awaits_workspace(&want.id) => {
                 Err(RecordOpenError::Arriving)
             }
@@ -2757,7 +2776,7 @@ impl RecordStore {
         let Ok(set) = self.0.try_borrow() else {
             return false;
         };
-        if !set.asks_workspace.get() || set.answered.borrow().contains(id) {
+        if !set.asks_workspace.get() || set.answered.borrow().contains_key(id) {
             return false;
         }
         set.wanted.borrow_mut().insert(id.clone());

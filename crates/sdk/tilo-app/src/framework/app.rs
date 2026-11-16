@@ -40,12 +40,16 @@ use super::scenario::{Fixture, Launched, Run};
 use super::view::ViewCx;
 use tilo_lock::MutexRecover as _;
 
-/// The id, title and icon of an app named at launch ([`ResourceApp::named`]).
+/// The id, title and icon of an app named at launch ([`ResourceApp::named`]), and whether its
+/// manifest declares its records each member's own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppName {
     pub id: &'static str,
     pub title: &'static str,
     pub icon: Option<&'static str>,
+    /// Each member of a workspace keeps their own record of the app, as the manifest that names
+    /// it says ([`ApplicationDefinition::member_record`]).
+    pub own_records: bool,
 }
 
 /// A framework app: one resource type and a view of it.
@@ -151,15 +155,6 @@ pub trait ResourceApp: 'static {
     /// definition is first made.
     fn named() -> Option<AppName> {
         None
-    }
-
-    /// Whether each member of a workspace keeps the app's record as their own: a window that
-    /// names no record opens the person's own record of the workspace, which only their devices
-    /// read, instead of the workspace's record of the app
-    /// ([`ApplicationDefinition::member_record`]). Asked once per process, before the definition
-    /// is first made.
-    fn member_record() -> bool {
-        false
     }
 
     /// Import a former document format using host-local custody, before typed
@@ -558,7 +553,7 @@ fn application_definition(
         optional: vec![],
         opens,
         workspace_record,
-        member_record: (app.member_record)(),
+        member_record: app.own_records(),
         opens_before_record: workspace_record && app.opens_before_record,
         create,
     }
@@ -582,8 +577,6 @@ pub(crate) struct AppHooks {
     icon: Option<&'static str>,
     /// [`ResourceApp::named`] — the app's name when the launch gives it.
     named: fn() -> Option<AppName>,
-    /// [`ResourceApp::member_record`].
-    member_record: fn() -> bool,
     /// [`Resource::KIND`] of the app's resource.
     pub(crate) kind: &'static str,
     /// [`Resource::LABEL`] of the app's resource.
@@ -644,7 +637,6 @@ impl<A: ResourceApp> Hooks<A> {
         title: titled::<A>,
         icon: A::ICON,
         named: A::named,
-        member_record: A::member_record,
         kind: <A::Resource as Resource>::KIND,
         label: <A::Resource as Resource>::LABEL,
         behaviour: A::BEHAVIOUR,
@@ -691,6 +683,15 @@ impl AppHooks {
 
     fn icon_name(&self) -> Option<&'static str> {
         (self.named)().map_or(self.icon, |named| named.icon)
+    }
+
+    /// Whether each member keeps their own record of the app's resource, as its manifest
+    /// declares (`[resources] own`): a window naming no record opens theirs.
+    fn own_records(&self) -> bool {
+        match (self.named)() {
+            Some(named) => named.own_records,
+            None => app_fleet::scope(self.id, self.kind) == app_fleet::Scope::Member,
+        }
     }
 }
 

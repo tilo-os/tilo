@@ -162,14 +162,6 @@ impl ResourceApp for SettingsShell {
         }
     }
 
-    /// What Settings shows is the person's own (their appearance, accounts,
-    /// devices, agent models), not the workspace's: each member keeps their
-    /// own record of it, which they change whatever their role in the
-    /// workspace.
-    fn member_record() -> bool {
-        true
-    }
-
     fn scenarios() -> &'static [&'static str] {
         crate::scenarios::names()
     }
@@ -480,10 +472,6 @@ mod own_record_tests {
         let own = definition
             .member_record_of(&person)
             .expect("each member keeps their own Settings record");
-        assert!(
-            own.id.as_str().starts_with("member:"),
-            "{}",
-            own.id.as_str()
-        );
+        assert_eq!(own.id.owner(), Some(person.key().as_str()));
     }
 }

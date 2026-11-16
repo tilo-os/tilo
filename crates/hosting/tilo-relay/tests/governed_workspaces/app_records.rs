@@ -340,6 +340,9 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
         peer
     };
     let own = tilo_action_policy::member_record_id(&hex::encode(carol.user_pk), kind);
+    // The workspace's owner is live while Carol writes: a member like any other
+    // for her own record, which never reaches the owner's device.
+    let owner_session = session(&relay, &laptop, workspace).await;
     let viewer_session = session(&relay, &viewer, workspace).await;
     let phone_session = session(&relay, &phone, workspace).await;
     let mut viewer_peer = replica();
@@ -405,7 +408,68 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
         },
     )
     .await;
+    assert!(
+        matches!(
+            answer_to_opening(&phone_session, own_app, &own).await,
+            tilo_relay_protocol::RecordAnswer::Sent { frames } if frames > 0
+        ),
+        "her other device opens her own record"
+    );
+    assert_eq!(
+        answer_to_opening(&owner_session, own_app, &own).await,
+        tilo_relay_protocol::RecordAnswer::NotYours,
+        "the owner's device was sent none of it live, and opening it is answered as hers"
+    );
+    // Joined again, the owner's device is replayed the workspace without it.
+    owner_session.close().await;
+    let owner_session = session(&relay, &laptop, workspace).await;
+    assert_eq!(
+        answer_to_opening(&owner_session, own_app, &own).await,
+        tilo_relay_protocol::RecordAnswer::NotYours,
+        "nor is it in the owner's catch-up"
+    );
+    owner_session.close().await;
     phone_session.close().await;
     viewer_session.close().await;
     relay.shutdown().await;
+}
+
+/// What the host answers `session` when it opens `app`'s record `record`. Every
+/// frame that arrives first is checked: none may be a change of `record`
+/// unless the answer says the record was sent.
+async fn answer_to_opening(
+    session: &RelayCoeditSession,
+    app: &str,
+    record: &str,
+) -> tilo_relay_protocol::RecordAnswer {
+    let channel = neighbour_wire::app_document_channel(app, record);
+    session.open_record(channel).unwrap();
+    let mut received = false;
+    let answer = tilo_test_env::within("the host answers the opened record", async {
+        loop {
+            match session.recv().await.expect("the session stays open") {
+                Inbound::Delta { data, .. } => {
+                    if let Ok(NeighbourMsg::AppDocument { record_id, .. }) =
+                        postcard::from_bytes::<NeighbourMsg>(&data)
+                        && record_id == record
+                    {
+                        received = true;
+                    }
+                }
+                Inbound::RecordOpened {
+                    channel: opened,
+                    answer,
+                } if opened == channel => return answer,
+                _ => {}
+            }
+        }
+    })
+    .await;
+    if answer == tilo_relay_protocol::RecordAnswer::NotYours {
+        assert!(
+            !received,
+            "a device that may not open the record received it"
+        );
+    }
+    answer
 }

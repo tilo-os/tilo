@@ -22,6 +22,7 @@ use tilo_action_broker::services::{
 use tilo_broker_core::custody::OwnerCustody as _;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner::Holding;
+use tilo_session_client::RecordAnswer;
 use ui::record::RecordId;
 
 use crate::engine::{Engine, RecordReading};
@@ -139,10 +140,11 @@ impl NativeDocumentReads for Records {
                 if when_opened {
                     // A host sends everything it holds of a record it was asked for, and then says
                     // how much that was. None of it means the workspace has none of the record,
-                    // which is new here; the record is on its way until then.
+                    // which is new here; the record is on its way until then. Another person's own
+                    // record is answered as theirs, and its read is refused.
                     match engine.record_answer(&workspace, &app, &record) {
                         Some(_) if head => return,
-                        Some(0) => return,
+                        Some(RecordAnswer::Sent { frames: 0 } | RecordAnswer::NotYours) => return,
                         _ => {}
                     }
                 } else if engine.host_replayed(&workspace) {
@@ -180,7 +182,8 @@ impl NativeDocumentReads for Records {
             self.engine
                 .record_answer(&route.cluster_id, &route.app_id, &route.record_id);
         let no_part = match answered {
-            Some(frames) => frames == 0,
+            Some(RecordAnswer::Sent { frames }) => frames == 0,
+            Some(RecordAnswer::NotYours) => true,
             // Nobody owed an answer this device asked for: this workspace replays every record, its
             // replay is that answer, and this device hosts it or reaches no host at all.
             None => !self.engine.records_when_opened(&route.cluster_id),
@@ -580,7 +583,7 @@ mod tests {
             );
 
             // The host sent everything it holds of the record, which is none of it: the record is new.
-            link.record_opened(topic_of(workspace), channel, 0);
+            link.record_opened(topic_of(workspace), channel, RecordAnswer::Sent { frames: 0 });
             assert!(
                 arriving.as_mut().now_or_never().is_some(),
                 "the host's word settles the open"
@@ -623,7 +626,7 @@ mod tests {
                     testing::now(),
                 )
                 .expect("this device takes what the host sent");
-            link.record_opened(topic_of(workspace), channel, 1);
+            link.record_opened(topic_of(workspace), channel, RecordAnswer::Sent { frames: 1 });
             assert!(
                 arriving.as_mut().now_or_never().is_some(),
                 "the record arrived and the open settles"
@@ -784,7 +787,7 @@ mod tests {
                     testing::now(),
                 )
                 .expect("this device takes what the host sent");
-            link.record_opened(topic_of(workspace), channel, 1);
+            link.record_opened(topic_of(workspace), channel, RecordAnswer::Sent { frames: 1 });
             assert!(
                 arriving.as_mut().now_or_never().is_some(),
                 "the host's word settles the head"
@@ -822,7 +825,7 @@ mod tests {
                 .expect("the head asks for itself");
             assert!(matches!(said.try_recv(), Ok(Cmd::OpenRecord { .. })));
             assert!(arriving.as_mut().now_or_never().is_none());
-            link.record_opened(topic_of(workspace), channel, 0);
+            link.record_opened(topic_of(workspace), channel, RecordAnswer::Sent { frames: 0 });
             assert!(
                 arriving.as_mut().now_or_never().is_some(),
                 "the host's word settles the head"

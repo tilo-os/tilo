@@ -4,6 +4,15 @@
 
 use super::{FleetAction, FleetApp};
 
+/// `(app, kind)` of each kind an app's members each keep as their own (`[resources] own`).
+pub(super) const OWN_KINDS: &[(&str, &str)] = &[
+    ("so.tilo.mail", "mail.mailbox"),
+    ("so.tilo.settings", "settings.root"),
+];
+
+/// The apps whose window opens a kind each member keeps as their own.
+pub(super) const OWN_WINDOWS: &[&str] = &["so.tilo.mail", "so.tilo.settings"];
+
 pub(super) const APPS: &[FleetApp] = &[
     FleetApp {
         id: "so.tilo.activity",

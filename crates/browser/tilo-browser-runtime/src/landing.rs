@@ -14,7 +14,7 @@
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
 use ui::automerge::ChangeHash;
-use ui::record::RecordStore;
+use ui::record::{RecordStore, WorkspaceAnswer};
 
 /// What a page did with a record its host sent.
 #[derive(Debug, PartialEq, Eq)]
@@ -80,10 +80,15 @@ pub(crate) fn keep(
         .map_err(|error| error.to_string())
 }
 
-/// The host answered all it holds of `app`'s record `record` (its wire name):
+/// The host answered `app`'s record `record` (its wire name) with `answer`:
 /// each of `stores` that holds or wants it is told so. Says whether one was, so
 /// the windows waiting for it are built again.
-pub(crate) fn answered(stores: &[RecordStore], app: &str, record: &str) -> bool {
+pub(crate) fn answered(
+    stores: &[RecordStore],
+    app: &str,
+    record: &str,
+    answer: WorkspaceAnswer,
+) -> bool {
     let mut answered = false;
     for store in stores {
         if store.app_and_home().0 != app {
@@ -96,27 +101,11 @@ pub(crate) fn answered(stores: &[RecordStore], app: &str, record: &str) -> bool 
             .chain(store.wanted_records())
             .find(|id| tilo_desktop_surface::host::records::wire_record(id) == record);
         if let Some(id) = found {
-            store.note_workspace_answered(id);
+            store.note_workspace_answer(id, answer);
             answered = true;
         }
     }
     answered
-}
-
-/// Whether `record` is a member's own record of someone other than every
-/// person in `here` (the people this page's windows show): theirs alone, which
-/// the host refuses this page's reader, so the page leaves it unread. `false`
-/// while the page shows nobody, when it cannot tell whose it is.
-pub(crate) fn someone_elses<'a>(record: &str, mut here: impl Iterator<Item = &'a str>) -> bool {
-    let Some((person, _)) = ui::permissions::policy::member_record(record) else {
-        return false;
-    };
-    let mut anyone = false;
-    let shown = here.any(|author| {
-        anyone = true;
-        author == person
-    });
-    anyone && !shown
 }
 
 #[cfg(test)]

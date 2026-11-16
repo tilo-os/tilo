@@ -9,8 +9,10 @@ resource it creates ("New workbook") and the actions it offers while closed
 manifest:
 
 * `apps/<app>/tilo-app.toml`: id, name, category, `platforms`,
-  `[package.names]`, `[resources]`, `[[offers]]`;
-* `apps/<app>/surface.toml`: each resource kind's label;
+  `[package.names]`, `[resources]` (its kinds, and the ones each member keeps
+  as their own), `[[offers]]`;
+* `apps/<app>/surface.toml`: each resource kind's label, and the kind of the
+  record a window of the app opens (its first resource);
 * `apps/<app>/search/*.ftl`: `search-keywords`, and `app-tagline` (English
   here), the tag line the packer signs into `[package.taglines]`.
 
@@ -99,6 +101,22 @@ def resource_types(app_dir: pathlib.Path, manifest: dict, package: dict) -> list
     return out
 
 
+def own_kinds(manifest: dict) -> list[str]:
+    """The kinds each member of a workspace keeps one record of as their own."""
+    return list(manifest.get("resources", {}).get("own", []))
+
+
+def window_kind(app_dir: pathlib.Path) -> str:
+    """The kind of the record a window of the app opens: its surface's first resource."""
+    surface_path = app_dir / "surface.toml"
+    if not surface_path.is_file():
+        return ""
+    for resource in tomllib.loads(surface_path.read_text(encoding="utf-8")).get("resources", []):
+        if isinstance(resource, dict) and "kind" in resource:
+            return resource["kind"]
+    return ""
+
+
 def offers(manifest: dict) -> list[dict]:
     return [
         dict(
@@ -134,6 +152,8 @@ def fleet(root: pathlib.Path) -> list[dict]:
                 keywords=search_keywords(app_dir),
                 resource_types=resource_types(app_dir, manifest, package),
                 actions=offers(manifest),
+                own=own_kinds(manifest),
+                window_kind=window_kind(app_dir),
             )
         )
     return apps
@@ -154,6 +174,16 @@ def render(apps: list[dict]) -> str:
         "//! Do not edit; change the sources and run the generator.",
         "",
         "use super::{FleetAction, FleetApp};",
+        "",
+        "/// `(app, kind)` of each kind an app's members each keep as their own (`[resources] own`).",
+        "pub(super) const OWN_KINDS: &[(&str, &str)] = &[",
+        *(f"    ({text(app['id'])}, {text(kind)})," for app in apps for kind in app["own"]),
+        "];",
+        "",
+        "/// The apps whose window opens a kind each member keeps as their own.",
+        "pub(super) const OWN_WINDOWS: &[&str] = &[",
+        *(f"    {text(app['id'])}," for app in apps if app["window_kind"] and app["window_kind"] in app["own"]),
+        "];",
         "",
         "pub(super) const APPS: &[FleetApp] = &[",
     ]

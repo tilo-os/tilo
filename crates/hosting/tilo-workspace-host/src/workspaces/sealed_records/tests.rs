@@ -2446,7 +2446,7 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
         loop {
             if let Some(crate::Envelope::RecordOpened {
                 channel: opened,
-                frames,
+                answer: tilo_relay_protocol::RecordAnswer::Sent { frames },
                 ..
             }) = page.recv().await
                 && opened == channel
@@ -2478,7 +2478,7 @@ async fn opened_frames(page: &crate::RelayClient, workspace_id: WorkspaceId, rec
         loop {
             if let Some(crate::Envelope::RecordOpened {
                 channel: opened,
-                frames,
+                answer: tilo_relay_protocol::RecordAnswer::Sent { frames },
                 ..
             }) = page.recv().await
                 && opened == channel

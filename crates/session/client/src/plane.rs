@@ -7,6 +7,7 @@
 use iroh_base::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_protocol::RecordAnswer;
 
 /// A host's own transport of the plane: the client says `outgoing`, reads `arrived` and what became
 /// of what it asked a host for, and the transport holds the other ends.
@@ -181,15 +182,15 @@ pub enum Event {
         peer: EndpointId,
         records_when_opened: bool,
     },
-    /// A host of `ws` sent everything it retains of a record this device opened on `channel`,
-    /// `frames` of them — none when the workspace has none of it — each landed before this; its
-    /// changes keep arriving from now on. `route` names the record where the host carrying it
-    /// opens records by route.
+    /// A host of `ws` answered a record this device opened on `channel`: it sent everything it
+    /// retains of it — none when the workspace has none of it — each landed before this, and its
+    /// changes keep arriving from now on; or the record is another person's own, and nothing of it
+    /// is sent. `route` names the record where the host carrying it opens records by route.
     RecordOpened {
         ws: Topic,
         channel: [u8; 32],
         route: Option<DocumentRoute>,
-        frames: u32,
+        answer: RecordAnswer,
     },
     /// A write to `route` landed in this device's replica of its workspace — `author`'s, or
     /// `None` when keys arrived that open what it held sealed: read it again from the

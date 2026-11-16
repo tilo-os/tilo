@@ -280,7 +280,7 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
         for event in reader.events.drain() {
             if let Event::RecordOpened {
                 route: Some(route),
-                frames: sent,
+                answer: tilo_session_client::RecordAnswer::Sent { frames: sent },
                 ..
             } = event
                 && route == ask

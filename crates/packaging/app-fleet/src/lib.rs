@@ -43,11 +43,52 @@ pub fn apps() -> &'static [FleetApp] {
 /// `dev.tilo.`, which resolve to their `so.tilo.` entry.
 #[must_use]
 pub fn metadata(package_id: &str) -> Option<&'static FleetApp> {
-    let canonical = package_id
-        .strip_prefix("dev.tilo.")
-        .map(|name| format!("so.tilo.{name}"));
-    let wanted = canonical.as_deref().unwrap_or(package_id);
+    let wanted = canonical(package_id);
     apps().iter().find(|app| app.id == wanted)
+}
+
+/// Whose a record of `kind` kept by `package_id` is, as the app's manifest declares it
+/// (`[resources] own`): each member's own, or the workspace's. Read from a table apart from
+/// [`apps`], so a host that asks only this links none of the rest.
+#[must_use]
+pub fn scope(package_id: &str, kind: &str) -> Scope {
+    let app = canonical(package_id);
+    if generated::OWN_KINDS
+        .iter()
+        .any(|(own_app, own_kind)| *own_app == app && *own_kind == kind)
+    {
+        Scope::Member
+    } else {
+        Scope::Workspace
+    }
+}
+
+/// Whether a window of `package_id` opens a record each member keeps as their own: it is the
+/// person's who opened it, and never stands on a workspace's shared desktop.
+#[must_use]
+pub fn windows_are_own(package_id: &str) -> bool {
+    let app = canonical(package_id);
+    generated::OWN_WINDOWS
+        .iter()
+        .any(|own| own.eq_ignore_ascii_case(&app))
+}
+
+/// Whose a record of a kind is ([`scope`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// The workspace's: every member reads it as their role allows.
+    Workspace,
+    /// One member's own: only their devices receive it, and only they read or change it,
+    /// whatever their role.
+    Member,
+}
+
+/// `package_id` as the fleet names it: a development build's `dev.tilo.` app is its `so.tilo.` one.
+fn canonical(package_id: &str) -> std::borrow::Cow<'_, str> {
+    package_id.strip_prefix("dev.tilo.").map_or_else(
+        || std::borrow::Cow::Borrowed(package_id),
+        |name| std::borrow::Cow::Owned(format!("so.tilo.{name}")),
+    )
 }
 
 #[cfg(test)]
@@ -68,6 +109,12 @@ mod tests {
             metadata("dev.tilo.sheets").map(|app| app.id),
             Some("so.tilo.sheets")
         );
+        assert_eq!(scope("so.tilo.mail", "mail.mailbox"), Scope::Member);
+        assert_eq!(scope("dev.tilo.settings", "settings.root"), Scope::Member);
+        assert_eq!(scope("so.tilo.mail", "tilo.rich-text"), Scope::Workspace);
+        assert_eq!(scope("so.tilo.sheets", "sheets.workbook"), Scope::Workspace);
+        assert!(windows_are_own("so.tilo.mail") && windows_are_own("dev.tilo.settings"));
+        assert!(!windows_are_own("so.tilo.chat"));
         let calendar = metadata("so.tilo.calendar").expect("Calendar is in the fleet");
         assert!(
             calendar

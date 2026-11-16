@@ -80,7 +80,7 @@ impl Received {
                 }
                 Event::RecordOpened {
                     route: Some(route),
-                    frames,
+                    answer: tilo_session_client::RecordAnswer::Sent { frames },
                     ..
                 } => {
                     self.opened.push((route.record, frames));

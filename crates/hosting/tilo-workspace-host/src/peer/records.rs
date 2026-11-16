@@ -7,7 +7,8 @@ use tilo_relay_protocol::WorkspaceId;
 /// Handle `OpenRecord`: under the admission a replay has, mark the record
 /// held by the device, so its live changes reach it from now on, then answer
 /// it in `answer` with everything retained of the record and, after it,
-/// [`Envelope::RecordOpened`]. The answer is written as a replay is: no live
+/// [`Envelope::RecordOpened`]; another person's own record is answered as
+/// not this device's, with nothing of it. The answer is written as a replay is: no live
 /// frame goes between its frames ([`super::answered_as_replay`]).
 /// A chain's head ([`neighbour_wire::chain_head`]) sends the chain's newest
 /// part, and the device follows the chain's heads from then on.
@@ -59,6 +60,19 @@ pub(super) async fn handle_open_record(
         if !session.admits(&runtime, peer, WorkspaceOperation::State) {
             return refused("device not in workspace membership");
         }
+        // Another person's own record is theirs alone: this device is told so,
+        // and is sent nothing of it. A host the workspace is attached to keeps
+        // all of the workspace.
+        let read = head.unwrap_or(channel);
+        if !runtime.attached(&peer.device_public_key)
+            && !runtime.store.reaches_person(&read, &peer.user_public_key)
+        {
+            return Ok(Some(Envelope::RecordOpened {
+                workspace_id,
+                channel,
+                answer: tilo_relay_protocol::RecordAnswer::NotYours,
+            }));
+        }
         let device = &peer.device_public_key;
         runtime.hold_record(device, channel);
         if let Some(head) = head {
@@ -100,6 +114,6 @@ pub(super) async fn handle_open_record(
     Ok(Some(Envelope::RecordOpened {
         workspace_id,
         channel,
-        frames: sent,
+        answer: tilo_relay_protocol::RecordAnswer::Sent { frames: sent },
     }))
 }

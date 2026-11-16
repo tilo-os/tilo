@@ -981,10 +981,15 @@ impl Engine {
     }
 
     /// What `workspace`'s host answered about `app`'s `record`: `None` while the answer to
-    /// [`Self::open_record`] is owed, and the frames it sent once it came — none when the workspace
-    /// has none of the record, which is then new here.
+    /// [`Self::open_record`] is owed; once it came, the frames it sent — none when the workspace
+    /// has none of the record, which is then new here — or that it is another person's own.
     #[must_use]
-    pub fn record_answer(&self, workspace: &str, app: &str, record: &str) -> Option<u32> {
+    pub fn record_answer(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Option<tilo_relay_protocol::RecordAnswer> {
         let workspace = WorkspaceId::parse(workspace)?;
         let channel = neighbour_wire::app_document_channel(app, record);
         self.link

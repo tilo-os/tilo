@@ -1723,14 +1723,6 @@ impl ResourceApp for MailShell {
         COMMANDS
     }
 
-    /// A person's mail is theirs, not the workspace's: each member keeps
-    /// their own mailbox record (its drafts, flags, folders and outbox),
-    /// which only their devices read and which they change whatever their
-    /// role in the workspace.
-    fn member_record() -> bool {
-        true
-    }
-
     /// Only a live window reaches mail servers and the account store; History
     /// shows what each past version of the document held, and a screenshot
     /// its scenario's fixture.
@@ -2672,11 +2664,8 @@ mod own_record_tests {
         let own = definition
             .member_record_of(&person)
             .expect("each member keeps their own Mail record");
-        let id = own.id.as_str();
-        assert!(
-            id.starts_with("member:") && id.contains(&person.key()) && id.ends_with("mail.mailbox"),
-            "{id}"
-        );
+        assert_eq!(own.id.owner(), Some(person.key().as_str()));
+        assert_eq!(own.kind.as_str(), "mail.mailbox");
     }
 
     /// A Viewer reads the workspace only, yet their own mailbox is theirs:

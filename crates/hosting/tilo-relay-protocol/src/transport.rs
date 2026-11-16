@@ -523,13 +523,13 @@ pub enum Envelope {
         channel: [u8; 32],
     },
 
-    /// The relay sent everything it retains of an opened record.
+    /// The relay's answer to an opened record: everything it retains of it
+    /// was sent, or it is not this device's to open.
     RecordOpened {
         workspace_id: WorkspaceId,
         /// The record's retained channel.
         channel: [u8; 32],
-        /// How many frames it sent.
-        frames: u32,
+        answer: RecordAnswer,
     },
 
     /// What `participation` shows besides its voice from now on (its
@@ -691,6 +691,17 @@ pub enum Envelope {
         workspace_id: WorkspaceId,
         reason: String,
     },
+}
+
+/// What the relay answered of a record a device opened ([`Envelope::OpenRecord`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordAnswer {
+    /// Everything it retains of the record went before this answer, this many
+    /// frames: none says the workspace holds none of it.
+    Sent { frames: u32 },
+    /// The record is another person's own: only that person's devices are
+    /// sent it, and this device's person is someone else.
+    NotYours,
 }
 
 impl Envelope {

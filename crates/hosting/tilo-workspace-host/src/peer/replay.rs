@@ -259,6 +259,9 @@ async fn write_addressed<W: tokio::io::AsyncWrite + Unpin>(
 /// the workspace and is left nothing out.
 struct ReplayFilter {
     device: [u8; 32],
+    /// The user root key of the device's person: of the members' own records,
+    /// only theirs is replayed to it.
+    person: [u8; 32],
     payloads: Arc<dyn crate::payloads::ShellPayloads>,
     every_frame: bool,
     channel_reader: bool,
@@ -268,6 +271,7 @@ impl ReplayFilter {
     async fn new(run: ReplayRun<'_>, peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> Self {
         Self {
             device: peer.device_public_key,
+            person: peer.user_public_key,
             payloads: run.workspace.lock().await.store.payloads().clone(),
             every_frame: run.authority.every_record(),
             channel_reader: session
@@ -287,7 +291,9 @@ impl ReplayFilter {
     /// - a device's identity hello that says nothing the workspace's
     ///   governance, which the replay carries, does not
     ///   ([`GovernanceCertificates`]): every member device's is retained,
-    ///   those of devices long gone too.
+    ///   those of devices long gone too;
+    /// - a change of another person's own record, which only their devices
+    ///   are sent.
     fn leaves_out(&self, frame: &Envelope, catchup: &ReplayCatchup) -> bool {
         if self.every_frame {
             return false;
@@ -299,6 +305,12 @@ impl ReplayFilter {
             return false;
         };
         if self.channel_reader && self.payloads.asks_admission(body) {
+            return true;
+        }
+        if let Some((route, _)) = self.payloads.open_document(body)
+            && crate::store::record_sync::owner_of(&route.record_id)
+                .is_some_and(|owner| owner != self.person)
+        {
             return true;
         }
         if let Some(certified) = catchup.certified.get()

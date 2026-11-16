@@ -617,13 +617,25 @@ async fn prepare_admission(
     let host_commit = source.is_none();
     // A browser environment's device reaches its own record and nothing else
     // of the workspace: a frame of another record is no change of its own.
+    // A person's own record reaches their devices alone, and a host the
+    // workspace is attached to. Their devices that are not connected now are
+    // sent it by their catch-up, which replays it: the record is retained.
+    let owner = channel.and_then(|channel| runtime.store.record_owner(&channel, None));
     let outside = |device: &[u8; 32]| {
-        source
+        let environment = source
             .as_ref()
             .map(|source| &source.environments)
             .is_some_and(|environments| {
                 crate::environment::environment_of(environments, device)
                     .is_some_and(|environment| !environment.reaches(channel))
+            });
+        environment
+            || owner.is_some_and(|owner| {
+                !runtime.attached(device)
+                    && runtime
+                        .state_sessions
+                        .get(device)
+                        .is_none_or(|session| session.peer.user_public_key != owner)
             })
     };
     let sessions = runtime

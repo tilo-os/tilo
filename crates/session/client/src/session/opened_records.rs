@@ -92,12 +92,13 @@ impl Task {
         sent_ok
     }
 
-    /// The host sent everything it holds of a record this page opened.
+    /// The host answered a record this page opened: it sent everything it holds of it, or it is
+    /// not this page's.
     pub(super) fn record_opened(
         &mut self,
         workspace_id: WorkspaceId,
         channel: [u8; 32],
-        frames: u32,
+        answer: tilo_relay_protocol::RecordAnswer,
     ) {
         // Its frames are in the replica before anyone hears the record opened.
         self.keep_arrived();
@@ -106,7 +107,7 @@ impl Task {
                 ws: workspace_id,
                 channel,
                 route: Some(route.clone()),
-                frames,
+                answer,
             });
         }
     }

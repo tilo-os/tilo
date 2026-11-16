@@ -39,21 +39,38 @@ impl RecordStore {
     /// something of it arrives, which clears this. Wakes the store's
     /// readers. Callable while a frame reads the store.
     pub fn note_workspace_answered(&self, id: RecordId) {
+        self.note_workspace_answer(id, super::WorkspaceAnswer::HoldsNone);
+    }
+
+    /// The workspace's hosts answered `id`, a record this store asked them
+    /// for, with `answer`: they hold none of it ([`Self::note_workspace_answered`]),
+    /// or it is another person's own, which opening then says
+    /// ([`super::RecordOpenError::NotYours`]) rather than waiting for it.
+    /// Wakes the store's readers. Callable while a frame reads the store.
+    pub fn note_workspace_answer(&self, id: RecordId, answer: super::WorkspaceAnswer) {
         if let Ok(set) = self.0.try_borrow() {
             set.wanted.borrow_mut().remove(&id);
-            set.answered.borrow_mut().insert(id);
+            set.answered.borrow_mut().insert(id, answer);
             set.kept.set(set.kept.get().wrapping_add(1));
         }
         self.wake_readers();
     }
 
-    /// Whether the workspace's hosts sent everything they hold of `id`
-    /// ([`Self::note_workspace_answered`]) and nothing of it arrived since.
+    /// Whether the workspace's hosts answered for `id`
+    /// ([`Self::note_workspace_answer`]) and nothing of it arrived since.
     #[must_use]
     pub fn workspace_answered(&self, id: &RecordId) -> bool {
+        self.workspace_answer(id).is_some()
+    }
+
+    /// What the workspace's hosts answered for `id`, if they did and nothing
+    /// of it arrived since.
+    #[must_use]
+    pub fn workspace_answer(&self, id: &RecordId) -> Option<super::WorkspaceAnswer> {
         self.0
             .try_borrow()
-            .is_ok_and(|set| set.answered.borrow().contains(id))
+            .ok()
+            .and_then(|set| set.answered.borrow().get(id).copied())
     }
 
     /// A peer's change to `id` was merged: more may follow, and every window

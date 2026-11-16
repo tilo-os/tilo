@@ -106,7 +106,9 @@ async fn open_head(
         loop {
             match guest.recv().await {
                 Some(crate::Envelope::RecordOpened {
-                    channel, frames, ..
+                    channel,
+                    answer: tilo_relay_protocol::RecordAnswer::Sent { frames },
+                    ..
                 }) if channel == head => return (sent, frames),
                 Some(envelope) => sent.extend(frame_channel(&envelope)),
                 None => panic!("the host closed the guest's session"),
@@ -228,7 +230,9 @@ async fn a_chain_with_no_part_answers_its_head_with_nothing() {
     let frames = tilo_test_env::within("the host answers the chain's head", async {
         loop {
             if let Some(crate::Envelope::RecordOpened {
-                channel, frames, ..
+                channel,
+                answer: tilo_relay_protocol::RecordAnswer::Sent { frames },
+                ..
             }) = guest.recv().await
                 && channel == head
             {

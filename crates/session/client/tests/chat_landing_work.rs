@@ -184,7 +184,7 @@ async fn guest_takes_in(
                 }
                 Event::RecordOpened {
                     route: Some(route),
-                    frames,
+                    answer: tilo_session_client::RecordAnswer::Sent { frames },
                     ..
                 } if route == *chat || route == head => {
                     work.sent.insert(route.record.clone(), frames);

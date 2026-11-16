@@ -136,6 +136,40 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase another_persons_own_record_is_answered_as_theirs_and_never_founded;
+    // The hosts send a person's own record to that person's devices alone, and
+    // answer anyone else's ask as not theirs: opening it then says whose it is,
+    // never waits, and never starts one in its place.
+    {
+        let (_memory, store) = page();
+        let theirs = RecordCheckout::new(
+            RecordId::of_member(&"b0".repeat(32), "mail.mailbox").unwrap(),
+            RecordKind::new("mail.mailbox"),
+        );
+        assert!(matches!(
+            store.try_open_record(&theirs),
+            Err(RecordOpenError::Arriving)
+        ));
+        store.note_workspace_answer(theirs.id.clone(), WorkspaceAnswer::NotYours);
+        assert_eq!(
+            store.workspace_answer(&theirs.id),
+            Some(WorkspaceAnswer::NotYours)
+        );
+        assert!(store.wanted_records().is_empty(), "not asked for again");
+        assert!(matches!(
+            store.try_open_record(&theirs),
+            Err(RecordOpenError::NotYours)
+        ));
+        assert!(matches!(
+            super::person::open_in(&store, &theirs, &|doc| {
+                put_text(doc, "body", "a fresh one");
+                Ok(())
+            }),
+            Err(RecordOpenError::NotYours)
+        ));
+        assert!(!store.is_ready(&theirs.id), "nothing was founded");
+    }
+
     phase a_store_of_its_own_takes_a_missing_record_as_new;
     // A store whose records are its own (no workspace sends them) creates a
     // missing record as before.

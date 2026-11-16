@@ -387,13 +387,14 @@ pub enum NetEvent {
         peer: PeerId,
         records_when_opened: bool,
     },
-    /// A host sent everything it retains of a record this device opened, as
-    /// that record's frames before this event: `frames` of them, none when
-    /// the workspace has none of the record.
+    /// A host answered a record this device opened: it sent everything it
+    /// retains of it, as that record's frames before this event (none when
+    /// the workspace has none of the record), or the record is another
+    /// person's own and nothing of it is sent.
     HostRecordOpened {
         ws: WorkspaceId,
         channel: [u8; 32],
-        frames: u32,
+        answer: tilo_relay_protocol::RecordAnswer,
     },
     Msg {
         ws: WorkspaceId,
@@ -611,12 +612,12 @@ enum InternalEvent {
 
 enum HostEvent {
     Ready,
-    /// The host sent everything it retains of a record this device opened
-    /// ([`RelayCoeditSession::open_record`]), as that record's frames before
-    /// this event: `frames` of them.
+    /// The host answered a record this device opened
+    /// ([`RelayCoeditSession::open_record`]): what it sent of it, as that
+    /// record's frames before this event, or that it is not this device's.
     RecordOpened {
         channel: [u8; 32],
-        frames: u32,
+        answer: tilo_relay_protocol::RecordAnswer,
     },
     /// A member joined or left the host's live plane.
     Member {
@@ -2250,10 +2251,10 @@ impl ActorState {
                     .is_some_and(|runtime| runtime.session.records_when_opened());
                 Some(self.host_ready(ws, peer, when_opened))
             }
-            HostEvent::RecordOpened { channel, frames } => Some(NetEvent::HostRecordOpened {
+            HostEvent::RecordOpened { channel, answer } => Some(NetEvent::HostRecordOpened {
                 ws,
                 channel,
-                frames,
+                answer,
             }),
             HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
             HostEvent::Message {
@@ -3590,8 +3591,8 @@ fn host_event(
         // how much. The records are the workspace's state, applied as they
         // come; the count is what says a record the workspace has none of is
         // new here.
-        HostInbound::RecordOpened { channel, frames } => {
-            HostEvent::RecordOpened { channel, frames }
+        HostInbound::RecordOpened { channel, answer } => {
+            HostEvent::RecordOpened { channel, answer }
         }
         // Nothing here holds these: a call's audio is the session's, carried
         // by the relay session the call itself holds, and a host keeps what a

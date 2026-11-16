@@ -1162,7 +1162,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
                 } if route == *place.note => note = true,
                 Event::RecordOpened {
                     route: Some(route),
-                    frames,
+                    answer: tilo_session_client::RecordAnswer::Sent { frames },
                     ..
                 } if route == *place.note => {
                     opened = Some(frames);
@@ -1209,7 +1209,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
                 } if route == *place.chat => part = true,
                 Event::RecordOpened {
                     route: Some(route),
-                    frames,
+                    answer: tilo_session_client::RecordAnswer::Sent { frames },
                     ..
                 } if route == head => {
                     answered = Some(frames);

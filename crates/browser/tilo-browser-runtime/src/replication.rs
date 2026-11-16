@@ -44,10 +44,10 @@ use neighbour_wire::content::ContentWants;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::engine::RecordReading;
-use tilo_session_client::{Events, Link};
+use tilo_session_client::{Events, Link, RecordAnswer};
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
-use ui::record::RecordSync;
+use ui::record::{RecordSync, WorkspaceAnswer};
 use ui::state::DocumentReplica;
 
 use crate::replicated::{Attachment, DESKTOP_APP, DESKTOP_RECORD};
@@ -1012,7 +1012,7 @@ impl Joined {
         let mut woken: HashSet<u64> = HashSet::new();
         let mut landed: BTreeSet<DocumentRoute> = BTreeSet::new();
         let mut refusals: Vec<(DocumentRoute, Vec<[u8; 32]>, String)> = Vec::new();
-        let mut opened: Vec<DocumentRoute> = Vec::new();
+        let mut opened: Vec<(DocumentRoute, WorkspaceAnswer)> = Vec::new();
         let mut content_arrived = false;
         for event in self.events.drain() {
             match event {
@@ -1054,9 +1054,11 @@ impl Joined {
                 Event::RecordOpened {
                     ws: workspace_id,
                     route: Some(route),
-                    frames: 0,
+                    answer,
                     ..
-                } if workspace_id == self.workspace => opened.push(route),
+                } if workspace_id == self.workspace => {
+                    opened.extend(answered_without_frames(answer).map(|said| (route, said)));
+                }
                 _ => {}
             }
         }
@@ -1071,7 +1073,7 @@ impl Joined {
         for route in settled {
             self.settle(&route, &mut woken);
         }
-        for route in self.to_read(landed) {
+        for route in read_order(landed) {
             // A record kept for whoever opens it is read as what changed since the store took
             // it last: a record that lands a write at a time (a sealed chat's history, written
             // by many) would otherwise be read, loaded and saved whole once per write.
@@ -1116,8 +1118,8 @@ impl Joined {
                 warn(&format!("{}/{}: {error}", route.app_id, route.record));
             }
         }
-        for route in opened {
-            self.workspace_answered(&route, &mut woken);
+        for (route, answer) in opened {
+            self.workspace_answered(&route, answer, &mut woken);
         }
         self.wakes(woken, content_arrived)
     }
@@ -1277,34 +1279,18 @@ impl Joined {
         }
     }
 
-    /// The records that landed, in the order they are read: records first, so a desktop naming a
-    /// new tab's record finds it, and without another member's own records.
-    fn to_read(&self, landed: BTreeSet<DocumentRoute>) -> Vec<DocumentRoute> {
-        let mut landed: Vec<DocumentRoute> = landed
-            .into_iter()
-            .filter(|route| !self.someone_elses(&route.record))
-            .collect();
-        landed.compact_sort_by_key(|route| route.app_id == DESKTOP_APP);
-        landed
-    }
-
-    /// Whether `record` is another member's own record, sealed for their
-    /// devices and refused to this page's reader: it is left unread
-    /// ([`crate::landing::someone_elses`]).
-    fn someone_elses(&self, record: &str) -> bool {
-        crate::landing::someone_elses(
-            record,
-            self.mounts
-                .values()
-                .map(|mounted| mounted.attachment.author.as_str()),
-        )
-    }
-
-    /// The host retains nothing of `route`, a record this page opened or
-    /// asked for, or holds it with no change in it: each store holding or wanting it tells what reads it
-    /// ([`ui::record::RecordStore::note_workspace_answered`]), and a window
-    /// that waited for it is built again, now on a new record.
-    fn workspace_answered(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
+    /// The host answered `route`, a record this page opened or asked for,
+    /// with `answer`: it retains nothing of it or holds it with no change in it,
+    /// or it is another person's own. Each store holding or wanting it tells
+    /// what reads it ([`ui::record::RecordStore::note_workspace_answer`]), and a
+    /// window that waited for it is built again: on a new record, or saying
+    /// whose it is.
+    fn workspace_answered(
+        &self,
+        route: &DocumentRoute,
+        answer: WorkspaceAnswer,
+        woken: &mut HashSet<u64>,
+    ) {
         if route.cluster_id != self.uuid {
             return;
         }
@@ -1313,6 +1299,7 @@ impl Joined {
                 &mounted.attachment.stores.borrow(),
                 &route.app_id,
                 &route.record,
+                answer,
             );
             if answered {
                 if let Some((handle, shared)) = &mounted.attachment.desktop {
@@ -1398,7 +1385,9 @@ impl Joined {
             // The host holds the record with nothing in it (a window founded it
             // empty, or a member's content has yet to follow): that is all it
             // holds, and a window waiting for it opens it as a new record.
-            crate::landing::Landed::Empty => self.workspace_answered(route, woken),
+            crate::landing::Landed::Empty => {
+                self.workspace_answered(route, WorkspaceAnswer::HoldsNone, woken);
+            }
         }
         Ok(())
     }
@@ -1914,4 +1903,23 @@ fn sorted_heads(heads: &[[u8; 32]]) -> Vec<[u8; 32]> {
     heads.sort_unstable();
     heads.dedup();
     heads
+}
+
+/// What a host's answer to an opened record tells the stores waiting for it, when it sent none
+/// of the record: it holds none, or the record is another person's own. An answer that sent frames
+/// tells them through the frames.
+fn answered_without_frames(answer: RecordAnswer) -> Option<WorkspaceAnswer> {
+    match answer {
+        RecordAnswer::Sent { frames: 0 } => Some(WorkspaceAnswer::HoldsNone),
+        RecordAnswer::NotYours => Some(WorkspaceAnswer::NotYours),
+        RecordAnswer::Sent { .. } => None,
+    }
+}
+
+/// The records that landed, in the order they are read: records first, so a desktop naming a new
+/// tab's record finds it.
+fn read_order(landed: BTreeSet<DocumentRoute>) -> Vec<DocumentRoute> {
+    let mut landed: Vec<DocumentRoute> = landed.into_iter().collect();
+    landed.compact_sort_by_key(|route| route.app_id == DESKTOP_APP);
+    landed
 }
