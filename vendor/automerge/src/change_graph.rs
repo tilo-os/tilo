@@ -225,6 +225,17 @@ impl ChangeGraph {
         self.max_ops.get(node.0 as usize).map(|max| u64::from(*max))
     }
 
+    // TILO(object-history): the ops a change holds (vendor/automerge/TILO-PATCH.md).
+    /// The actor of the change `hash` names and the op counters past `low`
+    /// up to `high` its ops have: `(actor, low, high)`.
+    pub(crate) fn op_range_for_hash(&self, hash: &ChangeHash) -> Option<(usize, u64, u64)> {
+        let i = self.nodes_by_hash.get(hash)?.0 as usize;
+        let high = u64::from(*self.max_ops.get(i)?);
+        let num_ops = self.num_ops.get(i).unwrap_or_default();
+        let actor = usize::from(*self.actors.get(i)?);
+        Some((actor, high.saturating_sub(num_ops), high))
+    }
+
     // TILO(diff-changed-objects): where the ops of a range of an actor's
     // changes start (vendor/automerge/TILO-PATCH.md).
     /// The first op counter of `actor`'s first change with an op past the

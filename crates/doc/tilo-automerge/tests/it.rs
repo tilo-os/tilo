@@ -29,6 +29,8 @@ mod idle_sync;
 mod known_hashes;
 #[path = "map_apply.rs"]
 mod map_apply;
+#[path = "object_history.rs"]
+mod object_history;
 #[path = "patch_log_memory.rs"]
 mod patch_log_memory;
 #[path = "scattered_apply.rs"]

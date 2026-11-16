@@ -525,3 +525,25 @@ which a diff cursor's index then holds: a reader of history that peeks at a
 past version must not hand a rendering host's `diff_incremental` the way
 there and back. The marked spot is `TILO(read-at)` in `autocommit.rs`. Used
 by `tilo-ui`'s history log to read a change's before and after.
+
+# Tilo patch: what last wrote in an object, from its own ops
+
+Notes shows when a note was created and last edited. It found that by
+decoding every change of the notebook and following which objects each one
+touched: 12.6 s on a page for a notebook of a thousand long notes, before
+the open note could show either date. Every op's id names the change that
+made it (`ChangeGraph::opid_to_hash`), so the same answer is in the note's
+own ops. `Automerge::latest_changes_within(obj)` reads the id and successor
+columns of `obj` and of every object made inside it, deleted ones included,
+keeps each actor's newest counter there (the op that made `obj` counts), and
+answers the changes those counters belong to: per actor, the newest change
+that made, set, overwrote or deleted anything in the object. It reads only
+those objects' ops, whatever else the document holds; `work().object_ops`
+counts them. `Automerge::change_writes_within(hash, obj)` tells whether one
+change wrote in `obj` or below it from that change's own ops (the search
+`objects_changed` makes for a diff, factored into `objects_written`) and
+the objects' parents, so a reader that already knows the answer follows new
+changes without reading the object again. The marked spots are
+`TILO(object-history)` in `automerge.rs` and `change_graph.rs`. Pinned by
+Notes' `metadata_reads_the_open_note_alone`.
+

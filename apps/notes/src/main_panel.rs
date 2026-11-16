@@ -794,9 +794,8 @@ impl MainPanel {
     ) -> Result<Self, String> {
         let mut panel = Self::new();
         panel.notebook.clone_from(&self.notebook);
-        // The notes' dates come from the document's whole history: the new
-        // panel goes on from where this one read it rather than reading
-        // every change again.
+        // The new panel goes on from where this one read the open note's
+        // dates rather than reading its ops again.
         panel.date_index.clone_from(&self.date_index);
         if let Some(actions) = self.header.actions() {
             panel.header.attach(actions);
@@ -1805,7 +1804,9 @@ impl Widget for MainPanel {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
-        ui::tilo_resource::profiling::measure("note_dates", || self.date_index.sync(state));
+        ui::tilo_resource::profiling::measure("note_dates", || {
+            self.date_index.sync(state, self.page_id);
+        });
         let dates = self
             .page_id
             .map(|page| self.date_index.get(page))

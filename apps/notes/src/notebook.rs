@@ -1455,6 +1455,18 @@ pub fn image_mime(bytes: &[u8]) -> Option<&'static str> {
         .filter(|mime| matches!(*mime, "image/png" | "image/jpeg" | "image/webp"))
 }
 
+/// The object note `page` is kept in, when the note exists: its entry in the
+/// notebook's pages, which holds the note and its place among them.
+#[must_use]
+pub fn page_object(doc: &tilo_resource::Doc, page: PageId) -> Option<automerge::ObjId> {
+    use automerge::ReadDoc as _;
+    let pages = Notebook::paths().pages.object(doc)?;
+    match doc.get(&pages, page_id(page).as_str()) {
+        Ok(Some((automerge::Value::Object(_), entry))) => Some(entry),
+        _ => None,
+    }
+}
+
 /// The object note `page`'s body is kept in, in `doc`.
 #[must_use]
 pub fn body_object(doc: &tilo_resource::Doc, page: PageId) -> Option<automerge::ObjId> {

@@ -1299,6 +1299,94 @@ impl Automerge {
     /// `before` and `after` can find a difference in, with every object
     /// above them: those holding an op that one clock covers and the other
     /// does not, or one such an op succeeds (vendor/automerge/TILO-PATCH.md).
+    /// Add to `changed` the objects holding an op of `actor` numbered past
+    /// `low` up to `high`, or an op such an op overwrote or deleted.
+    fn objects_written(&self, actor: usize, low: u64, high: u64, changed: &mut BTreeSet<ObjId>) {
+        let Some(start) = self.change_graph.first_op_past(actor, low) else {
+            return;
+        };
+        let between = |id: &OpId| id.actor() == actor && low < id.counter() && id.counter() <= high;
+        for op in self.ops.iter_ctr_range(start as usize..high as usize + 1) {
+            if between(&op.id) || op.succ().any(|succ| between(&succ)) {
+                changed.insert(op.obj);
+            }
+        }
+    }
+
+    // TILO(object-history): what wrote in an object, read from its own ops
+    // rather than from every change (vendor/automerge/TILO-PATCH.md).
+
+    /// The changes that last wrote in `obj` or in any object made inside it,
+    /// deleted ones included: for each actor, the change holding its newest
+    /// op there, the op that made `obj`, or an op that overwrote or deleted
+    /// one there. Reads only the ops of those objects, never the history.
+    ///
+    /// # Errors
+    /// `obj` is not an object of this document.
+    pub fn latest_changes_within(&self, obj: &ExId) -> Result<Vec<ChangeHash>, AutomergeError> {
+        let obj = self.exid_to_obj(obj)?.id;
+        let mut newest: HashMap<usize, u64> = HashMap::new();
+        let mut note = |id: OpId| {
+            let counter = newest.entry(id.actor()).or_insert(0);
+            *counter = (*counter).max(id.counter());
+        };
+        if !obj.is_root() {
+            note(obj.0);
+        }
+        let mut objects = vec![obj];
+        while let Some(obj) = objects.pop() {
+            let range = self.ops.scope_to_obj(&obj);
+            crate::work::read_object_ops(range.len());
+            let ids = self.ops.id_iter_range(&range);
+            let actions = self.ops.action_iter_range(&range);
+            let succs = self.ops.succ_iter_range(&range);
+            for ((id, action), succ) in ids.zip(actions).zip(succs) {
+                note(id);
+                for succ in succ {
+                    note(succ);
+                }
+                if ObjType::try_from(action).is_ok() {
+                    objects.push(ObjId(id));
+                }
+            }
+        }
+        let mut hashes: Vec<ChangeHash> = newest
+            .into_iter()
+            .filter_map(|(actor, counter)| {
+                self.change_graph.opid_to_hash(OpId::new(counter, actor))
+            })
+            .collect();
+        hashes.sort_unstable();
+        hashes.dedup();
+        Ok(hashes)
+    }
+
+    /// Whether the change `hash` names wrote in `obj` or in an object below
+    /// it: made, set, overwrote or deleted something there. Reads only the
+    /// change's own ops. False for a change or object this document lacks.
+    pub fn change_writes_within(&self, hash: &ChangeHash, obj: &ExId) -> bool {
+        let (Some((actor, low, high)), Ok(obj)) = (
+            self.change_graph.op_range_for_hash(hash),
+            self.exid_to_obj(obj).map(|meta| meta.id),
+        ) else {
+            return false;
+        };
+        if !obj.is_root() && obj.0.actor() == actor && low < obj.0.counter() && obj.0.counter() <= high {
+            return true;
+        }
+        let mut changed = BTreeSet::new();
+        self.objects_written(actor, low, high, &mut changed);
+        changed.into_iter().any(|mut written| loop {
+            if written == obj {
+                break true;
+            }
+            match self.ops.object_parent(&written) {
+                Some(parent) => written = parent,
+                None => break false,
+            }
+        })
+    }
+
     pub(crate) fn objects_changed(&self, before: &Clock, after: &Clock) -> BTreeSet<ObjId> {
         let mut changed = BTreeSet::new();
         let counter = |clock: &Clock, actor: usize| clock.0.get(actor).copied().unwrap_or(0);
@@ -1311,16 +1399,7 @@ impl Automerge {
             // The actor's ops between the two clocks are those of its changes
             // past `low`: an actor's counters start where its first change
             // starts, not at 1.
-            let Some(start) = self.change_graph.first_op_past(actor, low) else {
-                continue;
-            };
-            let between =
-                |id: &OpId| id.actor() == actor && low < id.counter() && id.counter() <= high;
-            for op in self.ops.iter_ctr_range(start as usize..high as usize + 1) {
-                if between(&op.id) || op.succ().any(|succ| between(&succ)) {
-                    changed.insert(op.obj);
-                }
-            }
+            self.objects_written(actor, low, high, &mut changed);
         }
         let mut below: Vec<ObjId> = changed.iter().copied().collect();
         while let Some(obj) = below.pop() {
@@ -2438,3 +2517,4 @@ pub(crate) struct Isolation {
     seq: u64,
     clock: Clock,
 }
+

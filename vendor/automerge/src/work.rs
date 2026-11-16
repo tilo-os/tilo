@@ -19,6 +19,9 @@ pub struct Work {
     /// Objects whose id an actor sorting before others renumbered: what taking in a change by
     /// a new actor rewrites of the document's object index besides the change.
     pub renumbered_objects: u64,
+    /// Ops of objects read to tell which changes last wrote in them
+    /// (`Automerge::latest_changes_within`).
+    pub object_ops: u64,
 }
 
 thread_local! {
@@ -28,6 +31,7 @@ thread_local! {
             searched_slabs: 0,
             visited_changes: 0,
             renumbered_objects: 0,
+            object_ops: 0,
         })
     };
 }
@@ -65,4 +69,9 @@ pub(crate) fn renumbered_objects(objects: usize) {
     count(|work| {
         work.renumbered_objects = work.renumbered_objects.saturating_add(objects as u64);
     });
+}
+
+#[inline]
+pub(crate) fn read_object_ops(ops: usize) {
+    count(|work| work.object_ops = work.object_ops.saturating_add(ops as u64));
 }

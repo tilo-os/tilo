@@ -4,9 +4,6 @@
 //! changes retain an unknown date; new action timestamps survive saves and merges.
 use crate::model::PageId;
 use automerge::{AutoCommit, ChangeHash};
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, OnceLock};
-use ui::history_source::{SchemaObjectId, schema_changes_since};
 
 // Notes' messages. Every host loads them before the app's view is built;
 // a widget built on its own loads them as it is made.
@@ -126,110 +123,107 @@ fn when(seconds: i64, now: chrono::DateTime<chrono::Local>) -> String {
     }
 }
 
-/// Every note's created and edited time, read from the document's history.
+/// The open note's created and edited time, read from the document's
+/// history.
 ///
-/// The history only grows, so the index reads each change once and goes on
-/// from the heads it read. Reading a long history whole (a launch) happens
-/// away from the UI thread on a copy of the document: until it lands, no
-/// note shows a date, and when it lands the caption gains them in place.
+/// Every op names the change that made it, and every change keeps its time.
+/// The note was created by the change that made its object, and last edited
+/// by the newest change that wrote in that object or any object inside it
+/// (its title, its blocks, their text): those are found from the note's own
+/// ops ([`automerge::Automerge::latest_changes_within`]), whatever the
+/// notebook's history holds besides. After that only the changes added since
+/// are read, each by its own ops, and only to tell whether it wrote in the
+/// note.
 #[derive(Clone, Default)]
 pub struct NoteDateIndex {
-    read: DatesRead,
-    /// A whole-history read in flight, shared by the copies a restored view
-    /// makes of this index.
-    reading: Option<Arc<Reading>>,
+    read: Option<DatesRead>,
 }
 
-/// What the history said up to `heads`.
-#[derive(Clone, Default)]
+/// What the history said of one note up to `heads`.
+#[derive(Clone)]
 struct DatesRead {
+    page: PageId,
     heads: Vec<ChangeHash>,
-    objects: HashMap<SchemaObjectId, PageId>,
-    page_maps: HashSet<SchemaObjectId>,
-    dates: HashMap<PageId, NoteDates>,
+    dates: NoteDates,
 }
-
-/// A whole-history read away from the UI thread: of the document at `heads`,
-/// landing in `read`.
-struct Reading {
-    heads: Vec<ChangeHash>,
-    read: OnceLock<DatesRead>,
-}
-
-/// How many operations a history holds before reading it whole leaves the UI
-/// thread. Below it the read costs a few milliseconds and the dates are there
-/// in the first frame.
-const OFF_THREAD_OPS: u64 = 50_000;
 
 impl NoteDateIndex {
+    /// `page`'s dates, as the last [`Self::sync`] for it read them; none for
+    /// another note.
     pub fn get(&self, page: PageId) -> NoteDates {
-        self.read.dates.get(&page).copied().unwrap_or_default()
+        self.read
+            .as_ref()
+            .filter(|read| read.page == page)
+            .map(|read| read.dates)
+            .unwrap_or_default()
     }
 
-    pub fn sync(&mut self, doc: &AutoCommit) {
-        self.sync_reading_off_thread_from(doc, OFF_THREAD_OPS);
-    }
-
-    /// [`Self::sync`], reading a history of at least `off_thread_ops`
-    /// operations away from the UI thread.
-    pub(crate) fn sync_reading_off_thread_from(&mut self, doc: &AutoCommit, off_thread_ops: u64) {
+    /// Read `page`'s dates from `doc`, going on from the last read of the
+    /// same note where `doc`'s history holds it.
+    pub fn sync(&mut self, doc: &AutoCommit, page: Option<PageId>) {
+        let Some(page) = page else {
+            self.read = None;
+            return;
+        };
         let history = doc.committed_document();
-        if let Some(reading) = &self.reading {
-            match reading.read.get() {
-                Some(read) => {
-                    self.read = read.clone();
-                    self.reading = None;
-                }
-                // Still reading the history this document goes on from.
-                None if contains_all(history, &reading.heads) => return,
-                // The document was replaced: that read is of another one.
-                None => self.reading = None,
-            }
-        }
         let heads = doc.committed_heads();
-        if heads == self.read.heads {
-            return;
-        }
-        // Undo or switching documents can remove our prior heads. Rebuild the
-        // projection instead of leaking dates from a discarded history branch.
-        if !contains_all(history, &self.read.heads) {
-            self.read = DatesRead::default();
-        }
-        if self.read.heads.is_empty()
-            && automerge::ReadDoc::stats(history).num_ops >= off_thread_ops
-            && self.read_off_thread(history, heads.clone())
-        {
-            return;
-        }
-        let since = std::mem::take(&mut self.read.heads);
-        self.read.apply(history, &since);
-        self.read.heads = heads;
-    }
-
-    /// Read `history` whole on a background thread, to land as of `heads`.
-    /// False when this host runs no background work.
-    fn read_off_thread(&mut self, history: &automerge::Automerge, heads: Vec<ChangeHash>) -> bool {
-        let reading = Arc::new(Reading {
-            heads,
-            read: OnceLock::new(),
-        });
-        let copy = ui::tilo_resource::profiling::measure("note_dates.copy", || history.clone());
-        let landing = Arc::clone(&reading);
-        let wake = ui::WakeHandle::new();
-        let spawned = ui::background::Background::current().spawn("note dates", move || {
-            let mut read = DatesRead::default();
-            read.apply(&copy, &[]);
-            read.heads.clone_from(&landing.heads);
-            if landing.read.set(read).is_ok() {
-                wake.wake();
+        if let Some(read) = self.read.as_mut().filter(|read| read.page == page) {
+            if read.heads == heads {
+                return;
             }
-        });
-        if spawned.is_err() {
-            return false;
+            // Undo or switching documents can remove the heads read up to:
+            // read the note again rather than keep dates from a discarded
+            // history.
+            if contains_all(history, &read.heads) {
+                if let Some(object) = crate::notebook::page_object(doc, page) {
+                    for change in history.get_changes_meta(&read.heads) {
+                        if history.change_writes_within(&change.hash, &object) {
+                            read.dates.edited =
+                                latest(read.dates.edited, time_of(change.timestamp));
+                        }
+                    }
+                }
+                read.heads = heads;
+                return;
+            }
         }
-        self.reading = Some(reading);
-        true
+        self.read = Some(DatesRead {
+            page,
+            dates: dates_of(doc, page),
+            heads,
+        });
     }
+}
+
+/// `page`'s dates, from its own ops.
+fn dates_of(doc: &AutoCommit, page: PageId) -> NoteDates {
+    let Some(object) = crate::notebook::page_object(doc, page) else {
+        return NoteDates::default();
+    };
+    let history = doc.committed_document();
+    let time = |hash: &ChangeHash| {
+        history
+            .get_change_meta_by_hash(hash)
+            .and_then(|change| time_of(change.timestamp))
+    };
+    NoteDates {
+        created: history.hash_for_opid(&object).as_ref().and_then(time),
+        edited: history
+            .latest_changes_within(&object)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(time)
+            .max(),
+    }
+}
+
+/// A change's time; none for one written before changes were stamped.
+fn time_of(timestamp: i64) -> Option<i64> {
+    (timestamp > 0).then_some(timestamp)
+}
+
+fn latest(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    a.max(b)
 }
 
 fn contains_all(history: &automerge::Automerge, heads: &[ChangeHash]) -> bool {
@@ -238,49 +232,26 @@ fn contains_all(history: &automerge::Automerge, heads: &[ChangeHash]) -> bool {
         .all(|hash| history.get_change_meta_by_hash(hash).is_some())
 }
 
-impl DatesRead {
-    /// Read the changes of `history` after `since`.
-    fn apply(&mut self, history: &automerge::Automerge, since: &[ChangeHash]) {
-        for change in schema_changes_since(history, since) {
-            let time = change.timestamp;
-            for creation in change.created {
-                if creation.parent.is_root() && creation.key.as_deref() == Some("pages") {
-                    self.page_maps.insert(creation.object);
-                    continue;
-                }
-                let page = if self.page_maps.contains(&creation.parent) {
-                    let page = creation.key.as_deref().and_then(|key| key.parse().ok());
-                    if let Some(page) = page {
-                        let dates = self.dates.entry(page).or_insert(NoteDates {
-                            created: time,
-                            edited: time,
-                        });
-                        dates.edited = dates.edited.max(time);
-                    }
-                    page
-                } else {
-                    self.objects.get(&creation.parent).copied()
-                };
-                if let Some(page) = page {
-                    self.objects.insert(creation.object, page);
-                }
-            }
-            for object in &change.touched {
-                if let Some(page) = self.objects.get(object) {
-                    let dates = self.dates.entry(*page).or_default();
-                    dates.edited = dates.edited.max(time);
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::actions::{self, Action};
     use tilo_actions::Action as _;
     use tilo_automerge::ApplyIncoming;
+    /// `page`'s dates, as an index that has not read `doc` before reads them.
+    fn dates(doc: &AutoCommit, page: PageId) -> NoteDates {
+        let mut index = NoteDateIndex::default();
+        index.sync(doc, Some(page));
+        index.get(page)
+    }
+
+    /// The ops of objects `read` read to tell what last wrote in them.
+    fn ops_read<T>(read: impl FnOnce() -> T) -> u64 {
+        let before = automerge::work().object_ops;
+        read();
+        automerge::work().object_ops - before
+    }
+
     #[allow(
         clippy::needless_pass_by_value,
         reason = "test helper models handing an owned action to the production executor"
@@ -341,7 +312,7 @@ mod tests {
                 apply(&mut doc, actions::create_page_action(a, None, "A"), 100);
                 apply(&mut doc, actions::create_page_action(b, None, "B"), 200);
                 let mut index = NoteDateIndex::default();
-                index.sync(&doc);
+                index.sync(&doc, Some(a));
                 assert_eq!(
                     index.get(a),
                     NoteDates {
@@ -359,7 +330,7 @@ mod tests {
                     ),
                     300,
                 );
-                index.sync(&doc);
+                index.sync(&doc, Some(a));
                 assert_eq!(
                     index.get(a),
                     NoteDates {
@@ -367,13 +338,14 @@ mod tests {
                         edited: Some(300)
                     }
                 );
-                assert_eq!(index.get(b).edited, Some(200));
+                assert_eq!(dates(&doc, b).edited, Some(200));
+                assert_eq!(index.get(b), NoteDates::default(), "the index reads the open note");
                 let mut restored = AutoCommit::load(&doc.save()).unwrap();
                 let mut restored_index = NoteDateIndex::default();
-                restored_index.sync(&restored);
+                restored_index.sync(&restored, Some(a));
                 assert_eq!(restored_index.get(a), index.get(a));
                 let heads = restored.get_heads();
-                restored_index.sync(&restored);
+                restored_index.sync(&restored, Some(a));
                 assert_eq!(restored.get_heads(), heads, "viewing metadata is read-only");
             }
 
@@ -388,7 +360,7 @@ mod tests {
                 );
                 apply(&mut doc, actions::rename_page_action(page, "Renamed"), 500);
                 let mut index = NoteDateIndex::default();
-                index.sync(&doc);
+                index.sync(&doc, Some(page));
                 assert_eq!(
                     index.get(page),
                     NoteDates {
@@ -411,7 +383,7 @@ mod tests {
                     "new notes must have a real persisted time"
                 );
                 let mut index = NoteDateIndex::default();
-                index.sync(&origin);
+                index.sync(&origin, Some(page));
                 assert_eq!(
                     index.get(page),
                     NoteDates {
@@ -423,7 +395,7 @@ mod tests {
                 <crate::Notebook as ui::tilo_resource::Resource>::register(&mut registry);
                 tilo_actions::replay(&mut peer, &envelope, &registry).unwrap();
                 let mut peer_index = NoteDateIndex::default();
-                peer_index.sync(&peer);
+                peer_index.sync(&peer, Some(page));
                 assert_eq!(peer_index.get(page), index.get(page));
                 assert_eq!(origin.get_heads(), peer.get_heads());
                 let heads = origin.get_heads();
@@ -431,7 +403,7 @@ mod tests {
                     tilo_actions::apply_local(&mut origin, &action, actions::encode(&action)).is_err(),
                     "a note is created once"
                 );
-                index.sync(&origin);
+                index.sync(&origin, Some(page));
                 assert_eq!(
                     origin.get_heads(),
                     heads,
@@ -440,28 +412,15 @@ mod tests {
             }
         }
 
-        phase metadata_long_history_is_read_off_the_ui_thread;
-        // A history long enough to read away from the UI thread is read there:
-        // no note shows a date until the read lands, the dates that land are the
-        // ones reading the history in place gives, an edit made while it was
-        // read still moves the edited time, and a read of a document since
-        // replaced is dropped rather than shown.
+        phase metadata_reads_the_open_note_alone;
+        // A note's dates are read from its own ops, whatever else the notebook
+        // holds, and an edit elsewhere is told apart from one in the note by
+        // that change's own ops.
         {
-            let pumped = ui::rt::background::Pumped::new();
-            let _scope = pumped.background().enter();
             let mut doc = AutoCommit::new();
             let page = PageId::new_v4();
             let other = PageId::new_v4();
-            apply(
-                &mut doc,
-                actions::create_page_action(page, None, "Long"),
-                100,
-            );
-            apply(
-                &mut doc,
-                actions::create_page_action(other, None, "Other"),
-                150,
-            );
+            apply(&mut doc, actions::create_page_action(page, None, "Read"), 100);
             apply(
                 &mut doc,
                 actions::edit_body_action(
@@ -472,64 +431,62 @@ mod tests {
                 ),
                 200,
             );
-            let mut in_place = NoteDateIndex::default();
-            in_place.sync_reading_off_thread_from(&doc, u64::MAX);
-            assert!(in_place.reading.is_none(), "below the bound reads in place");
+            apply(&mut doc, actions::create_page_action(other, None, "Other"), 150);
+            let read_alone = ops_read(|| dates(&doc, page));
+            // A notebook a hundred long notes larger.
+            for at in 0..100 {
+                let note = PageId::new_v4();
+                apply(&mut doc, actions::create_page_action(note, None, "More"), 300 + at);
+                apply(
+                    &mut doc,
+                    actions::edit_body_action(
+                        note,
+                        tilo_document::RichTextAction::AppendParagraph {
+                            text: "notebook text ".repeat(40),
+                        },
+                    ),
+                    300 + at,
+                );
+            }
+            let mut index = NoteDateIndex::default();
+            let read_among_many = ops_read(|| index.sync(&doc, Some(page)));
             assert_eq!(
-                in_place.get(page),
+                read_among_many, read_alone,
+                "the notebook's other notes are not read"
+            );
+            assert_eq!(
+                index.get(page),
                 NoteDates {
                     created: Some(100),
                     edited: Some(200)
                 }
             );
-
-            let mut index = NoteDateIndex::default();
-            index.sync_reading_off_thread_from(&doc, 1);
-            assert!(
-                index.reading.is_some(),
-                "a long history is read off the UI thread"
+            // A collaborator types in another note: nothing of this one is read
+            // again and its dates stay.
+            apply(&mut doc, actions::rename_page_action(other, "Renamed"), 500);
+            assert_eq!(ops_read(|| index.sync(&doc, Some(page))), 0);
+            assert_eq!(index.get(page).edited, Some(200));
+            // and then in this one.
+            apply(&mut doc, actions::rename_page_action(page, "Renamed too"), 600);
+            assert_eq!(ops_read(|| index.sync(&doc, Some(page))), 0);
+            assert_eq!(
+                index.get(page),
+                NoteDates {
+                    created: Some(100),
+                    edited: Some(600)
+                }
             );
-            assert_eq!(index.get(page), NoteDates::default(), "nothing lands yet");
-            // A collaborator's edit arrives while the history is read.
-            apply(&mut doc, actions::rename_page_action(other, "Renamed"), 300);
-            index.sync_reading_off_thread_from(&doc, 1);
-            assert_eq!(index.get(other), NoteDates::default(), "still reading");
-            assert_eq!(pumped.run_pending(), 1, "one read of the whole history");
-            index.sync_reading_off_thread_from(&doc, 1);
-            assert!(index.reading.is_none(), "the read landed");
-            assert_eq!(index.get(page), in_place.get(page));
+            assert_eq!(index.get(page), dates(&doc, page), "as a fresh read gives");
+            // Another note opened is read afresh.
+            index.sync(&doc, Some(other));
             assert_eq!(
                 index.get(other),
                 NoteDates {
                     created: Some(150),
-                    edited: Some(300)
-                },
-                "the edit made while reading moved the edited time"
+                    edited: Some(500)
+                }
             );
-            // Copies of the index taken while reading share that read.
-            let mut copy = NoteDateIndex::default();
-            copy.sync_reading_off_thread_from(&doc, 1);
-            let mut restored = copy.clone();
-            assert_eq!(pumped.run_pending(), 1);
-            restored.sync_reading_off_thread_from(&doc, 1);
-            assert_eq!(restored.get(page), in_place.get(page));
-
-            // The document is replaced while its history is read: that read is
-            // of another notebook and must not show.
-            let mut switched = NoteDateIndex::default();
-            switched.sync_reading_off_thread_from(&doc, 1);
-            let mut replacement = AutoCommit::new();
-            let fresh = PageId::new_v4();
-            apply(
-                &mut replacement,
-                actions::create_page_action(fresh, None, "Fresh"),
-                400,
-            );
-            switched.sync_reading_off_thread_from(&replacement, u64::MAX);
-            assert_eq!(pumped.run_pending(), 1);
-            switched.sync_reading_off_thread_from(&replacement, u64::MAX);
-            assert_eq!(switched.get(page), NoteDates::default());
-            assert_eq!(switched.get(fresh).created, Some(400));
+            assert_eq!(index.get(page), NoteDates::default());
         }
 
         phase metadata_converges_across_concurrent_edits_undo_and_replaced_history;
@@ -547,8 +504,8 @@ mod tests {
                 let mut second = base.fork();
                 let mut first_index = NoteDateIndex::default();
                 let mut second_index = NoteDateIndex::default();
-                first_index.sync(&first);
-                second_index.sync(&second);
+                first_index.sync(&first, Some(page));
+                second_index.sync(&second, Some(page));
                 apply(
                     &mut first,
                     actions::rename_page_action(page, "Renamed"),
@@ -564,14 +521,14 @@ mod tests {
                     ),
                     300,
                 );
-                first_index.sync(&first);
-                second_index.sync(&second);
+                first_index.sync(&first, Some(page));
+                second_index.sync(&second, Some(page));
                 assert_eq!(first_index.get(page).edited, Some(200));
                 assert_eq!(second_index.get(page).edited, Some(300));
                 first.merge_incoming(&mut second).unwrap();
                 second.merge_incoming(&mut first).unwrap();
-                first_index.sync(&first);
-                second_index.sync(&second);
+                first_index.sync(&first, Some(page));
+                second_index.sync(&second, Some(page));
                 assert_eq!(
                     first_index.get(page),
                     NoteDates {
@@ -581,7 +538,7 @@ mod tests {
                 );
                 assert_eq!(second_index.get(page), first_index.get(page));
                 let mut rebuilt = NoteDateIndex::default();
-                rebuilt.sync(&first);
+                rebuilt.sync(&first, Some(page));
                 assert_eq!(rebuilt.get(page), first_index.get(page));
             }
 
@@ -603,11 +560,11 @@ mod tests {
                 );
                 state.record_committed_action(before, None, None);
                 let mut index = NoteDateIndex::default();
-                index.sync(&state.doc);
+                index.sync(&state.doc, Some(page));
                 assert_eq!(index.get(page).edited, Some(200));
                 assert!(state.undo(None, None).is_some());
                 assert_eq!(crate::read::list_pages(&state.doc)[0].title, "Original");
-                index.sync(&state.doc);
+                index.sync(&state.doc, Some(page));
                 let undo_dates = index.get(page);
                 assert_eq!(undo_dates.created, Some(100));
                 assert!(
@@ -616,7 +573,7 @@ mod tests {
                 );
                 assert!(state.redo(None, None).is_some());
                 assert_eq!(crate::read::list_pages(&state.doc)[0].title, "Renamed");
-                index.sync(&state.doc);
+                index.sync(&state.doc, Some(page));
                 assert_eq!(index.get(page).created, Some(100));
                 assert!(index.get(page).edited >= undo_dates.edited);
             }
@@ -633,9 +590,9 @@ mod tests {
                 let before = doc.get_heads();
                 apply(&mut doc, actions::rename_page_action(page, "Renamed"), 200);
                 let mut index = NoteDateIndex::default();
-                index.sync(&doc);
+                index.sync(&doc, Some(page));
                 let historical = doc.fork_at(&before).unwrap();
-                index.sync(&historical);
+                index.sync(&historical, Some(page));
                 assert_eq!(
                     index.get(page),
                     NoteDates {
@@ -643,7 +600,7 @@ mod tests {
                         edited: Some(100)
                     }
                 );
-                index.sync(&AutoCommit::new());
+                index.sync(&AutoCommit::new(), Some(page));
                 assert_eq!(
                     index.get(page),
                     NoteDates::default(),
