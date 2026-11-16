@@ -1041,6 +1041,91 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
     }
 }
 
+/// `>>` through the kernel mount: an append lands after the file's real
+/// content even when the kernel's cached size is stale, as it is after the
+/// content changed under an open descriptor (a sync pass, a peer's edit).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_append_through_the_kernel_mount_lands_at_the_real_end() {
+    use std::io::Write as _;
+    require_fuse!();
+    tilo_test_env::within("an append through the kernel mount", async {
+        let mount_dir = tempdir().expect("mount temp dir");
+        let path = mount_dir.path().to_path_buf();
+        let invoice = path.join("invoice.txt");
+
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
+        let store = Arc::new(ContentStore::memory());
+        let namespace = Arc::new(Mutex::new(Namespace::new("append-peer").unwrap()));
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
+        let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+        let fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics);
+
+        let mut config = Config::default();
+        config.mount_options = vec![MountOption::FSName("quickfs_append".to_string())];
+        let session = fuser::spawn_mount(fs, &path, &config).expect("spawn FUSE session");
+        wait_for_mount(&path).await;
+
+        std::fs::write(&invoice, b"first").expect("write the file");
+        // Opened while the file is short, so the descriptor keeps the
+        // kernel's five-byte size and no later lookup can correct it.
+        let mut appender = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&invoice)
+            .expect("open for append");
+
+        // The content changes under the open descriptor, the way a sync pass
+        // or a peer's edit does; the kernel does not see the new length.
+        let original = b"Payment is due 30 days after the invoice.\n\nLate fees ...\n\n- Signed by both parties\n";
+        let hash = store
+            .write_content(original)
+            .await
+            .unwrap()
+            .expect("non-empty content");
+        let ino = namespace
+            .lock()
+            .unwrap()
+            .lookup(ROOT_INO, "invoice.txt")
+            .expect("the created file")
+            .ino
+            .0;
+        assert!(namespace.lock().unwrap().set_content(
+            ino,
+            Some(&hash),
+            original.len() as u64,
+            2
+        ));
+
+        let notice = b"\n- Notice period is 60 days\n";
+        appender.write_all(notice).expect("append");
+        // Close commits the bytes, so what the mount holds can be read back
+        // without asking the kernel's (still stale) attribute cache.
+        drop(appender);
+
+        let mut expected = original.to_vec();
+        expected.extend_from_slice(notice);
+        let (hash, size) = {
+            let ns = namespace.lock().unwrap();
+            (ns.hash_for(ino), ns.getattr(ino).expect("the file").size)
+        };
+        assert_eq!(
+            size,
+            expected.len() as u64,
+            "the file's attributes report its real length after the append"
+        );
+        assert_eq!(
+            hydrator.read(hash.expect("committed content"), 0, u64::MAX).await.unwrap(),
+            expected,
+            "the append went after the content, not over its start"
+        );
+        shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::too_many_lines,

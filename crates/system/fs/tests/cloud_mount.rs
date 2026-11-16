@@ -94,7 +94,7 @@ fn write_file(volume: &CloudVolume, path: &str, bytes: &[u8]) {
     let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
     let parent_ino = volume.resolve(parent).unwrap();
     let fh = match volume.lookup(parent_ino, name) {
-        Ok(attr) => volume.open_file(attr.ino, true, true).unwrap(),
+        Ok(attr) => volume.open_file(attr.ino, true, true, false).unwrap(),
         Err(_) => volume.create(parent_ino, name).unwrap().1,
     };
     volume.write(fh, 0, bytes).unwrap();
@@ -215,14 +215,14 @@ tilo_test_env::scenario! {
             assert_eq!(volume.read_ino(attr.ino, attr.size, 19).unwrap(), b"");
             for (write, truncate) in [(true, false), (true, true), (false, true)] {
                 assert_eq!(
-                    volume.open_file(attr.ino, write, truncate),
+                    volume.open_file(attr.ino, write, truncate, false),
                     Err(libc::EACCES)
                 );
             }
             for size in [0, 1, attr.size + 1] {
                 assert_eq!(volume.truncate(attr.ino, size), Err(libc::EACCES));
             }
-            let fh = volume.open_file(attr.ino, false, false).unwrap();
+            let fh = volume.open_file(attr.ino, false, false, false).unwrap();
             assert_eq!(volume.write(fh, 0, b"overwrite"), Err(libc::EBADF));
             volume.release(fh).unwrap();
             write_file(&volume, "safe-save.tmp", b"replacement");
@@ -364,7 +364,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(server.stats().bytes_served, fetched_before);
 
-        let fh = mount.volume.open_file(ino, false, false).unwrap();
+        let fh = mount.volume.open_file(ino, false, false, false).unwrap();
         let mut got = Vec::new();
         while got.len() < big.len() {
             let part = mount.volume.read(fh, got.len() as u64, 128 * 1024).unwrap();
@@ -523,6 +523,47 @@ fn a_remote_edit_during_a_local_edit_keeps_both_versions() {
     let listed = names(&mount.volume, "Shared");
     assert_eq!(listed.len(), 2, "{listed:?}");
     assert_eq!(read_all(&mount.volume, "Shared/budget.csv"), b"a,b\n9,9\n");
+}
+
+/// `>>` on the account folder: an `O_APPEND` descriptor writes at the end of
+/// the file, whatever offset the kernel sends from its cached size, and the
+/// other write modes keep their meaning.
+#[test]
+fn an_append_write_lands_at_the_end_and_truncation_still_empties() {
+    let server = FakeDav::nextcloud();
+    let original =
+        b"Payment is due 30 days after the invoice.\n\nLate fees ...\n\n- Signed by both parties\n";
+    server.put("invoice.txt", original);
+    let dir = tempfile::tempdir().unwrap();
+    let mount = mount_volume(&server, dir.path());
+    mount.volume.sync_once().unwrap();
+
+    let ino = mount.volume.resolve("invoice.txt").unwrap();
+    let fh = mount.volume.open_file(ino, true, false, true).unwrap();
+    let notice = b"\n- Notice period is 60 days\n";
+    // The kernel believes the file still has the length it cached; after a
+    // remote edit that can be 0, and appending must not overwrite the start.
+    assert_eq!(mount.volume.write(fh, 0, notice).unwrap(), notice.len());
+    mount.volume.release(fh).unwrap();
+
+    let mut appended = original.to_vec();
+    appended.extend_from_slice(notice);
+    assert_eq!(read_all(&mount.volume, "invoice.txt"), appended);
+    mount.volume.upload_pending().unwrap();
+    assert_eq!(server.get("invoice.txt").unwrap(), appended);
+
+    // A plain descriptor writes at the offset it was given.
+    write_file(&mount.volume, "plain.txt", b"abcdef");
+    let plain = mount.volume.resolve("plain.txt").unwrap();
+    let fh = mount.volume.open_file(plain, true, false, false).unwrap();
+    mount.volume.write(fh, 5, b"Z").unwrap();
+    mount.volume.release(fh).unwrap();
+    assert_eq!(read_all(&mount.volume, "plain.txt"), b"abcdeZ");
+
+    // O_TRUNC still empties the file before anything is written.
+    let fh = mount.volume.open_file(plain, true, true, false).unwrap();
+    mount.volume.release(fh).unwrap();
+    assert_eq!(read_all(&mount.volume, "plain.txt"), b"");
 }
 
 fn tree_json(dir: &Path) -> Option<u64> {
@@ -1351,6 +1392,25 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
         tilo_test_env::wait_for("the page's file on the server", || server
             .get("Docs/new.txt")),
         b"written by a POSIX tool"
+    );
+
+    // `>>` appends: the bytes go after the content, never over its start.
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(mount.join("Docs/new.txt"))
+            .unwrap();
+        file.write_all(b" and appended").unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(mount.join("Docs/new.txt")).unwrap(),
+        "written by a POSIX tool and appended"
+    );
+    assert_eq!(
+        tilo_test_env::wait_for("the appended file on the server", || server
+            .get("Docs/new.txt")),
+        b"written by a POSIX tool and appended"
     );
 
     let CloudResponse::Mounts(mounts) =

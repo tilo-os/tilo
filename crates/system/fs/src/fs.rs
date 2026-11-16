@@ -493,6 +493,11 @@ struct OpenFileHandleState {
     /// inode to trash there is intentionally no live path to recompute.
     opened_path: String,
     writable: bool,
+    /// `O_APPEND`: every write goes to the staged end of the file. The kernel
+    /// derives the offset it sends from its cached inode size, which a remote
+    /// edit or a hydration can make stale, so trusting it would overwrite
+    /// bytes instead of appending.
+    append: bool,
 }
 
 struct PinnedHydrationTask {
@@ -1415,12 +1420,43 @@ impl QuickFS {
     /// committed content is never read: ranges nobody writes stay the base's until a read
     /// or the commit needs them.
     fn write_buffer(&self, ino: u64, offset: u64, data: &[u8]) -> Result<u32, i32> {
-        offset.checked_add(data.len() as u64).ok_or(EINVAL)?;
+        self.write_staged(ino, Some(offset), data)
+    }
+
+    /// `write` on a descriptor opened with `O_APPEND`: the bytes land at the
+    /// staged end, never at the offset the request carried. The kernel derives
+    /// that offset from its cached inode size, which is stale whenever the
+    /// content changed under it (a remote edit, a hydration), and a stale
+    /// offset would overwrite the file's start instead of appending to it.
+    fn append_buffer(&self, ino: u64, data: &[u8]) -> Result<u32, i32> {
+        self.write_staged(ino, None, data)
+    }
+
+    /// `write` after its access check: a descriptor opened with `O_APPEND`
+    /// writes at the staged end, every other descriptor at the offset the
+    /// request carried.
+    fn write_handle(&self, ino: u64, fh: u64, offset: u64, data: &[u8]) -> Result<u32, i32> {
+        if self
+            .open_handle(ino, fh)
+            .is_some_and(|handle| handle.append)
+        {
+            self.append_buffer(ino, data)
+        } else {
+            self.write_buffer(ino, offset, data)
+        }
+    }
+
+    fn write_staged(&self, ino: u64, position: Option<u64>, data: &[u8]) -> Result<u32, i32> {
+        if let Some(offset) = position {
+            offset.checked_add(data.len() as u64).ok_or(EINVAL)?;
+        }
         let (stage, opened, base) = self.stage_for_write(ino)?;
         let mut guard = stage.lock();
-        guard
-            .write(offset, data)
-            .map_err(|error| error.raw_os_error().unwrap_or(EIO))?;
+        let outcome = match position {
+            Some(offset) => guard.write(offset, data),
+            None => guard.append(data),
+        };
+        outcome.map_err(|error| error.raw_os_error().unwrap_or(EIO))?;
         stage.note_len(&guard);
         // The generation moves under the stage lock, so a commit's
         // generation always describes the bytes it committed.
@@ -5528,6 +5564,7 @@ impl Filesystem for QuickFS {
                     flags.acc_mode(),
                     OpenAccMode::O_WRONLY | OpenAccMode::O_RDWR
                 ),
+                append: flags.0 & libc::O_APPEND != 0,
             },
         );
         let cache = self.open_cache_flags(ino.0);
@@ -5590,7 +5627,7 @@ impl Filesystem for QuickFS {
         name: &OsStr,
         mode: u32,
         umask: u32,
-        _flags: i32,
+        flags: i32,
         reply: ReplyCreate,
     ) {
         let mut writer = self.note_writer(req.pid(), None);
@@ -5654,6 +5691,7 @@ impl Filesystem for QuickFS {
                     ino: attr.ino.0,
                     opened_path,
                     writable: true,
+                    append: flags & libc::O_APPEND != 0,
                 },
             );
         }
@@ -5682,7 +5720,7 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(e));
             return;
         }
-        match self.write_buffer(ino.0, offset, data) {
+        match self.write_handle(ino.0, fh.0, offset, data) {
             Ok(written) => reply.written(written),
             Err(errno) => reply.error(to_errno(errno)),
         }

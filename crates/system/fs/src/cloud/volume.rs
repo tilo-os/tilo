@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Seek, SeekFrom};
+use std::io::{self, Seek, SeekFrom, Write as _};
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
@@ -212,6 +212,11 @@ struct Local {
 struct Handle {
     id: ItemId,
     write: bool,
+    /// `O_APPEND`: every write goes to the staged file's current end. The
+    /// kernel derives the offset it sends from its cached inode size, which
+    /// is stale whenever the account changed the file under it, so trusting
+    /// it would overwrite the start instead of appending.
+    append: bool,
     seq_end: u64,
     window: u64,
 }
@@ -1105,7 +1110,13 @@ impl CloudVolume {
         Ok(())
     }
 
-    pub fn open_file(&self, ino: u64, write: bool, truncate: bool) -> Result<u64, Errno> {
+    pub fn open_file(
+        &self,
+        ino: u64,
+        write: bool,
+        truncate: bool,
+        append: bool,
+    ) -> Result<u64, Errno> {
         let _mutation = if write || truncate {
             Some(self.mutation()?)
         } else {
@@ -1143,6 +1154,7 @@ impl CloudVolume {
             Handle {
                 id,
                 write,
+                append,
                 seq_end: 0,
                 window: 0,
             },
@@ -1152,12 +1164,13 @@ impl CloudVolume {
 
     pub fn write(&self, fh: u64, offset: u64, data: &[u8]) -> Result<usize, Errno> {
         let _mutation = self.mutation()?;
-        let path = {
+        let (path, append) = {
             let mut inner = self.inner();
             let handle = inner.handles.get(&fh).ok_or(libc::EBADF)?;
             if !handle.write {
                 return Err(libc::EBADF);
             }
+            let append = handle.append;
             let id = handle.id.clone();
             if inner
                 .tree
@@ -1170,13 +1183,18 @@ impl CloudVolume {
             local.dirty = true;
             local.generation = local.generation.saturating_add(1);
             let name = local.staged.clone().ok_or(libc::EIO)?;
-            self.staged_path(&name)
+            (self.staged_path(&name), append)
         };
-        let file = OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .map_err(|e| io_errno(&e))?;
-        file.write_all_at(data, offset).map_err(|e| io_errno(&e))?;
+        // `open` on the staged file itself, so an append lands at the length
+        // the file has now rather than at the offset the kernel believes.
+        let mut options = OpenOptions::new();
+        options.write(true).append(append);
+        let mut file = options.open(&path).map_err(|e| io_errno(&e))?;
+        if append {
+            file.write_all(data).map_err(|e| io_errno(&e))?;
+        } else {
+            file.write_all_at(data, offset).map_err(|e| io_errno(&e))?;
+        }
         Ok(data.len())
     }
 
@@ -1282,6 +1300,7 @@ impl CloudVolume {
             Handle {
                 id: id.clone(),
                 write: true,
+                append: false,
                 seq_end: 0,
                 window: 0,
             },

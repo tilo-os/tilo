@@ -103,7 +103,7 @@ tilo_test_env::scenario! {
             CloudResponse::Error(_)
         ));
         let ino = account.volume.resolve("a.txt").unwrap();
-        let writer = account.volume.open_file(ino, true, false).unwrap();
+        let writer = account.volume.open_file(ino, true, false, false).unwrap();
         account.volume.write(writer, 0, b"retained").unwrap();
         account.volume.release(writer).unwrap();
         account.volume.upload_pending().unwrap();
@@ -122,9 +122,9 @@ tilo_test_env::scenario! {
         let volume = &mount.volume;
         volume.sync_once().unwrap();
         let ino = volume.resolve("a.txt").unwrap();
-        let reader = volume.open_file(ino, false, false).unwrap();
+        let reader = volume.open_file(ino, false, false, false).unwrap();
         volume.prepare_import().unwrap();
-        assert_eq!(volume.open_file(ino, true, false), Err(libc::EROFS));
+        assert_eq!(volume.open_file(ino, true, false, false), Err(libc::EROFS));
         assert_eq!(volume.write(reader, 0, b"changed"), Err(libc::EROFS));
         assert_eq!(volume.truncate(ino, 0), Err(libc::EROFS));
         assert_eq!(volume.create(ROOT_INO, "new.txt"), Err(libc::EROFS));
@@ -145,7 +145,7 @@ tilo_test_env::scenario! {
         server.put("a.txt", b"original");
         let mut account = serve(&server);
         let ino = account.volume.resolve("a.txt").unwrap();
-        let writer = account.volume.open_file(ino, true, false).unwrap();
+        let writer = account.volume.open_file(ino, true, false, false).unwrap();
         assert!(matches!(
             account.service.request(
                 CloudRequest::PrepareImport {
@@ -169,7 +169,7 @@ tilo_test_env::scenario! {
             CloudResponse::Error(_)
         ));
         assert_eq!(account.volume.pending(), 1);
-        let writer = account.volume.open_file(ino, true, false).unwrap();
+        let writer = account.volume.open_file(ino, true, false, false).unwrap();
         account.volume.write(writer, 0, b"retained").unwrap();
         account.volume.release(writer).unwrap();
         account.volume.upload_pending().unwrap();
@@ -270,7 +270,7 @@ tilo_test_env::scenario! {
             if !saved {
                 let restored = account.launcher.volume("files-1").unwrap();
                 let ino = restored.resolve("a.txt").unwrap();
-                let writer = restored.open_file(ino, true, false).unwrap();
+                let writer = restored.open_file(ino, true, false, false).unwrap();
                 restored.write(writer, 0, b"retained").unwrap();
                 restored.release(writer).unwrap();
                 restored.upload_pending().unwrap();
@@ -387,7 +387,7 @@ fn failed_metadata_save_abort_restores_prior_pause_and_sync_state() {
         let restored = account.launcher.volume("files-1").unwrap();
         assert_eq!(restored.is_paused(), paused);
         let ino = restored.resolve("a.txt").unwrap();
-        let writer = restored.open_file(ino, true, false).unwrap();
+        let writer = restored.open_file(ino, true, false, false).unwrap();
         restored.write(writer, 0, b"restored").unwrap();
         restored.release(writer).unwrap();
         restored.upload_pending().unwrap();

@@ -339,7 +339,11 @@ fn production_volume_bothway_bytes_metadata_and_restart() {
     mount.sync_once().unwrap();
     let native_attr = mount.lookup(ROOT_INO, "Read only.docx").unwrap();
     assert_eq!(native_attr.perm, 0o444);
-    assert!(mount.open_file(native_attr.ino, true, false).is_err());
+    assert!(
+        mount
+            .open_file(native_attr.ino, true, false, false)
+            .is_err()
+    );
     let (_, handle) = mount.create(ROOT_INO, "local.txt").unwrap();
     mount.write(handle, 0, b"local exact bytes").unwrap();
     mount.release(handle).unwrap();

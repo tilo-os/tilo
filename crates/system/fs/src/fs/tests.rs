@@ -2506,6 +2506,7 @@ mod read_lock_tests {
                 ino: file,
                 opened_path: "/shared/a.txt".to_string(),
                 writable: false,
+                append: false,
             },
         );
         assert!(lock_namespace(&namespace).remove(file));

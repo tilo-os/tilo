@@ -84,6 +84,14 @@ fn create_open(fs: &QuickFS, name: &str) -> (u64, u64) {
 }
 
 fn open_handle(fs: &QuickFS, ino: u64, writable: bool) -> u64 {
+    insert_handle(fs, ino, writable, false)
+}
+
+fn open_append_fh(fs: &QuickFS, ino: u64) -> u64 {
+    insert_handle(fs, ino, true, true)
+}
+
+fn insert_handle(fs: &QuickFS, ino: u64, writable: bool, append: bool) -> u64 {
     let handle = fs.next_file_handle.fetch_add(1, Ordering::Relaxed);
     let opened_path = fs.ns().path_for(ino).unwrap();
     fs.open_file_handles.lock().unwrap().insert(
@@ -92,6 +100,7 @@ fn open_handle(fs: &QuickFS, ino: u64, writable: bool) -> u64 {
             ino,
             opened_path,
             writable,
+            append,
         },
     );
     handle
@@ -341,4 +350,43 @@ async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot(
             .is_none(),
         "the synced bytes went back into their file, not into a copy beside it"
     );
+}
+
+/// `>>` through the kernel: an `O_APPEND` descriptor writes at the end of
+/// the staged file, not at the offset the request carries. The kernel
+/// computes that offset from its cached inode size, which is stale after a
+/// remote edit or hydration; using it overwrote the file's start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_append_lands_at_the_staged_end_and_keeps_offset_writes_and_truncation() {
+    let fixture = Fixture::new().await;
+    let fs = fixture.mount(true);
+    let (ino, _fh) = create_open(&fs, "invoice.txt");
+    let original =
+        b"Payment is due 30 days after the invoice.\n\nLate fees ...\n\n- Signed by both parties\n";
+    fs.write_buffer(ino, 0, original).unwrap();
+
+    let appended = b"\n- Notice period is 60 days\n";
+    let append_fh = open_append_fh(&fs, ino);
+    // The request carries the kernel's cached size: here 0, as it is after an
+    // edit the kernel has not seen.
+    assert_eq!(
+        fs.write_handle(ino, append_fh, 0, appended).unwrap(),
+        u32::try_from(appended.len()).unwrap()
+    );
+    let mut expected = original.to_vec();
+    expected.extend_from_slice(appended);
+    assert_eq!(fs.staged_bytes(ino).as_deref(), Some(expected.as_slice()));
+
+    // A write without `O_APPEND` still lands exactly at its offset.
+    let plain = open_handle(&fs, ino, true);
+    fs.write_handle(ino, plain, 8, b"IS").unwrap();
+    expected.splice(8..10, *b"IS");
+    assert_eq!(fs.staged_bytes(ino).as_deref(), Some(expected.as_slice()));
+
+    // Appending after a truncation goes to the truncated end.
+    fs.truncate_inode(ino, 20).unwrap();
+    fs.write_handle(ino, append_fh, 0, b"tail").unwrap();
+    let mut truncated = expected.get(..20).unwrap().to_vec();
+    truncated.extend_from_slice(b"tail");
+    assert_eq!(fs.staged_bytes(ino).as_deref(), Some(truncated.as_slice()));
 }

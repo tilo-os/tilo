@@ -192,7 +192,8 @@ impl Filesystem for CloudFs {
         let access = flags.0 & libc::O_ACCMODE;
         let write = access != libc::O_RDONLY;
         let truncate = flags.0 & libc::O_TRUNC != 0;
-        match self.volume.open_file(ino.0, write, truncate) {
+        let append = flags.0 & libc::O_APPEND != 0;
+        match self.volume.open_file(ino.0, write, truncate, append) {
             Ok(fh) => reply.opened(FileHandle(fh), FopenFlags::empty()),
             Err(e) => reply.error(errno(e)),
         }

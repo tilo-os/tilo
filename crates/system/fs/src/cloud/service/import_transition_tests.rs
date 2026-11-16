@@ -74,7 +74,7 @@ fn expired_preparation_remounts_without_changing_pause_or_queued_data() {
     assert!(volume.is_paused());
     volume.sync_once().unwrap();
     let ino = volume.resolve("a.txt").unwrap();
-    let writer = volume.open_file(ino, true, false).unwrap();
+    let writer = volume.open_file(ino, true, false, false).unwrap();
     volume.write(writer, 0, b"retained").unwrap();
     volume.release(writer).unwrap();
     assert_eq!(volume.pending(), 1);

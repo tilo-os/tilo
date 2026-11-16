@@ -284,6 +284,13 @@ impl WriteStage {
         Ok(())
     }
 
+    /// Append `data` at the stage's current end, which is the file's real
+    /// length whether or not the writer knows it.
+    pub(super) fn append(&mut self, data: &[u8]) -> io::Result<()> {
+        let offset = self.len;
+        self.write(offset, data)
+    }
+
     /// Truncate or extend to `len` bytes; an extension reads as zeros.
     pub(super) fn set_len(&mut self, len: u64) -> io::Result<()> {
         if let Backing::Memory(memory) = &mut self.backing {
