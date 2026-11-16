@@ -117,7 +117,12 @@ pub async fn enter(
         false,
     )
     .await
-    .map_err(|reason| format!("{} did not let this key in: {reason}", address.name))?;
+    .map_err(|reason| {
+        tracing::debug!(%reason, name = %address.name, "a key did not enter its workspace");
+        "The computer that hosts this workspace is offline, or didn't let this agent in. Ask the \
+         person to open Tilo on it, then try again."
+            .to_owned()
+    })?;
     Ok(Entered::Door(Box::new(DoorLines::new(dialed))))
 }
 
@@ -163,7 +168,8 @@ impl DoorLines {
         let mut lines = self.lines.lock().await;
         if let Err(error) = lines.send(&request).await {
             self.live.store(false, std::sync::atomic::Ordering::Relaxed);
-            return id.map(|id| failed(&id, &format!("the device's door closed: {error}")));
+            tracing::debug!(%error, "the workspace's computer closed the agent's connection");
+            return id.map(|id| failed(&id, CLOSED));
         }
         let id = id?;
         loop {
@@ -172,12 +178,17 @@ impl DoorLines {
                 Ok(_) => {}
                 Err(error) => {
                     self.live.store(false, std::sync::atomic::Ordering::Relaxed);
-                    return Some(failed(&id, &format!("the device's door closed: {error}")));
+                    tracing::debug!(%error, "the workspace's computer closed the agent's connection");
+                    return Some(failed(&id, CLOSED));
                 }
             }
         }
     }
 }
+
+/// What a connection the workspace's computer ended says.
+const CLOSED: &str = "The computer that hosts this workspace closed the connection. Ask the \
+     person to open Tilo on it, then try again.";
 
 fn failed(id: &Value, message: &str) -> Value {
     serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": message}})

@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_relay_client::CertifyError;
 use tilo_relay_client::HttpClient;
+use tilo_relay_client::LinkError;
 use tilo_relay_client::https::{self, Origin};
 use tilo_relay_client::login::{PairingLink, SignIn, door_at, sign_in};
 use tilo_relay_client::login_code;
@@ -47,6 +48,30 @@ const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where the
      name with what you do: tilo_ls lists its apps and documents, tilo_read reads one, \
      tilo_do runs their actions, and tilo_do with path terminal#run runs a shell command \
      there, all of which History keeps as your run";
+
+/// What a login no host accepts any more says.
+pub(crate) const LOGIN_ENDED: &str = "This computer's Tilo login has ended: ask the person for a new code from their Tilo tab \
+     (Set up with your agent).";
+
+/// What a login this computer cannot read says.
+pub(crate) const LOGIN_DAMAGED: &str = "This computer's Tilo login is damaged: ask the person for a new code from their Tilo tab \
+     (Set up with your agent).";
+
+/// What a tilo that speaks another version than the host says.
+pub(crate) const TOO_OLD: &str = "This tilo is too old for your workspace: install it again with \
+     `curl -fsSL https://tilo.sh | sh`.";
+
+/// What a host that answers nothing usable says.
+pub(crate) const UNREACHED: &str =
+    "Tilo can't be reached from here right now; try again in a minute.";
+
+/// Why something failed, for whoever runs the logs: `RUST_LOG` set says
+/// this computer keeps them, and the person gets the plain sentence instead.
+pub(crate) fn debug_why(what: &str, why: &dyn std::fmt::Display) {
+    if std::env::var_os("RUST_LOG").is_some() {
+        eprintln!("tilo: {what}: {why}");
+    }
+}
 
 /// The HTTPS client every request here goes through.
 static CLIENT: OnceLock<tilo_net::Client> = OnceLock::new();
@@ -134,10 +159,13 @@ impl Device {
         tilo_user_identity::DeviceCert,
         tilo_user_identity::DeviceCert,
     )> {
-        Ok((
-            postcard::from_bytes(&hex::decode(&self.cert)?)?,
-            postcard::from_bytes(&hex::decode(&self.host_cert)?)?,
-        ))
+        let read = |hexed: &str| -> Result<tilo_user_identity::DeviceCert> {
+            hex::decode(hexed)
+                .ok()
+                .and_then(|bytes| postcard::from_bytes(&bytes).ok())
+                .ok_or_else(|| anyhow!(LOGIN_DAMAGED))
+        };
+        Ok((read(&self.cert)?, read(&self.host_cert)?))
     }
 }
 
@@ -171,16 +199,29 @@ pub fn load(dir: &std::path::Path) -> Result<Option<(SigningKey, Device)>> {
     if !key_path.exists() {
         return Ok(None);
     }
-    if std::fs::metadata(&key_path)?.permissions().mode() & 0o077 != 0 {
-        bail!(
-            "{} is readable by other accounts; log in again",
-            key_path.display()
-        );
+    // The key is this account's alone: one others can read is closed to
+    // them here, rather than asking the person to log in over a mode bit.
+    if std::fs::metadata(&key_path)?.permissions().mode() & 0o077 != 0
+        && std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).is_err()
+    {
+        return Err(anyhow!(LOGIN_DAMAGED));
     }
-    let bytes: [u8; 32] = std::fs::read(&key_path)?
+    let bytes: [u8; 32] = std::fs::read(&key_path)
+        .map_err(|error| {
+            debug_why("reading this computer's Tilo key", &error);
+            anyhow!(LOGIN_DAMAGED)
+        })?
         .try_into()
-        .map_err(|_| anyhow!("{} is damaged; log in again", key_path.display()))?;
-    let device: Device = serde_json::from_slice(&std::fs::read(dir.join("device.json"))?)?;
+        .map_err(|_| anyhow!(LOGIN_DAMAGED))?;
+    let device: Device =
+        serde_json::from_slice(&std::fs::read(dir.join("device.json")).map_err(|error| {
+            debug_why("reading this computer's Tilo login", &error);
+            anyhow!(LOGIN_DAMAGED)
+        })?)
+        .map_err(|error| {
+            debug_why("reading this computer's Tilo login", &error);
+            anyhow!(LOGIN_DAMAGED)
+        })?;
     Ok(Some((SigningKey::from_bytes(&bytes), device)))
 }
 
@@ -309,6 +350,119 @@ async fn sign_in_not_taken(
 /// devices called what it would be.
 const MAX_LABEL_ATTEMPTS: u32 = 9;
 
+/// What a login that failed says: what happened, in the person's words, and
+/// the one action that fixes it.
+fn certify_said(error: &CertifyError) -> String {
+    match error {
+        CertifyError::Expired => {
+            "The person's Tilo tab didn't approve this computer in time: it approves only while \
+             the tab is open. Keep the tab open, then run the same command again."
+                .to_owned()
+        }
+        CertifyError::Denied(reason) if reason.contains("declined") => {
+            "The person's Tilo tab declined this computer. Run the same command again and allow \
+             it in the tab."
+                .to_owned()
+        }
+        CertifyError::Denied(_) => {
+            "Tilo didn't let this computer in. Run the same command again with a new code from \
+             the person's Tilo tab."
+                .to_owned()
+        }
+        CertifyError::RateLimited { retry_after_ms } => format!(
+            "Tilo is taking in changes slowly right now: try again in {} seconds.",
+            retry_after_ms.div_ceil(1000).max(1)
+        ),
+        CertifyError::Request(_) | CertifyError::Sign(_) => {
+            "Tilo couldn't ask the person's Tilo tab to approve this computer. Try again in a \
+             minute."
+                .to_owned()
+        }
+        CertifyError::Transport(link) => link_said(link),
+        CertifyError::Iroh(_) | CertifyError::Io(_) => UNREACHED.to_owned(),
+        CertifyError::Codec(_) => TOO_OLD.to_owned(),
+        CertifyError::Auth(error) => auth_said(error),
+    }
+}
+
+/// What a host that answered nothing usable says.
+fn link_said(error: &LinkError) -> String {
+    match error {
+        LinkError::Unavailable(_) | LinkError::Refused(_) => UNREACHED.to_owned(),
+        LinkError::HostChanged => {
+            "This workspace has a new home. Ask the person for a new code from their Tilo tab \
+             (Set up with your agent)."
+                .to_owned()
+        }
+        LinkError::Malformed(_) | LinkError::PeerVersion { .. } => TOO_OLD.to_owned(),
+        LinkError::Sign(_) => LOGIN_DAMAGED.to_owned(),
+    }
+}
+
+/// What a handshake this computer did not pass says.
+fn auth_said(error: &tilo_relay_protocol::auth::AuthError) -> String {
+    use tilo_relay_protocol::auth::AuthError;
+    use tilo_user_identity::DeviceCertError;
+    match error {
+        AuthError::Cert(DeviceCertError::Expired) | AuthError::Revoked => LOGIN_ENDED.to_owned(),
+        AuthError::Cert(_) | AuthError::PolicyReject => {
+            "Tilo didn't let this computer into the workspace. Ask the person to allow it in \
+             their Tilo tab, then try again."
+                .to_owned()
+        }
+        AuthError::BadChallengeSig | AuthError::EndpointMismatch => TOO_OLD.to_owned(),
+    }
+}
+
+/// What a failure to enter the workspace says, from the error's own chain.
+pub(crate) fn enter_said(error: &anyhow::Error) -> String {
+    let chain = format!("{error:#}");
+    let says = |needle: &str| chain.contains(needle);
+    if says("Tilo login has ended") || says("device cert has expired") || says("revoked") {
+        LOGIN_ENDED.to_owned()
+    } else if says("Tilo login is damaged")
+        || says("not hex")
+        || says("names no person")
+        || says("postcard")
+    {
+        LOGIN_DAMAGED.to_owned()
+    } else if says("peer protocol")
+        || says("handshake frame does not decode")
+        || says("malformed answer")
+        || says("answers in a way this device does not read")
+    {
+        TOO_OLD.to_owned()
+    } else if says("did not let this key in") || says("did not let this computer in") {
+        "Tilo didn't let this computer into the workspace. Ask the person to allow it in their \
+         Tilo tab, then try again."
+            .to_owned()
+    } else {
+        UNREACHED.to_owned()
+    }
+}
+
+/// How often entering the workspace is tried after a login: a host that has
+/// just certified this device answers a moment later.
+const ENTER_TRIES: u32 = 3;
+
+/// Enter the workspace, asking again a few times with a growing pause.
+async fn connect_retrying(key: &SigningKey, device: &Device) -> Result<Entered> {
+    let mut pause = std::time::Duration::from_secs(1);
+    let mut last = None;
+    for _ in 0..ENTER_TRIES {
+        match connect(key, device).await {
+            Ok(entered) => return Ok(entered),
+            Err(error) => {
+                debug_why("entering the workspace", &error);
+                last = Some(error);
+                tokio::time::sleep(pause).await;
+                pause = pause.saturating_mul(2);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow!(UNREACHED)))
+}
+
 /// The workspace this computer's login entered: its id, and the name the
 /// device keeps for it, which is how a command that acts in it says which
 /// workspace it used. `None` when this computer is not logged in — an agent's
@@ -341,12 +495,15 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
     ))
     .map_err(|error| anyhow!(error))?;
     let host_web = Origin::new(&http(), &device.host_origin);
-    let info = https::host_info(&host_web).await?;
+    let info = https::host_info(&host_web).await.map_err(|error| {
+        debug_why("asking the workspace's host", &error);
+        anyhow!(UNREACHED)
+    })?;
     let host = info
         .address
         .as_ref()
         .map(tilo_relay_client::Host::published)
-        .context("the workspace's host takes no device connections")?;
+        .ok_or_else(|| anyhow!(UNREACHED))?;
     let (cert, host_cert) = device.certs()?;
     let signed = SignIn {
         link,
@@ -377,23 +534,33 @@ fn site_origin(flag: Option<&str>) -> Result<String> {
 }
 
 /// The site's home host, as its `entry.json` names it (`home.host.origin`).
+///
+/// A site that answers nothing, or nothing this tilo reads, is said as it
+/// is: Tilo cannot be reached from here right now.
 async fn home_host(site: &Origin) -> Result<String> {
-    let unreachable = || format!("{} names no Tilo host to log in at", site.name());
-    let (status, body) = site
-        .get("/entry.json")
-        .await
-        .map_err(|error| anyhow!("{} was not reached: {error}", site.name()))?;
+    let (status, body) = site.get("/entry.json").await.map_err(|error| {
+        debug_why(&format!("reading {}'s entry.json", site.name()), &error);
+        anyhow!(UNREACHED)
+    })?;
+    let entry: Value = serde_json::from_slice(&body).map_err(|error| {
+        debug_why(&format!("reading {}'s entry.json", site.name()), &error);
+        anyhow!(UNREACHED)
+    })?;
     if status != 200 {
-        bail!("{} (HTTP {status})", unreachable());
+        debug_why(&format!("reading {}'s entry.json", site.name()), &status);
+        bail!(UNREACHED);
     }
-    let entry: Value = serde_json::from_slice(&body).with_context(unreachable)?;
     let origin = entry
         .pointer("/home/host/origin")
         .and_then(Value::as_str)
-        .with_context(unreachable)?;
-    let url = tilo_net::Url::parse(origin).with_context(unreachable)?;
+        .ok_or_else(|| anyhow!(UNREACHED))?;
+    let url = tilo_net::Url::parse(origin).map_err(|error| {
+        debug_why("reading the site's host address", &error);
+        anyhow!(UNREACHED)
+    })?;
     if !tilo_net::secure_origin(&url) {
-        bail!("{}: its host {origin} is not https", unreachable());
+        debug_why("the site's host address", &origin);
+        bail!(UNREACHED);
     }
     Ok(url.origin().ascii_serialization())
 }
@@ -430,13 +597,19 @@ const CODE_KEPT_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 fn said_refusal(refusal: &login_code::CodeRefusal, code: &str) -> anyhow::Error {
     match refusal.code() {
         "unknown" => anyhow!(
-            "the code {code} is unknown, used or expired: a code works once, for 10 minutes. \
-             Ask the person to copy the prompt from their Tilo tab again."
+            "Tilo couldn't use the code {code}: a code works once, for 10 minutes. \
+             Ask the person for a new code from their Tilo tab (Set up with your agent)."
         ),
         "too-many" => {
-            anyhow!("too many wrong codes from here: wait a minute, then check the code")
+            anyhow!("There were too many wrong codes from here: wait a minute, then try again.")
         }
-        _ => anyhow!("the host refused the code: {refusal}"),
+        other => {
+            debug_why(&format!("the code was refused ({other})"), refusal);
+            anyhow!(
+                "Tilo couldn't use this code: ask the person for a new code from their Tilo tab \
+                 (Set up with your agent)."
+            )
+        }
     }
 }
 
@@ -497,10 +670,17 @@ async fn claim(
         .await
         .map_err(|refusal| match refusal.code() {
             "not-a-device" => anyhow!(
-                "this host signs nobody in for the person this computer is a device of: \
-                 sign in on the host where you set Tilo up"
+                "This computer is logged in to another Tilo account. Log it in again with a \
+                 code from the account the person wants to use (in Tilo, choose \
+                 \"Set up with your agent\")."
             ),
-            _ => anyhow!("the host refused the claim: {refusal}"),
+            other => {
+                debug_why(&format!("the claim was refused ({other})"), &refusal);
+                anyhow!(
+                    "Tilo couldn't use this code: ask the person for a new one from their Tilo \
+                     tab (Set up with your agent)."
+                )
+            }
         })
 }
 
@@ -695,8 +875,8 @@ fn add_tools(agent: &Agent, tilo: &Path, runner: &dyn agent::Runner) -> Tools {
 pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<ExitCode> {
     let Some(code) = protocol::normalize_code(code) else {
         bail!(
-            "{} is not a login code; one looks like K7Q-MX2P. Ask the person to copy the prompt \
-             from their Tilo tab again.",
+            "{} is not a login code; one looks like K7Q-MX2P. Ask the person for the code their \
+             Tilo tab shows (in Tilo, choose \"Set up with your agent\").",
             code.trim()
         );
     };
@@ -719,10 +899,15 @@ pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<Exit
         let done = match (&resolved.link, resolved.sign_in) {
             (Some(link), _) => set_up(&reporter, link, &agent).await,
             (None, true) => vouch(&reporter, &host).await,
-            (None, false) => Err(anyhow!("the code names nothing this computer can do")),
+            (None, false) => Err(anyhow!(
+                "Tilo couldn't use this code: ask the person for a new one from their Tilo tab \
+                 (Set up with your agent)."
+            )),
         };
         if let Err(error) = &done {
-            reporter.failed(&upper_first(&format!("{error:#}"))).await;
+            debug_why("the login did not finish", error);
+            // The tab reads one sentence: what happened, in plain words.
+            reporter.failed(&upper_first(&error.to_string())).await;
         }
         done
     })
@@ -745,14 +930,9 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     eprintln!("Waiting for the person's tab to approve this computer…");
     let (signed, label) = sign_in_not_taken(&host_web, &link, &agent.name, &key)
         .await
-        .map_err(|error| match error {
-            CertifyError::Expired => anyhow!(
-                "the tab did not approve this computer in time: it approves only while it is open"
-            ),
-            CertifyError::Denied(reason) if reason.contains("declined") => {
-                anyhow!("the tab declined this computer")
-            }
-            other => anyhow!("logging in failed: {other}"),
+        .map_err(|error| {
+            debug_why("the person's tab certifying this computer", &error);
+            anyhow!(certify_said(&error))
         })?;
     let mut device = Device::of(&signed)?;
     device.workspace_name = workspace_name(&host_web, &device.workspace).await;
@@ -793,21 +973,37 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
             )
         },
     );
-    match connect(&key, &device).await {
+    match connect_retrying(&key, &device).await {
         Ok(entered) => {
             println!("Entered {place}: their tab shows you there.");
             entered.close();
-            // The workspace's one folder, on this computer too.
-            match crate::folders::after_login(&device.workspace, device.workspace_name.as_deref()) {
+            // The workspace's one folder, on this computer too, asked for a
+            // few times: it is the same host that just took this computer in.
+            let mut folder =
+                crate::folders::after_login(&device.workspace, device.workspace_name.as_deref());
+            for pause in [1, 2] {
+                if folder.is_ok() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(pause));
+                folder = crate::folders::after_login(
+                    &device.workspace,
+                    device.workspace_name.as_deref(),
+                );
+            }
+            match folder {
                 Ok(folder) => println!(
                     "Its files are in {}, kept in sync both ways: anything written there is in the \
                      workspace, named for who wrote it (`tilo folders` lists the folders).",
                     folder.display()
                 ),
-                Err(error) => println!(
-                    "Its files are not in a folder on this computer yet: {error:#} \
-                     (`tilo folders start` tries again)."
-                ),
+                Err(error) => {
+                    debug_why("putting the workspace's files in a folder", &error);
+                    println!(
+                        "Logged in. Its files aren't in a folder on this computer yet: \
+                         `tilo folders` asks for it again."
+                    );
+                }
             }
             // An agent that adds Tilo's tools itself confirms them first: the
             // tab leaves only once they are in, and the agent's own check
@@ -821,18 +1017,14 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
         }
         Err(error) => {
             // Said to the person's tab and to the agent alike: what did not
-            // happen, the host's own reason, and what happens next.
+            // happen and the one action that fixes it.
+            let said = enter_said(&error);
             reporter
                 .failed(&format!(
-                    "Logged in, but this computer could not open the workspace yet: {error:#}. \
-                     Your agent tries again when it next uses Tilo."
+                    "Logged in, but this computer can't open your workspace yet: {said}"
                 ))
                 .await;
-            println!(
-                "Logged in, but this computer could not open {place} yet: {error:#}. \
-                 tilo mcp tries again each time it starts; if it keeps failing, run tilo login \
-                 with a new code from the person's tab."
-            );
+            println!("Logged in, but this computer can't open {place} yet: {said}");
         }
     }
     println!();
@@ -845,8 +1037,8 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
 async fn vouch(reporter: &Reporter<'_>, host: &dyn HttpClient) -> Result<ExitCode> {
     let Some((key, device)) = load(&device_dir()?)? else {
         bail!(
-            "this is a sign-in code, for a computer already set up with Tilo, and this one is \
-             not; on a new account, choose \"Set up with your agent\" in Tilo instead"
+            "This is a sign-in code, which needs a computer already logged in to Tilo, and this \
+             one isn't. In Tilo, choose \"Set up with your agent\" instead."
         );
     };
     // The host tells the tab it approved, as it approves: that step is
@@ -912,10 +1104,22 @@ mod tests {
             let (read, kept) = load(&place).unwrap().unwrap();
             assert_eq!(read.to_bytes(), key.to_bytes());
             assert_eq!(kept, device());
-            // A key others can read is not used.
+            // A key others can read is closed to them and used, not refused.
             std::fs::set_permissions(place.join("key"), std::fs::Permissions::from_mode(0o644))
                 .unwrap();
-            assert!(load(&place).is_err());
+            assert!(load(&place).unwrap().is_some());
+            assert_eq!(
+                std::fs::metadata(place.join("key"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            // A key that is not a key says what to do, not what it holds.
+            std::fs::write(place.join("key"), b"short").unwrap();
+            let said = load(&place).unwrap_err().to_string();
+            assert_eq!(said, LOGIN_DAMAGED);
             assert!(load(&dir.path().join("none")).unwrap().is_none());
         }
 
@@ -1042,6 +1246,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_failed_login_says_what_to_do_without_the_machinery() {
+        use tilo_relay_protocol::auth::AuthError;
+        use tilo_user_identity::DeviceCertError;
+        let said = certify_said(&CertifyError::Expired);
+        assert!(said.contains("Keep the tab open"), "{said}");
+        assert!(
+            certify_said(&CertifyError::RateLimited {
+                retry_after_ms: 1500
+            })
+            .contains("2 seconds"),
+            "a pause reads in seconds"
+        );
+        for error in [
+            CertifyError::Denied("declined".into()),
+            CertifyError::Denied("not admissible".into()),
+            CertifyError::Transport(LinkError::Unavailable("connect error".into())),
+            CertifyError::Transport(LinkError::Refused("403".into())),
+            CertifyError::Transport(LinkError::PeerVersion { theirs: 99 }),
+            CertifyError::Transport(LinkError::HostChanged),
+            CertifyError::Transport(LinkError::Sign("connect error".into())),
+            CertifyError::Codec("bad frame".into()),
+            CertifyError::Iroh("connect error".into()),
+            CertifyError::Auth(AuthError::Revoked),
+            CertifyError::Auth(AuthError::Cert(DeviceCertError::Expired)),
+        ] {
+            let said = certify_said(&error);
+            for machinery in [
+                "iroh:",
+                "codec:",
+                "auth:",
+                "peer ",
+                "protocol",
+                "connect error",
+                "bad frame",
+                "not admissible",
+                "403",
+            ] {
+                assert!(!said.contains(machinery), "{said} names {machinery}");
+            }
+            assert!(said.ends_with('.'), "{said}");
+        }
+        assert_eq!(
+            enter_said(&anyhow::anyhow!("device cert has expired")),
+            LOGIN_ENDED
+        );
+        assert_eq!(
+            enter_said(&anyhow::anyhow!(
+                "the host speaks peer protocol 99, this device 3"
+            )),
+            TOO_OLD
+        );
+        assert_eq!(
+            enter_said(&anyhow::anyhow!(
+                "the workspace's host takes no device connections"
+            )),
+            UNREACHED
+        );
+        assert_eq!(enter_said(&anyhow::anyhow!(LOGIN_DAMAGED)), LOGIN_DAMAGED);
+    }
+
     #[tokio::test]
     async fn a_spent_or_guessed_code_says_what_to_do() {
         let spent = FakeHost::new(|_, _| (404, Value::Null));
@@ -1076,7 +1341,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(said.contains("signs nobody in"), "{said}");
+        assert!(said.contains("another Tilo account"), "{said}");
     }
 
     #[tokio::test]

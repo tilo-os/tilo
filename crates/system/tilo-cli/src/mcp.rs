@@ -69,7 +69,12 @@ impl Session {
             .failures
             .into_iter()
             .find(|failure| failure.code == STOPPED)
-            .map(|failure| format!("{} Start a new session to go on.", failure.message))
+            .map(|failure| {
+                format!(
+                    "{} Start a new conversation with your agent to go on.",
+                    failure.message
+                )
+            })
     }
 }
 
@@ -99,12 +104,16 @@ impl Enter for LoggedIn {
             .await
             .map_err(|_| {
                 format!(
-                    "Tilo could not enter your workspace on {} within {} seconds; try again.",
+                    "Tilo couldn't reach the workspace on {} within {} seconds; it is offline, \
+                     or this computer's connection is down. Try again in a minute.",
                     crate::login::host_of(&device.host_origin),
                     ENTERING.as_secs()
                 )
             })?
-            .map_err(|error| format!("Tilo could not enter your workspace: {error:#}"))?;
+            .map_err(|error| {
+                crate::login::debug_why("entering the workspace", &error);
+                crate::login::enter_said(&error)
+            })?;
         Ok(Arc::new(Session { device: entered }))
     }
 }
@@ -209,7 +218,7 @@ fn open(session: Arc<Session>, device: &Device, run: &str) -> Result<Served, Str
     let user: [u8; 32] = hex::decode(&device.user)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
-        .ok_or("this computer's login names no person; log in again")?;
+        .ok_or(crate::login::LOGIN_DAMAGED)?;
     let actions = session.device.actions(workspace_id);
     let person = hex::encode(user);
     // The records the agent works in open as windows on the workspace's
@@ -287,7 +296,7 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
         Err(why) => {
             // The agent keeps its tools: this connection holds a session of
             // its own, which another `tilo mcp` of this device would cut off.
-            eprintln!("tilo mcp: {why}; serving this connection alone");
+            eprintln!("tilo mcp: {why} This agent's connection works on its own until then.");
             held::alone(&shared(device))
         }
     }

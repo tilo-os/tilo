@@ -126,11 +126,19 @@ fn reach_starting(
         match tilo_files::native::socket::connect(&place.socket) {
             Ok(stream) => return Ok(stream),
             Err(error) if Instant::now() >= deadline => {
-                return Err(format!(
-                    "no process holds this computer's session at {} ({error}); its log is {}",
-                    place.socket.display(),
-                    place.log.display()
-                ));
+                // Where it listens and what it logged: for whoever keeps this
+                // computer's logs, not for the agent's sentence.
+                tracing::debug!(
+                    socket = %place.socket.display(),
+                    log = %place.log.display(),
+                    %error,
+                    "Tilo's background sync did not answer"
+                );
+                return Err(
+                    "Tilo's background sync isn't answering on this computer. Run `tilo status` \
+                     to see how it stands, then try again."
+                        .to_owned(),
+                );
             }
             Err(_) => {}
         }
@@ -139,7 +147,10 @@ fn reach_starting(
             .is_none_or(|child| child.try_wait().ok().flatten().is_some());
         if ended {
             started = Some(start().map_err(|error| {
-                format!("the process holding this computer's session did not start: {error}")
+                tracing::debug!(%error, "Tilo's background sync did not start");
+                "Tilo's background sync didn't start on this computer. Run `tilo status` to see \
+                 how it stands, then try again."
+                    .to_owned()
             })?);
         }
         std::thread::sleep(POLL);
@@ -392,11 +403,14 @@ async fn keep_peer<E: Enter>(shared: Arc<Shared<E>>, home: PathBuf, state: PathB
     let peer = match crate::peer::Peer::open(&state, &home, true).await {
         Ok(peer) => Arc::new(peer),
         Err(error) => {
+            tracing::error!(%error, "the workspaces' files cannot be kept here");
             *NOT_IN
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!(
-                "the workspaces' files cannot be kept here: {error:#}"
-            ));
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+                "Tilo's background sync isn't keeping this computer's workspace files yet. Run \
+                 `tilo status` again in a minute."
+                    .to_owned(),
+            );
             return;
         }
     };
@@ -469,6 +483,11 @@ async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
     let mut opening = Opening::default();
     let mut next = Some(first);
     let mut input_open = true;
+    // Requests a holder ended before answering: a read is asked again of the
+    // holder reached in its place, once; anything else is the agent's to
+    // repeat, since it may have run.
+    let mut carried: Vec<String> = Vec::new();
+    let mut retried: std::collections::HashSet<String> = std::collections::HashSet::new();
     loop {
         let stream = if let Some(stream) = next.take() {
             stream
@@ -492,15 +511,26 @@ async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
             }
             swallow = said.answered;
         }
-        let mut unanswered: HashMap<String, Value> = HashMap::new();
+        let mut unanswered: HashMap<String, Unanswered> = HashMap::new();
+        for line in std::mem::take(&mut carried) {
+            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let Some(id) = message.get("id").cloned() else {
+                continue;
+            };
+            retried.insert(id.to_string());
+            write.write_all(format!("{line}\n").as_bytes()).await?;
+            unanswered.insert(id.to_string(), Unanswered { id, line });
+        }
         let ended = loop {
             tokio::select! {
                 line = input.recv(), if input_open => if let Some(line) = line {
-                    if let Some(id) = opening.note(&line) {
-                        unanswered.insert(id.to_string(), id);
-                    }
                     if write.write_all(format!("{line}\n").as_bytes()).await.is_err() {
                         break true;
+                    }
+                    if let Some(id) = opening.note(&line) {
+                        unanswered.insert(id.to_string(), Unanswered { id, line });
                     }
                 } else {
                     input_open = false;
@@ -530,13 +560,35 @@ async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
             // The agent's input closed and the holder answered everything.
             return Ok(ExitCode::SUCCESS);
         }
-        for id in unanswered.into_values() {
-            let again = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000,
-                "message": "Tilo's connection to the workspace started again before this was answered; make the call again."}});
+        for (key, request) in unanswered {
+            if a_read(&request.line) && retried.insert(key) {
+                carried.push(request.line);
+                continue;
+            }
+            let again = json!({"jsonrpc": "2.0", "id": request.id, "error": {"code": -32000,
+                "message": "Tilo lost its connection to the workspace before it answered. Run `tilo status` to see how it stands, then try again."}});
             stdout.write_all(format!("{again}\n").as_bytes()).await?;
         }
         stdout.flush().await?;
     }
+}
+
+/// A request the holder ended before answering.
+struct Unanswered {
+    id: Value,
+    line: String,
+}
+
+/// Whether a request only reads: asking it again runs nothing twice.
+fn a_read(line: &str) -> bool {
+    let Ok(message) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    message.get("method").and_then(Value::as_str) == Some("tools/call")
+        && matches!(
+            message.pointer("/params/name").and_then(Value::as_str),
+            Some("tilo_ls" | "tilo_read" | "tilo_find" | "tilo_status")
+        )
 }
 
 /// What an agent said to open its connection, said again to a holder
@@ -586,6 +638,22 @@ mod tests {
     use super::*;
     use std::io::{BufRead as _, Write as _};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn only_reads_are_asked_again_by_themselves() {
+        assert!(a_read(
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tilo_read","arguments":{}}}"#
+        ));
+        assert!(a_read(
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tilo_status"}}"#
+        ));
+        assert!(!a_read(
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"tilo_do","arguments":{}}}"#
+        ));
+        assert!(!a_read(
+            r#"{"jsonrpc":"2.0","id":5,"method":"initialize","params":{}}"#
+        ));
+    }
 
     /// A device that cannot enter, saying how many times it was asked: the
     /// holder asks it again for each connection, so the count says which

@@ -667,12 +667,11 @@ pub fn login_key(name: Option<&str>) -> Result<Option<tilo_api::direct::KeyFile>
     // the canonical encoding of the same certificate, which is what `Direct`
     // reads back.
     let cert: tilo_user_identity::DeviceCert = postcard::from_bytes(
-        &hex::decode(&device.cert)
-            .map_err(|_| anyhow!("this computer's certificate is not hex; log in again"))?,
+        &hex::decode(&device.cert).map_err(|_| anyhow!(crate::login::LOGIN_DAMAGED))?,
     )
-    .map_err(|error| anyhow!("this computer's certificate: {error}; log in again"))?;
+    .map_err(|_| anyhow!(crate::login::LOGIN_DAMAGED))?;
     let canonical = tilo_user_identity::canonical::canonical_bytes(&cert)
-        .map_err(|error| anyhow!("this computer's certificate: {error}"))?;
+        .map_err(|_| anyhow!(crate::login::LOGIN_DAMAGED))?;
     Ok(Some(tilo_api::direct::KeyFile {
         host: device.host_origin.clone(),
         // The site the device logged in with: links this key asks the host
