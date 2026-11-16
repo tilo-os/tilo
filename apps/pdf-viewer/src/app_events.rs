@@ -988,7 +988,7 @@ impl PdfApp {
                 true
             }
             "s" | "S" => {
-                self.request_save_via_portal();
+                self.ask_save();
                 *handled = true;
                 true
             }

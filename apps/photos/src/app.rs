@@ -450,7 +450,6 @@ pub struct Photos {
     picker: Option<ui::portal::PortalChannel>,
     contents_picker: Option<ui::portal::ContentsChannel>,
     directory_picker: Option<ui::portal::PortalChannel>,
-    save_chooser: Option<(ui::portal::SaveChannel, Option<tilo_actions::InvocationId>)>,
     directory_picker_retain_exif_location: bool,
     directory_import: Option<DirectoryImport>,
     directory_import_receipt: Option<DirectoryImportReceipt>,
@@ -715,7 +714,6 @@ impl Photos {
             picker: None,
             contents_picker: None,
             directory_picker: None,
-            save_chooser: None,
             directory_picker_retain_exif_location: true,
             directory_import: None,
             directory_import_receipt: None,
@@ -1132,38 +1130,32 @@ impl Photos {
         saved
     }
 
-    pub fn save_with_chooser(&mut self) -> bool {
-        self.shown_photo()
-            .is_some_and(|photo| self.choose_save_destination(&photo.image, None))
-    }
-
-    pub fn is_saving(&self) -> bool {
-        self.save_chooser.is_some()
-    }
-
-    pub(crate) fn choose_save_destination(
-        &mut self,
-        open: &OpenImage,
-        invocation: Option<tilo_actions::InvocationId>,
-    ) -> bool {
-        if self.save_chooser.is_some() {
-            return false;
-        }
-        let Some(bytes) = self.edited_png() else {
-            self.notice = Some(tr("photos-save-failed"));
-            return false;
-        };
+    /// Save a copy of the edited photograph where the person chooses; the window goes on showing
+    /// the photograph.
+    pub(crate) fn save_edited(
+        &self,
+        library: &PhotoLibrary,
+        cx: &mut ui::framework::EffectCx<PhotoLibrary, PhotosApp>,
+    ) -> ui::framework::EffectAnswer {
+        let open = self
+            .shown_photo_in(library)
+            .ok_or_else(|| "no photograph is open".to_string())?;
+        let bytes = self.edited_png().ok_or_else(|| tr("photos-save-failed"))?;
         let filter = ui::portal::FileFilter::new(&tr("photos-filter-images")).mimetype("image/png");
-        let chooser = ui::portal::PickRequest::save(
+        let request = ui::portal::PickRequest::save(
             &tr("photos-save-title"),
             &tr("photos-save"),
-            &Self::suggested_save_name(open),
+            &Self::suggested_save_name(&open.image),
         )
         .thread_name("photos-portal-save")
-        .filter(filter)
-        .send_save_contents(bytes);
-        self.save_chooser = Some((chooser, invocation));
-        true
+        .filter(filter);
+        Ok(cx.save_file(request, bytes, |app, saved, _| {
+            if !saved {
+                return Err(tr("photos-save-cancelled"));
+            }
+            app.state().notice = Some(tr("photos-saved-edited"));
+            Ok(ui::framework::Effected::done())
+        }))
     }
 
     fn edited_png(&self) -> Option<Vec<u8>> {

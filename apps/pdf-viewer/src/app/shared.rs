@@ -68,7 +68,7 @@ pub(super) struct AskHere {
 }
 
 impl AskHere {
-    pub(super) fn open(self, path: PathBuf, cx: &mut EffectCx<PdfMarkup>) -> EffectAnswer {
+    pub(super) fn open(self, path: PathBuf, cx: &mut EffectCx<PdfMarkup, PdfApp>) -> EffectAnswer {
         if self.shown.as_deref() == Some(path.as_path()) {
             return Ok(Effected::done());
         }
@@ -79,7 +79,7 @@ impl AskHere {
         cx.waker().wake();
         let arguments = [path.display().to_string()];
         let store = self.store;
-        Ok(cx.open_here(&open_here, &arguments, move |(), answer, cx| {
+        Ok(cx.open_here(&open_here, &arguments, move |_, answer, cx| {
             let result = answer
                 .as_ref()
                 .map(|()| Effected::done())
@@ -181,10 +181,11 @@ impl PdfApp {
     pub(crate) fn effect(
         &mut self,
         effect: PdfEffect,
-        cx: &mut EffectCx<PdfMarkup>,
+        cx: &mut EffectCx<PdfMarkup, Self>,
     ) -> EffectAnswer {
         let answer = match effect {
             PdfEffect::OpenPdf { path } => self.open_effect(path, cx),
+            PdfEffect::SaveAs => self.save_as_effect(cx),
             PdfEffect::ReadText { from_page, to_page } => {
                 self.read_text(from_page, to_page).map(Effected::value)
             }

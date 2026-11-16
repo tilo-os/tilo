@@ -69,7 +69,6 @@ pdf-note-save-waiting-pages = The pages are still being put in order. Save again
 pdf-note-saving = Saving a copy with your markup as { $name }…
 pdf-note-saved = Saved a copy with your markup as { $name }.
 pdf-note-save-failed = { $name } wasn't saved. Try another folder or name.
-pdf-note-save-picker-failed = The save window couldn't open. Try saving again.
 
 pdf-note-import-no-document = Open a PDF first, then import pages into it.
 pdf-note-import-busy = Pages are already being imported. Import more once they're in.
@@ -297,6 +296,7 @@ pdf-viewer-effects-select-text = Select text
 pdf-viewer-effects-select-all = Select all
 pdf-viewer-effects-copy-selection = Copy selection
 pdf-viewer-effects-insert-pages = Insert pages
+pdf-viewer-effects-save-to = Save annotated PDF to a file
 pdf-document = PDF
 pdf-document-record-reading-position = Remember reading position
 pdf-document-start-page-plan = Start page plan
