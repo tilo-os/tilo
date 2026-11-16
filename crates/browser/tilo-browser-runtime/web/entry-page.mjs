@@ -1821,7 +1821,7 @@ const DOOR_SIGNED_IN = 'tilo-entry-signed-in';
  * by invitation only, nothing does.
  */
 function offerRefusal({messages, named, error, workspace, runtime, link}) {
-  const entry = document.getElementById('arrival-entry');
+  const entry = document.getElementById('arrival-refusal');
   // The first screen of a first visit is not for someone the entry turns
   // away: it asks them to set an agent up in a workspace they are not in. It
   // leaves now, not after its fade, and whatever the page drew of it while it
