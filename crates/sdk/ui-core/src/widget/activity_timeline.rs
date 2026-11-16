@@ -155,13 +155,6 @@ impl ChipKind {
     }
 }
 
-/// Below this width a row's writer chip is the writer's mark without its name, so what the
-/// change did and the thing it did it to keep the room.
-const COMPACT_WRITER_WIDTH: f64 = 480.0;
-
-/// The space between what a change did and the thing it did it to.
-const TARGET_GAP: f64 = 5.0;
-
 /// Below this width the trailing time + revert slots shrink so the summary
 /// keeps a usable share of the row.
 const NARROW_WIDTH: f64 = 340.0;
@@ -2565,7 +2558,8 @@ impl ActivityTimeline {
                 text_style,
             );
             let (action_w, line_h) = text_renderer.measure_style(&action, None, text_style);
-            let link_x = summary_x + f64::from(action_w) + TARGET_GAP;
+            let link_x =
+                summary_x + f64::from(action_w) + f64::from(theme.tokens.spacing.rhythm.tight);
             let label = fit_text(
                 text_renderer,
                 &target.label,

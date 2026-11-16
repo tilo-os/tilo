@@ -75,6 +75,9 @@ pub struct Metrics {
     /// characters of the `Reading` role at the stock text size.
     pub reading_measure: f32,
     pub message_measure: f32,
+    /// The width below which a History row's writer chip is the writer's mark alone, so
+    /// what the change did and the thing it did it to keep the room.
+    pub history_writer_name_width: f32,
     pub chooser_width: f32,
     /// The narrowest a text field stands where nothing else sets its width: a row that
     /// wraps or a run that hugs its items lays a field out at its own width, which is
@@ -167,6 +170,7 @@ impl Metrics {
         readable_width: 720.0,
         reading_measure: 640.0,
         message_measure: 560.0,
+        history_writer_name_width: 480.0,
         chooser_width: 224.0,
         field_min_width: 160.0,
         wheel_line: 60.0,
@@ -284,6 +288,7 @@ impl Metrics {
             readable_width: self.readable_width * factor,
             reading_measure: self.reading_measure * factor,
             message_measure: self.message_measure * factor,
+            history_writer_name_width: self.history_writer_name_width * factor,
             chooser_width: self.chooser_width * factor,
             field_min_width: self.field_min_width * factor,
             wheel_line: self.wheel_line * factor,

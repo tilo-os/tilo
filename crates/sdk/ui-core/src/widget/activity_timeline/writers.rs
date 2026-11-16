@@ -111,7 +111,9 @@ impl ActivityTimeline {
         theme: &Theme,
     ) -> Option<(String, f64, ChipLead)> {
         let (label, width, lead) = Self::writer_chip(entry, text_renderer, theme)?;
-        if self.rect.width() >= COMPACT_WRITER_WIDTH || matches!(lead, ChipLead::None) {
+        if self.rect.width() >= f64::from(theme.tokens.metrics.history_writer_name_width)
+            || matches!(lead, ChipLead::None)
+        {
             return Some((label, width, lead));
         }
         let width = crate::widget::ChipFace::intrinsic_width("", lead, false, text_renderer, theme);
