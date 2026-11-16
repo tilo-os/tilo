@@ -23,6 +23,7 @@ tilo-web-search = { path = "../../platform/tilo-web-search" }
 tilo-rt = { path = "../../platform/tilo-rt" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 serde_json.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # The engine answers the tools' own tests ask instead of the web.

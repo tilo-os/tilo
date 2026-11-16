@@ -17510,6 +17510,7 @@ dependencies = [
  "tilo-rt",
  "tilo-test-env",
  "tilo-web-search",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -28767,6 +28768,7 @@ dependencies = [
  "tilo-activities",
  "tilo-advisory-lock",
  "tilo-agent-participant",
+ "tilo-agent-web-tools",
  "tilo-api",
  "tilo-app",
  "tilo-app-cli",
