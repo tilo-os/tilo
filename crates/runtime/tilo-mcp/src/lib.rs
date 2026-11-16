@@ -38,7 +38,7 @@ use serde_json::{Value, json};
 use step::{DeclaredRun, STEP, STEP_RUN, SURFACE_STRUCTURED};
 use tilo_actions::remote::{
     ActionHost, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
-    InvokeArgument, InvokeRequest, RemoteActionTarget,
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_lock::MutexRecover as _;
 pub use turns::{MAX_ADMITTED, MAX_WORKING};
@@ -2846,10 +2846,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             let Some(deadline) =
                 deadline.filter(|deadline| tokio::time::Instant::now() < *deadline)
             else {
-                let mut value = state
-                    .as_ref()
-                    .map(|state| state_json(id, state))
-                    .ok_or_else(|| UNOWNED.to_string())?;
+                // This call admitted the invocation, so the caller is told how to
+                // ask about it again: an observation the host did not answer in
+                // time says nothing about whether the invocation is theirs.
+                let mut value = state.as_ref().map_or_else(
+                    || json!({"invocation_id": id.0.to_string()}),
+                    |state| state_json(id, state),
+                );
                 if let Some(fields) = value.as_object_mut() {
                     fields.insert(
                         "pending".into(),
@@ -2919,6 +2922,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             self.remember_effect(invocation, effect);
         }
         let answer = answer.ok_or_else(|| BridgeError::from("Unavailable"))?;
+        // A receipt that admitted nothing is the host's refusal: there is no
+        // invocation to follow, and answering one as unknown would lose why.
+        if let Ok(receipt) = &answer
+            && let ReceiptStatus::Rejected { error } = &receipt.status
+        {
+            return Err(BridgeError::Host(error.clone()));
+        }
         answer
             .map(|_| Admission::Answered)
             .map_err(BridgeError::Host)
