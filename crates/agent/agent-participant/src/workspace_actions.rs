@@ -71,6 +71,7 @@ mod publish;
 mod reads;
 mod run_context;
 mod run_voice;
+mod runs;
 mod share;
 mod terminal;
 mod tree_put;
@@ -185,6 +186,13 @@ enum Job {
         after: Option<String>,
         done: Completer<Result<tilo_actions::remote::ChangePage, ActionHostError>>,
     },
+    /// A page of a workspace's runs ([`runs`]).
+    Runs {
+        workspace_id: WorkspaceId,
+        caller: Caller,
+        query: tilo_actions::remote::workspace_runs::RunsQuery,
+        done: Completer<Result<tilo_actions::remote::workspace_runs::Runs, ActionHostError>>,
+    },
     /// An agent's run connected to a workspace and has asked nothing yet:
     /// it is present there, waiting ([`run_voice`]).
     Arrived {
@@ -214,6 +222,7 @@ impl Job {
             Self::ContentLink { .. } => "content-link",
             Self::Search { .. } => "search",
             Self::Changes { .. } => "changes",
+            Self::Runs { .. } => "runs",
             Self::Joined(_) => "joined",
             Self::Forget(_) => "forget",
             Self::NotesFolder(_) => "notes-folder",
@@ -230,6 +239,7 @@ impl Job {
             | Self::ContentLink { workspace_id, .. }
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
+            | Self::Runs { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
             | Self::NotesFolder(workspace_id) => Some(*workspace_id),
             Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
@@ -244,7 +254,7 @@ impl Job {
         match self {
             Self::Catalogue { query, .. } => catalogue_keys(query),
             // Every record the workspace holds is searched and followed.
-            Self::Search { .. } | Self::Changes { .. } => Keys::Workspace,
+            Self::Search { .. } | Self::Changes { .. } | Self::Runs { .. } => Keys::Workspace,
             Self::Feedback { .. }
             | Self::Invoke { .. }
             | Self::Ran(_)
@@ -620,6 +630,11 @@ impl WorkspaceActions {
         // would, and is no part of the remembered request.
         request.wait_ms = None;
         let invocation = request.invocation;
+        // The listing of the workspace's runs is a read, answered at once and
+        // remembered as no run of its own.
+        if tilo_actions::remote::workspace_runs::is_listing(&request.target) {
+            return self.runs_request(workspace_id, caller, &request);
+        }
         let receipt = |status| {
             Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
                 invocation,
@@ -650,6 +665,9 @@ impl WorkspaceActions {
                             .into(),
                     },
                 });
+            }
+            if let Some(entry) = ledger.entries.get_mut(&invocation) {
+                entry.workspace = Some(workspace_id);
             }
         }
         let (done, answer) = pending();
@@ -996,6 +1014,8 @@ struct Workspace {
     runs: run_voice::Runs,
     /// What changed in its records, for those following it ([`found`]).
     changes: ui::history_source::feed::ChangeLog,
+    /// What its records' histories say of its runs ([`runs`]).
+    run_index: runs::Index,
 }
 
 impl Drop for Workspace {
@@ -1033,6 +1053,7 @@ impl Workspace {
             undecided: BTreeSet::new(),
             records: None,
             changes: ui::history_source::feed::ChangeLog::new(),
+            run_index: runs::Index::default(),
         })
     }
 
@@ -1688,6 +1709,8 @@ impl Worker {
         let started = Instant::now();
         let kind = job.kind();
         self.take(job);
+        // What it ended, it ended now, as a listing of runs says.
+        self.ledger().stamp_ended();
         let (waited, ran) = (started.duration_since(queued), started.elapsed());
         tracing::debug!(
             kind,
@@ -1762,6 +1785,12 @@ impl Worker {
                     after,
                     done,
                 } => done.complete(self.changes(workspace_id, &caller, after.as_deref())),
+                Job::Runs {
+                    workspace_id,
+                    caller,
+                    query,
+                    done,
+                } => done.complete(self.runs(workspace_id, &caller, &query)),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
                 Job::NotesFolder(workspace_id) => self.notes_pass(workspace_id),
                 Job::Forget(workspace_id) => self.forget(workspace_id),

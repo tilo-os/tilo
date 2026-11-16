@@ -33,6 +33,13 @@ pub(super) struct Entry {
     /// What the person is asked about it, once it waits for their answer
     /// ([`super::bounded::About`]).
     pub(super) about: Option<Box<super::bounded::About>>,
+    /// The workspace it was asked in, once admitted there: what a listing of
+    /// that workspace's runs reads it by ([`super::runs`]).
+    pub(super) workspace: Option<tilo_relay_protocol::WorkspaceId>,
+    /// When it was asked for, in milliseconds since the Unix epoch.
+    pub(super) started_ms: i64,
+    /// When the host first saw it ended ([`Ledger::stamp_ended`]).
+    pub(super) ended_ms: Option<i64>,
 }
 
 #[derive(Default)]
@@ -79,9 +86,23 @@ impl Ledger {
                 saving: false,
                 witness: None,
                 about: None,
+                workspace: None,
+                started_ms: now_ms(),
+                ended_ms: None,
             },
         );
         true
+    }
+
+    /// Note, of every invocation that ended since the last look, that it
+    /// ended now: what a listing of runs says it ended at.
+    pub(super) fn stamp_ended(&mut self) {
+        let now = now_ms();
+        for entry in self.entries.values_mut() {
+            if entry.ended_ms.is_none() && entry.update.is_terminal() {
+                entry.ended_ms = Some(now);
+            }
+        }
     }
 
     pub(super) fn forget(&mut self, id: &InvocationId) {
@@ -106,4 +127,13 @@ impl Ledger {
     pub(super) fn owned(&self, caller: &Caller, id: &InvocationId) -> Option<&Entry> {
         self.entries.get(id).filter(|entry| entry.caller == *caller)
     }
+}
+
+/// Now, in milliseconds since the Unix epoch.
+pub(super) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
 }
