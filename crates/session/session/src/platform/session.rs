@@ -51,13 +51,13 @@ pub use crate::wake::{Seams as WakeSeams, WakeInterfaces};
 pub use crate::workspace_keys::KeyLink;
 pub use tilo_service::{Service, Services};
 
-use crate::doors::plane::{mount_services, start_action_plane};
 use crate::notifications::mount_banners;
 use crate::panels::mount::mount_activities;
 use crate::panels::mount::{KeyContext, mount_controls, mount_setup};
 use crate::plane::Plane;
 use crate::search::SessionSearch;
-use tilo_app_launch::Doors as WindowDoors;
+use crate::services::plane::{mount_services, start_action_plane};
+use tilo_app_launch::Channels as WindowChannels;
 
 pub use os_actions::SessionAction;
 
@@ -280,7 +280,7 @@ impl Session {
                 records.changes()
             });
         // What each open window shows, as the broker knows it: the shell offers the windows a person
-        // may share from, and the sharing doors read it.
+        // may share from, and the sharing services read it.
         let notes = options.launches.notes();
         // The workspaces' layouts, which hold the shell itself: what every member shows, and what a
         // change of it is written into.
@@ -379,7 +379,7 @@ impl Session {
                     return;
                 };
                 // What the text finds is what the layout places, through its own catalogue:
-                // the hits reach the door's callback, which places what a place can show.
+                // the hits reach the API's callback, which places what a place can show.
                 search.place_soon(needle, None, layout::canvas_find_within(), done);
             })
         };
@@ -540,12 +540,12 @@ impl Session {
         }
         // One process per app per workspace: its later windows open in the
         // process the session started, with connections of their own. A
-        // window mapping settles what its app's door serves, so an app built
-        // before the door keeps a process per window from then on.
-        let window_doors = WindowDoors::new(crate::app_tabs::ServiceLinks::new(
+        // window mapping settles what its app's API serves, so an app built
+        // before the API keeps a process per window from then on.
+        let window_channels = WindowChannels::new(crate::app_tabs::ServiceLinks::new(
             std::sync::Arc::clone(&options.launches),
         ));
-        let settling = Rc::clone(&window_doors);
+        let settling = Rc::clone(&window_channels);
         let mut policy =
             crate::background::WindowPlacement::for_shell(options.shell, &desktop, strips);
         // A window opens in the workspace its process was launched into: an agent's or a service's
@@ -568,7 +568,7 @@ impl Session {
         // tilolang instance reach an origin through.
         let connectors = Rc::new(crate::connectors::ConnectorHost::new());
         if let Some(launch) = &options.launch {
-            launch.lend_doors(Rc::clone(&window_doors), Rc::clone(&connectors));
+            launch.lend_channels(Rc::clone(&window_channels), Rc::clone(&connectors));
         }
 
         // The programs the person downloaded: the registry takes the
@@ -605,7 +605,7 @@ impl Session {
             presentation.theme.tokens.radii.tile,
         )));
         // What stands over the windows, opened by the chrome's own widgets, by the session's
-        // verbs and by the views bound to them, and read by whoever asks through the door.
+        // verbs and by the views bound to them, and read by whoever asks through the API.
         let overlays = Overlays::new();
         // Alt+Tab's panel: the shell's walk says what it shows, the chrome draws it, and the
         // compositor pictures the windows its cards name.
@@ -614,7 +614,7 @@ impl Session {
         let super_peek = tilo_desktop::super_peek::SuperPeek::default();
         // The surfaces the shell shows over its windows, and where each stands: the shell's own
         // views, or the quick settings' app where the device has one and the shell draws it. The
-        // shell's door and the chrome's door open them through it.
+        // shell's API and the chrome's API open them through it.
         let surfaces = crate::device_lists::Surfaces {
             status_panel: crate::quick_settings::installed(&options.surfaces),
             shell: options.shell,
@@ -631,9 +631,9 @@ impl Session {
         let panel_asks: Rc<RefCell<Vec<&'static str>>> = Rc::default();
         let panel_keys =
             (surfaces.panel_shows(crate::quick_settings::SURFACE)).then(|| Rc::clone(&panel_asks));
-        let lists_door: tilo_session_core::surfaces::Shared =
-            crate::shell::lists_door(options.shell, desktop.clone(), surfaces.clone());
-        published.add(Rc::clone(&lists_door));
+        let lists_surface: tilo_session_core::surfaces::Shared =
+            crate::shell::lists_surface(options.shell, desktop.clone(), surfaces.clone());
+        published.add(Rc::clone(&lists_surface));
         // The chrome above the windows: its own tree, beside the shell's.
         let intents = Rc::new(RefCell::new(Vec::new()));
         let engine = activity.open_engine(&options, &handle);
@@ -903,19 +903,19 @@ impl Session {
         // time someone searches; a search asked for before then opens now,
         // and the shell publishes it on its next pass.
         handle.search_palette().borrow_mut().adopt();
-        // The shell as the session publishes it, which the shell reads through the door.
-        let chrome_door = crate::shell::chrome_door(options.shell, &chrome, surfaces.clone());
-        published.add(Rc::clone(&chrome_door));
-        // The seam the MCP server's connections ask this session's own doors on: made before
+        // The shell as the session publishes it, which the shell reads through the API.
+        let chrome_surface = crate::shell::chrome_surface(options.shell, &chrome, surfaces.clone());
+        published.add(Rc::clone(&chrome_surface));
+        // The seam the MCP server's connections ask this session's own services on: made before
         // the plane starts, which serves the programs.
-        let session_doors = std::sync::Arc::new(crate::mcp_server::SessionDoors::new(
+        let session_services = std::sync::Arc::new(crate::mcp_server::SessionServices::new(
             options.wake.handle(),
             &options.person,
         ));
         let task_programs = Some(std::sync::Arc::new(
             crate::task_programs::TaskPrograms::new(std::sync::Arc::new(
                 crate::task_programs_host::TaskProgramHost::new(std::sync::Arc::clone(
-                    &session_doors,
+                    &session_services,
                 )),
             )),
         ));
@@ -924,15 +924,15 @@ impl Session {
         // Each is answered on the loop's pass, where the layout is. The shell's styles, read
         // from the store, share the shell's reading (shell.md §6).
         let steps: std::sync::Arc<dyn crate::platform::steps::SessionSteps> =
-            std::sync::Arc::clone(&session_doors)
+            std::sync::Arc::clone(&session_services)
                 as std::sync::Arc<dyn crate::platform::steps::SessionSteps>;
         let session_actions = std::sync::Arc::new(crate::session_actions::SessionActions::new(
             std::sync::Arc::clone(&steps),
         ));
-        session_doors.keep_actions(std::sync::Arc::clone(&session_actions));
+        session_services.keep_actions(std::sync::Arc::clone(&session_actions));
         // What a watch of a whole workspace reads: the changes in this device's replica.
         if let Some(engine) = &engine {
-            session_doors.keep_records(std::sync::Arc::clone(engine));
+            session_services.keep_records(std::sync::Arc::clone(engine));
         }
         // The person's settings, answered under the provider Settings' window names for each
         // control it shows: the session keeps them in its settings service, and this is what the
@@ -974,7 +974,7 @@ impl Session {
         // nothing: the shell's parts are what a client finds there, while the
         // desktop's own shell and chrome keep their actions.
         let aside: Vec<tilo_session_core::surfaces::Shared> = if shell.is_some() {
-            vec![Rc::clone(&lists_door), Rc::clone(&chrome_door)]
+            vec![Rc::clone(&lists_surface), Rc::clone(&chrome_surface)]
         } else {
             Vec::new()
         };
@@ -1162,7 +1162,7 @@ impl Session {
         // The shortcuts the person saved and the triggers that start them
         // without anyone invoking them: armed on the shell this device shows,
         // and started on the broker below. A run executes here, on a runtime
-        // of its own, and what a person saves through the action door is one
+        // of its own, and what a person saves through the action API is one
         // of its workspace's settings, written into the workspace's records
         // and shown on the shell on the loop's next pass.
         let automation_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1181,7 +1181,7 @@ impl Session {
         let revocations = crate::engine::revocations_of(engine.as_ref());
         // The typed opens an app asks this session for: one service, made
         // here so the broker below serves Files' waits for its lists'
-        // changes, and started from the doors table.
+        // changes, and started from the services table.
         let tools = crate::tools::Handle::new(
             std::sync::Arc::clone(&options.launches),
             options.wake.handle(),
@@ -1192,12 +1192,12 @@ impl Session {
             &handle,
             std::sync::Arc::new(shortcut_library),
             &activity,
-            crate::doors::plane::Knitted {
+            crate::services::plane::Knitted {
                 agents: Some(agents.roster()),
                 agent_sessions: Some(std::sync::Arc::clone(&agent_sessions) as _),
                 tools: Some(tools.clone()),
             },
-            crate::doors::plane::Collaboration {
+            crate::services::plane::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
@@ -1263,7 +1263,7 @@ impl Session {
         // who serves each: the identity an app signs in through, the
         // machine's readings an app the launcher connects reads, and the
         // data this device used. They start here, before any app does.
-        let table = crate::doors::start(crate::doors::Serving {
+        let table = crate::services::start(crate::services::Serving {
             shell: action_plane
                 .as_ref()
                 .map(|plane| std::sync::Arc::clone(&plane.layout)),
@@ -1282,44 +1282,44 @@ impl Session {
             wake: options.wake.handle(),
         });
         tilo_startup_metrics::mark("published-done");
-        // The control door `tilo-control` reaches: the development socket and the device admin's,
+        // The control API `tilo-control` reaches: the development socket and the device admin's,
         // both answered over the broker this session's plane starts. It exists whether or not a
         // socket opens, because a program inside an app this session started is served at it too.
-        // The activity undoes an agent's run in the records it changed through the same door.
-        let door_host = std::sync::Arc::new(
+        // The activity undoes an agent's run in the records it changed through the same API.
+        let host = std::sync::Arc::new(
             crate::mcp_server::Host::new(
                 action_plane.as_ref().and_then(Plane::agent_broker),
-                std::sync::Arc::clone(&session_doors),
+                std::sync::Arc::clone(&session_services),
             )
             .with_session_actions(Some(std::sync::Arc::clone(&session_actions))),
         );
-        let undo_door: std::sync::Arc<dyn crate::task_undo::UndoDoor> = door_host.clone();
-        activity.attach_door(undo_door);
+        let undo_api: std::sync::Arc<dyn crate::task_undo::UndoApi> = host.clone();
+        activity.attach_api(undo_api);
         activity.attach_content(std::sync::Arc::clone(&record_content));
-        let control = crate::test_control::Control::open(&options, door_host);
-        tilo_startup_metrics::mark("control-door-open");
-        let door = crate::mcp_server::mount_named(
+        let control = crate::test_control::Control::open(&options, host);
+        tilo_startup_metrics::mark("control-socket-open");
+        let server = crate::mcp_server::mount_named(
             &options,
             questions.clone(),
-            std::sync::Arc::clone(&session_doors),
-            control.door(),
+            std::sync::Arc::clone(&session_services),
+            control.shared(),
             std::sync::Arc::clone(&agent_sessions),
         );
         // Beside the harness's control socket: whether the loop still turns,
         // and where every thread stands when it does not. A session without
-        // one serves no such door, and no other session does either.
+        // one serves no such socket, and no other session does either.
         let liveness = options.test_control.as_deref().and_then(|control| {
             compositor.serve_liveness(control, crate::mcp_server::bind_private)
         });
-        let mcp_server = door.map(|door| {
-            let mut door = door.serve(
+        let mcp_server = server.map(|server| {
+            let mut server = server.serve(
                 action_plane.as_ref().and_then(Plane::agent_broker),
                 action_plane
                     .as_ref()
                     .map(|plane| std::sync::Arc::clone(&plane.layout)),
             );
-            door.hear_device_agents(std::sync::Arc::clone(&device_agents));
-            door
+            server.hear_device_agents(std::sync::Arc::clone(&device_agents));
+            server
         });
         let automation = crate::automation::Automation::new(
             options.state.as_deref(),
@@ -1418,17 +1418,17 @@ impl Session {
         services
             .borrow_mut()
             .add(Box::new(crate::send_to::SendToService::new(sends.clone())));
-        // The shell's own records reach the door as any app's do the moment its package runs.
+        // The shell's own records reach the API as any app's do the moment its package runs.
         if let Some(shell) = &shell {
-            shell.share_records(&services, &session_doors);
+            shell.share_records(&services, &session_services);
         }
         // So do the records the services keep of every app the session runs itself (a seeded
         // session's Tasks, Notes, Mail): a REPL's or an agent's `find(tasks.Task)` reads them on the
         // session's pass, as it reads the shell's, and starts no app to read one.
         for record in services.borrow().records() {
-            session_doors.keep_records_of(&record.app);
+            session_services.keep_records_of(&record.app);
         }
-        // The shell's own readings and verbs, on the same door every other
+        // The shell's own readings and verbs, on the same API every other
         // service answers on.
         crate::shell::state::ShellService::mount(
             &services,
@@ -1447,7 +1447,7 @@ impl Session {
             .add(Box::new(crate::window_share::WindowShareService::new(
                 Rc::clone(&window_shares),
             )));
-        // The displays, on the same door: their arrangements land as the
+        // The displays, on the same API: their arrangements land as the
         // commands the loop carries out, their brightness is set at once, and
         // the reading says where each display stands.
         let displays_service = crate::displays::Displays::mount(
@@ -1485,7 +1485,7 @@ impl Session {
             crate::notifications::RoleNotices::of(&notifications),
         );
 
-        // The apps search lists are this device's lists, the same ones the action door lists and
+        // The apps search lists are this device's lists, the same ones the action API lists and
         // names apps from: an app a person sees is one app, whoever reads it.
         // What the session opens an app through, kept for the notices that name a place too.
         let action_apps = options.apps.clone();
@@ -1516,7 +1516,7 @@ impl Session {
         let community =
             crate::community::Community::for_site(crate::platform::directory::community_site());
         // The person's mentions in the workspaces' records: told through those notifications, kept
-        // in the records' store, and opened through this session's own door to the apps.
+        // in the records' store, and opened through this session's own API to the apps.
         let mentions = records_store.clone().map(|store| {
             let naming = handle.clone();
             crate::mentions::Mentions::over(crate::mentions::Given {
@@ -1658,7 +1658,7 @@ impl Session {
             mentions,
             asker,
             mcp_server: RefCell::new(mcp_server),
-            session_doors,
+            session_services,
             device_agents: std::sync::Arc::clone(&device_agents),
             folder_import: RefCell::new(None),
             sync,
@@ -1725,7 +1725,7 @@ impl Session {
             ))));
         // The session's own diagnostics: the profiler and the heap trim, which
         // the device admin and a person's own scripts read and drive through
-        // the same door as the desktop's other actions.
+        // the same API as the desktop's other actions.
         shared
             .published
             .add(Rc::new(std::cell::RefCell::new(crate::diagnostics::Served)));
@@ -1911,8 +1911,8 @@ impl Session {
         if let Some(tabs) = &mut self.tabs {
             tabs.wake_on(&mut self.compositor)?;
         }
-        if let Some(door) = self.shared.mcp_server.get_mut() {
-            door.wake_on(&mut self.compositor)?;
+        if let Some(server) = self.shared.mcp_server.get_mut() {
+            server.wake_on(&mut self.compositor)?;
         }
         if let Some(import) = self.shared.folder_import.get_mut().as_mut() {
             import.wake_on(&mut self.compositor)?;
@@ -2247,7 +2247,7 @@ impl Session {
     }
 
     /// Reach `surface` (a service the session runs in its process) through
-    /// the session's door from now on: its resources are published beside
+    /// the session's API from now on: its resources are published beside
     /// the desktop's, and keys that ask for its actions reach it.
     pub fn publish(&mut self, surface: tilo_session_core::surfaces::Shared) {
         self.shared.published.add(surface);
@@ -2334,7 +2334,7 @@ impl Session {
     }
 
     /// What the windows ask of the workspace's activity and follow, as this session serves it: the
-    /// same door the shell's own pane reads through.
+    /// same API the shell's own pane reads through.
     #[must_use]
     pub fn activity(&self) -> tilo_desktop_surface::session::ActivityRequests {
         self.shared.activity.requests()
@@ -2344,7 +2344,7 @@ impl Session {
     /// as any caller does.
     ///
     /// # Errors
-    /// The door's refusal: there is no step to take back.
+    /// The API's refusal: there is no step to take back.
     pub fn undo_layout(&mut self) -> Result<(), ApiError> {
         let address = ActionAddress::new(layout::RECORD_RESOURCE, "undo");
         self.shared.published.invoke(
@@ -2359,7 +2359,7 @@ impl Session {
     /// [`Self::invoke`].
     ///
     /// # Errors
-    /// The door's refusal: no such action, bad arguments, or one the caller
+    /// The API's refusal: no such action, bad arguments, or one the caller
     /// may not run.
     pub fn invoke_with_actor(
         &mut self,
@@ -2380,7 +2380,7 @@ impl Session {
 
     /// Invoke `action` of `resource` as `actor` taking a step of the turn the message `message` of
     /// `conversation` asked: what the layout stands it beside is filled in exactly as the agent
-    /// door fills it for a step the broker hands it in that turn.
+    /// API fills it for a step the broker hands it in that turn.
     ///
     /// # Errors
     /// Why the action names nothing published, or why it could not be made.
@@ -2415,7 +2415,7 @@ impl Session {
     /// accepted at once; its result lands in the service's reading.
     ///
     /// # Errors
-    /// The door's refusal: no such resource or action, bad arguments, or
+    /// The API's refusal: no such resource or action, bad arguments, or
     /// one the device cannot do now.
     pub fn invoke(
         &mut self,
@@ -2439,7 +2439,7 @@ impl Session {
     /// [`ApiError::ConfirmationRequired`].
     ///
     /// # Errors
-    /// The door's refusal: no such resource or action, bad arguments, or
+    /// The API's refusal: no such resource or action, bad arguments, or
     /// one the device cannot do now.
     pub fn invoke_confirmed(
         &mut self,
@@ -2453,7 +2453,7 @@ impl Session {
             .borrow_mut()
             .invoke_confirmed(resource, action, arguments)
         {
-            Some(started) => started.map(crate::doors::plane::answered),
+            Some(started) => started.map(crate::services::plane::answered),
             None => Err(ApiError::Unknown(ActionAddress::new(resource, action))),
         }
     }
@@ -2706,19 +2706,19 @@ impl Session {
     /// Hand every agent following the catalogue the session's own actions again when what it
     /// offers moved: a place made, a place closed, a window opened, a notice put up. The rows
     /// are the same the REPL lists, so an agent arranging the screen sees what the person's own
-    /// door publishes (shell.md §8.1, "Any action").
+    /// API publishes (shell.md §8.1, "Any action").
     pub(crate) fn follow_session_actions(&self) {
         let Some(actions) = &self.published_steps else {
             return;
         };
         // The rows read here, on the loop that holds the layout: nothing off this thread
-        // reads a place. They are read again only once the door moved, and what is offered then
+        // reads a place. They are read again only once the API moved, and what is offered then
         // is compared with what was offered before, so the broker is told only when the rows
         // themselves moved.
         // A held pointer drags or resizes a window: every frame of it moves the shell, never what
         // the steps offer, so the rows are read once the person lets go.
         if self.shared.underway.get().gesture
-            || !actions.door_moved(self.shared.published.revision())
+            || !actions.rows_moved(self.shared.published.revision())
         {
             return;
         }

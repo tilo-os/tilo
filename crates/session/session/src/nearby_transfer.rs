@@ -11,7 +11,7 @@
 //! leaves this device, and nothing lands on the other one without its
 //! person's consent.
 //!
-//! Files reaches it through the action door ([`NearbyTransferServices`]): the
+//! Files reaches it through the action API ([`NearbyTransferServices`]): the
 //! broker binds every handle it is handed to the connection that asked and to
 //! that connection's workspace, and this engine refuses a handle of another
 //! connection. The spool belongs to a worker thread of the engine's own,
@@ -56,7 +56,7 @@ use ui::widget::ScreenshotSendDevice;
 
 use crate::platform::fabric::Continuity;
 
-/// The one app the action door serves: the certified Files application.
+/// The one app the action API serves: the certified Files application.
 pub(crate) const FILES_APP_ID: &str = "so.tilo.file-explorer";
 
 /// How long the handles one Files connection holds stay usable. Files does not ask again on a

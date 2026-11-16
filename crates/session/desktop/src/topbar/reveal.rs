@@ -19,6 +19,8 @@
 //! - **While shown it stays** while the pointer is on it, heads for it, or
 //!   something of it is open (its menus, its own keyboard focus); anything
 //!   else hides it.
+//! - **It stands in for the window's own bar**, which a fullscreen window
+//!   does not show: a secondary press on it opens that window's menu.
 //!
 //! A press in the band while the bar hides belongs to the window under it
 //! and cancels the reveal until the pointer leaves the edge. The person's

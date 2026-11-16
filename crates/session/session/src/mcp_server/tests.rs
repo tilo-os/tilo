@@ -41,12 +41,12 @@ fn an_answer_remembered_for_a_program_covers_each_instance_of_it() {
 }
 
 #[test]
-fn the_door_is_the_seats_own_unless_a_developer_named_one() {
-    let seat = path_in(None, Some("/run/user/1000".into()));
+fn the_api_is_the_devices_own_unless_a_developer_named_one() {
+    let device = path_in(None, Some("/run/user/1000".into()));
     assert_eq!(
-        seat,
+        device,
         Some(PathBuf::from("/run/user/1000/tilo-session/agent.sock")),
-        "the seat's door"
+        "this device's API"
     );
     let named = path_in(
         Some("/run/an-mcp-server".into()),
@@ -55,11 +55,11 @@ fn the_door_is_the_seats_own_unless_a_developer_named_one() {
     assert_eq!(
         named,
         Some(PathBuf::from("/run/an-mcp-server")),
-        "a developer's own door"
+        "a developer's own API"
     );
     assert_eq!(
         path_in(Some("relative".into()), Some("/run/user/1000".into())),
-        seat,
+        device,
         "only an absolute path is a developer's"
     );
     assert_eq!(path_in(None, None), None, "nowhere to listen");
@@ -131,25 +131,25 @@ fn the_shell_runtime_is_its_executable_in_its_unit_of_this_login() {
 /// longer knows, are not its; the windows of its own are, and so is anything not a window.
 #[test]
 fn a_window_of_another_workspace_is_not_an_agents() {
-    let doors = SessionDoors::new(Arc::new(|| {}), "person");
-    doors
+    let services = SessionServices::new(Arc::new(|| {}), "person");
+    services
         .tabs
         .lock_recover()
         .extend([(7, "studio".to_owned()), (9, "garden".to_owned())]);
     assert!(
-        !doors.window_elsewhere("desktop:tab:7", "studio"),
+        !services.window_elsewhere("desktop:tab:7", "studio"),
         "its own"
     );
     assert!(
-        doors.window_elsewhere("desktop:tab:9", "studio"),
+        services.window_elsewhere("desktop:tab:9", "studio"),
         "another's"
     );
     assert!(
-        doors.window_elsewhere("desktop:tab:11", "studio"),
+        services.window_elsewhere("desktop:tab:11", "studio"),
         "one no longer on the shell"
     );
     assert!(
-        !doors.window_elsewhere("notes.notebook", "studio"),
+        !services.window_elsewhere("notes.notebook", "studio"),
         "a resource that is no window"
     );
 }
@@ -162,7 +162,7 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
     // A session that never answers, and no broker: a read asking the session waits it out.
     let records = ServiceRecords {
         state: None,
-        session: Arc::new(SessionDoors::new(Arc::new(|| {}), "person")),
+        session: Arc::new(SessionServices::new(Arc::new(|| {}), "person")),
         agent_session: None,
     };
     let started = std::time::Instant::now();

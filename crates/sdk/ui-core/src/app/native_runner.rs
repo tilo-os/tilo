@@ -3622,7 +3622,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             UserEvent::HostCommand(invocation) => {
                 self.app.invoke_host_command(&invocation);
-                // The API is a wake too: what the command started is answered
+                // The action API is a wake too: what the command started is answered
                 // by the state passes even when no frame follows (a window
                 // macOS is not drawing, an agent driving it unseen).
                 self.app.run_state_tick();
@@ -5053,7 +5053,7 @@ impl App {
     }
 
     /// [`Self::run_with_setup`], serving the windows the shell opens in this
-    /// process later with `open` ([`crate::window_door`]): each becomes one
+    /// process later with `open` ([`crate::window_channel`]): each becomes one
     /// more window of the loop, and the loop ends with the last.
     #[allow(
         clippy::expect_used,
@@ -5126,13 +5126,13 @@ impl App {
             native_scenario.is_none() || self.profiler.is_some(),
             "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
-        // The API is taken before the launch's own window is made: the shell
-        // takes a window as it maps as one this process serves, and only a
-        // process that answered its API before that is served more.
-        let door = open.and_then(|open| process_windows::serve_door(&proxy).map(|()| open));
+        // The channel is taken before the launch's own window is made: the
+        // shell takes a window as it maps as one this process serves, and only
+        // a process that said so before that is served more.
+        let open = open.and_then(|open| process_windows::serve_channel(&proxy).map(|()| open));
         let mut handler = self.into_handler(&proxy, native_scenario, setup);
         handler.windowless = crate::host::environment().windowless;
-        let mut handler = process_windows::ProcessWindows::new(handler, proxy, door);
+        let mut handler = process_windows::ProcessWindows::new(handler, proxy, open);
         // Run on demand, so a window that gives its place to the next one
         // (`hand_over`) keeps the loop for that window to run on. On every
         // target winit's `run_app` is this same loop, consuming it.

@@ -139,7 +139,7 @@ pub(crate) struct Personal {
     /// Listed workspaces handed to the session to open, until their workspace is here: none of them is
     /// taken for one deleted here meanwhile.
     entering: BTreeSet<WorkspaceId>,
-    /// Workspaces on this session that are someone else's, joined through their door: the person's
+    /// Workspaces on this session that are someone else's, joined through their API: the person's
     /// other devices join them each on their own, so the list never names them.
     borrowed: BTreeSet<WorkspaceId>,
     /// Where each workspace this device holds is hosted, as this device's workspace itself says:
@@ -164,7 +164,7 @@ pub(crate) struct Personal {
     /// starts empty for it.
     unreadable: bool,
     /// The list as the person's keys read it, last kept on the hosts of their workspaces and handed
-    /// to this device's door: kept again when it moves.
+    /// to this device's API: kept again when it moves.
     kept: Option<tilo_relay_session::workspaces::PersonalList>,
     /// Whether `kept` was handed to the hosts too: a session's broker reaches them only once it
     /// serves, so a list said before then is kept on them once it does.
@@ -194,7 +194,7 @@ struct PublishInputs {
 
 impl PublishInputs {
     /// What the session hands the list: the person's own workspaces on it, in
-    /// their order. A workspace joined from a door is not one of theirs.
+    /// their order. A workspace joined from an API is not one of theirs.
     ///
     /// A workspace that was made on another device stays hosted by that one,
     /// so the devices holding it agree on where it lives; one this device
@@ -382,7 +382,7 @@ impl Personal {
         std::mem::take(&mut self.unreadable)
     }
 
-    /// `workspace` arrived from a door: it is the workspace of whoever let the person in, not one
+    /// `workspace` arrived from an API: it is the workspace of whoever let the person in, not one
     /// of their own, so their other devices are never told to open it themselves — each joins it
     /// through its own invitation.
     pub(crate) fn joined(&mut self, workspace: WorkspaceId) {
@@ -393,7 +393,7 @@ impl Personal {
         self.persist();
     }
 
-    /// The workspaces on this device that are someone else's, joined through their door:
+    /// The workspaces on this device that are someone else's, joined through their API:
     /// whose workspace they are is their host's governance's to say, not this person's.
     pub(crate) fn borrowed(&self) -> &BTreeSet<WorkspaceId> {
         &self.borrowed
@@ -421,7 +421,7 @@ impl Personal {
     }
 
     /// Record what this person decided about the community at `site` : [`CommunityState::Pending`]
-    /// as their door is asked, and [`CommunityState::Decided`] once the site let them in — their
+    /// as their API is asked, and [`CommunityState::Decided`] once the site let them in — their
     /// decision from then on, including after they leave it. It is the person's, not this session's,
     /// so their other devices are told of it. Whether it changed anything.
     pub(crate) fn decide_community(&mut self, site: &str, state: CommunityState) -> bool {
@@ -731,7 +731,7 @@ impl Personal {
     /// The person's devices as a workspace's settings offer them, this device always among them:
     /// whether the workspace shows on each, and which one is this device.
     /// Empty for a workspace the person's list does not name: one joined through someone else's
-    /// door is not theirs to show or keep off.
+    /// API is not theirs to show or keep off.
     pub(crate) fn device_choices(&self, workspace: WorkspaceId) -> Vec<DeviceChoice> {
         let Some(entry) = entries_of(&self.directory)
             .into_iter()
@@ -952,7 +952,7 @@ fn take_personal(personal: &mut Personal, sync: &crate::sync::Client) -> (bool, 
 impl crate::Shared {
     /// Give every workspace on the shell that is nobody's yet the owner its governance names: the
     /// person at this device for their own — the one seeded here, one made here, or one made on
-    /// another device of theirs — and, for a workspace joined through its door, the owner its
+    /// another device of theirs — and, for a workspace joined through its API, the owner its
     /// host's governance has, which this device learns when the workspace comes here. A workspace
     /// whose owner is not known here keeps none, and never takes this person's: a host's workspace
     /// is not theirs to claim. One naming someone else keeps that name: ownership moves through the
@@ -1043,7 +1043,7 @@ impl crate::Shared {
     /// else the person at this device for a workspace of their own that no governance here has yet.
     /// A workspace founded before this device had an identity names the person by the id they went
     /// by then; it is theirs as the person they are now, which is what their own actions in it are
-    /// decided as. `None` for one joined through a door whose host has not said whose it is here.
+    /// decided as. `None` for one joined through an API whose host has not said whose it is here.
     fn owner_of(&self, workspace: WorkspaceId, borrowed: &BTreeSet<WorkspaceId>) -> Option<String> {
         if let Some(engine) = &self.engine
             && let Ok(owner) = engine.owner_of(&workspace.to_string())
@@ -1080,7 +1080,7 @@ impl crate::Shared {
     }
 
     /// Give this computer the workspace a join chose, and come into it the way the join named:
-    /// through its door, or with the invitation it holds. What the workspace held before this
+    /// through its API, or with the invitation it holds. What the workspace held before this
     /// device arrived comes with it.
     /// A joined workspace the session does not already hold is admitted before it is put on the shell
     /// ([`Self::redeem_invitation`]): a host that refuses leaves the person where they were, with
@@ -1091,7 +1091,7 @@ impl crate::Shared {
                 "desktop-joined-workspace-unknown",
             ));
         };
-        // A workspace a door let the person into is whoever let them in's: the person's other
+        // A workspace an API let the person into is whoever let them in's: the person's other
         // devices join it each through their own invitation, so their list never names it.
         if let Some(personal) = &self.personal {
             personal.borrow_mut().joined(workspace);
@@ -1105,7 +1105,7 @@ impl crate::Shared {
         Ok(())
     }
 
-    /// Come into the workspace a join chose, off the loop, through its door or
+    /// Come into the workspace a join chose, off the loop, through its API or
     /// with its invitation: this device becomes a member of the workspace and
     /// takes in its state. A
     /// session that holds no workspaces, or takes no part in the collaboration
@@ -1147,7 +1147,7 @@ impl crate::Shared {
         let asked = sync.enroll(crate::sync::Enrolling {
             workspace_id: workspace,
             way: joined.granted.way.clone(),
-            // A door's workspace learns the person by the name the session knows them by.
+            // A API's workspace learns the person by the name the session knows them by.
             name: crate::platform::directory::person()
                 .map(|person| person.name)
                 .unwrap_or_default(),
@@ -1316,7 +1316,7 @@ impl crate::Shared {
                     // where they are now.
                     tracing::warn!(%key, %error, "a workspace was not joined");
                     // A community whose host refused this device is not joined: the join is
-                    // forgotten, and the community's own follow asks its door again when a network
+                    // forgotten, and the community's own follow asks its API again when a network
                     // comes back.
                     self.directory_store.forget_community(&key);
                 }
@@ -1507,7 +1507,7 @@ impl crate::Shared {
         moved
     }
 
-    /// Keep the person's list where their keys read it, when it moved: this device's door answers
+    /// Keep the person's list where their keys read it, when it moved: this device's API answers
     /// it to a key of theirs that dials it, and every dedicated host of a workspace held here keeps
     /// it for the keys that reach no device of theirs.
     fn keep_readable(
@@ -1730,7 +1730,7 @@ impl crate::Shared {
             return;
         }
         // A community whose home this workspace is is the person's from here on: no device of
-        // theirs asks its door again — not to join it, and not to rejoin it once they left. Only
+        // theirs asks its API again — not to join it, and not to rejoin it once they left. Only
         // now, with the workspace on the shell: a community marked decided when its host refused the
         // enrollment was never joined, and nothing asked again.
         if let Some(site) = self.directory_store.community_of(workspace_id) {
@@ -1986,7 +1986,7 @@ mod tests {
             );
         }
 
-        phase a_workspace_joined_through_its_door_is_not_this_persons_to_list;
+        phase a_workspace_joined_through_its_api_is_not_this_persons_to_list;
         {
             let state = tempfile::tempdir().expect("a state directory");
             let session = session();

@@ -1,5 +1,5 @@
 //! The workspace directory on every host: the sheet listing what the sites' directories offer and
-//! the workspaces this host holds, and what its presses do. What a site lists and what its door
+//! the workspaces this host holds, and what its presses do. What a site lists and what its relay
 //! grants is [`tilo_workspace_directory`]'s; what is the host's own — its site, the person a join
 //! is made as, the workspaces it holds and what joining one gives it — is its [`Host`].
 

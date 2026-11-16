@@ -2,12 +2,12 @@
 //! compositor with the session (see the crate docs).
 //!
 //! `tilo-messaging --principal <hex> --device <id> --profile <dir>`; the
-//! session door is standard input and output.
+//! session with the compositor is standard input and output.
 
 use std::path::PathBuf;
 
-use tilo_messaging_service::door::{DEVICE_ARG, DoorLink, PRINCIPAL_ARG, PROFILE_ARG};
-use tilo_messaging_service::service::{DoorHandler, Service, listen};
+use tilo_messaging_service::service::{Service, SessionHandler, listen};
+use tilo_messaging_service::session::{DEVICE_ARG, PRINCIPAL_ARG, PROFILE_ARG, SessionLink};
 
 fn arguments() -> Option<(String, String, PathBuf)> {
     let mut principal = None;
@@ -57,16 +57,16 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let handler = DoorHandler::new();
-    let door = match DoorLink::start(
-        "tilo-messaging-door",
+    let handler = SessionHandler::new();
+    let session = match SessionLink::start(
+        "tilo-messaging-session",
         std::io::stdin(),
         std::io::stdout(),
         handler.clone(),
     ) {
-        Ok(door) => door,
+        Ok(session) => session,
         Err(error) => {
-            tracing::error!(target: "tilo::messaging", %error, "the session door did not open");
+            tracing::error!(target: "tilo::messaging", %error, "the session with the compositor did not open");
             std::process::exit(1);
         }
     };
@@ -74,7 +74,7 @@ fn main() {
         &principal,
         &device,
         &profile,
-        door,
+        session,
         runtime.handle().clone(),
     ) {
         Ok(service) => service,
@@ -89,6 +89,6 @@ fn main() {
         tracing::error!(target: "tilo::messaging", %error, "the messaging socket did not open");
         std::process::exit(1);
     }
-    // The door closing ends the process; until then the runtime serves.
+    // The session closing ends the process; until then the runtime serves.
     runtime.block_on(std::future::pending::<()>());
 }

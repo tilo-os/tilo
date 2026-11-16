@@ -80,7 +80,7 @@ fn a_picker_that_cannot_open_is_told_in_plain_words() {
     click_open_folder(&mut app);
     app.settle();
 
-    let said = format!("Couldn't open a folder. {reason}");
+    let said = reason.to_owned();
     tilo_test_env::wait_until(format!("Code to say {said:?}"), || {
         app.settle();
         app.harness()

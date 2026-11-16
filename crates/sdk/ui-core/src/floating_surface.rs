@@ -180,8 +180,8 @@ impl FloatingSurfaceServiceClient {
     /// ([`Self::hand_over`]), else the one the launcher handed this process ([`Self::discover`]).
     pub(crate) fn for_window() -> Option<Self> {
         #[cfg(feature = "local-daemons")]
-        if crate::window_door::is_building() {
-            let connection = crate::window_door::take_shell_ui()?;
+        if crate::window_channel::is_building() {
+            let connection = crate::window_channel::take_shell_ui()?;
             let wake = crate::wake::WakeHandle::new();
             return Self::from_stream_waking(UnixStream::from(connection), move || wake.wake())
                 .ok();

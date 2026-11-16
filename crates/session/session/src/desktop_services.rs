@@ -74,7 +74,7 @@ pub struct DesktopServices {
 
 impl DesktopServices {
     /// Start every desktop service `buses` reach, the portal taking its
-    /// screenshots with `capture`, sharing the screens, driving the seat and
+    /// screenshots with `capture`, sharing the screens, driving this device and
     /// passing the selection through `side` (the session's own side of it),
     /// Pass the selection through `side` (the session's own side of it),
     /// and take the holds apps ask it for in `inhibitors` (the session's

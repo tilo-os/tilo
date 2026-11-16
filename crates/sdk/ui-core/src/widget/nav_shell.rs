@@ -48,7 +48,7 @@ mod sidebar_resize;
 mod status_action;
 mod window_header;
 mod window_toolbar;
-use crate::widget::OverflowDoor;
+use crate::widget::OverflowButton;
 #[cfg(test)]
 use crate::widget::toast::ToastKind;
 use band::plan;
@@ -267,7 +267,7 @@ struct Header {
     title: HeaderTitle,
     binding: Option<LocalBinding<String>>,
     actions: Vec<Element>,
-    more: OverflowDoor,
+    more: OverflowButton,
     leading: Option<Element>,
 }
 
@@ -277,7 +277,7 @@ impl Header {
             title: HeaderTitle::new(),
             binding: None,
             actions: Vec::new(),
-            more: OverflowDoor::new(&format!("nav-shell-more-{}", column.key())),
+            more: OverflowButton::new(&format!("nav-shell-more-{}", column.key())),
             leading: None,
         }
     }

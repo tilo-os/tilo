@@ -165,7 +165,7 @@ pub struct WindowBar {
     /// them (the shell bar's window menu, for the window in front): the row's
     /// actions that do not fit give way with no API of their own, since every
     /// one stays reachable there. `false`: nothing lists them, so what does not
-    /// fit goes behind the row's door ([`crate::widget::OverflowDoor`]). Each
+    /// fit goes behind the row's button ([`crate::widget::OverflowButton`]). Each
     /// host states it; no row guesses it from what shell it is on.
     pub lists_actions: bool,
 }

@@ -1,13 +1,13 @@
-//! Where a host's offloadable actions run: the action door's route
+//! Where a host's offloadable actions run: the action API's route
 //! ([`tilo_actions::offload::ActionOffload`]) a host hands its broker as
 //! `HostServices::action_offload`.
 //!
-//! Every host installs the offer round ([`offer_offload`], [`offer_door`]):
+//! Every host installs the offer round ([`offer_offload`], [`offer_route`]):
 //! it asks the other devices of the invoking workspace whether they would run
 //! the job sooner, weighing each answer against running it here, and sends the
 //! invocation to the device that wins. A workspace whose other devices cannot
 //! take the job — none connected, none running the app, none powered for it —
-//! runs it here, through the app's own handler, and the door is told why.
+//! runs it here, through the app's own handler, and the route is told why.
 //! [`OFFLOAD_ENV`] set to `off` installs no route at all.
 //!
 //! The round reads and keeps only the workspaces' own document media, through
@@ -85,7 +85,7 @@ pub fn offer_offload(
 /// `runtime` carries the asks and the runs. `None` — every offloadable action
 /// runs here — when offload is turned off.
 #[must_use]
-pub fn offer_door(
+pub fn offer_route(
     plane: ActionPlane,
     endpoint: Endpoint,
     runtime: tokio::runtime::Handle,
@@ -491,7 +491,7 @@ struct OfferOffload {
     /// `package:entrypoint`.
     ran: Mutex<HashMap<String, Run>>,
     /// Input bytes of the invocations handed to the app to run here, by
-    /// workspace and inputs, until the door reports that run.
+    /// workspace and inputs, until the app reports that run.
     running: Mutex<HashMap<(String, Vec<String>), u64>>,
     /// The invocations this device sent to another device, and where: one that
     /// comes back is not sent away again.
@@ -533,7 +533,7 @@ impl OfferOffload {
         };
         {
             let mut running = self.running.lock_recover();
-            // A local run the door never reports (it failed) is forgotten
+            // A local run the app never reports (it failed) is forgotten
             // rather than kept forever.
             if running.len() >= MAX_LOCAL_RUNS {
                 running.clear();

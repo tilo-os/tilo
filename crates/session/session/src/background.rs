@@ -35,7 +35,7 @@ pub(crate) fn prefs() -> Prefs {
 impl crate::Shared {
     /// Steer the player in front, as the panel's own controls do: the music widget's play or pause,
     /// previous and next are the `media` resource's actions, which every caller reaches through the
-    /// same door.
+    /// same API.
     pub(crate) fn music(&self, action: Action) {
         let action = match action {
             Action::PlayPause => "play-pause",

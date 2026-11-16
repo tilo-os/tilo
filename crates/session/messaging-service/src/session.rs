@@ -1,12 +1,12 @@
-//! The session door: what the service asks of the compositor that started
-//! it, over the service's standard input and output.
+//! The compositor's side of the messaging session: what the service asks of it,
+//! over the service's standard input and output.
 //!
 //! The compositor alone holds the person's records (their accounts and
 //! contacts), shows the protected network prompt and owns the device's
 //! endpoint that carries private Tilo messages, so the service asks it for
 //! those. The compositor tells the service when the person's session stops
 //! being usable (locked or ended), which retires every admission the service
-//! made under it. The service stops when the door closes.
+//! made under it. The service stops when that connection closes.
 
 use serde::{Deserialize, Serialize};
 
@@ -71,7 +71,7 @@ pub enum Event {
     Session { active: bool, generation: u64 },
 }
 
-pub type DoorLink = crate::link::Link<Call, Reply, Event>;
+pub type SessionLink = crate::link::Link<Call, Reply, Event>;
 
 /// What the compositor starts the service with.
 pub const PRINCIPAL_ARG: &str = "--principal";

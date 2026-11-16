@@ -10,10 +10,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use settings_store::system_sounds::SystemSoundEvent;
-use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, RemoteActionTarget, application_action_target,
-    application_record_target,
-};
 use tilo_desktop_surface::notifications::{NOT_NOW_ACTION, Notification, NotificationIconKind};
 use tilo_desktop_surface::surface::HostAction;
 
@@ -21,42 +17,6 @@ pub use ui::mentions::{Place, SCHEME};
 
 /// The name a notice that opens something offers that choice under.
 pub const OPEN_ACTION: &str = "open";
-
-/// The argument an app's `open` takes: the anchor of the item to show. A
-/// host that asks a window to show the resource it named passes that resource
-/// as the anchor, as a search hit passes the anchor it found; without it the
-/// app has nothing to show and the window opens empty.
-#[must_use]
-pub fn open_arguments(resource: &str) -> tilo_actions::remote::InvokeArgument {
-    let mut anchor = serde_json::Map::new();
-    anchor.insert(
-        "anchor".to_owned(),
-        serde_json::Value::String(resource.to_owned()),
-    );
-    tilo_actions::remote::InvokeArgument::Json(anchor)
-}
-
-/// Where choosing `place` lands in `workspace`: the app's `open` of the item on the record it is
-/// in.
-#[must_use]
-pub fn open_target(workspace: &str, place: &Place) -> RemoteActionTarget {
-    if place.record.is_empty() {
-        application_action_target(
-            workspace,
-            &place.app,
-            place.resource.clone(),
-            APPLICATION_OPEN_ACTION,
-        )
-    } else {
-        application_record_target(
-            workspace,
-            &place.app,
-            &place.record,
-            place.resource.clone(),
-            APPLICATION_OPEN_ACTION,
-        )
-    }
-}
 
 /// The tag of the next notice told under no name of its own: one per telling, so the same words
 /// told twice are two notices.
@@ -248,23 +208,5 @@ pub trait Notices {
     /// The notices that closed since this was last taken, each with why.
     fn take_closed(&self) -> Vec<(String, Closed)> {
         Vec::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Showing a resource is the app's `open` of that resource as its anchor:
-    /// the argument a window's `open` reads, never an empty one.
-    #[test]
-    fn opening_a_resource_passes_it_as_the_anchor() {
-        let slot = open_arguments("settings.section:devices_access")
-            .to_slot()
-            .expect("an anchor reaches the window");
-        assert!(
-            slot.ends_with(r#"{"anchor":"settings.section:devices_access"}"#),
-            "{slot}"
-        );
     }
 }

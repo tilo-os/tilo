@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_desktop_model::Layout;
 use tilo_desktop_model::layout::TileContent;
-use tilo_desktop_model::{Layout, TabId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::LayoutEffect;
 use tilo_resource::Effect;
@@ -150,14 +150,6 @@ pub(crate) fn place(at: Point) -> (i32, i32) {
     )]
     let place = (at.x.round() as i32, at.y.round() as i32);
     place
-}
-
-/// Close the tab `tab` on this device, wherever it stands.
-pub(crate) fn close_tab(handle: &DesktopHandle, tab: TabId) {
-    let mut tree = handle.read(Clone::clone);
-    if tree.close_tab(tab).is_some() {
-        handle.replace_tree(tree);
-    }
 }
 
 impl BackgroundLayer {
@@ -300,12 +292,7 @@ impl BackgroundLayer {
             LayoutEffect::Focus { tab } => {
                 return tab.parse().is_ok_and(|tab| self.handle.focus_tab(tab));
             }
-            LayoutEffect::CloseTab { tab } => {
-                let Ok(tab) = tab.parse::<u64>() else {
-                    return false;
-                };
-                close_tab(&self.handle, tab);
-            }
+            LayoutEffect::CloseTab { .. } => return self.handle.dispatch(verb.clone()).is_ok(),
             // With nothing typed the effect is the search key itself: it opens search, and a press
             // over the open search closes it, as the shell's own search key does. A query is typed
             // into the search already open instead.

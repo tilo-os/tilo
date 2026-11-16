@@ -1,5 +1,5 @@
 //! The agent key a person starts their session with (`tilo-session --agent-key FILE`): a session
-//! started for an agent, headless or in a hosted workspace's machine, has no one at the door to
+//! started for an agent, headless or in a hosted workspace's machine, has no one at the API to
 //! admit it, so the person decides ahead of time, by starting the session with a key, and their
 //! root certifies it.
 //!
@@ -12,7 +12,7 @@
 //! ends as a device does: a revocation their root signs, from their device list or the agent's
 //! card. A revoked key is never certified again; a new key is a new FILE.
 //!
-//! A program presenting the key at the door ([`tilo_mcp::session_api::KEY`]) is admitted as
+//! A program presenting the key at the API ([`tilo_mcp::session_api::KEY`]) is admitted as
 //! the grant's agent without a question: every connection an instance of its own, attributed to the
 //! grant, working in a run its admission starts, like a client the person admitted on the sheet.
 //! A key the session does not hold, an expired or revoked grant, or one the person's root could not
@@ -141,7 +141,7 @@ impl super::Loop {
 
 impl AgentKey {
     /// [`Self::open`], or `None` , saying why, for a key that cannot be kept: it admits no one,
-    /// and the session still serves the door and asks.
+    /// and the session still serves the API and asks.
     pub(crate) fn kept(file: &Path) -> Option<Self> {
         Self::open(file)
             .inspect_err(|error| {

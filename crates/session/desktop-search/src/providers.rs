@@ -534,12 +534,14 @@ impl Published {
             score,
             icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
             target: Target::Invoke(Box::new(crate::model::InvokeTarget {
-                app: published.app.clone(),
-                workspace: published.workspace.clone(),
-                address: action.address.clone(),
                 arguments,
                 descriptor: Some(action.clone()),
-                place: crate::model::LaunchPlace::Focus,
+                ..crate::model::InvokeTarget::action(
+                    &published.app,
+                    &published.workspace,
+                    action.address.resource.as_str(),
+                    action.address.action.as_str(),
+                )
             })),
         }
     }

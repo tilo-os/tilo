@@ -94,7 +94,7 @@ macro_rules! seams {
         }
 
         impl Seams {
-            /// What the broker's doors read: every seam, as this session decided it.
+            /// What the broker's APIs read: every seam, as this session decided it.
             pub(crate) fn into_host_services(self) -> HostServices {
                 HostServices { $( $field: seam_field!(self.$field $(, $default)?) ),* }
             }
@@ -165,7 +165,7 @@ pub(crate) fn document_reads(
     }))
 }
 
-/// What each installed app declared it may do on the action door, read from the lists search keeps:
+/// What each installed app declared it may do on the action API, read from the lists search keeps:
 /// a ceiling the broker decides an app's calls against, never a grant.
 pub(crate) fn declared_access(
     lists: crate::lists::Lists,
@@ -200,7 +200,7 @@ pub(crate) fn declared_resource_kinds(
 #[cfg(test)]
 pub(crate) const EVERY_APP: &[&str] = &["published", "settings", "launcher"];
 
-/// How a shipped app's source reaches a seam of the action door: a marker in its code, and the seam
+/// How a shipped app's source reaches a seam of the action API: a marker in its code, and the seam
 /// that answers the call. A marker here is a call, so an app that starts calling a seam it did not
 /// is found by the guard.
 #[cfg(test)]
@@ -259,7 +259,7 @@ mod tests {
         }
 
         phase an_apps_declared_access_is_what_its_manifest_says;
-        // The action door's ceiling comes from the installed apps' signed manifests, read with the
+        // The action API's ceiling comes from the installed apps' signed manifests, read with the
         // lists search keeps: an app Tilo cannot find declared nothing, and never more than its
         // manifest says.
         {

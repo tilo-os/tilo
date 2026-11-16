@@ -17,7 +17,7 @@ required-features = ["service"]
 
 [features]
 default = ["service"]
-# The service itself; without it, the crate is the session door the
+# The service itself; without it, the crate is the link to the session the
 # compositor answers.
 service = [
     "dep:launcher",

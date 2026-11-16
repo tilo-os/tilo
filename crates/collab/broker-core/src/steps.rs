@@ -21,9 +21,9 @@ pub struct HostStepRequest<'a> {
     pub actor: &'a crate::actor::BrokerActor,
     pub address: &'a ActionAddress,
     pub argument: Option<&'a str>,
-    /// The agent session's own door, when the step is one of an agent session's (a program it
+    /// The agent session's own host, when the step is one of an agent session's (a program it
     /// writes): what the step does in turn goes through it, so the session admits that too.
-    pub door: Option<Arc<dyn ActionHost + Send + Sync>>,
+    pub host: Option<Arc<dyn ActionHost + Send + Sync>>,
     /// The work the invocation names itself a part of (its context's group, as an agent session
     /// stamps every call): what a step that changes a record makes is that work's, which History
     /// groups and an undo of it takes back, as an app's action is.

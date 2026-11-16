@@ -1,9 +1,9 @@
 //! An agent session's programs: the tilolang an agent writes as one step of its session, run here,
-//! in the same door an MCP client reaches for its `tilo` tool (`docs/designs/app-language/agents.md`).
+//! in the same API an MCP client reaches for its `tilo` tool (`docs/designs/app-language/agents.md`).
 //! An agent reaches it through the broker as a host step under
 //! [`task_programs::PROVIDER`](tilo_actions::remote::task_programs::PROVIDER), admitted by the
 //! session the step is a step of, and gets back what the program answered.
-//! One agent session has one session of the door: its own tilolang host, the `let` s and references
+//! One agent session has one session of the host: its own tilolang host, the `let` s and references
 //! its programs made, and the steps `undo` takes back. Every call the program makes is done as the
 //! agent, for the person it acts for, attributed to the session, and decided by the workspace's
 //! policy like the agent's own calls.
@@ -29,7 +29,7 @@ use crate::platform::programs::{ProgramRequest, Programs};
 
 /// An agent session's programs, as this host runs them.
 pub(crate) struct TaskPrograms {
-    /// Where a program runs: the session's door on this host.
+    /// Where a program runs: the session's host.
     programs: Arc<dyn Programs>,
 }
 
@@ -128,10 +128,10 @@ impl HostStepServices for TaskPrograms {
         let session = actor
             .session()
             .ok_or("an agent runs programs as a step of its session")?;
-        let door = request
-            .door
+        let host = request
+            .host
             .clone()
-            .ok_or("an agent runs programs only through its session's door")?;
+            .ok_or("an agent runs programs only through its session's API")?;
         let args = bind(request.argument)?;
         let program = args.text("program").unwrap_or_default().to_owned();
         let confirm = args.boolean("confirm").unwrap_or(false);
@@ -155,7 +155,7 @@ impl HostStepServices for TaskPrograms {
             });
         self.programs.run(ProgramRequest {
             workspace: request.workspace,
-            door,
+            host,
             agent,
             person: actor.acting_for(),
             session,
@@ -197,7 +197,7 @@ mod tests {
             actor,
             address,
             argument: Some(argument),
-            door: None,
+            host: None,
             group: None,
         }
     }
@@ -232,7 +232,7 @@ mod tests {
         }
 
         phase only_an_agents_program_in_its_session_is_taken;
-        // A program is a step of an agent's session, through the session's door: anyone else, and
+        // A program is a step of an agent's session, through the session's API: anyone else, and
         // an agent outside a session, is refused before anything starts.
         {
             let programs = programs();
@@ -253,7 +253,7 @@ mod tests {
             );
             assert_eq!(
                 took(&BrokerActor::agent("claude").in_session("agent-session:1")),
-                Some("an agent runs programs only through its session's door".to_owned())
+                Some("an agent runs programs only through its session's API".to_owned())
             );
         }
     }

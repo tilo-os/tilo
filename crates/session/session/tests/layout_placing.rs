@@ -61,7 +61,7 @@ fn mailbox() -> ResourceSpec {
         .with_view(ResourceViewSpec::new("reader", "Reader", "open-reader"))
 }
 
-/// The app and its mailbox, published into the session's door; it records every action it is asked
+/// The app and its mailbox, published on the session's plane; it records every action it is asked
 /// to run, so a test can say showing ran none.
 struct Mailbox {
     app: String,
@@ -110,7 +110,7 @@ impl Published for Mailbox {
 fn options() -> Options {
     Options {
         person: ADA.to_owned(),
-        state: Some(crate::common::seated_state()),
+        state: Some(crate::common::device_state()),
         collab: false,
         ..Options::default()
     }
@@ -183,7 +183,7 @@ fn front_row(session: &Session) -> u64 {
     workspace.strips.first().expect("a row").id.0
 }
 
-/// An app with a mailbox is published into the session's door.
+/// An app with a mailbox is published on the session's plane.
 fn with_mailbox(session: &mut Session) -> (String, Rc<std::cell::RefCell<Vec<String>>>) {
     let app = "so.tilo.lang.mail".to_owned();
     let asked = Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -325,7 +325,7 @@ fn session_searching(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
             person: ADA.to_owned(),
-            state: Some(crate::common::seated_state()),
+            state: Some(crate::common::device_state()),
             collab: false,
             search: tilo_session::SearchOptions {
                 indexes: Some(std::sync::Arc::new(SessionIndexes::new(index, None))),

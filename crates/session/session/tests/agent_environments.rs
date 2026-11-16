@@ -1,13 +1,13 @@
 //! Coding agents in confined environments, and several at once: each environment `ush` opens
-//! asks the session for a door of its own, and a program inside it is served there as an agent
+//! asks the session for a socket of its own, and a program inside it is served there as an agent
 //! of that environment, working in the environment's workspace rather than the one in front of
 //! the person. Every connection the person admits is an agent of its own (`claude-code@dev#1`),
 //! and "Always allow" is remembered per environment.
 //!
 //! The environments here are this test's own processes, as `ush` is the person's: a process asks
-//! for the door through the production request ([`runtime_portal::environment_door`]) and holds
+//! for the socket through the production request ([`runtime_portal::environment_socket`]) and holds
 //! its lease, and the programs inside it are processes it starts. A program outside that process
-//! tree, the test itself or a program of another environment, is refused at the door.
+//! tree, the test itself or a program of another environment, is refused at the socket.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -27,7 +27,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use runtime_portal::environment_door::{self, Request};
+use runtime_portal::environment_socket::{self, Request};
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
@@ -56,7 +56,7 @@ static ONE_SESSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const ROLE: &str = "TILO_TEST_AGENT_SESSION_ROLE";
 
 /// A process of this test's, started as the role [`ROLE`] names: an environment holding its
-/// door, or a program inside one. Run as a test of its own, it does nothing.
+/// socket, or a program inside one. Run as a test of its own, it does nothing.
 #[test]
 fn program() {
     match std::env::var(ROLE).as_deref() {
@@ -66,17 +66,17 @@ fn program() {
     }
 }
 
-/// An environment, as `ush` opens one: ask the session for its door, say where it is, start the
-/// program inside it, and hold the door until told to end (this process's input closes).
+/// An environment, as `ush` opens one: ask the session for its socket, say where it is, start the
+/// program inside it, and hold the lease until told to end (this process's input closes).
 fn environment() {
     let var = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-    let door = PathBuf::from(var("DOOR").expect("the session's door"));
+    let socket = PathBuf::from(var("SOCKET").expect("the session's socket"));
     let request = Request::new(
         &var("ENVIRONMENT").expect("the environment"),
         &var("ENVIRONMENT_NAME").expect("its name"),
         var("ENVIRONMENT_WORKSPACE").as_deref(),
     );
-    let lease = match environment_door::open(&door, &request) {
+    let lease = match environment_socket::open(&socket, &request) {
         Ok(lease) => lease,
         Err(error) => {
             say("REFUSED", &error.to_string());
@@ -84,7 +84,7 @@ fn environment() {
             return;
         }
     };
-    say("DOOR", &lease.path().display().to_string());
+    say("SOCKET", &lease.path().display().to_string());
     let target = match var("CLIENT_TARGET").as_deref() {
         None => {
             ended();
@@ -99,7 +99,7 @@ fn environment() {
 }
 
 /// A coding agent's program: connect to `TARGET`, introduce itself as `CLIENT_NAME` (asking for
-/// `ASK_WORKSPACE`, when named), say what the door answered, list what it may do, and stay
+/// `ASK_WORKSPACE`, when named), say what the socket answered, list what it may do, and stay
 /// until told to end.
 fn client() {
     let var = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
@@ -155,8 +155,8 @@ fn introduce(stream: &UnixStream, name: &str, workspace: Option<&str>) -> Vec<Va
             "params": {"name": "tilo_ls", "arguments": {}}
         }),
     ] {
-        // A door that refuses closes at once, and can close before this ask reaches it: the
-        // write then fails, and the reason it gave is already on the connection. What the door
+        // A socket that refuses closes at once, and can close before this ask reaches it: the
+        // write then fails, and the reason it gave is already on the connection. What the socket
         // answered is read either way, so a refusal that came early is still the answer.
         let asked = writer.write_all(format!("{ask}\n").as_bytes()).is_ok();
         let mut line = String::new();
@@ -217,7 +217,7 @@ fn start(role: &str, vars: &[(&str, String)], inherit: bool) -> Child {
     command.spawn_locked().unwrap()
 }
 
-/// An environment of this test's: the process holding its door, and what it and the program
+/// An environment of this test's: the process holding its socket, and what it and the program
 /// inside it said.
 struct Environment {
     child: Child,
@@ -225,22 +225,27 @@ struct Environment {
 }
 
 impl Environment {
-    /// Open the environment `id` at `door`, called `name`, in `workspace` (the one in front
+    /// Open the environment `id` at `socket`, called `name`, in `workspace` (the one in front
     /// when `None`), with a program named `client` inside it connecting to `target` (`own`,
-    /// its own door, or another's path; none when `None`), asking for `asked`.
-    fn open(door: &Path, id: &str, workspace: Option<&str>, client: Option<(&str, &str)>) -> Self {
-        Self::asking(door, id, workspace, client, None)
+    /// its own socket, or another's path; none when `None`), asking for `asked`.
+    fn open(
+        socket: &Path,
+        id: &str,
+        workspace: Option<&str>,
+        client: Option<(&str, &str)>,
+    ) -> Self {
+        Self::asking(socket, id, workspace, client, None)
     }
 
     fn asking(
-        door: &Path,
+        socket: &Path,
         id: &str,
         workspace: Option<&str>,
         client: Option<(&str, &str)>,
         asked: Option<&str>,
     ) -> Self {
         let mut vars = vec![
-            ("DOOR", door.display().to_string()),
+            ("SOCKET", socket.display().to_string()),
             ("ENVIRONMENT", id.to_owned()),
             (
                 "ENVIRONMENT_NAME",
@@ -263,7 +268,7 @@ impl Environment {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
                 if let Some((what, rest)) = line.split_once(' ')
-                    && matches!(what, "DOOR" | "REFUSED" | "ANSWER" | "UNREACHABLE")
+                    && matches!(what, "SOCKET" | "REFUSED" | "ANSWER" | "UNREACHABLE")
                 {
                     let _ = tell.send((what.to_owned(), rest.to_owned()));
                 }
@@ -280,11 +285,11 @@ impl Environment {
         })
     }
 
-    /// Where its door is.
+    /// Where its socket is.
     #[track_caller]
-    fn door(&self, session: &mut Session) -> PathBuf {
+    fn socket(&self, session: &mut Session) -> PathBuf {
         let (what, rest) = self.next(session);
-        assert_eq!(what, "DOOR", "the environment's door opened: {rest}");
+        assert_eq!(what, "SOCKET", "the environment's socket opened: {rest}");
         PathBuf::from(rest)
     }
 
@@ -326,7 +331,7 @@ fn shell() -> Layout {
 
 /// A headless session on [`shell`], its MCP server at `root`, its questions asked on its sheets.
 fn session(root: &Path) -> (Session, Questions, PathBuf) {
-    let door = root.join("agent.sock");
+    let socket = root.join("agent.sock");
     let questions = Questions::new();
     let mut session = Session::headless(
         Options {
@@ -335,7 +340,7 @@ fn session(root: &Path) -> (Session, Questions, PathBuf) {
             collab: false,
             person: PERSON.to_owned(),
             action_plane: ActionPlane::At(root.join("plane.sock")),
-            mcp_server: Some(door.clone()),
+            mcp_server: Some(socket.clone()),
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -345,7 +350,7 @@ fn session(root: &Path) -> (Session, Questions, PathBuf) {
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("a frame");
     }
-    (session, questions, door)
+    (session, questions, socket)
 }
 
 /// Press `effect` on the sheet publishing it, as the person would.
@@ -414,7 +419,7 @@ fn seated_as(session: &mut Session, name: &str) -> (String, String, String) {
     })
 }
 
-/// A program of the person's login, outside every environment, at `door`: its answers, read
+/// A program of the person's login, outside every environment, at `socket`: its answers, read
 /// while the session runs, and its leaving.
 struct Program {
     answers: mpsc::Receiver<Vec<Value>>,
@@ -423,13 +428,13 @@ struct Program {
 }
 
 impl Program {
-    fn connect(door: &Path, workspace: Option<&str>) -> Self {
-        let door = door.to_path_buf();
+    fn connect(socket: &Path, workspace: Option<&str>) -> Self {
+        let socket = socket.to_path_buf();
         let workspace = workspace.map(str::to_owned);
         let (tell, answers) = mpsc::channel();
         let (leave, staying) = mpsc::channel::<()>();
         let ended = std::thread::spawn(move || {
-            let stream = UnixStream::connect(&door).expect("the door");
+            let stream = UnixStream::connect(&socket).expect("the socket");
             let read = introduce(&stream, "Claude Code", workspace.as_deref());
             let _ = tell.send(read);
             let _ = staying.recv_timeout(tilo_test_env::hang_bound());
@@ -460,7 +465,7 @@ fn refusal(answer: &Value) -> Option<&str> {
 }
 
 /// An agent in an environment works in that environment's workspace, not the one in front of
-/// the person, and asking for another is refused. Its door goes when the environment ends,
+/// the person, and asking for another is refused. Its socket goes when the environment ends,
 /// and so does the agent it let in.
 #[test]
 fn an_agent_in_an_environment_works_in_its_workspace_alone() {
@@ -469,21 +474,24 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
-    let (mut session, questions, door) = session(root.path());
+    let (mut session, questions, socket) = session(root.path());
 
     let dev = Environment::open(
-        &door,
+        &socket,
         &format!("{STUDIO}/dev"),
         Some(STUDIO),
         Some(("Claude Code", "own")),
     );
-    let path = dev.door(&mut session);
+    let path = dev.socket(&mut session);
     assert!(
         path.starts_with(root.path().join("environments")),
-        "the environment's door is beside the session's: {}",
+        "the environment's socket is beside the session's: {}",
         path.display()
     );
-    assert!(path.exists(), "the door is there while the environment is");
+    assert!(
+        path.exists(),
+        "the socket is there while the environment is"
+    );
 
     let shown = asked(&mut session, &questions);
     assert_eq!(
@@ -516,13 +524,13 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
     // A program in an environment works in its environment's workspace only: asking for the
     // one in front is refused before the person is asked anything.
     let elsewhere = Environment::asking(
-        &door,
+        &socket,
         "dev-2",
         Some(STUDIO),
         Some(("Claude Code", "own")),
         Some(GARDEN),
     );
-    elsewhere.door(&mut session);
+    elsewhere.socket(&mut session);
     let refused = elsewhere.answer(&mut session);
     assert_eq!(
         refusal(&refused),
@@ -533,7 +541,7 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
     elsewhere.end();
 
     dev.end();
-    crate::common::wait_for(&mut session, "the environment's door to go", |session| {
+    crate::common::wait_for(&mut session, "the environment's socket to go", |session| {
         (!path.exists()
             && !agent_sessions(session)
                 .iter()
@@ -542,42 +550,42 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
     });
 }
 
-/// An environment's door serves the programs inside that environment and nothing else: not a
+/// An environment's socket serves the programs inside that environment and nothing else: not a
 /// program of the login outside it, and not one inside another environment.
 #[test]
-fn an_environments_door_serves_its_own_programs_alone() {
+fn an_environments_socket_serves_its_own_programs_alone() {
     let _one = ONE_SESSION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
-    let (mut session, questions, door) = session(root.path());
+    let (mut session, questions, socket) = session(root.path());
 
-    let dev = Environment::open(&door, "dev", Some(STUDIO), None);
-    let path = dev.door(&mut session);
+    let dev = Environment::open(&socket, "dev", Some(STUDIO), None);
+    let path = dev.socket(&mut session);
 
     // The test itself is a program of this login, and outside the environment.
     let outside = Program::connect(&path, None);
     let read = outside.answers(&mut session);
     assert_eq!(
         read.first().and_then(refusal),
-        Some("this door serves only programs inside the environment it belongs to"),
+        Some("this socket serves only programs inside the environment it belongs to"),
         "{read:?}"
     );
     outside.end();
 
     // A program inside another environment reaches for it.
     let other = Environment::open(
-        &door,
+        &socket,
         "other",
         Some(STUDIO),
         Some(("Claude Code", &path.display().to_string())),
     );
-    other.door(&mut session);
+    other.socket(&mut session);
     let refused = other.answer(&mut session);
     assert_eq!(
         refusal(&refused),
-        Some("this door serves only programs inside the environment it belongs to"),
+        Some("this socket serves only programs inside the environment it belongs to"),
         "{refused}"
     );
     assert!(
@@ -599,17 +607,17 @@ fn always_allow_is_remembered_per_environment() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
-    let (mut session, questions, door) = session(root.path());
+    let (mut session, questions, socket) = session(root.path());
 
-    let first = Environment::open(&door, "dev", Some(STUDIO), Some(("Claude Code", "own")));
-    first.door(&mut session);
+    let first = Environment::open(&socket, "dev", Some(STUDIO), Some(("Claude Code", "own")));
+    first.socket(&mut session);
     asked(&mut session, &questions);
     allow(&mut session, 2);
     assert!(first.answer(&mut session).get("result").is_some());
     seated_as(&mut session, "Claude Code in Env dev #1");
 
-    let again = Environment::open(&door, "dev", Some(STUDIO), Some(("Claude Code", "own")));
-    again.door(&mut session);
+    let again = Environment::open(&socket, "dev", Some(STUDIO), Some(("Claude Code", "own")));
+    again.socket(&mut session);
     assert!(
         again.answer(&mut session).get("result").is_some(),
         "let in as the person said"
@@ -617,8 +625,8 @@ fn always_allow_is_remembered_per_environment() {
     assert!(questions.pending().is_empty(), "without asking");
     seated_as(&mut session, "Claude Code in Env dev #2");
 
-    let other = Environment::open(&door, "other", Some(STUDIO), Some(("Claude Code", "own")));
-    other.door(&mut session);
+    let other = Environment::open(&socket, "other", Some(STUDIO), Some(("Claude Code", "own")));
+    other.socket(&mut session);
     let shown = asked(&mut session, &questions);
     assert_eq!(
         shown.title,
@@ -630,7 +638,7 @@ fn always_allow_is_remembered_per_environment() {
         Some("You didn’t let this program work here as an agent.")
     );
 
-    let host = Program::connect(&door, None);
+    let host = Program::connect(&socket, None);
     let shown = asked(&mut session, &questions);
     assert_eq!(
         shown.title, "Work in “Garden” as the agent claude-code@host#1",
@@ -655,13 +663,13 @@ fn two_programs_of_one_name_are_two_agents() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
-    let (mut session, questions, door) = session(root.path());
+    let (mut session, questions, socket) = session(root.path());
 
-    let first = Program::connect(&door, None);
+    let first = Program::connect(&socket, None);
     asked(&mut session, &questions);
     allow(&mut session, 1);
     assert!(first.answers(&mut session)[0].get("result").is_some());
-    let second = Program::connect(&door, None);
+    let second = Program::connect(&socket, None);
     assert!(
         second.answers(&mut session)[0].get("result").is_some(),
         "the person let this program in for the session"
@@ -696,9 +704,9 @@ fn a_program_asks_for_a_workspace_the_person_may_grant() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
-    let (mut session, questions, door) = session(root.path());
+    let (mut session, questions, socket) = session(root.path());
 
-    let studio = Program::connect(&door, Some(STUDIO));
+    let studio = Program::connect(&socket, Some(STUDIO));
     let shown = asked(&mut session, &questions);
     assert_eq!(
         shown.title,
@@ -710,7 +718,7 @@ fn a_program_asks_for_a_workspace_the_person_may_grant() {
     assert_eq!(doing, "Studio", "where it asked, not Garden in front");
 
     for workspace in [ELSEWHERE, "00000000-0000-4000-8000-000000000000"] {
-        let refused = Program::connect(&door, Some(workspace));
+        let refused = Program::connect(&socket, Some(workspace));
         let read = refused.answers(&mut session);
         assert_eq!(
             read.first().and_then(refusal),

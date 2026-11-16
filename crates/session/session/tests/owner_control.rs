@@ -1,4 +1,4 @@
-//! The owner's control door on a headless session: what the account whose desktop this is
+//! The owner's control socket on a headless session: what the account whose desktop this is
 //! drives with its own scripts — the action model and the state it shows — and nothing else,
 //! with nothing invoked and nothing shown of what the lock covers while the screen is locked.
 
@@ -26,7 +26,7 @@ use tilo_session::{Options, Session};
 use tilo_test_env::ScopedEnv;
 
 const PERSON: &str = "Pat";
-/// The window the shell shows: what the lock must not tell the owner's door about.
+/// The window the shell shows: what the lock must not tell the owner's socket about.
 const TITLE: &str = "Groceries";
 
 /// The ops only a development session's test-control socket answers: synthetic input, the hosted
@@ -149,10 +149,10 @@ fn session(root: &Path) -> Session {
     session
 }
 
-/// The owner's door serves the action model and the state it shows, and refuses every op only a
+/// The owner's socket serves the action model and the state it shows, and refuses every op only a
 /// development session's socket answers.
 #[test]
-fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
+fn the_owner_socket_serves_the_action_model_and_the_state_it_shows() {
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
     let owner = root.path().join("admin-control.sock");
@@ -173,7 +173,7 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     );
     assert_eq!(
         invoked["err"]["code"], "unknown_action",
-        "the door invokes through the broker, which says no such action: {invoked}"
+        "the socket invokes through the broker, which says no such action: {invoked}"
     );
     let status = ask(
         &mut session,
@@ -182,7 +182,7 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     );
     assert_eq!(
         status["err"]["code"], "unknown_invocation",
-        "the door follows an invocation: {status}"
+        "the socket follows an invocation: {status}"
     );
     let cancelled = ask(
         &mut session,
@@ -191,7 +191,7 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     );
     assert_eq!(
         cancelled["err"]["code"], "unknown_invocation",
-        "the door cancels an invocation: {cancelled}"
+        "the socket cancels an invocation: {cancelled}"
     );
     let state = ask(&mut session, &owner, &json!({"op": "state_dump"}));
     assert_eq!(state["state"]["chrome"]["session_locked"], false, "{state}");
@@ -207,7 +207,7 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     assert_eq!(
         ask(&mut session, &owner, &json!({"op": "watch"})),
         json!({"ok": {}}),
-        "the door streams the state it shows"
+        "the socket streams the state it shows"
     );
     assert_eq!(
         ask(
@@ -224,7 +224,7 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
         let refused = ask(&mut session, &owner, &json!({"op": op}));
         assert_eq!(
             refused["err"]["code"], "not_permitted",
-            "{op} is not the owner's door's: {refused}"
+            "{op} is not the owner's socket's: {refused}"
         );
         assert!(
             refused["err"]["message"]
@@ -239,7 +239,7 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
             "a development session answers {op}: {dev_answer}"
         );
     }
-    // The test identity is a development fixture too, and the owner's door mints none.
+    // The test identity is a development fixture too, and the owner's socket mints none.
     let minted = ask(
         &mut session,
         &owner,
@@ -247,7 +247,7 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     );
     assert_eq!(minted["err"]["code"], "not_permitted", "{minted}");
 
-    // An op the protocol does not answer is unsupported on both doors, and each names its own.
+    // An op the protocol does not answer is unsupported on both sockets, and each names its own.
     let unknown = ask(&mut session, &owner, &json!({"op": "nonsense"}));
     assert_eq!(unknown["err"]["code"], "unsupported", "{unknown}");
     let message = unknown["err"]["message"].as_str().unwrap();
@@ -255,10 +255,10 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     assert!(message.contains("`state_dump`"), "{unknown}");
 }
 
-/// A locked session invokes nothing through the owner's door, and shows nothing of what the lock
+/// A locked session invokes nothing through the owner's socket, and shows nothing of what the lock
 /// covers — while the development socket, which drives the seat, still sees the shell.
 #[test]
-fn a_locked_session_invokes_nothing_through_the_owner_door() {
+fn a_locked_session_invokes_nothing_through_the_owner_socket() {
     let _settled = ui::motion::testing::settled();
     let _lock = lock_environment();
     let root = crate::common::private_home();
@@ -271,7 +271,7 @@ fn a_locked_session_invokes_nothing_through_the_owner_door() {
         reached(&mut session, |session| session.compositor().locked()),
         "the session is locked"
     );
-    // A pass more, so the door reads the lock the frame was drawn under.
+    // A pass more, so the socket reads the lock the frame was drawn under.
     session.step(Duration::from_millis(1)).expect("a turn");
 
     let invoked = ask(
@@ -281,7 +281,7 @@ fn a_locked_session_invokes_nothing_through_the_owner_door() {
     );
     assert_eq!(
         invoked["err"]["code"], "locked",
-        "the owner's door invokes nothing while the screen is locked: {invoked}"
+        "the owner's socket invokes nothing while the screen is locked: {invoked}"
     );
     // The listing stays readable: what the person may run is not the lock's to hide.
     let listed = ask(&mut session, &owner, &json!({"op": "actions_enumerate"}));
@@ -379,15 +379,15 @@ fn unlock_through_the_development_socket(
     );
     assert_eq!(
         invoked["err"]["code"], "unknown_action",
-        "the door invokes again once the screen is unlocked: {invoked}"
+        "the socket invokes again once the screen is unlocked: {invoked}"
     );
 }
 
-/// The chrome advertises its shortcuts by the table's own ids, and a person's door runs an
+/// The chrome advertises its shortcuts by the table's own ids, and a person's socket runs an
 /// advertised one: asking for a shortcut the shell publishes is never answered as an action that
 /// does not exist.
 #[test]
-fn the_door_runs_an_advertised_desktop_shortcut() {
+fn the_owner_socket_runs_an_advertised_desktop_shortcut() {
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
     let owner = root.path().join("admin-control.sock");

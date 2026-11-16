@@ -40,14 +40,20 @@ pub struct ClosedTab {
     /// The window's content, in the form that opens again
     /// ([`Tab::relaunchable`]).
     pub tab: Tab,
+    /// The monitor this device showed the window's group on, when it had
+    /// several: a group made again goes back to it.
+    pub display: Option<String>,
 }
 
 /// Where a reopen put a window back.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reopened {
     pub strip: StripId,
     pub group: GroupId,
     pub tab: TabId,
+    /// The monitor the group made again goes back to, when the close
+    /// remembered one; `None` when the window went into a group still there.
+    pub display: Option<String>,
 }
 
 /// Why a window left its group: a person closed it, or it only moved.
@@ -97,13 +103,20 @@ impl ClosedTabs {
 
 impl Workspace {
     /// Remember the window at `strip`, `group` and `tab` (indices) as closed,
-    /// so [`Self::reopen_closed`] puts it back, and end the shares it showed
+    /// shown on monitor `display`, so [`Self::reopen_closed`] puts it back,
+    /// and end the shares it showed
     /// ([`Self::end_window_shares`]): a window that closes stops being shared.
     /// Called by the removal path every close goes through, so whatever closed
     /// a window — its ✕, a chord, a menu row, a window closed whole — the
     /// close can be undone and the workspace stops showing it.
     /// Returns whether there was such a window.
-    pub fn note_close(&mut self, strip: usize, group: usize, tab: usize) -> bool {
+    pub fn note_close(
+        &mut self,
+        strip: usize,
+        group: usize,
+        tab: usize,
+        display: Option<String>,
+    ) -> bool {
         let Some((strip_id, holding)) = self
             .strips
             .get(strip)
@@ -123,6 +136,7 @@ impl Workspace {
             group_width: holding.width,
             whole_group: holding.tabs.len() == 1,
             tab: closing.relaunchable(),
+            display,
         };
         self.closed_tabs.push(entry);
         self.end_window_shares(closing_id);
@@ -160,6 +174,7 @@ impl Workspace {
             if self.holds(tab) {
                 continue;
             }
+            let mut display = None;
             let strip_id = if let Some((strip, group)) = self.group_position(entry.group) {
                 let id = self.strips.get(strip)?.id;
                 let holding = self.strips.get_mut(strip)?.window_groups.get_mut(group)?;
@@ -194,12 +209,14 @@ impl Workspace {
                         focus_history: Vec::new(),
                     },
                 );
+                display = entry.display;
                 id
             };
             return Some(Reopened {
                 strip: strip_id,
                 group: entry.group,
                 tab,
+                display,
             });
         }
     }
@@ -226,7 +243,8 @@ impl Workspace {
 impl Layout {
     /// Put the window closed most recently in `workspace` back where it was
     /// and focus it, as the person's reopen does: the workspace shows the
-    /// strip it lands in, and that strip its group. `None`, changing
+    /// strip it lands in, and that strip its group, on the display the group
+    /// was shown on while that display is still here. `None`, changing
     /// nothing, when the workspace is gone or remembers no close.
     pub fn reopen_closed(&mut self, workspace: WorkspaceId) -> Option<Reopened> {
         let focused = self.active_strip.get(&workspace).copied();
@@ -238,6 +256,10 @@ impl Layout {
         self.active = workspace;
         self.active_strip.insert(workspace, reopened.strip);
         self.set_active_group(reopened.strip, reopened.group);
+        if let Some(monitor) = &reopened.display {
+            self.outputs.return_home(reopened.group, monitor);
+        }
+        self.outputs.note_focus(reopened.strip, reopened.group);
         Some(reopened)
     }
 }

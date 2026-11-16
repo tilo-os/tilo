@@ -7,7 +7,7 @@
 //! workspace and author ([`Hosts::hand_over`]):
 //!
 //! - the host's end of the window's patch connection, whose other end the window took on its
-//!   window door (`runtime_portal::windows::PATCH_VERB`);
+//!   window socket (`runtime_portal::windows::PATCH_VERB`);
 //! - the instance's collaboration connection, attested as that window of the app's launch, exactly
 //!   as a later window's own connection is: the broker attributes it from the session's record,
 //!   never from the host;
@@ -16,20 +16,20 @@
 //!   resources;
 //! - its module, read from the installation verified as a launch verifies it, in a sealed memfd.
 //!
-//! The person's region formats ride with the instance, and are said again on every host's door
+//! The person's region formats ride with the instance, and are said again on every host's socket
 //! when they change them in Settings ([`Hosts::locale_changed`]): their windows' dates, clocks
 //! and weeks follow where they stand, without waiting for a restart. So does what the person may
-//! do in the app, said again on the doors of the workspace's hosts when its policy changes
+//! do in the app, said again on the sockets of the workspace's hosts when its policy changes
 //! ([`Hosts::policy_changed`]): a viewer's window offers no change they cannot make.
 //!
 //! The author is the publisher whose key signed the package; a person's own build, signed with
 //! their own key, runs in a host of that person's. A host is started through the launch kind
 //! "tilolang host" (`tilo-launcher tilolang-host`), keyed by its workspace, its author and the
 //! runtimes it runs on, with the storage of that workspace and author; it ends once the last of its
-//! instances ended, which it says on its door.
+//! instances ended, which it says on its socket.
 //!
 //! In a development session (`TILO_LAUNCHER_LIVE_MODULES`), a reinstall of an app a host runs is
-//! verified as a launch verifies it and handed to the host on its door ([`Hosts::reinstalled`]):
+//! verified as a launch verifies it and handed to the host on its socket ([`Hosts::reinstalled`]):
 //! its open windows take the new build over without restarting, as `tilolang dev` expects.
 //!
 //! A window that ran its instance in its own process kept the app's record in the app's own
@@ -197,8 +197,8 @@ struct HostKey {
 
 /// A running host.
 struct Host {
-    /// The session's end of its door.
-    door: Arc<OwnedFd>,
+    /// The session's end of its socket.
+    socket: Arc<OwnedFd>,
     /// The windows whose instances it runs, each with its app.
     instances: HashMap<u64, String>,
     /// Which start of the host this is, so the end of an earlier one never retires a later one.
@@ -324,8 +324,8 @@ impl Hosts {
             language: ui::i18n::preferred_language().unwrap_or_default(),
         };
         for (key, host) in self.running().iter() {
-            if let Err(error) = runtime_portal::tilolang_host::send_locale(&host.door, &locale) {
-                // Its follow thread reads the end of the door and forgets it: the next instance
+            if let Err(error) = runtime_portal::tilolang_host::send_locale(&host.socket, &locale) {
+                // Its follow thread reads the end of the socket and forgets it: the next instance
                 // starts another.
                 tracing::warn!(
                     %error,
@@ -353,9 +353,9 @@ impl Hosts {
                     standing: crate::authority::standing(workspace, app),
                 };
                 if let Err(error) =
-                    runtime_portal::tilolang_host::send_standing(&host.door, &standing)
+                    runtime_portal::tilolang_host::send_standing(&host.socket, &standing)
                 {
-                    // Its follow thread reads the end of the door and forgets it: the next
+                    // Its follow thread reads the end of the socket and forgets it: the next
                     // instance starts another.
                     tracing::warn!(
                         %error,
@@ -511,14 +511,14 @@ impl Hosts {
 
     /// A package was installed, in a development session: every app a running host runs whose
     /// installed build changed is verified as a launch verifies it and handed to that host on its
-    /// door, once, so its open windows take the new build over. A build that does not verify, or
+    /// socket, once, so its open windows take the new build over. A build that does not verify, or
     /// that only a host of another author or other runtimes could run, is left for the app's next
     /// start.
     pub fn reinstalled(&self) {
         let mut running = self.running();
         for (key, host) in running.iter_mut() {
             for (app, build) in &mut host.builds {
-                match self.send_later_build(key, &host.door, app, build) {
+                match self.send_later_build(key, &host.socket, app, build) {
                     Ok(true) => {
                         tracing::info!(app, workspace = %key.workspace, "a later build was handed to its host");
                     }
@@ -531,12 +531,12 @@ impl Hosts {
         }
     }
 
-    /// Hand the host `key` behind `door` the installed build of `app` when it is not `build`, the
+    /// Hand the host `key` behind `socket` the installed build of `app` when it is not `build`, the
     /// one it runs, which it is from then on. Whether it was handed.
     fn send_later_build(
         &self,
         key: &HostKey,
-        door: &OwnedFd,
+        socket: &OwnedFd,
         app: &str,
         build: &mut Build,
     ) -> std::io::Result<bool> {
@@ -565,7 +565,7 @@ impl Hosts {
             module_len: module.len() as u64,
         };
         let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
-        runtime_portal::tilolang_host::send_build(door, &later, &module)?;
+        runtime_portal::tilolang_host::send_build(socket, &later, &module)?;
         build.module = hashed;
         Ok(true)
     }
@@ -633,7 +633,7 @@ impl Hosts {
     ) -> std::io::Result<bool> {
         let mut hosts = self.running();
         if let Some(host) = hosts.get_mut(key) {
-            match runtime_portal::tilolang_host::send_instance(&host.door, request, fds) {
+            match runtime_portal::tilolang_host::send_instance(&host.socket, request, fds) {
                 Ok(()) => {
                     host.instances.insert(request.instance, request.app.clone());
                     // Its other windows run the build handed last; a later one reaches them all.
@@ -642,13 +642,13 @@ impl Hosts {
                 }
                 // The host is ending: start another.
                 Err(error) => {
-                    tracing::info!(%error, "a tilolang host's door is closed");
+                    tracing::info!(%error, "a tilolang host's socket is closed");
                     hosts.remove(key);
                 }
             }
         }
         let mut host = self.start(key)?;
-        runtime_portal::tilolang_host::send_instance(&host.door, request, fds)?;
+        runtime_portal::tilolang_host::send_instance(&host.socket, request, fds)?;
         host.instances.insert(request.instance, request.app.clone());
         host.builds.insert(request.app.clone(), build);
         hosts.insert(key.clone(), host);
@@ -668,7 +668,7 @@ impl Hosts {
         Ok(dir)
     }
 
-    /// Start the host `key`, with its door at the launch kind's descriptor, and follow it on a
+    /// Start the host `key`, with its socket at the launch kind's descriptor, and follow it on a
     /// thread of its own until it ends.
     fn start(self: &Arc<Self>, key: &HostKey) -> std::io::Result<Host> {
         use std::os::unix::process::CommandExt as _;
@@ -679,17 +679,17 @@ impl Hosts {
             .stdin(std::process::Stdio::null())
             // Read here: what it said last is why it ended when it could not say so itself.
             .stderr(std::process::Stdio::piped());
-        let door = theirs.as_raw_fd();
-        let slot = launcher::run::tilolang_host::DOOR_CHILD_FD;
-        // SAFETY: only async-signal-safe calls between fork and exec: the door is placed at its
+        let socket = theirs.as_raw_fd();
+        let slot = launcher::run::tilolang_host::SOCKET_CHILD_FD;
+        // SAFETY: only async-signal-safe calls between fork and exec: the socket is placed at its
         // slot without close-on-exec.
         unsafe {
             command.pre_exec(move || {
-                if door == slot {
+                if socket == slot {
                     if libc::fcntl(slot, libc::F_SETFD, 0) < 0 {
                         return Err(std::io::Error::last_os_error());
                     }
-                } else if libc::dup2(door, slot) < 0 {
+                } else if libc::dup2(socket, slot) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -705,26 +705,26 @@ impl Hosts {
                 .spawn(move || last_lines(stderr, &tag))
         });
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
-        let door = Arc::new(ours);
+        let socket = Arc::new(ours);
         tracing::info!(
             workspace = %key.workspace,
             author = %key.author,
             pid = child.id(),
             "tilolang host started"
         );
-        let (hosts, followed, key) = (Arc::clone(self), Arc::clone(&door), key.clone());
+        let (hosts, followed, key) = (Arc::clone(self), Arc::clone(&socket), key.clone());
         std::thread::Builder::new()
             .name("tilolang-host".into())
             .spawn(move || hosts.follow(&key, generation, &followed, child, said))?;
         Ok(Host {
-            door,
+            socket,
             instances: HashMap::new(),
             generation,
             builds: HashMap::new(),
         })
     }
 
-    /// Follow the host `key` of `generation` over its door `followed` until it ends: each
+    /// Follow the host `key` of `generation` over its socket `followed` until it ends: each
     /// instance that ends is noted, then the host's own end and why, and the host is forgotten.
     fn follow(
         &self,
@@ -741,13 +741,13 @@ impl Hosts {
                 Ok(Some(FromHost::Ended(instance))) => self.ended(key, generation, instance),
                 Ok(Some(FromHost::Exiting(why))) => reason = Some(why),
                 Ok(None) => break,
-                // The packet was taken: the door carries the next one.
+                // The packet was taken: the socket carries the next one.
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                     tracing::error!(%error, workspace = %key.workspace, author = %key.author, "a tilolang host said something unreadable");
                 }
-                // The door failed: it carries nothing more; the host is waited for.
+                // The socket failed: it carries nothing more; the host is waited for.
                 Err(error) => {
-                    tracing::error!(%error, workspace = %key.workspace, author = %key.author, "a tilolang host's door failed");
+                    tracing::error!(%error, workspace = %key.workspace, author = %key.author, "a tilolang host's socket failed");
                     break;
                 }
             }
@@ -797,9 +797,9 @@ impl Hosts {
             }
         };
         if let Some(host) = closed {
-            // The host reads the end of its door and ends once it runs nothing.
+            // The host reads the end of its socket and ends once it runs nothing.
             // SAFETY: shutting down the writing half of a socket the session owns.
-            let _ = unsafe { libc::shutdown(host.door.as_raw_fd(), libc::SHUT_WR) };
+            let _ = unsafe { libc::shutdown(host.socket.as_raw_fd(), libc::SHUT_WR) };
         }
     }
 }
@@ -942,7 +942,7 @@ mod tests {
 
     const NOTES: &str = "so.tilo.lang.notes";
 
-    /// Hosts running in each workspace of `running`, behind its door, each with two windows of
+    /// Hosts running in each workspace of `running`, behind its socket, each with two windows of
     /// Notes.
     fn running(running: Vec<(&str, OwnedFd)>) -> Arc<Hosts> {
         let hosts = Hosts::with(
@@ -950,7 +950,7 @@ mod tests {
             Box::new(|_, _, _| Command::new("true")),
             Box::new(|_| Err("no package store here".to_owned())),
         );
-        for (workspace, door) in running {
+        for (workspace, socket) in running {
             let key = HostKey {
                 workspace: workspace.to_owned(),
                 author: "person-ada".to_owned(),
@@ -958,7 +958,7 @@ mod tests {
                 app_runtime: "tilo@1".to_owned(),
             };
             let host = Host {
-                door: Arc::new(door),
+                socket: Arc::new(socket),
                 instances: HashMap::from([(7, NOTES.to_owned()), (8, NOTES.to_owned())]),
                 generation: 1,
                 builds: HashMap::new(),
@@ -968,10 +968,10 @@ mod tests {
         hosts
     }
 
-    /// Every host running says on its door what the person's formats now are, so the instances it
+    /// Every host running says on its socket what the person's formats now are, so the instances it
     /// runs write their weeks and times again; a host that is not running hears nothing.
     #[test]
-    fn a_formats_change_is_said_on_the_door_of_every_host_running() {
+    fn a_formats_change_is_said_on_the_socket_of_every_host_running() {
         let (ours, theirs) = runtime_portal::tilolang_host::pair().unwrap();
         let (idle_ours, idle_theirs) = runtime_portal::tilolang_host::pair().unwrap();
         let hosts = running(vec![("7a110d00-0000-4000-8000-0000000000f1", ours)]);
@@ -986,13 +986,13 @@ mod tests {
         let handed = runtime_portal::tilolang_host::receive(&theirs).unwrap();
         ui::format::region::install(before);
         let Some(runtime_portal::tilolang_host::Handed::Locale(locale)) = handed else {
-            panic!("a runtime host's door carries the formats as formats: {handed:?}");
+            panic!("a runtime host's socket carries the formats as formats: {handed:?}");
         };
         assert_eq!(
             locale.formats, sunday,
             "the week the person starts on reaches the host its instances run in"
         );
-        // The session keeps no other host's door: nothing was said on it, so its end is all the
+        // The session keeps no other host's socket: nothing was said on it, so its end is all the
         // host would hear.
         drop(idle_ours);
         assert!(
@@ -1007,7 +1007,7 @@ mod tests {
     /// now do in each app it runs, so the windows already open follow; a host of another
     /// workspace hears nothing.
     #[test]
-    fn a_policy_change_is_said_for_each_app_on_the_doors_of_the_workspaces_hosts() {
+    fn a_policy_change_is_said_for_each_app_on_the_sockets_of_the_workspaces_hosts() {
         const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000f2";
         let (ours, theirs) = runtime_portal::tilolang_host::pair().unwrap();
         let (other_ours, other_theirs) = runtime_portal::tilolang_host::pair().unwrap();
@@ -1031,7 +1031,7 @@ mod tests {
             panic!("the workspace's host is told the person's standing: {handed:?}");
         };
         assert_eq!(said.app, NOTES);
-        // What a launched Notes reads of the person's authority, as it reads back off the door.
+        // What a launched Notes reads of the person's authority, as it reads back off the socket.
         let expected = crate::authority::standing(&workspace, NOTES).unwrap();
         let expected = serde_json::from_slice(&serde_json::to_vec(&expected).unwrap()).unwrap();
         assert_eq!(said.standing, Some(expected));
@@ -1050,7 +1050,7 @@ mod tests {
         );
     }
 
-    /// In a development session, a reinstall of an app a host runs reaches that host's door once,
+    /// In a development session, a reinstall of an app a host runs reaches that host's socket once,
     /// as the module that verified; a reinstall that does not verify reaches it not at all.
     #[test]
     fn a_verified_later_build_is_handed_once_to_the_host_running_the_app() {
@@ -1087,9 +1087,9 @@ mod tests {
         };
         let builds = HashMap::from([(NOTES.to_owned(), build)]);
         let instances = HashMap::from([(7, NOTES.to_owned())]);
-        let door = Arc::new(ours);
+        let socket = Arc::new(ours);
         let host = Host {
-            door,
+            socket,
             instances,
             generation: 1,
             builds,

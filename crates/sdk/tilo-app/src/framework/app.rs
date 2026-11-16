@@ -1364,7 +1364,7 @@ fn start_record(
             handoff: context.take_handoff(),
             lent: super::scenario::Lent::new(context.take_lent()),
             reveal: std::cell::RefCell::new(
-                ui_core::window_door::requested_reveal().or_else(|| revealed(target)),
+                ui_core::window_channel::requested_reveal().or_else(|| revealed(target)),
             ),
             shows: Some(context.window_shows()),
         })
@@ -1661,7 +1661,7 @@ fn prepare_hooked(
     // stood in its environment; a capture continues nothing, and neither does
     // a later window the shell opens in the process.
     if args.shots.is_none()
-        && ui_core::window_door::requested_instance().is_none()
+        && ui_core::window_channel::requested_instance().is_none()
         && let Some(handoff) = process_handoff()
     {
         prepared.context.provide_handoff(handoff);

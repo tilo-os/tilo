@@ -261,22 +261,22 @@ The first asks to work in *Studio* as `claude-code@dev#1`, the second in
 *Garden* as `claude-code@site#1`. The person allows each on the sheet; the bar
 shows both, each in its workspace, and Stop on one ends that one alone.
 
-**The environment's door.** The session's MCP server
+**The environment's socket.** The session's MCP server
 (`$XDG_RUNTIME_DIR/tilo-session/agent.sock`) serves only programs of the login
 outside every sandbox, so nothing in a guest reaches it. When `ush` opens an
-environment it asks the session, on that door, for a door of the
+environment it asks the session, on that socket, for a socket of the
 environment's own, by its `TILO_ENVIRONMENT` id
-(`runtime_portal::environment_door`; the request passes the
-door's kernel peer checks, so it comes from a program of the login outside
+(`runtime_portal::environment_socket`; the request passes the
+socket's kernel peer checks, so it comes from a program of the login outside
 every sandbox). The session binds a fresh socket beside its own
 (`tilo-session/environments/`), answers its path and the workspace it serves,
 and `ush` binds it into the guest alone at `/run/tilo/agent.sock`, naming it in
 `TILO_AGENT_SOCK`, which `tilo-runtime --connect` uses in place of the
-session's door. The connection the request came on is the door's lease: when
+session's socket. The connection the request came on is the socket's lease: when
 the environment ends (or its `ush` does) the socket is removed and the agents
 it let in are stopped.
 
-- **Workspace.** A program on an environment's door works in the
+- **Workspace.** A program on an environment's socket works in the
   environment's workspace (above: the one its Terminal was opened in, as its
   record names it, read by `ush::workspace::environment_workspace`), never the
   one in front, and asking for another is refused. An environment of the
@@ -288,7 +288,7 @@ it let in are stopped.
   account that descends from the process holding the lease (the environment's
   own `ush`) is served there. A program of the login outside it, or one in
   another environment, is refused before anyone is asked. The session's own
-  door keeps its checks: another account, or a process in other namespaces,
+  socket keeps its checks: another account, or a process in other namespaces,
   is refused there.
 - **The person decides.** Each program is asked about on the sheet, naming
   the environment; "Always allow" is remembered per environment (its
@@ -302,7 +302,7 @@ it let in are stopped.
   #2`, and the person's Stop ends it alone. Instance numbers count from one in
   each session of the desktop.
 - **The Host case.** A program in the Host target, or any program of the login
-  outside a sandbox, uses the session's own door and works in the workspace in
+  outside a sandbox, uses the session's own socket and works in the workspace in
   front. `tilo-runtime --connect --workspace ID` asks for another by id; it is
   admitted there only when the person is one of that workspace's people (and
   not blocked in it), and the person still decides on the sheet.

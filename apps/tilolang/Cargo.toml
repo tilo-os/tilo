@@ -63,7 +63,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 tilolang-host = { path = "../../crates/platform/tilolang-host", features = ["test-support"] }
 collaboration = { version = "0.1.0", path = "../../crates/collab/collaboration", features = ["test-support", "broker-transport", "native"] }
 collab-types = { version = "0.1.0", path = "../../crates/collab/collab-types" }
-# A later build as a development session hands it over the host's door.
+# A later build as a development session hands it over the host's socket.
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 automerge.workspace = true
 uuid.workspace = true

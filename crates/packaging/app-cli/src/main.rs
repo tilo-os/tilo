@@ -324,7 +324,7 @@ fn parse_cli() -> Cli {
         _ => "app",
     };
     let mut command = Cli::command().bin_name(bin_name);
-    if !tilo_control::client::desktop_present(&tilo_control::client::doors_from_env()) {
+    if !tilo_control::client::desktop_present(&tilo_control::client::sockets_from_env()) {
         // Opening needs a desktop session; where there is none it is not
         // offered, and typed anyway says so in one sentence.
         command = command.mut_subcommands(|sub| {
@@ -341,12 +341,12 @@ fn parse_cli() -> Cli {
 
 /// `app open`: the same as `tilo open`.
 fn open(app: &str, items: &[String]) -> ExitCode {
-    let doors = tilo_control::client::doors_from_env();
+    let sockets = tilo_control::client::sockets_from_env();
     let cwd = std::env::current_dir().unwrap_or_default();
     let mut out = std::io::stdout().lock();
     let mut err = std::io::stderr().lock();
     let code = tilo_control::front::open(
-        &doors,
+        &sockets,
         app,
         items,
         &cwd,

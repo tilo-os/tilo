@@ -92,10 +92,11 @@ pub(crate) enum HostRequest {
         workspace: String,
         name: String,
     },
-    /// Show `resource` of the app `app` in that app's window, opening one when none is open: the
-    /// page has the workspace's session open the resource there, as a mention's notice does. It
-    /// never reaches the embedding page.
-    ShowInApp { app: String, resource: String },
+    /// Show `place` in its app's window, opening one when none is open: the page has the
+    /// workspace's session open it there, as a mention's notice does. It never reaches the
+    /// embedding page.
+    #[serde(skip)]
+    ShowInApp(tilo_session_core::notice::Place),
     /// The person takes back a key of theirs (a device, an agent's grant):
     /// the page's root signs the revocation and every session of theirs
     /// announces it (`onHostAction('revoke-device', {key, reason})`).
@@ -122,9 +123,8 @@ pub(crate) struct Revoking {
 const RENAME_ACTION: &str = "set-name";
 /// The avatar menu's "Report a problem…", which the page answers itself.
 const REPORT_PROBLEM: &str = "report-problem";
-/// Chat, which holds the conversation each pair of people shares.
-/// Settings, whose pages a person's own card opens.
-pub(crate) use ui::shell::SETTINGS_APP;
+/// Settings at one of its pages, which a person's own card opens.
+use crate::settings_link::page as settings_page;
 /// Settings' page that lists the person's devices and agents and takes them
 /// back: the card's own way to what acts as them.
 const DEVICES_ACCESS: &str = tilo_session::people::DEVICES_ACCESS;
@@ -1019,18 +1019,18 @@ impl BrowserShell {
                 // the page the card asked for.
                 tilo_session::people::PeopleAsk::Settings(link) => {
                     let resource = ui::shell::settings_anchor(&link).unwrap_or(link);
-                    self.requests.borrow_mut().push(HostRequest::ShowInApp {
-                        app: SETTINGS_APP.into(),
-                        resource,
-                    });
+                    self.requests
+                        .borrow_mut()
+                        .push(HostRequest::ShowInApp(settings_page(resource)));
                 }
                 // Another of the person's devices: the page has no sheet of its own for the
                 // code, so it opens the Settings page their devices are listed and added on.
                 tilo_session::people::PeopleAsk::PairDevice => {
-                    self.requests.borrow_mut().push(HostRequest::ShowInApp {
-                        app: SETTINGS_APP.into(),
-                        resource: "settings.section:devices_access".into(),
-                    });
+                    self.requests
+                        .borrow_mut()
+                        .push(HostRequest::ShowInApp(settings_page(
+                            "settings.section:devices_access".into(),
+                        )));
                 }
                 // How an agent connects, asked of the card: the page shows the
                 // setup its own first screen does.
@@ -1370,10 +1370,9 @@ impl BrowserShell {
                 // the account's own page does above.
                 DesktopAsk::OpenSettings(link) => {
                     let resource = ui::shell::settings_anchor(&link).unwrap_or(link);
-                    self.requests.borrow_mut().push(HostRequest::ShowInApp {
-                        app: SETTINGS_APP.into(),
-                        resource,
-                    });
+                    self.requests
+                        .borrow_mut()
+                        .push(HostRequest::ShowInApp(settings_page(resource)));
                 }
                 // The person named the workspace in front: its host writes the
                 // name where every device and list of it reads it.
@@ -1580,10 +1579,11 @@ impl BrowserShell {
             // Everything that acts as this person: Settings' own page, opened
             // in this workspace, as the desktop's card opens it.
             ProfileChoice::Action(id) if id == DEVICES_ACCESS => {
-                self.requests.borrow_mut().push(HostRequest::ShowInApp {
-                    app: SETTINGS_APP.into(),
-                    resource: "settings.section:devices_access".into(),
-                });
+                self.requests
+                    .borrow_mut()
+                    .push(HostRequest::ShowInApp(settings_page(
+                        "settings.section:devices_access".into(),
+                    )));
                 return;
             }
             ProfileChoice::Action(id) if id == REPORT_PROBLEM => {

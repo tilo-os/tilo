@@ -265,7 +265,7 @@ pub(super) enum PublishedCommand {
         first: mpsc::SyncSender<Result<String, String>>,
         cancel: tokio::sync::watch::Receiver<()>,
     },
-    /// Take an action of one, answering the door's verdict.
+    /// Take an action of one, answering the action API's verdict.
     Invoke {
         resource: Arc<str>,
         action: String,
@@ -2627,7 +2627,7 @@ impl CollaborationManager {
             media::audio_output::require_governed();
         }
         // A window the shell opened in this running process has a
-        // connection of its own (`ui::window_door`); the one the launcher
+        // connection of its own (`ui::window_channel`); the one the launcher
         // handed the process is its first window's.
         let source = match connection {
             crate::NativeConnection::Window(None) => return Ok(Self::disabled()),

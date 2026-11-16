@@ -129,7 +129,7 @@ impl DesktopSurface {
                         }
                     }
                     Admitted::Close(ids) if live(&shared.tree, ids) => {
-                        if let Some(removed) = shared.tree.close_tab(ids.tab) {
+                        if let Some(removed) = shared.close(ids.tab) {
                             ops.push(RowOp::Close {
                                 strip: removed.strip,
                                 group: removed.group,

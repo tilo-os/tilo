@@ -3,7 +3,7 @@
 //! A role draws its panel, its roster or its card as a widget tree of its own and asks the host to
 //! show it on a layer above (or below) the windows: this session's compositor on a Linux desktop,
 //! the page's canvas on the web. The role keeps the returned [`Layer`] and never names the host
-//! that draws it; what it shows to assistive technology and to the session's door is read through
+//! that draws it; what it shows to assistive technology and to the session's API is read through
 //! it too, so a panel is pressed and read the same on both.
 //!
 //! The hosts themselves are named here beside the trait, so a role asks for the widget trees, the
@@ -40,7 +40,7 @@ pub use tilo_surface_host::{
 pub trait Surfaces {
     /// Place `tree` on a layer of its own, called `name`, standing at `placement`: it covers the
     /// outputs, and what `heard` says of the layer's role reaches it. The actions `published`
-    /// offers are reached through the session's door.
+    /// offers are reached through the session's API.
     fn place(
         &mut self,
         name: &str,
@@ -49,7 +49,7 @@ pub trait Surfaces {
         heard: Heard,
     ) -> Rc<dyn Layer>;
 
-    /// Reach what `published` offers through the session's door from now on: the layer the role
+    /// Reach what `published` offers through the session's API from now on: the layer the role
     /// placed is what shows it.
     fn publish(&mut self, published: Rc<RefCell<dyn Published>>);
 }

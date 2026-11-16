@@ -1,14 +1,14 @@
 //! The MCP server at its bound, through the ways in a session really serves: its own socket for
-//! the programs of this login, the door of a confined environment for the programs inside it,
-//! and this device's endpoint for the agents on the person's other devices. The door serves
+//! the programs of this login, the socket of a confined environment for the programs inside it,
+//! and this device's endpoint for the agents on the person's other devices. The server serves
 //! sixteen connections at once and counts them as one whichever way they came. The one past them
-//! is told what it can act on: that the door is full, that nothing it asked ran, and to connect
+//! is told what it can act on: that the server is full, that nothing it asked ran, and to connect
 //! again once a connection has closed. One from another device is told so in place of the answer
-//! that the door opened, and those that arrive between two passes of the session wait in the
-//! door's own places, so no more of them wait than the door serves.
+//! that the server opened, and those that arrive between two passes of the session wait in the
+//! server's own places, so no more of them wait than it serves.
 //!
-//! The environment here is the test's own: the test holds its door's lease as `ush` does
-//! ([`runtime_portal::environment_door`]), and the programs inside it are processes the test
+//! The environment here is the test's own: the test holds its socket's lease as `ush` does
+//! ([`runtime_portal::environment_socket`]), and the programs inside it are processes the test
 //! starts, as an environment's are its `ush`'s.
 
 #![cfg(target_os = "linux")]
@@ -33,7 +33,7 @@ use std::time::{Duration, Instant, SystemTime};
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
-use runtime_portal::environment_door::{self, Lease, Request};
+use runtime_portal::environment_socket::{self, Lease, Request};
 use serde_json::{Value, json};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_mcp::devices::{ALPN, NotOpened, open};
@@ -50,7 +50,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 const PERSON: &str = "ada";
 /// The workspace in front of the person, which every agent here works in.
 const STUDIO: &str = "8b0e8f5e-6c1f-4f4e-9d4a-1f2e3d4c5b6a";
-/// As many connections as the door serves at once.
+/// As many connections as the socket serves at once.
 const SERVED: usize = 16;
 
 /// What this test's own processes are, when it starts itself as one of them.
@@ -65,26 +65,26 @@ fn program() {
     }
 }
 
-/// A coding agent's program inside an environment: connect to `TARGET`, the environment's door,
-/// introduce itself and say what the door answered, then stay until told to end (this process's
-/// input closes). With `AGAIN`, a door that has no room is asked again until it serves this
-/// program, as the door's refusal says to, and the first refusal is said too.
+/// A coding agent's program inside an environment: connect to `TARGET`, the environment's socket,
+/// introduce itself and say what the socket answered, then stay until told to end (this process's
+/// input closes). With `AGAIN`, a socket that has no room is asked again until it serves this
+/// program, as the socket's refusal says to, and the first refusal is said too.
 fn inside() {
     let target = std::env::var("TARGET").expect("where to connect");
     let again = std::env::var("AGAIN").is_ok_and(|again| again == "1");
     let mut refused = false;
-    let (answer, _stream) = tilo_test_env::wait_for("the door to answer this program", || {
-        let stream = UnixStream::connect(&target).expect("the environment's door");
+    let (answer, _stream) = tilo_test_env::wait_for("the socket to answer this program", || {
+        let stream = UnixStream::connect(&target).expect("the environment's socket");
         stream
             .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
-        // A door that refuses says so and closes at once, and can have closed before this
-        // reaches it: the write then fails, and what the door said is read all the same.
+        // A socket that refuses says so and closes at once, and can have closed before this
+        // reaches it: the write then fails, and what the socket said is read all the same.
         let _ = (&stream).write_all(format!("{}\n", initialize()).as_bytes());
         let mut line = String::new();
         BufReader::new(&stream)
             .read_line(&mut line)
-            .expect("the door answers before it closes");
+            .expect("the socket answers before it closes");
         let answer: Value = serde_json::from_str(&line).expect("one JSON reply a line");
         if again && let Some(told) = answer.pointer("/error/message").and_then(Value::as_str) {
             if !refused {
@@ -114,9 +114,9 @@ struct Inside {
 }
 
 impl Inside {
-    /// Start a program inside the environment whose door is at `door`; with `again`, one that
-    /// connects again for as long as the door has no room for it.
-    fn start(door: &Path, again: bool) -> Self {
+    /// Start a program inside the environment whose socket is at `socket`; with `again`, one that
+    /// connects again for as long as the socket has no room for it.
+    fn start(socket: &Path, again: bool) -> Self {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -127,7 +127,7 @@ impl Inside {
                 "-q",
             ])
             .env(ROLE, "inside")
-            .env("TARGET", door)
+            .env("TARGET", socket)
             .env("AGAIN", if again { "1" } else { "0" })
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -158,16 +158,16 @@ impl Inside {
     }
 }
 
-/// What a client found when it looked for the door's next line.
+/// What a client found when it looked for the socket's next line.
 enum Heard {
     /// One whole reply.
     Line(Value),
-    /// The door closed the connection.
+    /// The socket closed the connection.
     Closed,
 }
 
-/// One connection to a door, as an MCP client holds it: a line each way. Nothing here waits on
-/// the door: the session's loop turns on the test's own thread, so what the door wrote is read
+/// One connection to a socket, as an MCP client holds it: a line each way. Nothing here waits on
+/// the socket: the session's loop turns on the test's own thread, so what the socket wrote is read
 /// when the test looks.
 #[derive(Debug)]
 struct Client {
@@ -184,17 +184,17 @@ impl Client {
         }
     }
 
-    fn connect(door: &Path) -> Self {
-        Self::over(UnixStream::connect(door).expect("the door"))
+    fn connect(socket: &Path) -> Self {
+        Self::over(UnixStream::connect(socket).expect("the socket"))
     }
 
-    /// Ask `request`. A door that refused this connection may have closed it already: what it
+    /// Ask `request`. A socket that refused this connection may have closed it already: what it
     /// said is read all the same.
     fn send(&mut self, request: &Value) {
         let _ = self.stream.write_all(format!("{request}\n").as_bytes());
     }
 
-    /// The next line the door wrote, once one is whole, or that it closed the connection;
+    /// The next line the socket wrote, once one is whole, or that it closed the connection;
     /// `None` while it has said nothing more.
     fn heard(&mut self) -> Option<Heard> {
         loop {
@@ -303,7 +303,7 @@ impl Person {
     }
 }
 
-/// A device that dials this box's door: its certificate, and the endpoint whose key it names.
+/// A device that dials this box's socket: its certificate, and the endpoint whose key it names.
 struct Device {
     cert: DeviceCert,
     endpoint: Endpoint,
@@ -322,11 +322,11 @@ fn tree() -> Layout {
 }
 
 /// This box: its headless session with the MCP server open, the questions it asks the person,
-/// and its endpoint answering the door toward the person's other devices.
+/// and its endpoint answering the socket toward the person's other devices.
 struct Shell {
     session: Session,
     questions: Questions,
-    door: PathBuf,
+    socket: PathBuf,
     runtime: tokio::runtime::Runtime,
     addr: EndpointAddr,
     _endpoint: Endpoint,
@@ -339,14 +339,14 @@ impl Shell {
     fn start(person: &Person) -> Self {
         let home = tilo_test_env::TestHome::new().expect("a home");
         let root = crate::common::private_home();
-        let door = root.path().join("agent.sock");
+        let socket = root.path().join("agent.sock");
         let questions = Questions::new();
         let mut session = crate::common::headless(Options {
             questions: Some(questions.clone()),
             collab: false,
             person: PERSON.to_owned(),
             action_plane: ActionPlane::At(root.path().join("plane.sock")),
-            mcp_server: Some(door.clone()),
+            mcp_server: Some(socket.clone()),
             state: Some(home.state().to_path_buf()),
             // The person's settings, as the session serves them: what the person sets this
             // box's MCP server with.
@@ -379,7 +379,7 @@ impl Shell {
         Self {
             session,
             questions,
-            door,
+            socket,
             runtime,
             addr,
             _endpoint: endpoint,
@@ -412,10 +412,10 @@ impl Shell {
         }
     }
 
-    /// Open an environment's door as its `ush` does, this test holding its lease: the programs
+    /// Open an environment's socket as its `ush` does, this test holding its lease: the programs
     /// the test starts are the programs inside it.
     fn environment(&mut self, record: &str) -> Lease {
-        let door = self.door.clone();
+        let socket = self.socket.clone();
         let request = Request::new(
             &format!("{STUDIO}/{record}"),
             &format!("Env {record}"),
@@ -423,20 +423,20 @@ impl Shell {
         );
         let (tell, opened) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tell.send(environment_door::open(&door, &request));
+            let _ = tell.send(environment_socket::open(&socket, &request));
         });
-        crate::common::wait_for(&mut self.session, "the environment's door", |_| {
+        crate::common::wait_for(&mut self.session, "the environment's socket", |_| {
             opened.try_recv().ok()
         })
-        .expect("the environment's door opens")
+        .expect("the environment's socket opens")
     }
 
-    /// A program of this login at the session's own door.
+    /// A program of this login at the session's own socket.
     fn program(&self) -> Client {
-        Client::connect(&self.door)
+        Client::connect(&self.socket)
     }
 
-    /// Dial this box's door from `device`: its connection once the door said it opened, or the
+    /// Dial this box's socket from `device`: its connection once the socket said it opened, or the
     /// reason it said instead.
     fn dial(&self, device: &Device) -> Result<Client, NotOpened> {
         let dialed = self.runtime.block_on(open(
@@ -461,24 +461,24 @@ impl Shell {
     #[track_caller]
     fn answer(&mut self, client: &mut Client) -> Option<Value> {
         let heard =
-            crate::common::wait_for(&mut self.session, "the door's answer", |_| client.heard());
+            crate::common::wait_for(&mut self.session, "the socket's answer", |_| client.heard());
         match heard {
             Heard::Line(reply) => Some(reply),
             Heard::Closed => None,
         }
     }
 
-    /// Introduce `client` as an MCP client does, and read that the door serves it.
+    /// Introduce `client` as an MCP client does, and read that the socket serves it.
     #[track_caller]
     fn served(&mut self, client: &mut Client) {
         client.send(&initialize());
         self.introduced(client);
     }
 
-    /// Read that the door serves `client`, which introduced itself.
+    /// Read that the socket serves `client`, which introduced itself.
     #[track_caller]
     fn introduced(&mut self, client: &mut Client) {
-        let introduced = self.answer(client).expect("the door answers it");
+        let introduced = self.answer(client).expect("the socket answers it");
         assert!(
             introduced.pointer("/result/serverInfo").is_some(),
             "it is served: {introduced}"
@@ -493,7 +493,7 @@ impl Shell {
         })
     }
 
-    /// Read that the door serves the program `inside`.
+    /// Read that the socket serves the program `inside`.
     #[track_caller]
     fn served_inside(&mut self, inside: &Inside) {
         let (what, rest) = self.said(inside);
@@ -545,8 +545,8 @@ impl Shell {
         );
     }
 
-    /// Connect again, as the door's refusal says to, until `connect` is served: every refusal on
-    /// the way is the door's having no room, and nothing else.
+    /// Connect again, as the socket's refusal says to, until `connect` is served: every refusal on
+    /// the way is the socket's having no room, and nothing else.
     #[track_caller]
     fn once_there_is_room<T>(
         &mut self,
@@ -560,7 +560,7 @@ impl Shell {
             }
             assert!(
                 Instant::now() < deadline,
-                "the door has room once a connection closed"
+                "the socket has room once a connection closed"
             );
             self.session.step(Duration::from_millis(1)).expect("step");
         }
@@ -582,16 +582,16 @@ fn refusal(refused: &Value) -> String {
         .to_owned()
 }
 
-/// The door serves sixteen connections at once, whichever way each came in: seven programs of
+/// The socket serves sixteen connections at once, whichever way each came in: seven programs of
 /// this login, three programs inside an environment and six agents on two of the person's other
 /// devices are all served, and the next is refused by every way in, in the same words, before
 /// anything is read of it and without the person being asked. One from another device is not
-/// told the door opened first. Who may connect at all is decided before that, so a device of
+/// told the socket opened first. Who may connect at all is decided before that, so a device of
 /// somebody else's and a program outside the environment are refused as that, not as one more
-/// than the door serves. When a connection closes, one that connects again is served, whichever
+/// than the socket serves. When a connection closes, one that connects again is served, whichever
 /// way either came.
 #[test]
-fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_there_is_no_room() {
+fn the_server_serves_sixteen_connections_however_they_came_and_tells_the_next_there_is_no_room() {
     let _settled = ui::motion::testing::settled();
     let person = Person::new();
     let mut shell = Shell::start(&person);
@@ -607,7 +607,7 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
     let mut first = shell.program();
     first.send(&initialize());
     shell.allow_for_the_session();
-    let introduced = shell.answer(&mut first).expect("the door answers it");
+    let introduced = shell.answer(&mut first).expect("the socket answers it");
     assert!(
         introduced.pointer("/result/serverInfo").is_some(),
         "{introduced}"
@@ -634,7 +634,7 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
     for device in [&laptop, &tablet, &laptop, &tablet, &laptop, &tablet] {
         let mut agent = shell
             .dial(device)
-            .expect("the door opens for the person's device");
+            .expect("the socket opens for the person's device");
         shell.served(&mut agent);
         agents.push(agent);
     }
@@ -644,7 +644,7 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
     );
     shell.at_shell(SERVED);
 
-    // The seventeenth, at the session's own door: told before anything is read of it, and
+    // The seventeenth, at the session's own socket: told before anything is read of it, and
     // closed.
     let mut next = shell.program();
     let refused = shell
@@ -658,11 +658,11 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
         "and its connection is closed"
     );
 
-    // From another device: refused in place of the answer that the door opened, in the same
+    // From another device: refused in place of the answer that the socket opened, in the same
     // words.
     let unopened = shell
         .dial(&laptop)
-        .expect_err("one past the bound is not told the door opened");
+        .expect_err("one past the bound is not told the socket opened");
     assert_eq!(
         unopened.reason(),
         told,
@@ -685,7 +685,7 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
         "the person was asked about none of them"
     );
 
-    // Who may connect is decided first: a full door tells a device of somebody else's, and a
+    // Who may connect is decided first: a full socket tells a device of somebody else's, and a
     // program outside the environment, what it tells them when it has room.
     let theirs = shell
         .dial(&stranger)
@@ -697,7 +697,7 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
         .expect("a program outside the environment is told why");
     assert_eq!(
         refused["error"]["message"],
-        "this door serves only programs inside the environment it belongs to",
+        "this socket serves only programs inside the environment it belongs to",
         "{refused}"
     );
 
@@ -710,7 +710,7 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
     assert!(still["result"].is_object(), "{still}");
 
     // A program of this login leaves: an agent on another device that connects again is
-    // served, and the door is as full as it was.
+    // served, and the socket is as full as it was.
     drop(programs.pop());
     let mut arrived = shell.once_there_is_room(|shell| shell.dial(&tablet));
     shell.served(&mut arrived);
@@ -737,7 +737,7 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
         program.send(&initialize());
         let answer = shell
             .answer(&mut program)
-            .expect("the door answers before it closes");
+            .expect("the socket answers before it closes");
         if answer.pointer("/result/serverInfo").is_some() {
             Ok(program)
         } else {
@@ -754,14 +754,14 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
 }
 
 /// Connections from the person's other devices arrive on this device's endpoint, between the
-/// passes of the session that serve them. Each takes one of the door's places as it arrives and
-/// waits in it: while the session's loop does not turn, sixteen are told the door opened and
-/// the next is refused, so no more wait than the door serves. A program of this login that
-/// connected meanwhile finds the door full on the pass that follows, since the places are the
+/// passes of the session that serve them. Each takes one of the socket's places as it arrives and
+/// waits in it: while the session's loop does not turn, sixteen are told the socket opened and
+/// the next is refused, so no more wait than the socket serves. A program of this login that
+/// connected meanwhile finds the socket full on the pass that follows, since the places are the
 /// same ones. The sixteen that waited are then each served, and once one of them has closed, a
 /// device that connects again is served.
 #[test]
-fn connections_from_other_devices_wait_for_the_pass_in_the_doors_places_and_no_more() {
+fn connections_from_other_devices_wait_for_the_pass_in_the_servers_places_and_no_more() {
     let _settled = ui::motion::testing::settled();
     let person = Person::new();
     let mut shell = Shell::start(&person);
@@ -783,7 +783,7 @@ fn connections_from_other_devices_wait_for_the_pass_in_the_doors_places_and_no_m
     }
     let unopened = shell
         .dial(&laptop)
-        .expect_err("one more than the door serves is not told the door opened");
+        .expect_err("one more than the socket serves is not told the socket opened");
     says_no_room(unopened.reason());
     let mut program = shell.program();
 

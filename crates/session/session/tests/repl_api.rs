@@ -1,8 +1,8 @@
 //! The REPL at the session's MCP server, on the headless session with the tilolang shell as the
-//! whole screen: `tilolang repl --door` asks to act as the person, the person admits it, and the
+//! whole screen: `tilolang repl --api` asks to act as the person, the person admits it, and the
 //! lines it sends are the agent's own calls (`tilo_ls`, `tilo`), run as the person.
 //!
-//! The person admits it either on the sheet the door's question opens, pressed as they press it,
+//! The person admits it either on the sheet the server's question opens, pressed as they press it,
 //! or ahead of time, by naming the program when they start the session (`--admit-repl`). A note
 //! placed on the layout by a `tilo` program stands on the shell's screen, read from what the
 //! shell lays out for assistive technology, and is the person's step, which `undo` takes back.
@@ -66,7 +66,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     let tools = repl.opened(session);
     assert!(
         tools.iter().any(|tool| tool == "tilo"),
-        "the door runs programs: {tools:?}"
+        "the server runs programs: {tools:?}"
     );
 
     // `ls` : the apps, the session's own resources among them.
@@ -180,7 +180,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     });
 }
 
-/// The person admits the REPL on the sheet the door's question opens.
+/// The person admits the REPL on the sheet the server's question opens.
 #[test]
 fn the_person_admits_the_repl_on_the_sheet_and_it_works_as_them() {
     let _settled = ui::motion::testing::settled();
@@ -236,7 +236,7 @@ fn a_repl_named_when_the_session_starts_is_admitted_without_asking() {
 /// written for a person's device works on the image's. The REPL shows the frames through it, and
 /// the shell draws them.
 ///
-/// This fails on a build whose door compiles programs against the installed packages alone: the
+/// This fails on a build whose server compiles programs against the installed packages alone: the
 /// image's store holds no shell, and the program is refused as an unknown name.
 #[test]
 fn a_program_names_the_shell_package_the_session_runs_with_none_installed() {
@@ -247,7 +247,7 @@ fn a_program_names_the_shell_package_the_session_runs_with_none_installed() {
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("TILO_APPS_DATA_DIR", store.path());
     // A session that runs no service of a seeded app's: an image's own, whose apps a person opens
-    // when they want one, so nothing but the shell itself publishes a package to the door.
+    // when they want one, so nothing but the shell itself publishes a package to the server.
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
@@ -281,7 +281,7 @@ fn a_program_names_the_shell_package_the_session_runs_with_none_installed() {
     });
 }
 
-/// Placing what a text finds, twice, through the door: each place is the person's step, and the
+/// Placing what a text finds, twice, through the server: each place is the person's step, and the
 /// session keeps answering, the connection that asked and a new one alike.
 #[test]
 fn placing_what_text_finds_twice_keeps_the_session_answering() {
@@ -320,11 +320,11 @@ fn placing_what_text_finds_twice_keeps_the_session_answering() {
     assert!(tools.iter().any(|tool| tool == "tilo"), "{tools:?}");
 }
 
-/// What the session's services publish (the seeded apps' records) is listed through the door past
+/// What the session's services publish (the seeded apps' records) is listed through the server past
 /// the first page of the session's rows, page by page as its cursor reads on, and a note is found
 /// by its title.
 #[test]
-fn a_record_the_sessions_services_publish_is_found_through_the_door() {
+fn a_record_the_sessions_services_publish_is_found_through_the_server() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let questions = Questions::new();
@@ -655,7 +655,7 @@ fn showing_the_overview_is_no_step_and_a_refused_undo_holds_no_other_step() {
     });
 }
 
-/// What the seeded apps keep, placed through the door, is drawn on the canvas by its own app's
+/// What the seeded apps keep, placed through the server, is drawn on the canvas by its own app's
 /// view, its content and not its title alone: a note found by its title shows its text. And a text
 /// finds the resource it names even where many actions name it too: "Inbox" places the inbox.
 #[test]
@@ -826,7 +826,7 @@ fn inked(shot: &image::RgbaImage, (x, y, w, h): (f64, f64, f64, f64)) -> usize {
     pixels.iter().filter(|pixel| far(**pixel, *ground)).count()
 }
 
-/// The seeded inbox placed through the door, once, and what the session shows and does with it
+/// The seeded inbox placed through the server, once, and what the session shows and does with it
 /// from then on:
 ///
 /// - it stands on the canvas as the mail app's own view of it, and mail's package is loaded because
@@ -842,7 +842,7 @@ fn inked(shot: &image::RgbaImage, (x, y, w, h): (f64, f64, f64, f64)) -> usize {
 /// steps that only read come first, and the one that changes a record (the flag) comes last, so
 /// nothing a step reads was changed by a step before it.
 #[test]
-fn the_seeded_inbox_placed_through_the_door_fills_in_settles_is_drawn_and_rereads_one_thread() {
+fn the_seeded_inbox_placed_through_the_server_fills_in_settles_is_drawn_and_rereads_one_thread() {
     let _settled = ui::motion::testing::settled();
     // The bar draws the time, and a minute turning over is a change, not idle work: the test holds
     // the clock at the minute it runs in, as a capture does, so what it watches at rest is the
@@ -868,7 +868,7 @@ fn the_seeded_inbox_placed_through_the_door_fills_in_settles_is_drawn_and_reread
     });
 }
 
-/// The seeded inbox placed through the door stands on the canvas as the mail app's own view of it:
+/// The seeded inbox placed through the server stands on the canvas as the mail app's own view of it:
 /// a seeded conversation's subject is laid out in it, and drawn where it is laid out in the
 /// snapshot `tilo-control` takes. (That mail's package is loaded because the place shows it, and
 /// was not before, is read where the inbox is placed.)
@@ -1199,7 +1199,7 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     then_the_overview_opens_and_closes(&mut session, &mut repl);
 }
 
-/// The overview opens over the shell and closes again, through the door as an agent asks it.
+/// The overview opens over the shell and closes again, through the server as an agent asks it.
 fn then_the_overview_opens_and_closes(session: &mut Session, repl: &mut Repl) {
     let (answer, failed) = repl.call(
         session,
@@ -1234,7 +1234,7 @@ fn the_repl_finds_what_place_found_places() {
     let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
-        state: Some(crate::common::seated_state()),
+        state: Some(crate::common::device_state()),
         shell: true,
         collab: false,
         services: apps,

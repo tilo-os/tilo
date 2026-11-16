@@ -3,6 +3,21 @@
 //! notice's choice does ([`crate::shell::HostRequest::ShowInApp`]), and the
 //! request stays for the page's own desktop.
 
+use tilo_desktop_search::providers::settings::SETTINGS_ROOT;
+use tilo_session_core::notice::Place;
+use ui::shell::SETTINGS_APP;
+
+/// Settings at the page `anchor` names, as search opens it: its window's
+/// `open`, told the page. The pages are no resources of their own.
+pub(crate) fn page(anchor: String) -> Place {
+    Place {
+        app: SETTINGS_APP.to_owned(),
+        resource: SETTINGS_ROOT.to_owned(),
+        anchor,
+        ..Place::default()
+    }
+}
+
 /// Take from `queue` what the embedding page answers, leaving each request
 /// `stays` keeps for the page's own desktop: a `settings:` link queued
 /// between frames waits there for the desktop to show it, and the page's
@@ -28,5 +43,25 @@ mod tests {
         let taken = take_for_page(&mut queue, |request| *request == "show-in-app");
         assert_eq!(taken, ["copy", "named"]);
         assert_eq!(queue, ["show-in-app"]);
+    }
+
+    /// A page of Settings opens through the `open` Settings' window
+    /// publishes, told the page: the page itself publishes none.
+    #[test]
+    fn a_settings_page_opens_through_the_window_s_open() {
+        let place = page("settings.section:external_accounts".into());
+        let at = (
+            place.app.as_str(),
+            place.resource.as_str(),
+            place.anchor.as_str(),
+        );
+        assert_eq!(
+            at,
+            (
+                SETTINGS_APP,
+                SETTINGS_ROOT,
+                "settings.section:external_accounts"
+            )
+        );
     }
 }

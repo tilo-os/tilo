@@ -51,22 +51,25 @@ impl RegistrationGate {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn release_with_window_door(self, door: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    pub fn release_with_window_channel(
+        self,
+        channel: std::os::fd::BorrowedFd<'_>,
+    ) -> io::Result<()> {
         use std::os::fd::AsFd as _;
-        crate::door::send(self.0.as_fd(), &[&[1]], &[door])
+        crate::message::send(self.0.as_fd(), &[&[1]], &[channel])
     }
 }
 
-/// The window door the shell handed over with the release, until the launch
-/// takes it ([`take_window_door`]).
+/// The window channel the shell handed over with the release, until the launch
+/// takes it ([`take_window_channel`]).
 #[cfg(target_os = "linux")]
-static WINDOW_DOOR: std::sync::Mutex<Option<OwnedFd>> = std::sync::Mutex::new(None);
+static WINDOW_CHANNEL: std::sync::Mutex<Option<OwnedFd>> = std::sync::Mutex::new(None);
 
 #[cfg(target_os = "linux")]
-pub fn take_window_door() -> Option<OwnedFd> {
-    WINDOW_DOOR.lock().map_or_else(
+pub fn take_window_channel() -> Option<OwnedFd> {
+    WINDOW_CHANNEL.lock().map_or_else(
         |poisoned| poisoned.into_inner().take(),
-        |mut door| door.take(),
+        |mut channel| channel.take(),
     )
 }
 
@@ -118,10 +121,10 @@ fn read_release() -> io::Result<()> {
     // SAFETY: fd 0 is the gate the host handed over, open until `dup2`
     // replaces it after this returns.
     let gate = unsafe { std::os::fd::BorrowedFd::borrow_raw(0) };
-    if let Some(door) = read_release_from(gate)? {
-        *WINDOW_DOOR
+    if let Some(channel) = read_release_from(gate)? {
+        *WINDOW_CHANNEL
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(door);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(channel);
     }
     Ok(())
 }
@@ -129,7 +132,7 @@ fn read_release() -> io::Result<()> {
 #[cfg(target_os = "linux")]
 fn read_release_from(gate: std::os::fd::BorrowedFd<'_>) -> io::Result<Option<OwnedFd>> {
     let mut release = [0_u8; 1];
-    let Some((1, fds)) = crate::door::receive(gate, &mut release)? else {
+    let Some((1, fds)) = crate::message::receive(gate, &mut release)? else {
         return Err(io::ErrorKind::UnexpectedEof.into());
     };
     Ok(fds.into_iter().next())
@@ -273,16 +276,16 @@ mod tests {
         assert!(child.wait().expect("child exit").success());
     }
 
-    /// The shell's window door rides on the release, and a release without
+    /// The shell's window channel rides on the release, and a release without
     /// one is still a release.
     #[cfg(target_os = "linux")]
     #[test]
-    fn the_window_door_comes_with_the_release() {
+    fn the_window_channel_comes_with_the_release() {
         use std::os::fd::AsFd as _;
         let (release, wait) = UnixStream::pair().expect("gate");
-        let (door, _app) = UnixStream::pair().expect("door");
+        let (channel, _app) = UnixStream::pair().expect("channel");
         RegistrationGate(release)
-            .release_with_window_door(door.as_fd())
+            .release_with_window_channel(channel.as_fd())
             .expect("release");
         assert!(read_release_from(wait.as_fd()).expect("released").is_some());
 

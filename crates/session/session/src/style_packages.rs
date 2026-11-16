@@ -4,7 +4,7 @@
 //! A style is a tilolang package, and a person makes one the way they make any app: they
 //! write a package, install it, pick it. This is where that happens for a style: the session
 //! offers the same three commands a person types at `tilolang` — `check`, and an install that
-//! compiles and signs — as actions on its own door, so a shell view, the canvas chat's agent and
+//! compiles and signs — as actions on its own API, so a shell view, the canvas chat's agent and
 //! the REPL run the one path.
 //!
 //! * **Make it mine** copies a shipped style's package source from the copy this build carries
@@ -93,7 +93,7 @@ struct Done {
     answer: String,
 }
 
-/// The person's style packages, as the session's door publishes them: `make-it-mine`, `check`
+/// The person's style packages, as the session's API publishes them: `make-it-mine`, `check`
 /// and `install`, each the command it names, over the person's workspace.
 pub(crate) struct Served {
     /// What the last step answered, guarded off the loop: a `check` or an `install` compiles and

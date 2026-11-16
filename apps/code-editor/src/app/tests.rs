@@ -1,3 +1,4 @@
+use super::file_workflow::AfterSave;
 use super::*;
 use automerge::ReadDoc;
 use ui::tilo_resource::Effect as _;
@@ -815,11 +816,7 @@ fn failed_save_as_preserves_the_original_destination_and_conflict_stamp() {
         let key = app.buffer_key(before.node);
         let text = EditorDoc::read_buffer_key(doc, &key).unwrap();
         assert!(before.dirty);
-        app.apply_portal_outcome(
-            doc,
-            Some(PortalIntent::SaveAs(before.node)),
-            ui::portal::PortalOutcome::Opened(destination),
-        );
+        app.save_as(doc, before.node, destination, AfterSave::Nothing);
         let after = app.session.active_buffer().unwrap();
         assert_eq!(after.path, before.path);
         assert_eq!(after.name, before.name);
@@ -854,11 +851,7 @@ fn successful_save_as_writes_current_text_before_adopting_the_destination() {
         let original = before.path.unwrap();
         let original_text = std::fs::read_to_string(&original).unwrap();
         let text = EditorDoc::read_buffer_key(doc, &app.buffer_key(before.node)).unwrap();
-        app.apply_portal_outcome(
-            doc,
-            Some(PortalIntent::SaveAs(before.node)),
-            ui::portal::PortalOutcome::Opened(destination.clone()),
-        );
+        app.save_as(doc, before.node, destination.clone(), AfterSave::Nothing);
         let after = app.session.active_buffer().unwrap();
         assert_eq!(std::fs::read_to_string(&destination).unwrap(), text);
         assert_eq!(std::fs::read_to_string(original).unwrap(), original_text);
@@ -872,6 +865,49 @@ fn successful_save_as_writes_current_text_before_adopting_the_destination() {
             Some(destination)
         );
     });
+}
+
+#[test]
+fn save_as_makes_the_new_file_the_one_the_window_shows() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("main.rs");
+    std::fs::write(&file, "fn main() {}\n").unwrap();
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    let launch = [file.to_str().unwrap()];
+    let mut app =
+        ui::framework::testing::TestApp::<crate::CodeEditorShell>::launched(&launch).unwrap();
+    app.settle();
+    let shown = |app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>| {
+        crate::test_support::editor(app, |app| {
+            app.shows
+                .as_ref()
+                .and_then(ui::application_view::WindowShows::shown)
+                .map(|path| crate::disk::canonical(&path))
+        })
+    };
+    assert_eq!(shown(&mut app), Some(crate::disk::canonical(&file)));
+
+    let copy = dir.path().join("copy.py");
+    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(copy.clone()));
+    app.effect(&CodeEditorEffect::SaveAs).unwrap();
+    app.settle();
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), "fn main() {}\n");
+    let active = crate::test_support::editor(&mut app, |app| {
+        app.session
+            .active_buffer()
+            .and_then(|buffer| buffer.path.clone())
+    });
+    assert_eq!(
+        active.as_deref(),
+        Some(copy.as_path()),
+        "the buffer is the new file"
+    );
+    assert_eq!(
+        shown(&mut app),
+        Some(crate::disk::canonical(&copy)),
+        "the window shows the file the buffer was saved as"
+    );
 }
 
 #[test]

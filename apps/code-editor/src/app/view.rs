@@ -88,7 +88,7 @@ pub(crate) fn window(cx: &ViewCx<Project>, mut window: CodeApp) -> Element {
     let store = window.store();
     {
         let status = Rc::clone(&store);
-        cx.window_effects(|app: &mut CodeApp, effect: CodeEditorEffect, cx| {
+        cx.window_host_effects(|app: &mut CodeApp, effect: CodeEditorEffect, cx| {
             app.answer_effect(effect, cx)
         })
         .status(move || status.borrow().shown.statuses.clone());

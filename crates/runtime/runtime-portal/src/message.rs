@@ -1,6 +1,6 @@
-//! The messages that travel over a connected door.
+//! The messages that travel over a connected socket.
 //!
-//! A door is a `SOCK_SEQPACKET` socket an app is handed as one of its
+//! A socket an app is handed as one of its
 //! service descriptors (`runtime_portal::windows`, `registration_gate`,
 //! `origin_connector`, `tilolang_host`): every request is one message of
 //! NUL-separated fields, with the descriptors it carries beside it, and every

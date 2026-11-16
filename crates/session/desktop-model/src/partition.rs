@@ -277,6 +277,20 @@ impl OutputPartition {
         changed
     }
 
+    /// The monitor this device shows `group` on, while it is placed.
+    pub fn home_of(&self, group: GroupId) -> Option<&str> {
+        self.home.get(&group).map(String::as_str)
+    }
+
+    /// Show `group`, which has no place yet, on `monitor` while that
+    /// monitor is connected: a window made again goes back where it was
+    /// shown rather than to the display the person happens to work on.
+    pub fn return_home(&mut self, group: GroupId, monitor: &str) {
+        if self.output_of(monitor).is_some() {
+            self.home.entry(group).or_insert_with(|| monitor.to_owned());
+        }
+    }
+
     /// Show `group` on `display` from now on, leaving the strip's order to
     /// the caller. It forgets where it came from, so a monitor coming back
     /// no longer reclaims it, and becomes `display`'s last focused group in

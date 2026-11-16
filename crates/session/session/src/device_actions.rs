@@ -3,7 +3,7 @@
 //! The session's collaboration endpoint serves
 //! [`ActionPlane`](tilo_peer_state::actions::ActionPlane): a request another device of one of this
 //! person's workspaces sends is checked against that workspace's roster as it stands, and the
-//! action it names runs here through the broker's door as any other caller's would. The other way
+//! action it names runs here through the broker as any other caller's would. The other way
 //! round, an application names another of the person's devices and one of its own actions;
 //! [`OwnDeviceActions`] sends it there as an ordinary invocation of that action and follows it
 //! until that device answers, so the app observes it like an invocation of its own.
@@ -94,7 +94,7 @@ impl DeviceActions {
         self.0.plane.clone()
     }
 
-    /// Answer arriving requests through `host` from now on: the broker's own door, once it serves.
+    /// Answer arriving requests through `host` from now on: the broker's own, once it serves.
     pub(crate) fn install(&self, host: Arc<dyn ActionHost + Send + Sync>) {
         self.0.dispatch.install(host);
     }
@@ -257,7 +257,7 @@ fn outcome_of(answer: Option<Result<InvocationUpdate, ActionHostError>>) -> OwnD
 /// idle-suspending.
 const REMOTE_USE_LEASE: Duration = Duration::from_secs(600);
 
-/// The one place a request that arrived on this device is handed to: the broker's door, once it
+/// The one place a request that arrived on this device is handed to: the broker, once it
 /// serves. Until then a request is answered as unavailable rather than left waiting, and so after
 /// the broker retires.
 /// It also counts the requests from the person's other devices as use of this one, holding the
@@ -852,7 +852,7 @@ mod tests {
             .collect()
     }
 
-    /// An offloadable invocation of `APP` 's action, reading `inputs` : the request the door
+    /// An offloadable invocation of `APP` 's action, reading `inputs` : the request the broker
     /// weighs, and the invocation the app made.
     fn offloadable(inputs: Vec<String>) -> (OffloadRequest, InvokeRequest) {
         let request = OffloadRequest {
@@ -976,26 +976,27 @@ mod tests {
         // The two devices' content hears what the other says, as the workspace's hosts carry it.
         let (here_plane, _, pump) = carrying(here_content, there_content);
 
-        let door = actions
+        let route = actions
             .offload_route(Arc::clone(&here_plane))
             .expect("offload is on");
 
         // Nothing has measured how long the transform takes here, so nothing is quicker than
         // running it here: the app's own handler runs it.
         let (request, sent) = offloadable(vec![input.clone()]);
-        let placed = door.offload_invocation(request.clone(), sent).await;
+        let placed = route.offload_invocation(request.clone(), sent).await;
         assert!(
             matches!(placed, Offloaded::RunHere { .. }),
             "the first run is here: {placed:?}"
         );
-        door.ran_here(&request, LOCAL_RUN);
+        route.ran_here(&request, LOCAL_RUN);
 
         // The other device has the app and already keeps the photograph, and the run here took
         // longer than moving it: it offers, and the round picks it.
         let (request, sent) = offloadable(vec![input]);
-        let placed = tokio::time::timeout(PATIENCE, door.offload_invocation(request, sent.clone()))
-            .await
-            .expect("the round finishes");
+        let placed =
+            tokio::time::timeout(PATIENCE, route.offload_invocation(request, sent.clone()))
+                .await
+                .expect("the round finishes");
         let Offloaded::Ran { device, output, .. } = placed else {
             panic!("the other device runs it: {placed:?}");
         };
@@ -1071,17 +1072,17 @@ mod tests {
             .route()
             .offer(&CrdtRoute::app(APP, WORKSPACE), &input, &photograph)
             .expect("the app's photograph is kept here");
-        let door = actions
+        let route = actions
             .offload_route(Arc::clone(&content))
             .expect("offload is on");
 
         let (request, sent) = offloadable(vec![input.clone()]);
-        let placed = door.offload_invocation(request.clone(), sent).await;
+        let placed = route.offload_invocation(request.clone(), sent).await;
         assert!(matches!(placed, Offloaded::RunHere { .. }), "{placed:?}");
-        door.ran_here(&request, LOCAL_RUN);
+        route.ran_here(&request, LOCAL_RUN);
 
         let (request, sent) = offloadable(vec![input]);
-        let placed = tokio::time::timeout(PATIENCE, door.offload_invocation(request, sent))
+        let placed = tokio::time::timeout(PATIENCE, route.offload_invocation(request, sent))
             .await
             .expect("a device that is away is not waited for");
         let Offloaded::RunHere { reason } = placed else {
@@ -1110,21 +1111,21 @@ mod tests {
             .route()
             .offer(&CrdtRoute::app(APP, WORKSPACE), &input, &photograph)
             .expect("the app's photograph is kept here");
-        let door = actions.offload_route(content).expect("offload is on");
+        let route = actions.offload_route(content).expect("offload is on");
 
         // The app's own handler runs it here, and how long that took is what another device would
         // have to beat.
         let (request, sent) = offloadable(vec![input.clone()]);
-        let placed = door.offload_invocation(request.clone(), sent).await;
+        let placed = route.offload_invocation(request.clone(), sent).await;
         assert!(
             matches!(placed, Offloaded::RunHere { .. }),
             "the first run is here: {placed:?}"
         );
-        door.ran_here(&request, LOCAL_RUN);
+        route.ran_here(&request, LOCAL_RUN);
 
         // Nobody is in the workspace to offer, so it runs here again, and says why.
         let (request, sent) = offloadable(vec![input]);
-        let placed = door.offload_invocation(request, sent).await;
+        let placed = route.offload_invocation(request, sent).await;
         let Offloaded::RunHere { reason } = placed else {
             panic!("nobody offered, so it runs here: {placed:?}");
         };

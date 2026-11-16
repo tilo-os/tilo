@@ -694,7 +694,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_tools_door_answers_drives_openers_and_the_app_list;
+        fn the_tools_api_answers_drives_openers_and_the_app_list;
 
         phase a_drive_is_named_by_its_block_device_and_is_open_only_when_mounted;
         {

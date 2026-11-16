@@ -13,7 +13,7 @@
 //! carried out by the ask loop in `asks`.
 //!
 //! Everything a person can do here is a published action: the shell's and
-//! the chrome's, and each surface app's through its door
+//! the chrome's, and each surface app's through its API
 //! ([`ui::device_local_api::SharedApi`]). [`Session::resources`] lists
 //! them and [`Session::invoke`] runs one, as any caller of the action
 //! protocol on this device does.
@@ -188,9 +188,6 @@ pub mod displays;
 #[cfg(target_os = "linux")]
 mod documents;
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
-mod doors;
-#[cfg(target_os = "linux")]
 mod downloaded;
 #[cfg(target_os = "linux")]
 pub mod drives;
@@ -339,6 +336,9 @@ pub mod seeded_apps;
 mod send_to;
 #[cfg(target_os = "linux")]
 mod service_sessions;
+#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
+mod services;
 #[cfg(target_os = "linux")]
 pub mod session_package;
 #[cfg(target_os = "linux")]

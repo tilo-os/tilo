@@ -4,7 +4,7 @@
 //! gave it no collaboration connection, so it holds and commits none of the app's data. The
 //! app's instance runs in the tilolang host of its workspace and author, on the app's own
 //! connection, and sends this window component patches over a patch connection the session
-//! hands it on its window door (`ui::window_door::take_patch`). The window shows them through
+//! hands it on its window channel (`ui::window_channel::take_patch`). The window shows them through
 //! the UI host's half (`tilo_ui_host::AppWindow`) and sends back what the person did. Its own
 //! launch identity stays for its surface and accessibility.
 //!
@@ -43,7 +43,7 @@ pub fn is_hosted() -> bool {
 /// the process's first window's.
 #[must_use]
 pub fn window_instance() -> Option<u64> {
-    ui::window_door::requested_instance().or_else(|| {
+    ui::window_channel::requested_instance().or_else(|| {
         // Unset: the process was not launched for a window of its own.
         let value = std::env::var("TILO_CONTINUITY_INSTANCE").ok()?;
         match value.parse() {
@@ -399,7 +399,8 @@ impl HostedWindow {
         let Some(instance) = self.instance else {
             return false;
         };
-        let Some(patch) = ui::window_door::take_patch(instance, ui::wake::WakeHandle::new()) else {
+        let Some(patch) = ui::window_channel::take_patch(instance, ui::wake::WakeHandle::new())
+        else {
             return false;
         };
         match Channel::from_socket(patch) {
@@ -415,7 +416,7 @@ impl HostedWindow {
     }
 
     /// The window over the patch connection `channel`, whose other end its instance's host
-    /// holds: what the session hands it on the window door.
+    /// holds: what the session hands it on the window channel.
     #[must_use]
     pub fn over(channel: Channel) -> Self {
         let mut window = Self::unconnected();

@@ -22,7 +22,7 @@ pub struct WindowRequest {
 #[cfg(feature = "local-daemons")]
 pub use transport::*;
 
-/// Say on the API the launcher handed this process that it opens the windows the shell
+/// Say on the window channel the launcher handed this process that it opens the windows the shell
 /// asks for, before the launch's first window is made: the shell takes a mapped window as
 /// proof the app cannot, so an app that answers only once its loop runs keeps a process
 /// per window.
@@ -93,7 +93,7 @@ pub(crate) fn open_window(
 }
 
 /// The instance of the window being built for the shell's request, while one is; `None`
-/// while the process's first window is built, and where there is no window API.
+/// while the process's first window is built, and where there is no window channel.
 #[must_use]
 pub fn requested_instance() -> Option<u64> {
     #[cfg(feature = "local-daemons")]
@@ -107,12 +107,12 @@ pub fn requested_instance() -> Option<u64> {
 }
 
 /// The variable a launch names the item its window opens on in, for a process the shell
-/// starts for that window rather than one it asks for it: a window API request cannot
+/// starts for that window rather than one it asks for it: a window channel request cannot
 /// reach a window that is already being built.
 pub const REVEAL_ENV: &str = crate::host::REVEAL_ENV;
 
 /// The variable the session sets on a launch it makes with no window: the app answers its
-/// actions and its API, and its first window is the first one the shell asks for here.
+/// actions and serves no window channel, and its first window is the first one the shell asks for here.
 pub const WINDOWLESS_ENV: &str = crate::host::WINDOWLESS_ENV;
 
 /// The item the window being built opens on: what the shell's request named for a window
@@ -205,10 +205,10 @@ mod transport {
         }
     }
 
-    /// Write `request` on the shell's end of `API`, with the connections it says it
+    /// Write `request` on the shell's end of `channel`, with the connections it says it
     /// carries.
     pub fn send(
-        door: &Descriptor,
+        channel: &Descriptor,
         request: &WindowRequest,
         collaboration: Option<&Descriptor>,
         shell_ui: Option<&Descriptor>,
@@ -220,12 +220,12 @@ mod transport {
         }
         let encoded = serde_json::to_vec(request).map_err(std::io::Error::other)?;
         let fds: Vec<&Descriptor> = collaboration.into_iter().chain(shell_ui).collect();
-        runtime_portal::windows::send_open(door, &encoded, &fds)
+        runtime_portal::windows::send_open(channel, &encoded, &fds)
     }
 
-    /// The next request on the app's end of `API`; `None` once the shell closed it.
-    pub fn receive(door: &Descriptor) -> std::io::Result<Option<WindowOpening>> {
-        let Some((encoded, fds)) = runtime_portal::windows::receive_open(door)? else {
+    /// The next request on the app's end of `channel`; `None` once the shell closed it.
+    pub fn receive(channel: &Descriptor) -> std::io::Result<Option<WindowOpening>> {
+        let Some((encoded, fds)) = runtime_portal::windows::receive_open(channel)? else {
             return Ok(None);
         };
         opening(&encoded, fds).map(Some)
@@ -297,29 +297,29 @@ mod transport {
         }
     }
 
-    /// The API the launcher handed this process, once (see
-    /// [`runtime_portal::windows::take_door`]), told this app serves windows: the shell
-    /// routes an app's later windows to a process that said so before it mapped one.
+    /// The window channel the launcher handed this process, taken once: saying so tells the
+    /// shell this app serves windows, and it routes the app's later windows to a process that
+    /// said so before it mapped one.
     #[must_use]
-    pub fn take_door() -> Option<Descriptor> {
-        door().take()
+    pub fn take_channel() -> Option<Descriptor> {
+        channel().take()
     }
 
-    static DOOR: Mutex<Option<Descriptor>> = Mutex::new(None);
+    static CHANNEL: Mutex<Option<Descriptor>> = Mutex::new(None);
 
     static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-    /// The API, taken once and answered for once: whoever wants it first ([`announce`]
-    /// before the launch's first window, [`take_door`] to serve it) takes it and tells
+    /// The channel, taken once and announced once: whoever wants it first ([`announce`]
+    /// before the launch's first window, [`take_channel`] to serve it) takes it and tells
     /// the shell so, and later callers get it until it is handed out.
-    fn door() -> std::sync::MutexGuard<'static, Option<Descriptor>> {
-        let mut slot = DOOR
+    fn channel() -> std::sync::MutexGuard<'static, Option<Descriptor>> {
+        let mut slot = CHANNEL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            *slot = runtime_portal::windows::take_door();
-            if let Some(door) = slot.as_ref()
-                && let Err(error) = runtime_portal::windows::send_serves(door)
+            *slot = runtime_portal::windows::take_channel();
+            if let Some(channel) = slot.as_ref()
+                && let Err(error) = runtime_portal::windows::send_serves(channel)
             {
                 tracing::warn!(%error, "the shell was not told this app opens its windows");
             }
@@ -327,27 +327,28 @@ mod transport {
         slot
     }
 
-    /// Take the API and tell the shell about it, keeping it for serving.
+    /// Take the channel and tell the shell about it, keeping it for serving.
     pub fn announce() {
-        drop(door());
+        drop(channel());
     }
 
-    /// Read `API` on a thread of its own, handing each request to `open`, until the
+    /// Read `channel` on a thread of its own, handing each request to `open`, until the
     /// shell closes it or `open` refuses (its loop is gone). The thread could not be
     /// started.
     pub fn serve(
-        door: Descriptor,
+        channel: Descriptor,
         open: impl Fn(PendingWindow) -> bool + Send + 'static,
     ) -> std::io::Result<()> {
+        *served() = channel.try_clone().ok();
         let open = Arc::new(Mutex::new(open));
         let reopen: Reopen = Arc::new(move |pending| match open.lock() {
             Ok(open) => open(pending),
             Err(poisoned) => (poisoned.into_inner())(pending),
         });
-        tilo_rt::spawn_thread("tilo-window-door", move || {
+        tilo_rt::spawn_thread("tilo-window-channel", move || {
             loop {
                 let received =
-                    runtime_portal::windows::receive_message(&door).and_then(|message| {
+                    runtime_portal::windows::receive_message(&channel).and_then(|message| {
                         Ok(match message {
                             Some(runtime_portal::windows::Message::Open(encoded, fds)) => {
                                 Some(Some(opening(&encoded, fds)?))
@@ -377,6 +378,27 @@ mod transport {
             }
         })
         .map(drop)
+    }
+
+    /// The API being served, kept to close it when the loop that builds windows ends.
+    static SERVED: Mutex<Option<Descriptor>> = Mutex::new(None);
+
+    fn served() -> std::sync::MutexGuard<'static, Option<Descriptor>> {
+        SERVED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Take no more windows: the loop that builds them is ending, and what the process does
+    /// before it exits (saving, letting its renderer go) can take seconds. A window the shell
+    /// asks for from now on is refused at once, so the shell starts it in a process of its own,
+    /// rather than handing it to this one, which would drop it.
+    pub fn stop_serving() {
+        if let Some(channel) = served().take()
+            && let Err(error) = runtime_portal::windows::close_channel(&channel)
+        {
+            tracing::warn!(%error, "the window API stayed open as the loop ended");
+        }
     }
 
     thread_local! {
@@ -466,22 +488,22 @@ mod transport {
     mod tests {
         use super::*;
 
-        fn door() -> Option<(Descriptor, Descriptor)> {
+        fn channel() -> Option<(Descriptor, Descriptor)> {
             runtime_portal::windows::pair().ok()
         }
 
         fn connection() -> Option<Descriptor> {
-            door().map(|(one, _)| one)
+            channel().map(|(one, _)| one)
         }
 
         tilo_test_env::scenario! {
-            /// A window request sent over the API and received at the app's end.
+            /// A window request sent over the channel and received at the app's end.
             /// Each phase was a test of its own and builds its own fixture.
             fn a_window_request_carries_exactly_the_connections_it_names;
 
             phase a_window_request_arrives_with_its_own_connections;
             {
-                let Some((shell, app)) = door() else { return };
+                let Some((shell, app)) = channel() else { return };
                 let (Some(collaboration), Some(shell_ui)) = (connection(), connection()) else {
                     return;
                 };
@@ -514,7 +536,7 @@ mod transport {
 
             phase a_request_that_does_not_carry_what_it_names_is_refused;
             {
-                let Some((shell, app)) = door() else { return };
+                let Some((shell, app)) = channel() else { return };
                 let request = WindowRequest {
                     instance: 1,
                     collaboration: true,

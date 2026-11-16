@@ -1,4 +1,4 @@
-//! The session's services' steps, as the session's door answers them on its pass: an action a
+//! The session's services' steps, as the session's API answers them on its pass: an action a
 //! service publishes, invoked as the agent or person that asked and as a step of the run it names,
 //! and a change of a record a service keeps for a package the session runs itself.
 
@@ -48,7 +48,7 @@ pub(crate) fn with_turn_beside(
 }
 
 /// Run `address` as `actor` through the session's services, which publish the actions its own
-/// doors do not: what a service keeps (Chat's `record-work` on a turn's summons, the layout's
+/// APIs do not: what a service keeps (Chat's `record-work` on a turn's summons, the layout's
 /// place read from a service) is invoked on the same pass, on the record the service writes. The
 /// `actor` an agent names is `agent:<id>`, attributed as it is at an app's record origin; a person
 /// acts as themselves. A step of a `run` is that run's, as an app's action is. `beside` is the

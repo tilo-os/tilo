@@ -1,4 +1,4 @@
-//! The door of an app's origin connector: the process the session's launcher starts for a
+//! The socket of an app's origin connector: the process the session's launcher starts for a
 //! tilolang app whose types hold an outside service's resources (a mail server), in the app's
 //! sandbox with the network and custody its manifest declares for that origin. It runs whether
 //! or not a window of the app is open.
@@ -6,7 +6,7 @@
 //! Each instance of the app a tilolang host runs reaches the connector over a connection of its
 //! own: the session makes a pair, hands one end to the instance with the instance's other
 //! connections (`crate::tilolang_host::InstanceFds::origin`) and the other to the connector on
-//! this door, as one `SOCK_SEQPACKET` packet in the framing of `jobs`: the verb
+//! this socket, as one `SOCK_SEQPACKET` packet in the framing of `jobs`: the verb
 //! [`ATTACH_VERB`] with the one descriptor.
 
 use std::io;
@@ -23,7 +23,7 @@ pub const ORIGIN_ENV: &str = "TILO_TILOLANG_CONNECTOR";
 
 pub const ATTACH_VERB: &[u8] = b"attach";
 
-/// A connected pair of door ends: the session keeps one and hands the other to the connector
+/// A connected pair of socket ends: the session keeps one and hands the other to the connector
 /// it starts.
 ///
 /// # Errors
@@ -39,7 +39,7 @@ pub fn connection() -> io::Result<(Descriptor, Descriptor)> {
 }
 
 #[must_use]
-pub fn take_door() -> Option<Descriptor> {
+pub fn take_socket() -> Option<Descriptor> {
     #[cfg(target_os = "linux")]
     {
         static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -47,7 +47,7 @@ pub fn take_door() -> Option<Descriptor> {
         if TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return None;
         }
-        // SAFETY: the launcher handed this descriptor to the process for the door alone, and
+        // SAFETY: the launcher handed this descriptor to the process for the socket alone, and
         // the flag above lets it be owned exactly once.
         Some(unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) })
     }
@@ -55,19 +55,19 @@ pub fn take_door() -> Option<Descriptor> {
     None
 }
 
-/// Hand the connector behind `door` an instance's connection `connection`.
+/// Hand the connector behind `socket` an instance's connection `connection`.
 ///
 /// # Errors
 /// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
-pub fn send_attachment(door: &Descriptor, connection: &Descriptor) -> io::Result<()> {
+pub fn send_attachment(socket: &Descriptor, connection: &Descriptor) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
-        crate::door::send(door.as_fd(), &[ATTACH_VERB], &[connection.as_fd()])
+        crate::message::send(socket.as_fd(), &[ATTACH_VERB], &[connection.as_fd()])
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (door, connection);
+        let _ = (socket, connection);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "only the Linux shell runs origin connectors",
@@ -75,25 +75,25 @@ pub fn send_attachment(door: &Descriptor, connection: &Descriptor) -> io::Result
     }
 }
 
-/// The next instance's connection on `door`; `None` at end of file, when the session closed
+/// The next instance's connection on `socket`; `None` at end of file, when the session closed
 /// its end.
 ///
 /// # Errors
 /// The socket's error; a message that is no attachment with its one descriptor;
 /// [`io::ErrorKind::Unsupported`] off Linux.
-pub fn receive_attachment(door: &Descriptor) -> io::Result<Option<Descriptor>> {
+pub fn receive_attachment(socket: &Descriptor) -> io::Result<Option<Descriptor>> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
         let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
         let mut buffer = vec![0_u8; 64];
-        let Some((length, fds)) = crate::door::receive(door.as_fd(), &mut buffer)? else {
+        let Some((length, fds)) = crate::message::receive(socket.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
         let message = buffer.get(..length).unwrap_or_default();
-        if crate::door::decode(message).as_slice() != [ATTACH_VERB] {
+        if crate::message::decode(message).as_slice() != [ATTACH_VERB] {
             return Err(invalid(
-                "the connector's door carried something other than an attachment",
+                "the connector's socket carried something other than an attachment",
             ));
         }
         let [connection] = <[Descriptor; 1]>::try_from(fds)
@@ -102,7 +102,7 @@ pub fn receive_attachment(door: &Descriptor) -> io::Result<Option<Descriptor>> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = door;
+        let _ = socket;
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "only the Linux shell runs origin connectors",

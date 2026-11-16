@@ -3,7 +3,7 @@
 //! The session's own actions — the arrangement, its undo, the windows, the notices — are decided
 //! by the broker like any other step and carried out on the session's pass, where the arrangement
 //! lives on the thread that shows it. A role that offers them names this seam; the host's own
-//! doors answer it (the native session's door queue, the page's own).
+//! APIs answer it (the native session's API queue, the page's own).
 
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{ActionHostError, Completer};

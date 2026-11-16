@@ -7,7 +7,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Where a profile's settings documents live: their files, the lock of the one process that holds them, the watch a follower keeps on them and the holder's door for other processes' writes."
+description = "Where a profile's settings documents live: their files, the lock of the one process that holds them, the watch a follower keeps on them and the holder's socket for other processes' writes."
 
 [lib]
 name = "tilo_settings_records"

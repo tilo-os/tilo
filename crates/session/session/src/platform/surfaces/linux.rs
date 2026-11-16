@@ -1,5 +1,5 @@
 //! The Linux desktop's layers: the compositor shows each widget tree the session places on a
-//! surface of its own, and the session's door reaches what it publishes.
+//! surface of its own, and the session's API reaches what it publishes.
 
 use std::cell::RefCell;
 use std::rc::Rc;

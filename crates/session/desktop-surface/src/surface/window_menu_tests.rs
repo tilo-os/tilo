@@ -1416,6 +1416,42 @@ fn closing_the_tab_leaves_the_window_that_closing_it_ends() {
     );
 }
 
+/// Closing the last window of a strip says what closed and offers Undo, which brings it back as the
+/// reopen chord does.
+#[test]
+fn a_close_says_what_closed_and_its_undo_reopens_it() {
+    let (surface, handle) = one_window_shell(1);
+    let mut frame = present(surface);
+    let route = first_route(&handle);
+    let said = handle.acknowledger();
+    assert!(said.current(ui::time::now()).is_none());
+
+    handle
+        .choose_window_menu(route.tab, CLOSE_WINDOW, None)
+        .unwrap();
+    settle(&mut frame);
+    assert!(
+        handle.read(|tree| tree.workspaces[0].strips[0].window_groups.is_empty()),
+        "the strip's last window closed"
+    );
+    let shown = said.current(ui::time::now()).expect("the close is said");
+    assert!(shown.text().ends_with("closed"), "{:?}", shown.text());
+    assert_eq!(shown.action(), Some("Undo"));
+
+    assert!(said.press_action(), "Undo is there to press");
+    settle(&mut frame);
+    assert_eq!(
+        handle.read(|tree| tree.workspaces[0].strips[0].window_groups.len()),
+        1,
+        "Undo reopens the window"
+    );
+    assert!(
+        said.current(ui::time::now()).is_none(),
+        "and the confirmation goes"
+    );
+    assert!(!said.press_action(), "an Undo is pressed once");
+}
+
 /// A window running an app that controls the desktop offers to end that,
 /// and the row is gone once the grant is taken back.
 #[test]

@@ -29,9 +29,9 @@ pub(super) fn for_provider(
 }
 
 /// Transport keys alone never grant access to a service on this device.
-/// The certified local door retains its original admission, even when the
+/// The certified local socket retains its original admission, even when the
 /// protected native seat projects a keyless person. Network admissions,
-/// including same-person devices, are not that door.
+/// including same-person devices, are not that socket.
 pub(super) fn is_local_host_caller(
     caller: &Caller,
     origin: Option<&super::published_invocation::InvocationCaller>,
@@ -229,7 +229,7 @@ impl AppBrokerState {
             actor: &policy,
             address,
             argument: argument.as_deref(),
-            door: api,
+            host: api,
             group: request
                 .context
                 .as_ref()

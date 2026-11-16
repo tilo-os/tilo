@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 pub const TILO_DESKTOP: &str = "tilo";
 pub const SESSION_DIR: &str = "tilo-session";
 pub const AGENT_SOCKET_FILE: &str = "agent.sock";
-pub const ENVIRONMENT_DOORS_DIR: &str = "environments";
+pub const ENVIRONMENTS_DIR: &str = "environments";
 pub const GUEST_AGENT_SOCKET: &str = "/run/tilo/agent.sock";
 pub const AGENT_SOCKET_ENV: &str = "TILO_AGENT_SOCK";
 pub const ADMIN_CONTROL_SOCKET_FILE: &str = "admin-control.sock";

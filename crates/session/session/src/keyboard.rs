@@ -462,7 +462,7 @@ impl crate::Session {
 mod tests {
     use super::*;
 
-    /// The arguments of `arguments` as the door hands them over.
+    /// The arguments of `arguments` as the API hands them over.
     fn arguments(arguments: serde_json::Value) -> serde_json::Map<String, Value> {
         match arguments {
             Value::Object(map) => map,

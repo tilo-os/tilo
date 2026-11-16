@@ -9,9 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
 
-pub use tilo_session_core::notice::{
-    Closed, Notice, Notices, OPEN_ACTION, Place, SCHEME, open_target,
-};
+pub use tilo_session_core::notice::{Closed, Notice, Notices, OPEN_ACTION, Place, SCHEME};
 
 /// A host's notifier as a role's notices: the notification platform the toolkit serves, which is
 /// the page's `ui::host::current().notifications`. What choosing one lands at comes back here;

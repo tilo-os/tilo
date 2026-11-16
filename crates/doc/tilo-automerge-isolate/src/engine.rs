@@ -23,13 +23,49 @@ pub(crate) fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
 /// change, distinct, and have the document's stored heads as the changes
 /// nothing depends on, heads the worker's [`load`] checked against the
 /// changes themselves.
-#[cfg(target_os = "linux")]
 pub(crate) fn load_validated(bytes: &[u8], hashes: &[ChangeHash]) -> Result<AutoCommit, Rejected> {
     if hashes.is_empty() {
         return load(bytes);
     }
     AutoCommit::load_with_options(bytes, strict().known_change_hashes(hashes))
         .map_err(|e| Rejected::Invalid(e.to_string()))
+}
+
+/// [`apply`] of a whole document into a blank `doc`, taking each change's
+/// hash from `hashes` instead of rebuilding and hashing every change: what
+/// [`verified_hashes`] gave for exactly these bytes. The document is the one
+/// [`apply`] builds; see [`load_validated`].
+pub(crate) fn apply_validated(
+    doc: &mut AutoCommit,
+    incoming: &[u8],
+    dependencies: Dependencies,
+    hashes: &[ChangeHash],
+) -> Result<Applied, Rejected> {
+    let loaded = AutoCommit::load_with_options(
+        incoming,
+        strict()
+            .text_encoding(doc.document().text_encoding())
+            .known_change_hashes(hashes),
+    )
+    .map_err(|e| Rejected::Invalid(e.to_string()))?;
+    let actor = doc.get_actor().clone();
+    *doc = loaded.with_actor(actor);
+    if dependencies == Dependencies::RequireComplete && !doc.get_missing_deps(&[]).is_empty() {
+        return Ok(Applied::MissingDependencies);
+    }
+    Ok(Applied::Changed(!doc.get_heads().is_empty()))
+}
+
+/// The hash of every change of the document `bytes` hold, in the order
+/// [`load_validated`] takes them, after loading them as [`load`] does:
+/// every change rebuilt and hashed, and the document's stored heads checked
+/// against them. Only for exactly one document chunk.
+pub(crate) fn verified_hashes(bytes: &[u8]) -> Result<Vec<ChangeHash>, Rejected> {
+    if !single_document(bytes) {
+        return Err(Rejected::Malformed("not one document"));
+    }
+    let mut doc = load(bytes)?;
+    Ok(document_change_hashes(bytes, &mut doc))
 }
 
 /// The hash of every change `incoming` carries, in the order it carries them,
@@ -57,16 +93,20 @@ pub(crate) fn change_hashes(incoming: &[u8]) -> Option<Vec<ChangeHash>> {
 /// the order [`load_validated`] takes them: only when `bytes` is a single
 /// document chunk, whose changes are then exactly the document's, listed in
 /// the chunk's order. Otherwise none.
-#[cfg(target_os = "linux")]
 pub(crate) fn document_change_hashes(bytes: &[u8], doc: &mut AutoCommit) -> Vec<ChangeHash> {
-    let mut chunks = crate::precheck::chunks(bytes);
-    let single_document = chunks.next().is_some_and(|chunk| {
-        chunk.kind == crate::precheck::DOCUMENT && chunk.bytes.len() == bytes.len()
-    }) && chunks.next().is_none();
-    if !single_document {
+    if !single_document(bytes) {
         return Vec::new();
     }
     doc.document().change_hashes().to_vec()
+}
+
+/// Whether `bytes` are exactly one document chunk: a document whole, as a
+/// save writes it.
+pub(crate) fn single_document(bytes: &[u8]) -> bool {
+    let mut chunks = crate::precheck::chunks(bytes);
+    chunks.next().is_some_and(|chunk| {
+        chunk.kind == crate::precheck::DOCUMENT && chunk.bytes.len() == bytes.len()
+    }) && chunks.next().is_none()
 }
 
 /// Apply `incoming` to `doc` as the caller will.

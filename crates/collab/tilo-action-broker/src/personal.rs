@@ -2,7 +2,7 @@
 //!
 //! The store holds the records of the person's own scope — `(app, personal)`
 //! — once per app and record, on the cluster their identity root derives.
-//! A door is what carries them: it answers the store's link on the host's own
+//! The sibling links are what carry them: this answers the store's link on the host's own
 //! endpoint, dials the siblings the store knows of, hands each write a sibling
 //! admits to the apps that have the record open, on the same route those apps
 //! publish on, and keeps the store beside the host's state.
@@ -112,21 +112,21 @@ pub fn open(
     }
 }
 
-/// A host's door to the person's other devices: the sibling links kept, what
+/// A host's links to the person's other devices: the sibling links kept, what
 /// a sibling writes handed to the host's apps, and the store written back
 /// beside the host's state as it changes.
 ///
 /// The store's link itself is answered by the host, on the endpoint it runs
 /// on: `sync` is handed to the accept loop that endpoint already has, beside
-/// whatever else it serves. Dropping the door stops the links with its tasks;
+/// whatever else it serves. Dropping this stops the links with its tasks;
 /// the store itself stays where the host keeps it.
-pub struct Door {
+pub struct Links {
     siblings: tokio::task::JoinHandle<()>,
     delivery: tokio::task::JoinHandle<()>,
     keeping: tokio::task::JoinHandle<()>,
 }
 
-impl Drop for Door {
+impl Drop for Links {
     fn drop(&mut self) {
         self.siblings.abort();
         self.delivery.abort();
@@ -134,9 +134,9 @@ impl Drop for Door {
     }
 }
 
-impl Door {
+impl Links {
     /// Open the person's store to their other devices from `endpoint`, on
-    /// `runtime` for as long as the door: dial each of the person's devices
+    /// `runtime` for as long as it lives: dial each of the person's devices
     /// this one has no link to, hand every write one of them admits to the
     /// apps that have the record open through `channels` and `fanout`, and
     /// keep the store under `state` as it changes.

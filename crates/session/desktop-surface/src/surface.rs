@@ -331,6 +331,8 @@ struct Shared {
     liveness: Vec<(TabId, LivenessChoice)>,
     /// Where the host confirms in passing what left nothing to see.
     acknowledger: ui::widget::acknowledgement::Acknowledger,
+    /// What a confirmation's Undo runs after a close: the reopen Shift+Super+T makes.
+    reopen: Rc<dyn Fn()>,
     /// The notifications the host installed: the shell carries out what the person chose there,
     /// and the host above the windows draws them ([`DesktopHandle::notifications`]).
     notifications: Option<DesktopNotifications>,
@@ -986,6 +988,13 @@ impl DesktopSurface {
         let search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>> =
             Rc::new(RefCell::new(tilo_desktop_search::LazyDesktopSearch::new()));
         let shared = Rc::new(RefCell::new(Shared::new(tree, minter, &search)));
+        // A close is undone as the person's reopen undoes it, through the same command.
+        let reopening = Rc::downgrade(&shared);
+        shared.borrow_mut().reopen = Rc::new(move || {
+            if let Some(shared) = reopening.upgrade() {
+                let _ = DesktopHandle { shared }.dispatch(ChromeEffect::ReopenClosed);
+            }
+        });
         #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
         let tiles = Box::new(peer_view::PeerTiles::new(
             tiles,
@@ -1626,7 +1635,7 @@ impl DesktopSurface {
                 }
             }
             for tab in group.take_pending_close_commits() {
-                changed |= shared.tree.close_tab(tab).is_some();
+                changed |= shared.close(tab).is_some();
             }
             if let Some((from, to)) = group.take_pending_tab_reorder() {
                 changed |= shared

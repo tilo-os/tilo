@@ -166,7 +166,7 @@ pub struct Options {
     /// certifies an agent's grant for it, listed with their devices. A program presenting the key
     /// at the MCP server ([`tilo_mcp::session_api::AGENT_KEY_ENV`]) is admitted as that
     /// grant's agent without asking them: what a session started for an agent, with no one to
-    /// answer the door, lets the agent in by. Revoking the grant, as a device or from the agent's
+    /// answer the API, lets the agent in by. Revoking the grant, as a device or from the agent's
     /// card, ends it.
     pub agent_key: Option<std::path::PathBuf>,
     /// Where the development test-control socket opens ([`crate::test_control`]), which
@@ -175,7 +175,7 @@ pub struct Options {
     pub test_control: Option<std::path::PathBuf>,
     /// Where the device admin's control socket opens ([`crate::test_control::admin_path`]), which
     /// `tilo-control` reaches as the account whose desktop this is:
-    /// `tilo-session --admin-control PATH` , else the seat's own `admin-control.sock` for a session
+    /// `tilo-session --admin-control PATH` , else this device's own `admin-control.sock` for a session
     /// that owns the machine, and `headless-owner-control.sock` for a headless one. `None` : there
     /// is none.
     pub admin_control: Option<std::path::PathBuf>,

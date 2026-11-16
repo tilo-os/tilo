@@ -1,4 +1,4 @@
-//! The overflow door: the named place a control goes when the row it belongs to is too small.
+//! The overflow button: the named place a control goes when the row it belongs to is too small.
 
 use crate::i18n::widget_text;
 use std::cell::Cell;
@@ -18,11 +18,11 @@ use crate::widget::DrawChild;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{AppModel, Button, ModelPath, TaffyTreeExt, Widget};
 
-/// The toolkit's one overflow rule: which of a row's `count` items give way to its door.
+/// The toolkit's one overflow rule: which of a row's `count` items give way to its button.
 pub(crate) fn give_way(
     count: usize,
     width: f64,
-    door: f64,
+    button: f64,
     used: impl Fn(&[bool]) -> f64,
     priority: impl Fn(usize) -> Option<i32>,
     group: impl Fn(usize) -> Vec<usize>,
@@ -31,7 +31,7 @@ pub(crate) fn give_way(
     if used(&hidden) <= width {
         return hidden;
     }
-    let budget = (width - door).max(0.0);
+    let budget = (width - button).max(0.0);
     // Each pass hides at least one more item, so this ends.
     loop {
         if used(&hidden) <= budget {
@@ -55,7 +55,7 @@ pub(crate) fn give_way(
 /// in `width` beside an overflow button `button` wide ([`give_way`]); the rest are behind the
 /// button, in the same order.
 #[must_use]
-pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, door: f64) -> usize {
+pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, button: f64) -> usize {
     let widths: Vec<f64> = widths.into_iter().collect();
     let gap = gap.max(0.0);
     let used = |hidden: &[bool]| {
@@ -67,14 +67,14 @@ pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, door: f
             .collect();
         shown.iter().sum::<f64>() + gap * crate::num::f64_of_usize(shown.len().saturating_sub(1))
     };
-    let hidden = give_way(widths.len(), width, door, used, |_| Some(0), |i| vec![i]);
+    let hidden = give_way(widths.len(), width, button, used, |_| Some(0), |i| vec![i]);
     hidden.iter().take_while(|hidden| !**hidden).count()
 }
 
 /// The trailing "More actions" API: a button holding the menu of what did not fit. The host
 /// lays it out where the row ends and hides it ([`Self::set_shown`]) when nothing is behind it.
 #[crate::component::not_a_component(shell, "the strip's overflow")]
-pub struct OverflowDoor {
+pub struct OverflowButton {
     button: Button,
     menu: ContextMenu,
     requested: Rc<Cell<bool>>,
@@ -89,7 +89,7 @@ pub struct OverflowDoor {
     shown: bool,
 }
 
-impl OverflowDoor {
+impl OverflowButton {
     /// A shut API with `id` on its button, named by the toolkit's own
     /// `window-toolbar-more` message, so the API reads in the window's
     /// language like the rest of the chrome and the commands behind it.
@@ -206,7 +206,7 @@ impl OverflowDoor {
     }
 }
 
-impl Widget for OverflowDoor {
+impl Widget for OverflowButton {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.children();
     }
@@ -408,7 +408,7 @@ impl Widget for OverflowDoor {
     }
 
     fn name(&self) -> &'static str {
-        "OverflowDoor"
+        "OverflowButton"
     }
 
     fn needs_redraw(&self) -> bool {
@@ -425,14 +425,14 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn what_does_not_fit_a_row_waits_behind_its_door;
+        fn what_does_not_fit_a_row_waits_behind_its_button;
 
-        phase a_row_that_holds_them_all_shows_no_door;
+        phase a_row_that_holds_them_all_shows_no_button;
         {
             assert_eq!(plan(400.0, [40.0, 40.0, 40.0], 8.0, 40.0), 3);
         }
 
-        phase what_does_not_fit_is_named_behind_the_door_not_dropped;
+        phase what_does_not_fit_is_named_behind_the_button_not_dropped;
         {
             // Four 40 px controls and their gaps want 184 px; a 170 px row has
             // fits two of them beside the API's own 40 px, so the last two
@@ -445,13 +445,13 @@ mod tests {
             assert_eq!(plan(30.0, [40.0, 40.0], 8.0, 40.0), 0);
         }
 
-        phase the_door_holds_the_ones_after_the_last_that_fits;
+        phase the_button_holds_the_ones_after_the_last_that_fits;
         {
             // 40 + 8 + 40 + 8 + 40 = 136 fits in 200 - 40 = 160; the fourth does not.
             assert_eq!(plan(200.0, [40.0, 40.0, 40.0, 60.0], 8.0, 40.0), 3);
         }
 
-        phase an_empty_row_has_no_door;
+        phase an_empty_row_has_no_button;
         {
             assert_eq!(plan(0.0, [], 8.0, 40.0), 0);
         }
@@ -459,24 +459,24 @@ mod tests {
         // The rows a header keeps behind the API read as the menu of the run they came from:
         // a run of three stands as one row, and choosing its second member chooses the second
         // action behind the API, not the row.
-        phase a_run_behind_the_door_is_one_row_that_picks_its_own_member;
+        phase a_run_behind_the_button_is_one_row_that_picks_its_own_member;
         {
-            let mut door = OverflowDoor::new("more");
+            let mut button = OverflowButton::new("more");
             let rows = vec![
                 (0, MenuItem::selection("Complete")),
                 (1, MenuItem::selection("Today").with_group("Due")),
                 (2, MenuItem::selection("Tomorrow").with_group("Due")),
                 (3, MenuItem::selection("Delete")),
             ];
-            door.open_numbered(rows, Rect::new(0.0, 0.0, 800.0, 600.0));
+            button.open_numbered(rows, Rect::new(0.0, 0.0, 800.0, 600.0));
             assert_eq!(
-                door.menu_labels(),
+                button.menu_labels(),
                 ["Complete", "Due", "Delete"],
                 "the two of one run fold into its row"
             );
-            door.choose(0);
-            assert_eq!(door.take_choice(), Some(0), "a row on its own");
-            door.open_numbered(
+            button.choose(0);
+            assert_eq!(button.take_choice(), Some(0), "a row on its own");
+            button.open_numbered(
                 vec![
                     (0, MenuItem::selection("Complete")),
                     (1, MenuItem::selection("Today").with_group("Due")),
@@ -485,42 +485,42 @@ mod tests {
                 ],
                 Rect::new(0.0, 0.0, 800.0, 600.0),
             );
-            door.choose(1);
-            assert_eq!(door.take_choice(), None, "a run's own row runs nothing");
+            button.choose(1);
+            assert_eq!(button.take_choice(), None, "a run's own row runs nothing");
             assert_eq!(
-                door.pick_of(1, 1),
+                button.pick_of(1, 1),
                 Some(2),
-                "the run's second member is the second action behind the door"
+                "the run's second member is the second action behind the button"
             );
             assert_eq!(
-                door.pick_of(2, 0),
+                button.pick_of(2, 0),
                 Some(3),
                 "the row after it keeps its place"
             );
         }
 
-        phase the_commands_behind_the_door_are_named_to_assistive_technology;
+        phase the_commands_behind_the_button_are_named_to_assistive_technology;
         {
-            let mut door = OverflowDoor::new("more");
-            door.set_shown(true);
-            let shut = door.accessibility().expect("the button names itself");
+            let mut button = OverflowButton::new("more");
+            button.set_shown(true);
+            let shut = button.accessibility().expect("the button names itself");
             assert_eq!(shut.role, crate::a11y::Role::Button);
             assert_eq!(shut.name.as_deref(), Some("More actions"));
             assert_eq!(shut.state.expanded, Some(false));
-            assert!(shut.children.is_empty(), "a shut door names no command");
+            assert!(shut.children.is_empty(), "a shut button names no command");
             assert!(
-                door.accessibility_represents_child(0),
-                "the door is the button: the button is not named again beside it"
+                button.accessibility_represents_child(0),
+                "the button is the button: the button is not named again beside it"
             );
 
-            door.open(
+            button.open(
                 vec![
                     MenuItem::selection("Snooze until…"),
                     MenuItem::selection("Remove"),
                 ],
                 Rect::new(0.0, 0.0, 1280.0, 800.0),
             );
-            let open = door.accessibility().expect("the button names itself");
+            let open = button.accessibility().expect("the button names itself");
             assert_eq!(open.state.expanded, Some(true));
             let menu = open.children.first().expect("the menu is named while up");
             let rows: Vec<Option<&str>> = menu

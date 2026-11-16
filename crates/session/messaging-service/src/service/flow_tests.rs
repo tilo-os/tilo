@@ -10,33 +10,37 @@ use tilo_messaging::{EnrollmentPhase, Pairing, SendError, ServiceAccount};
 use tilo_messaging_protocol::supervisor::AccountSupervisor;
 
 use super::{Flow, Order, Provider};
-use crate::door;
 use crate::link::{Handler, Responder};
 use crate::service::Service;
 use crate::service::gate::{Gate, Running};
 use crate::service::identity::{Credential, Custody, Identity};
+use crate::session;
 
 /// The compositor's side, as far as these flows ask it.
 struct Compositor;
-impl Handler<door::Call, door::Reply, door::Event> for Compositor {
-    fn call(&self, call: door::Call, reply: Responder<door::Call, door::Reply, door::Event>) {
+impl Handler<session::Call, session::Reply, session::Event> for Compositor {
+    fn call(
+        &self,
+        call: session::Call,
+        reply: Responder<session::Call, session::Reply, session::Event>,
+    ) {
         reply.send(match call {
-            door::Call::Person => door::Reply::Person {
+            session::Call::Person => session::Reply::Person {
                 accounts: accounts::AccountStore::default(),
                 directory: tilo_resource::Model::to_json(
                     &tilo_contact_directory::ContactDirectory::default(),
                 ),
             },
-            _ => door::Reply::Done,
+            _ => session::Reply::Done,
         });
     }
-    fn event(&self, _: door::Event) {}
+    fn event(&self, _: session::Event) {}
 }
 
 struct Rig {
     runtime: tokio::runtime::Runtime,
     service: Arc<Service>,
-    _compositor: door::DoorLink,
+    _compositor: session::SessionLink,
     _vault: tempfile::TempDir,
     _profile: tempfile::TempDir,
 }
@@ -81,15 +85,15 @@ fn rig() -> Rig {
     })
     .unwrap();
     let (service_end, compositor_end) = std::os::unix::net::UnixStream::pair().unwrap();
-    let compositor = door::DoorLink::start(
+    let compositor = session::SessionLink::start(
         "compositor",
         compositor_end.try_clone().unwrap(),
         compositor_end,
         Arc::new(Compositor),
     )
     .unwrap();
-    let handler = super::super::DoorHandler::new();
-    let link = door::DoorLink::start(
+    let handler = super::super::SessionHandler::new();
+    let link = session::SessionLink::start(
         "service",
         service_end.try_clone().unwrap(),
         service_end,

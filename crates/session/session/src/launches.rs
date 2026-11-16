@@ -21,7 +21,7 @@ use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 use tilo_action_broker::services::LauncherServices;
-use tilo_app_launch::doors::ancestry;
+use tilo_app_launch::channels::ancestry;
 use tilo_broker_core::services::{
     AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication,
 };
@@ -451,7 +451,7 @@ impl Window {
 
 impl LauncherServices for Launches {
     /// This device's apps, as its lists last read them: what an app or a service asking the action
-    /// door may open here, and what each app declared it may do.
+    /// API may open here, and what each app declared it may do.
     fn applications(&self) -> Vec<LaunchableApplication> {
         self.applications
             .lock_recover()

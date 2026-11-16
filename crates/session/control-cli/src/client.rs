@@ -4,7 +4,7 @@
 //! `tilo-control` (the developer's and admin's tool) and `tilo` (what a
 //! person types) both speak it through this module, so there is one client
 //! and one protocol. What differs is only which socket a command reaches —
-//! [`Door`] — and how the answer is shown.
+//! [`ControlSocket`] — and how the answer is shown.
 
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write};
@@ -114,7 +114,7 @@ pub fn id_from_printed(printed: &str) -> String {
 /// A socket that answers the action model's semantic requests
 /// (`actions_enumerate`, `actions_invoke`, …).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Door {
+pub enum ControlSocket {
     /// Named by `$TILO_TEST_CONTROL` (a development session) or a caller.
     Named(PathBuf),
     /// The device admin's own socket: their login or ssh, never an app.
@@ -125,7 +125,7 @@ pub enum Door {
     Agent(PathBuf),
 }
 
-impl Door {
+impl ControlSocket {
     #[must_use]
     pub fn path(&self) -> &Path {
         match self {
@@ -134,60 +134,69 @@ impl Door {
     }
 }
 
-/// The doors a semantic request may go through, in the order to try them:
+/// The sockets a semantic request may go through, in the order to try them:
 /// the named development socket alone when `$TILO_TEST_CONTROL` is set;
 /// otherwise the admin's socket, then the MCP server. Empty without a
 /// private runtime directory.
 #[must_use]
-pub fn semantic_doors(test_control: Option<OsString>, runtime_dir: Option<OsString>) -> Vec<Door> {
+pub fn semantic_sockets(
+    test_control: Option<OsString>,
+    runtime_dir: Option<OsString>,
+) -> Vec<ControlSocket> {
     if let Some(named) = test_control.filter(|named| !named.is_empty()) {
-        return vec![Door::Named(PathBuf::from(named))];
+        return vec![ControlSocket::Named(PathBuf::from(named))];
     }
     let Some(session) = tilo_paths::login::session_dir(runtime_dir) else {
         return Vec::new();
     };
     vec![
-        Door::Admin(session.join(tilo_paths::login::ADMIN_CONTROL_SOCKET_FILE)),
-        Door::Agent(session.join(tilo_paths::login::AGENT_SOCKET_FILE)),
+        ControlSocket::Admin(session.join(tilo_paths::login::ADMIN_CONTROL_SOCKET_FILE)),
+        ControlSocket::Agent(session.join(tilo_paths::login::AGENT_SOCKET_FILE)),
     ]
 }
 
-/// The doors of this process's own environment.
+/// The sockets of this process's own environment.
 #[must_use]
-pub fn doors_from_env() -> Vec<Door> {
-    semantic_doors(
+pub fn sockets_from_env() -> Vec<ControlSocket> {
+    semantic_sockets(
         std::env::var_os(crate::TEST_CONTROL_ENV),
         std::env::var_os("XDG_RUNTIME_DIR"),
     )
 }
 
-/// Whether a desktop session serves any of `doors` here: something exists
+/// Whether a desktop session serves any of `sockets` here: something exists
 /// at one of their paths. What a person may do through it is the desktop's
 /// to decide, at the first request.
 #[must_use]
-pub fn desktop_present(doors: &[Door]) -> bool {
-    doors.iter().any(|door| door.path().exists())
+pub fn desktop_present(sockets: &[ControlSocket]) -> bool {
+    sockets.iter().any(|socket| socket.path().exists())
 }
 
-/// Why no door answered.
+/// Why no socket answered.
 #[derive(Debug)]
 pub enum Unreachable {
-    /// No desktop session serves a door here.
+    /// No desktop session serves a socket here.
     NoDesktop,
-    /// Every door that exists turned this process away.
-    Refused { door: Door, message: String },
-    /// A door broke off mid-conversation.
-    Io { door: Door, error: io::Error },
+    /// Every socket that exists turned this process away.
+    Refused {
+        socket: ControlSocket,
+        message: String,
+    },
+    /// A socket broke off mid-conversation.
+    Io {
+        socket: ControlSocket,
+        error: io::Error,
+    },
 }
 
-/// A connection to the desktop's action model through the first door that
+/// A connection to the desktop's action model through the first socket that
 /// serves this process.
 pub struct Desktop {
-    door: Door,
+    socket: ControlSocket,
     stream: UnixStream,
-    /// Doors after `door`, tried when it turns this process away.
-    rest: Vec<Door>,
-    /// Whether `door` has answered a request; only a first answer can be a
+    /// Control sockets after `socket`, tried when it turns this process away.
+    rest: Vec<ControlSocket>,
+    /// Whether `socket` has answered a request; only a first answer can be a
     /// refusal of the process itself.
     answered: bool,
 }
@@ -195,24 +204,24 @@ pub struct Desktop {
 impl std::fmt::Debug for Desktop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Desktop")
-            .field("door", &self.door)
+            .field("socket", &self.socket)
             .field("rest", &self.rest)
             .finish_non_exhaustive()
     }
 }
 
 impl Desktop {
-    /// Connect through the first of `doors` that accepts a connection.
+    /// Connect through the first of `sockets` that accepts a connection.
     ///
     /// # Errors
     /// [`Unreachable::NoDesktop`] when none does.
-    pub fn connect(doors: &[Door]) -> Result<Self, Unreachable> {
-        let mut remaining = doors.to_vec();
+    pub fn connect(sockets: &[ControlSocket]) -> Result<Self, Unreachable> {
+        let mut remaining = sockets.to_vec();
         while !remaining.is_empty() {
-            let door = remaining.remove(0);
-            if let Ok(stream) = connect(door.path()) {
+            let socket = remaining.remove(0);
+            if let Ok(stream) = connect(socket.path()) {
                 return Ok(Self {
-                    door,
+                    socket,
                     stream,
                     rest: remaining,
                     answered: false,
@@ -222,18 +231,18 @@ impl Desktop {
         Err(Unreachable::NoDesktop)
     }
 
-    /// The door this connection goes through now.
+    /// The socket this connection goes through now.
     #[must_use]
-    pub fn door(&self) -> &Door {
-        &self.door
+    pub fn socket(&self) -> &ControlSocket {
+        &self.socket
     }
 
-    /// One request, one answer. A door that turns this process away on its
+    /// One request, one answer. A socket that turns this process away on its
     /// first answer — the admin's socket refuses a sandboxed app and what runs in
-    /// one — hands the request on to the next door.
+    /// one — hands the request on to the next socket.
     ///
     /// # Errors
-    /// Every door refused, or the connection broke.
+    /// Every socket refused, or the connection broke.
     pub fn request(
         &mut self,
         request: &serde_json::Value,
@@ -244,22 +253,22 @@ impl Desktop {
                 Ok(answer) => answer,
                 Err(error) => {
                     let broke = Unreachable::Io {
-                        door: self.door.clone(),
+                        socket: self.socket.clone(),
                         error,
                     };
                     if self.answered {
                         return Err(broke);
                     }
-                    // Closed on us before any answer: the next door may serve.
+                    // Closed on us before any answer: the next socket may serve.
                     self.advance(broke)?;
                     continue;
                 }
             };
             if !self.answered
-                && let Some(message) = refusal_of_process(&self.door, &answer)
+                && let Some(message) = refusal_of_process(&self.socket, &answer)
             {
                 self.advance(Unreachable::Refused {
-                    door: self.door.clone(),
+                    socket: self.socket.clone(),
                     message,
                 })?;
                 continue;
@@ -269,13 +278,13 @@ impl Desktop {
         }
     }
 
-    /// Move on to the next door that accepts a connection, or give back
+    /// Move on to the next socket that accepts a connection, or give back
     /// `why` the current one did not serve when none is left.
     fn advance(&mut self, why: Unreachable) -> Result<(), Unreachable> {
         while !self.rest.is_empty() {
-            let door = self.rest.remove(0);
-            if let Ok(stream) = connect(door.path()) {
-                self.door = door;
+            let socket = self.rest.remove(0);
+            if let Ok(stream) = connect(socket.path()) {
+                self.socket = socket;
                 self.stream = stream;
                 self.answered = false;
                 return Ok(());
@@ -285,14 +294,14 @@ impl Desktop {
     }
 }
 
-/// Whether `answer`, a door's first, turns away the process itself rather
+/// Whether `answer`, a socket's first, turns away the process itself rather
 /// than answering its request: the admin socket's `not_permitted` refusal
-/// of a connection, or the MCP server's JSON-RPC error. Returns the door's
+/// of a connection, or the MCP server's JSON-RPC error. Returns the socket's
 /// own words, for logs; a person is shown a plain sentence instead.
 #[must_use]
-pub fn refusal_of_process(door: &Door, answer: &serde_json::Value) -> Option<String> {
-    match door {
-        Door::Admin(_) => {
+pub fn refusal_of_process(socket: &ControlSocket, answer: &serde_json::Value) -> Option<String> {
+    match socket {
+        ControlSocket::Admin(_) => {
             let err = answer.get("err")?;
             (err.get("code").and_then(serde_json::Value::as_str) == Some("not_permitted")).then(
                 || {
@@ -303,9 +312,9 @@ pub fn refusal_of_process(door: &Door, answer: &serde_json::Value) -> Option<Str
                 },
             )
         }
-        Door::Agent(_) => {
+        ControlSocket::Agent(_) => {
             // The control protocol answers `answer` or `err`; a JSON-RPC
-            // error is the door's MCP framing refusing before any request.
+            // error is the socket's MCP framing refusing before any request.
             answer.get("jsonrpc")?;
             Some(
                 answer
@@ -315,7 +324,7 @@ pub fn refusal_of_process(door: &Door, answer: &serde_json::Value) -> Option<Str
                     .to_string(),
             )
         }
-        Door::Named(_) => None,
+        ControlSocket::Named(_) => None,
     }
 }
 
@@ -324,29 +333,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn doors_are_the_named_socket_alone_or_admin_then_agent() {
+    fn sockets_are_the_named_one_alone_or_admin_then_agent() {
         assert_eq!(
-            semantic_doors(
+            semantic_sockets(
                 Some("/run/dev/control.sock".into()),
                 Some("/run/user/7".into())
             ),
-            [Door::Named("/run/dev/control.sock".into())]
+            [ControlSocket::Named("/run/dev/control.sock".into())]
         );
         assert_eq!(
-            semantic_doors(Some(OsString::new()), Some("/run/user/7".into())),
+            semantic_sockets(Some(OsString::new()), Some("/run/user/7".into())),
             [
-                Door::Admin("/run/user/7/tilo-session/admin-control.sock".into()),
-                Door::Agent("/run/user/7/tilo-session/agent.sock".into()),
+                ControlSocket::Admin("/run/user/7/tilo-session/admin-control.sock".into()),
+                ControlSocket::Agent("/run/user/7/tilo-session/agent.sock".into()),
             ]
         );
-        assert!(semantic_doors(None, None).is_empty());
-        assert!(semantic_doors(None, Some("relative".into())).is_empty());
+        assert!(semantic_sockets(None, None).is_empty());
+        assert!(semantic_sockets(None, Some("relative".into())).is_empty());
     }
 
     #[test]
-    fn only_a_doors_refusal_of_the_process_hands_on() {
-        let admin = Door::Admin("/a".into());
-        let agent = Door::Agent("/b".into());
+    fn only_a_control_sockets_refusal_of_the_process_hands_on() {
+        let admin = ControlSocket::Admin("/a".into());
+        let agent = ControlSocket::Agent("/b".into());
         let refused = serde_json::json!({"err": {"code": "not_permitted", "message": "no"}});
         assert_eq!(refusal_of_process(&admin, &refused).as_deref(), Some("no"));
         let unknown = serde_json::json!({"err": {"code": "unknown_action", "message": "x"}});
@@ -358,7 +367,7 @@ mod tests {
             None
         );
         assert_eq!(
-            refusal_of_process(&Door::Named("/c".into()), &refused),
+            refusal_of_process(&ControlSocket::Named("/c".into()), &refused),
             None
         );
     }

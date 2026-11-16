@@ -88,13 +88,13 @@ pub(crate) fn power_offers(options: &Options) -> tilo_sheets::power::Offers {
 
 pub(crate) fn mount_sheets(
     compositor: &mut Compositor,
-    doors: &mut Surfaces,
+    surfaces: &mut Surfaces,
     options: &Options,
 ) -> Sheets {
     let who = (options.device.as_str(), options.person.as_str());
     let power = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::power::definition(),
         PowerState::default(),
         who,
@@ -105,7 +105,7 @@ pub(crate) fn mount_sheets(
     }
     let workspace_settings = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::workspace_settings::definition(),
         WorkspaceSettingsState::default(),
         who,
@@ -113,7 +113,7 @@ pub(crate) fn mount_sheets(
     );
     let directory = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::directory::definition(),
         DirectoryState::default(),
         who,
@@ -121,7 +121,7 @@ pub(crate) fn mount_sheets(
     );
     let invite = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::invite::definition(),
         InviteState::default(),
         who,
@@ -129,7 +129,7 @@ pub(crate) fn mount_sheets(
     );
     let pair_device = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::pair_device::definition(),
         AddDeviceState::default(),
         who,
@@ -139,7 +139,7 @@ pub(crate) fn mount_sheets(
     // surface asked it.
     let delete_workspace = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::delete_workspace::definition(),
         DeleteWorkspaceState::default(),
         who,
@@ -147,7 +147,7 @@ pub(crate) fn mount_sheets(
     );
     let portal = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::portal::definition(),
         PortalState::default(),
         who,
@@ -155,7 +155,7 @@ pub(crate) fn mount_sheets(
     );
     let file_picker = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::file_picker::definition(),
         FilePickerState::default(),
         who,
@@ -163,15 +163,15 @@ pub(crate) fn mount_sheets(
     );
     let shortcut_guide = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::shortcut_guide::definition(),
         GuideState::default(),
         who,
         options,
     );
-    let (display_confirm, displays) = mount_displays(compositor, doors, who, options);
-    let (add_app, uninstall) = mount_app_questions(compositor, doors, who, options);
-    let lock_view = mount_lock_view(compositor, doors, who, options);
+    let (display_confirm, displays) = mount_displays(compositor, surfaces, who, options);
+    let (add_app, uninstall) = mount_app_questions(compositor, surfaces, who, options);
+    let lock_view = mount_lock_view(compositor, surfaces, who, options);
     Sheets {
         power,
         workspace_settings,
@@ -195,13 +195,13 @@ pub(crate) fn mount_sheets(
 /// the layouts and the wireless displays it streams to.
 fn mount_displays(
     compositor: &mut Compositor,
-    doors: &mut Surfaces,
+    surfaces: &mut Surfaces,
     who: (&str, &str),
     options: &Options,
 ) -> (Option<ConfirmState>, Option<DisplaysState>) {
     let display_confirm = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::display_confirm::definition(),
         ConfirmState::default(),
         who,
@@ -212,7 +212,7 @@ fn mount_displays(
     }
     let displays = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::displays::definition(),
         DisplaysState::default(),
         who,
@@ -227,7 +227,7 @@ fn mount_displays(
 /// could unlock it. It stands on every display while it is up.
 fn mount_lock_view(
     compositor: &mut Compositor,
-    doors: &mut Surfaces,
+    surfaces: &mut Surfaces,
     who: (&str, &str),
     options: &Options,
 ) -> Option<LockState> {
@@ -244,7 +244,7 @@ fn mount_lock_view(
             state.presentation().cover_every_display();
             let sheet = sheet.layer();
             compositor.add_host(sheet.clone());
-            doors.add(sheet);
+            surfaces.add(sheet);
             Some(state)
         }
         Err(error) => {
@@ -258,13 +258,13 @@ fn mount_lock_view(
 /// its own sheet over the shell.
 fn mount_app_questions(
     compositor: &mut Compositor,
-    doors: &mut Surfaces,
+    surfaces: &mut Surfaces,
     who: (&str, &str),
     options: &Options,
 ) -> (Option<AddState>, Option<UninstallState>) {
     let add_app = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::add_app::definition(),
         AddState::default(),
         who,
@@ -272,7 +272,7 @@ fn mount_app_questions(
     );
     let uninstall = mount_sheet(
         compositor,
-        doors,
+        surfaces,
         tilo_sheets::uninstall::definition(),
         UninstallState::default(),
         who,
@@ -283,7 +283,7 @@ fn mount_app_questions(
 
 fn mount_sheet<S: tilo_sheets::SheetState + 'static>(
     compositor: &mut Compositor,
-    doors: &mut Surfaces,
+    surfaces: &mut Surfaces,
     definition: &'static ui::application::ApplicationDefinition,
     state: S,
     who: (&str, &str),
@@ -300,7 +300,7 @@ fn mount_sheet<S: tilo_sheets::SheetState + 'static>(
             let state = sheet.state().clone();
             let sheet = sheet.layer();
             compositor.add_host(sheet.clone());
-            doors.add(sheet);
+            surfaces.add(sheet);
             Some(state)
         }
         Err(error) => {

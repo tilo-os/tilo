@@ -100,16 +100,17 @@ impl Held {
             {
                 continue;
             }
-            // Without a kind the item has no address: the record opens.
-            let resource = mention
-                .item
-                .as_ref()
-                .filter(|_| !kind.is_empty())
-                .map_or_else(String::new, |(field, id)| format!("{kind}/{field}/{id}"));
+            // The item opens through the record's resource, published under its kind, as a search
+            // hit on it does. Without a kind the item has no address: the record opens.
+            let (resource, anchor) = match mention.item.as_ref().filter(|_| !kind.is_empty()) {
+                Some((field, id)) => (kind.clone(), format!("{kind}/{field}/{id}")),
+                None => Default::default(),
+            };
             let place = Place {
                 app: look.app.to_owned(),
                 record: record.clone(),
                 resource,
+                anchor,
             };
             let tag = place.tag(&mention.person);
             if standing.contains_key(&tag) {
@@ -491,7 +492,7 @@ impl Mentions {
     }
 
     /// Take up the places the person chose from a notice, so the host opens them through its own
-    /// door: the role knows where they want to be, and the host how to get there.
+    /// API: the role knows where they want to be, and the host how to get there.
     fn chosen_places(&self) {
         let Some(notices) = &self.0.notices else {
             return;
@@ -503,7 +504,7 @@ impl Mentions {
     }
 
     /// The places the person chose since this was last taken, in the order they chose them: what
-    /// the host opens through its own door.
+    /// the host opens through its own API.
     pub fn take_chosen(&self) -> Vec<Place> {
         std::mem::take(&mut *self.0.chosen.borrow_mut())
     }

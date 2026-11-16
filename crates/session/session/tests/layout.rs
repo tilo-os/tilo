@@ -47,7 +47,7 @@ struct Seat {
 impl Seat {
     /// The device of `home`, holding its workspaces.
     fn in_home(home: &mut tilo_test_env::TestHome) -> Self {
-        let state = crate::common::seat_in(home);
+        let state = crate::common::device_in(home);
         let salt = session_keeping(&state, None)
             .handle()
             .read(|tree| tree.salt);
@@ -68,7 +68,7 @@ impl Seat {
     /// ([`Self::in_home`]) and saves the layout in the session after, where the keys are held
     /// from the start.
     fn with_layout(home: &mut tilo_test_env::TestHome, tree: &Layout) -> (Self, Vec<WorkspaceId>) {
-        let state = crate::common::seat_in(home);
+        let state = crate::common::device_in(home);
         let (salt, workspace_ids) = save_layout(&state, tree);
         (Self { state, salt }, workspace_ids)
     }

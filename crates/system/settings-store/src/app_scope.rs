@@ -30,7 +30,7 @@ pub const APP_READABLE_SECTIONS: &[&str] = &[
 ];
 
 /// Keys of a shared section that one app owns and writes through the same
-/// door, as `(app id, section, keys)`: Theme Studio chooses the desktop's
+/// API, as `(app id, section, keys)`: Theme Studio chooses the desktop's
 /// active theme. Every other key of the section stays its owner's (the
 /// Settings app's), and no other app writes these.
 pub const OWNED_SHARED_KEYS: &[(&str, &str, &[&str])] = &[(
