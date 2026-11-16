@@ -348,6 +348,7 @@ dependencies = [
  "tilo-action-broker",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-agent-web-engine",
  "tilo-app",
  "tilo-automation",
  "tilo-copy-lint",
@@ -14333,8 +14334,10 @@ dependencies = [
  "tilo-media",
  "tilo-mime",
  "tilo-model-client",
+ "tilo-net",
  "tilo-relay-protocol",
  "tilo-rich-text",
+ "tilo-rt",
  "tilo-thumbnail",
  "tilo-ui",
  "tilo-user-identity",
@@ -15624,6 +15627,7 @@ dependencies = [
  "tilo-files",
  "tilo-locale",
  "tilo-rich-text",
+ "tilo-spreadsheet-engine",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
@@ -17475,6 +17479,17 @@ dependencies = [
  "weather",
  "wire-frame",
  "word-processor",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-agent-web-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-rt",
+ "tilo-web-search",
+ "url",
  "workspace-hack",
 ]
 
@@ -22103,6 +22118,15 @@ dependencies = [
  "tilo-accounts-engine",
  "tilo-spotify",
  "tilo-youtube-engine",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-spreadsheet-engine"
+version = "0.1.0"
+dependencies = [
+ "ironcalc_base",
+ "runtime-dylib",
  "workspace-hack",
 ]
 

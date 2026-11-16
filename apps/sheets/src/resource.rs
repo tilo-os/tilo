@@ -1422,6 +1422,26 @@ pub fn parse_cell_anchor(anchor: &str) -> Option<(Id, Addr)> {
 /// Framework app: the sheets grid is the view of [`Workbook`].
 pub struct SheetsShell;
 
+/// What the binary runs instead of opening a window: `--probe-spreadsheet-engine`
+/// runs the formula engine's self-check, which proves Sheets loads the engine
+/// library and runs it. It needs `runtime-engine`.
+const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
+    option: "--probe-spreadsheet-engine",
+    run: probe_spreadsheet_engine,
+}];
+
+#[cfg(feature = "runtime-engine")]
+fn probe_spreadsheet_engine(_: &str) -> Result<(), String> {
+    let report = tilo_spreadsheet_engine::self_check()?;
+    println!("sheets --probe-spreadsheet-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_spreadsheet_engine(_: &str) -> Result<(), String> {
+    Err("the spreadsheet engine library needs the `runtime-engine` feature".to_string())
+}
+
 /// Every capture scenario: the sample workbook with one surface in view.
 #[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
@@ -1467,6 +1487,10 @@ impl ResourceApp for SheetsShell {
     const TITLE: &'static str = "Sheets";
     const TITLE_KEY: &'static str = "sheets-app-title";
     const ICON: Option<&'static str> = Some("sheets");
+
+    fn commands() -> &'static [ui::framework::Command] {
+        COMMANDS
+    }
 
     #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {

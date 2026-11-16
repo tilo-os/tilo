@@ -17,6 +17,13 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Reach the web tools' libraries through their engine library in the runtime
+# bundle (libtilo_agent_web_engine.so, crates/runtime/engines/agent-web)
+# instead of linking them. The release collection enables it
+# (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
+# links them statically, because an engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-agent-web-engine/thin"]
 
 [dependencies]
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
@@ -44,6 +51,9 @@ tilo-automation = { path = "../../crates/collab/automation" }
 # merged, and one page reduced to readable text, with every download bounded
 # and every destination checked.
 tilo-web-search = { path = "../../crates/platform/tilo-web-search" }
+# The engine library a release loads the search and the page reader through
+# (crates/runtime/engines/agent-web).
+tilo-agent-web-engine = { path = "../../crates/runtime/engines/agent-web", optional = true }
 # Those tools reach the network on their own runtime, and hand a page they
 # fetched to whoever reads it as tilo.content.
 tilo-rt = { path = "../../crates/platform/tilo-rt" }

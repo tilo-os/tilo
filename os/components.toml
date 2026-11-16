@@ -455,7 +455,7 @@ features = [
   "mail/runtime-engine", "settings/runtime-engine", "calendar/runtime-engine",
   "clocks/runtime-engine", "contacts/runtime-engine", "messages/runtime-engine",
   "pdf-viewer/runtime-engine", "file-explorer/runtime-engine",
-  "print-centre/runtime-engine",
+  "print-centre/runtime-engine", "sheets/runtime-engine", "agent/runtime-engine",
   "imager/runtime-engine", "browser/runtime-engine",
   "store/runtime-engine", "chat/runtime-engine", "osk/runtime-engine",
   "notes/runtime-engine",

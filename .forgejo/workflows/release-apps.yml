@@ -872,8 +872,9 @@ jobs:
           rm -rf "$runtime"
       # Canvas's painting engines, the YouTube client of Music and Tube,
       # account custody with the IMAP client (Mail, Settings), the time-zone
-      # database (Calendar, Clocks) and the contact directory (Calendar,
-      # Contacts, Mail, Messages) live in engine libraries beside the runtime. Each app's
+      # database (Calendar, Clocks), the contact directory (Calendar,
+      # Contacts, Mail, Messages), the spreadsheet formula engine (Sheets) and
+      # the agent's web search live in engine libraries beside the runtime. Each app's
       # probe runs its engine's code without a document, display or network;
       # the loader's trace says that the app, not the runtime, brought the
       # engine in. Settings runs from its engine library, which brings the
@@ -898,7 +899,9 @@ jobs:
                        "calendar libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                        "contacts libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                        "mail libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
-                       "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine"; do
+                       "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
+                       "sheets libtilo_spreadsheet_engine.so --probe-spreadsheet-engine" \
+                       "agent libtilo_agent_web_engine.so --probe-agent-web-engine"; do
             read -r app library option <<<"$probe"
             if [[ ! -x target/thin-app/$app ]]; then
               echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"

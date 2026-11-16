@@ -170,6 +170,13 @@ ENGINES = {
     "lzma-rust2": "the xz and LZMA decoder, in libtilo_archive_engine.so",
     "bzip2": "the bzip2 codec, in libtilo_archive_engine.so",
     "libbz2-rs-sys": "the bzip2 codec's pure-Rust core, in libtilo_archive_engine.so",
+    "tilo-spreadsheet-engine": "the spreadsheet formula engine's library "
+                               "(libtilo_spreadsheet_engine.so)",
+    "ironcalc_base": "the spreadsheet formula engine, which Sheets loads from "
+                     "libtilo_spreadsheet_engine.so",
+    "tilo-agent-web-engine": "the agent's web tools' library (libtilo_agent_web_engine.so)",
+    "tilo-web-search": "the keyless web search and page reader, which the agent loads from "
+                       "libtilo_agent_web_engine.so",
     "tilo-fuse-engine": "the FUSE presentation's engine library (libtilo_fuse_engine.so)",
     "runtime-fs-fuse": "the workspace filesystem's FUSE presentation, which Imager's projection "
                        "worker loads from libtilo_fuse_engine.so",

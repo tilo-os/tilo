@@ -113,8 +113,14 @@ symbol_relocations = 6592
 # runtime-dylib-lazy-link.py, which made Settings' engine export only its
 # entry points: libtilo_settings_engine.so 16251144 -> 10105200 bytes on
 # x86_64, the ad-block engine 2112792 -> 210328.
+# The two engines that hold what Sheets' formulas and the agent's web tools
+# used to carry in their own tapps, measured at rb4387cd6ce (x86_64). The
+# aarch64 numbers are that measurement: the first aarch64 run prints what to
+# lower them to.
 [engines.x86_64]
 "libtilo_accounts_engine.so" = 2752512
+"libtilo_agent_web_engine.so" = 393216
+"libtilo_spreadsheet_engine.so" = 5505024
 "libtilo_adblock_engine.so" = 262144
 "libtilo_app_host_engine.so" = 1245184
 "libtilo_archive_engine.so" = 1048576
@@ -134,6 +140,8 @@ symbol_relocations = 6592
 
 [engines.aarch64]
 "libtilo_accounts_engine.so" = 2490368
+"libtilo_agent_web_engine.so" = 393216
+"libtilo_spreadsheet_engine.so" = 5505024
 "libtilo_adblock_engine.so" = 262144
 "libtilo_app_host_engine.so" = 1179648
 "libtilo_archive_engine.so" = 983040

@@ -1,0 +1,7 @@
+reason = "Sheets and the agent moved their engines into libraries of their own (crates/runtime/engines/spreadsheet, crates/runtime/engines/agent-web), measured at rb4387cd6ce (x86_64). Sheets' tapp fell from 5,293,056 to 2,049,024 bytes with the formula engine (5,436,256 bytes) in its library, and the agent's from 1,725,952 to 1,525,760 with the web search (371,472 bytes) in its. What remains over their budgets is the features each app gained since the last raise, with no shared addition: Sheets reads Notion exports, keeps workbooks as content and shows comment threads (17,694 lines since 28fe888f on 2026-10-15), and the agent keeps its own web-tool code (35b0cc07fa6) after the search and page reader moved out. Each amount is the overage plus the ratchet's 1 % headroom, rounded up to 64 KiB."
+run = "rb4387cd6ce"
+
+[apps."so.tilo.agent"]
+x86_64 = 327680
+[apps."so.tilo.sheets"]
+x86_64 = 262144

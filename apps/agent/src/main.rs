@@ -205,8 +205,29 @@ fn default_model_timeout_ms(managed: bool, provider_given: bool) -> u64 {
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+#[cfg(feature = "runtime-engine")]
+extern crate tilo_agent_web_engine;
+
+/// What a release runs instead of a session: the self-check of the web tools'
+/// engine library, which proves the agent loads it and runs it.
+const PROBE_AGENT_WEB_ENGINE: &str = "--probe-agent-web-engine";
+
+#[cfg(feature = "runtime-engine")]
+fn probe_agent_web_engine() -> Result<String, String> {
+    tilo_agent_web_engine::self_check()
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_agent_web_engine() -> Result<String, String> {
+    Err("the web tools' engine library needs the `runtime-engine` feature".to_string())
+}
 
 fn main() -> anyhow::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some(PROBE_AGENT_WEB_ENGINE) {
+        let report = probe_agent_web_engine().map_err(anyhow::Error::msg)?;
+        println!("tilo-agent {PROBE_AGENT_WEB_ENGINE}: {report}");
+        return Ok(());
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
