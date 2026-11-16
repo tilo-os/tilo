@@ -13,7 +13,9 @@ files are not there - and pushes that had only been built natively broke main
 that way repeatedly.
 
 Only the touched packages are linted, and the Clippy runs start together, so a
-one-crate push costs about one build. Cargo compiles wherever `$CARGO` points
+one-crate push costs about one build. A run that passed is not repeated while
+everything it reads is unchanged (tools/ci/lint_inputs.py), so a push retried
+after a rebase onto unrelated commits does not lint again. Cargo compiles wherever `$CARGO` points
 when it is set - any cargo drop-in, which may build on another machine - and
 otherwise the `cargo` on PATH. Formatting is always checked by the `cargo` on
 PATH: it compiles nothing, so it needs no other machine, and a drop-in that
@@ -42,6 +44,7 @@ TOOLS = Path(__file__).resolve().parents[1]
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
 from ci.package_sets import PAGE_ENTRY, page_closure, wasm_crates
+from ci.lint_inputs import Workspace
 from ci.workspace_graph import cargo_metadata, owner_for, package_maps
 
 WASM_TARGET = "wasm32-unknown-unknown"
@@ -65,6 +68,8 @@ CARGO_REMARKS = (
 REF_TIPS = ("refs/remotes/{remote}/main", "refs/remotes/origin/main",
             "refs/remotes/origin/HEAD", "refs/heads/main")
 ZERO_OID = {"0"}
+# How many passing lint keys a clone keeps.
+KEPT_PASSES = 256
 
 
 def say(message: str) -> None:
@@ -97,9 +102,14 @@ def wasm_target_installed() -> bool:
 
 
 class Lint(NamedTuple):
-    """One lint run of the push gate: what it is called, and the command that reruns it."""
+    """One lint run of the push gate: what it is called, the command that reruns it, and what it reads.
+
+    `packages` are linted; with `dependencies` the run also reads every crate they build on.
+    """
     label: str
     command: list[str]
+    packages: list[str]
+    dependencies: bool
 
 
 def git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -184,7 +194,7 @@ def rust_changes(files: set[str]) -> set[str]:
     return {path for path in files if path.endswith(RUST_SUFFIXES) or Path(path).name in RUST_NAMES}
 
 
-def touched(root: Path, files: set[str]) -> tuple[list[str], list[str]]:
+def touched(root: Path, files: set[str]) -> tuple[list[str], list[str], dict]:
     """The packages owning the changed files, and what is linted for the page.
 
     That is each touched package that builds for the page, and the page itself
@@ -198,7 +208,7 @@ def touched(root: Path, files: set[str]) -> tuple[list[str], list[str]]:
     web = owners & wasm_crates(packages)
     if owners & page_closure(packages):
         web.add(PAGE_ENTRY)
-    return sorted(owners), sorted(web)
+    return sorted(owners), sorted(web), metadata
 
 
 def lint_runs(native: list[str], web: list[str], formatting: bool) -> list[Lint]:
@@ -212,14 +222,15 @@ def lint_runs(native: list[str], web: list[str], formatting: bool) -> list[Lint]
     selected = [item for name in native for item in ("-p", name)]
     runs = []
     if formatting:
-        runs.append(Lint("rustfmt", [*format_command(), "fmt", "--check", *selected]))
+        runs.append(Lint("rustfmt", [*format_command(), "fmt", "--check", *selected], native, False))
     runs.append(Lint("clippy (native)",
-                     [*cargo, "clippy", "--locked", *selected, "--all-targets", "--", "-D", "warnings"]))
+                     [*cargo, "clippy", "--locked", *selected, "--all-targets", "--", "-D", "warnings"],
+                     native, True))
     if web:
         page = [item for name in web for item in ("-p", name)]
         runs.append(Lint("clippy (wasm32)", [
             *cargo, "clippy", "--locked", "--target", WASM_TARGET, *page, "--", "-D", "warnings",
-        ]))
+        ], web, True))
     return runs
 
 
@@ -248,6 +259,41 @@ def run_together(root: Path, runs: list[Lint]) -> tuple[list[tuple[Lint, int, st
         results.append((run, status, log.read()))
         log.close()
     return results, time.monotonic() - started
+
+
+class Passes:
+    """The keys of lint runs that passed, kept in the clone's Git directory for all its worktrees."""
+
+    def __init__(self, root: Path):
+        common = Path(git(root, "rev-parse", "--git-common-dir").stdout.strip())
+        self.directory = (root / common) / "pre-push-lint"
+
+    def passed(self, key: str | None) -> bool:
+        return key is not None and (self.directory / key).is_file()
+
+    def record(self, key: str | None, label: str) -> None:
+        if key is None:
+            return
+        self.directory.mkdir(parents=True, exist_ok=True)
+        (self.directory / key).write_text(label + "\n")
+        entries = sorted(self.directory.iterdir(), key=lambda entry: entry.stat().st_mtime)
+        for stale in entries[:-KEPT_PASSES]:
+            stale.unlink(missing_ok=True)
+
+
+def lint_keys(root: Path, metadata: dict, runs: list[Lint]) -> list[str | None]:
+    """Each run's key, or None for every run when the inputs cannot be named.
+
+    The lint reads the files on disk, so only a clean worktree is keyed by its commit.
+    """
+    if git(root, "status", "--porcelain").stdout.strip():
+        return [None] * len(runs)
+    try:
+        workspace = Workspace(root, metadata)
+        return [workspace.key(run.packages, run.dependencies, run.command) for run in runs]
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        say(f"pre-push: cannot name what the lint reads, so earlier passes are not reused: {error}")
+        return [None] * len(runs)
 
 
 def packages(count: int) -> str:
@@ -284,7 +330,7 @@ def main(argv: list[str]) -> int:
         say("pre-push: no Rust or Cargo file changed; nothing to lint")
         return 0
     try:
-        native, web = touched(root, files)
+        native, web, metadata = touched(root, files)
     except (subprocess.CalledProcessError, RuntimeError) as error:
         say(f"pre-push: cargo metadata could not name the packages this push touches, so the lint is "
             f"skipped: {error}")
@@ -318,7 +364,18 @@ def main(argv: list[str]) -> int:
     say(f"pre-push: linting {packages(len(native))}{page}")
     runs = lint_runs(native, web, formatting)
     checked = f"{'clippy and rustfmt' if formatting else 'clippy'} for {packages(len(native))}{page}"
-    return report(*run_together(root, runs), checked)
+    passes = Passes(root)
+    pending = []
+    for run, key in zip(runs, lint_keys(root, metadata, runs)):
+        if passes.passed(key):
+            say(f"pre-push: {run.label} passed before on the same inputs")
+        else:
+            pending.append((run, key))
+    results, elapsed = run_together(root, [run for run, _key in pending])
+    for (_run, key), (run, status, _output) in zip(pending, results):
+        if status == 0:
+            passes.record(key, " ".join(run.command))
+    return report(results, elapsed, checked)
 
 
 if __name__ == "__main__":

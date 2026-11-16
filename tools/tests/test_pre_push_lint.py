@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HOOK_SOURCES = [
     ".githooks/pre-push",
     "tools/ci/pre_push_lint.py",
+    "tools/ci/lint_inputs.py",
     "tools/ci/package_sets.py",
     "tools/ci/workspace_graph.py",
 ]
@@ -23,6 +24,21 @@ CRATE = """[package]
 name = "{name}"
 version = "0.1.0"
 edition = "2021"
+"""
+LOCK = """version = 4
+
+[[package]]
+name = "fixture-native"
+version = "0.1.0"
+
+[[package]]
+name = "fixture-web"
+version = "0.1.0"
+dependencies = ["wasm-bindgen"]
+
+[[package]]
+name = "wasm-bindgen"
+version = "0.1.0"
 """
 LIB = """pub fn answer() -> u32 {{
     {answer}
@@ -85,6 +101,9 @@ class PrePushLintTests(unittest.TestCase):
         # One host crate and one crate that builds for the page; the second says
         # so the way the workspace's page crates do, by depending on wasm-bindgen.
         self.write("Cargo.toml", WORKSPACE)
+        self.write("Cargo.lock", LOCK)
+        # Running the hook compiles its Python; the repository ignores that as well.
+        self.write(".gitignore", "__pycache__/\n")
         self.write("native/Cargo.toml", CRATE.format(name="fixture-native"))
         self.write("native/src/lib.rs", LIB.format(answer=42))
         self.write("web/Cargo.toml", CRATE.format(name="fixture-web")
@@ -282,6 +301,76 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("clippy --locked --target wasm32-unknown-unknown -p fixture-web -- -D warnings",
                       self.calls())
+
+    def rebase(self, files):
+        """Move main on by a commit writing `files`, and replay the last commit onto it.
+
+        Returns the new main: what the remote holds when the push is retried.
+        """
+        mine = self.head()
+        self.git("reset", "-q", "--hard", self.base)
+        for name, text in files.items():
+            self.write(name, text)
+        main = self.commit("chore: someone else's change")
+        self.git("cherry-pick", mine)
+        return main
+
+    def test_a_retry_after_rebasing_onto_unrelated_commits_lints_nothing_again(self):
+        self.write("native/src/lib.rs", LIB.format(answer=50))
+        self.commit("feat: answer 50")
+        first = self.push()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        main = self.rebase({"web/src/lib.rs": LIB.format(answer=51), "docs/notes.md": "words\n"})
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [], "nothing the lint reads changed")
+        self.assertNotIn("fmt --check", self.log.read_text() if self.log.exists() else "")
+        self.assertIn("clippy (native) passed before on the same inputs", retry.stderr)
+        self.assertIn("rustfmt passed before on the same inputs", retry.stderr)
+
+    def test_a_retry_after_a_dependency_changed_lints_again(self):
+        self.write("web/src/lib.rs", LIB.format(answer=52))
+        self.commit("feat: answer 52 in the page")
+        self.assertEqual(self.push().returncode, 0)
+        main = self.rebase({"fake-binding/src/lib.rs": "pub fn bind() {}\npub fn more() {}\n"})
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(sorted(self.calls()), sorted([
+            "clippy --locked --target wasm32-unknown-unknown -p fixture-web -- -D warnings",
+            NATIVE_CLIPPY.replace("native", "web"),
+        ]))
+        # Formatting reads only the pushed package, which is as it was.
+        self.assertNotIn("fmt --check", self.log.read_text())
+
+    def test_a_retry_after_a_file_the_build_includes_changed_lints_again(self):
+        self.write("docs/answer.txt", "42\n")
+        self.commit("docs: the answer")
+        self.base = self.head()
+        self.write("native/src/lib.rs", 'pub const ANSWER: &str = include_str!("../../docs/answer.txt");\n')
+        self.commit("feat: answer from the docs")
+        self.assertEqual(self.push().returncode, 0)
+        main = self.rebase({"docs/answer.txt": "43\n"})
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
+    def test_a_failed_lint_is_not_remembered(self):
+        self.write("native/src/lib.rs", LIB.format(answer=53))
+        self.commit("feat: answer 53")
+        self.assertEqual(self.push(status=1).returncode, 1)
+        retry = self.push(status=1)
+        self.assertEqual(retry.returncode, 1)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
+    def test_uncommitted_changes_are_linted_again(self):
+        self.write("native/src/lib.rs", LIB.format(answer=54))
+        self.commit("feat: answer 54")
+        self.assertEqual(self.push().returncode, 0)
+        self.write("native/src/extra.rs", "pub fn extra() {}\n")
+        retry = self.push()
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
 
     def test_a_plan_names_the_packages_without_linting(self):
         self.write("web/src/lib.rs", LIB.format(answer=11))

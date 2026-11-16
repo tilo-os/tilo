@@ -5,7 +5,9 @@
 # that build for the page, because a crate can compile here and still break the
 # page (std's clocks and files are not there). Only the packages the pushed
 # commits touch are linted, and the runs start together, so a one-crate push
-# costs about one build. tools/ci/pre_push_lint.py selects them and runs them.
+# costs about one build. tools/ci/pre_push_lint.py selects them and runs them;
+# a run that passed is not repeated while nothing it reads has changed, so a push
+# retried after a rebase onto unrelated commits does not lint again.
 #
 # It is Git's own hook: this clone runs it through core.hooksPath (see
 # CONTRIBUTING.md). There is no environment variable to skip it; the escape is
