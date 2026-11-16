@@ -2875,7 +2875,7 @@ tilo_test_env::scenario! {
         };
         tree.active = tree.workspaces[0].id();
         for person in 0..6 {
-            tree.workspaces[0].member_here(tilo_desktop_model::Member::named(collab_types::MemberId::person(&format!("person-{person}")),
+            tree.workspaces[0].member_here(tilo_desktop_model::Member::named(collab_types::MemberId::person(format!("person-{person}")),
                 format!("Person {person}"),
             ));
         }

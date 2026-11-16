@@ -304,7 +304,7 @@ fn busy_shell() -> Layout {
     tree.workspaces[0].name = "Customer support and escalations for the whole team".into();
     for person in 0..6 {
         tree.workspaces[0].member_here(tilo_desktop_model::Member::named(
-            collab_types::MemberId::person(&format!("person-{person}")),
+            collab_types::MemberId::person(format!("person-{person}")),
             format!("Person {person}"),
         ));
     }
