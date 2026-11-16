@@ -15,10 +15,18 @@
 //!   so a call and its changes are one run. A call that changed nothing is a
 //!   run of the ledger's alone, gone when the host restarts or lets go of it.
 //!
-//! Every key the workspace admits reads every run there, as History shows
-//! every actor's changes. What a call was given, what it answered and why it
-//! failed in words stay its caller's: a run says what was asked for, how it
-//! stands, and a failure's code.
+//! A caller is given, of each run, only what lies in records they may read
+//! now: a record's share of a run when the check a read of that record makes
+//! passes for them ([`Worker::policy_for`], the host's own person as the
+//! owner), a call the ledger remembers when they may read the record it
+//! addressed (or, for a call on no record, the workspace's content). A run
+//! with nothing left for them is not listed, nor counted, nor said to wait;
+//! their own runs are no exception, as `tilo_status` reads those by id. The
+//! index is the workspace's, shared; each listing asks the policy again,
+//! once for each record, so a Read taken away shows on the next one. What a
+//! call was given, what it answered and why it failed in words stay its
+//! caller's: a run says what was asked for, how it stands, and a failure's
+//! code.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -76,18 +84,18 @@ impl Index {
     /// Read again each of `records` that changed since the last look:
     /// `revision` says where one stands without reading it, `document` reads
     /// it whole, both `None` for a record the replica cannot open yet.
-    /// Whether some record could not be read.
+    /// The records that could not be read.
     fn take_in(
         &mut self,
         records: &[RecordKey],
         revision: impl Fn(&RecordKey) -> Option<[u8; 32]>,
         document: impl Fn(&RecordKey) -> Option<Vec<u8>>,
         words: &dyn HistoryWords,
-    ) -> bool {
-        let mut unread = false;
+    ) -> Vec<RecordKey> {
+        let mut unread = Vec::new();
         for key in records {
             let Some(now) = revision(key) else {
-                unread = true;
+                unread.push(key.clone());
                 continue;
             };
             if self.records.get(key).is_some_and(|(at, _)| *at == now) {
@@ -96,7 +104,7 @@ impl Index {
             let Some(doc) =
                 document(key).and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
             else {
-                unread = true;
+                unread.push(key.clone());
                 continue;
             };
             let entries = ui::history_source::verbs::entries_after(&doc, &[], words);
@@ -265,6 +273,9 @@ struct Call {
     by: RunBy,
     title: Option<String>,
     action: String,
+    /// The record it addressed, by its app and its id there; `None` for a
+    /// call on no record (the workspace's own actions).
+    addressed: Option<RecordKey>,
 }
 
 /// The step the changes of `entry`'s call record, and the call as a run
@@ -304,8 +315,9 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
         })
         .unwrap_or_else(|| "someone".to_owned());
     let target = &entry.request.target;
-    let action = match record_of(&target.provider, "") {
-        Some(route) => format!("{}#{}", app_path(&route.app_id), target.address.action),
+    let addressed = record_of(&target.provider, "").map(|route| (route.app_id, route.record));
+    let action = match &addressed {
+        Some((app_id, _)) => format!("{}#{}", app_path(app_id), target.address.action),
         None => format!("{}#{}", target.address.resource, target.address.action),
     };
     let call = Call {
@@ -320,6 +332,7 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
         },
         title: super::said_run_title(&entry.request),
         action,
+        addressed,
     };
     (step, call)
 }
@@ -595,8 +608,8 @@ impl Worker {
             |(app, record)| engine.record(&cluster_id, app, record).ok().flatten(),
             &ui::history_source::sentence::ThreadWords,
         );
-        let recorded = index.steps();
-        let calls = {
+        let mut recorded = index.steps();
+        let mut calls = {
             let mut ledger = self.ledger();
             ledger.stamp_ended();
             ledger
@@ -609,7 +622,34 @@ impl Worker {
                 })
                 .collect::<Vec<_>>()
         };
-        Ok(page(listing(recorded, calls), query, unread))
+        // Of it all, what the caller may read now, each record asked once.
+        let owner = self.serves_as_owner(caller);
+        let who = if owner { None } else { self.bounded(caller) };
+        let mut reads: HashMap<RecordKey, bool> = HashMap::new();
+        let mut may_read = |key: &RecordKey| {
+            *reads.entry(key.clone()).or_insert_with(|| {
+                owner
+                    || who.as_ref().is_some_and(|who| {
+                        self.policy_for(workspace_id, who, &cluster_id, Some((&key.0, &key.1)))
+                            .is_ok()
+                    })
+            })
+        };
+        recorded.retain(|_, shares| {
+            shares.retain(|share| may_read(&(share.app_id.clone(), share.record.clone())));
+            !shares.is_empty()
+        });
+        let across = owner
+            || who.as_ref().is_some_and(|who| {
+                self.policy_for(workspace_id, who, &cluster_id, None)
+                    .is_ok()
+            });
+        calls.retain(|(_, call)| match &call.addressed {
+            Some(record) => may_read(record),
+            None => across,
+        });
+        let pending = unread.iter().any(&mut may_read);
+        Ok(page(listing(recorded, calls), query, pending))
     }
 }
 
@@ -651,6 +691,7 @@ mod tests {
             },
             title: None,
             action: "terminal#run".into(),
+            addressed: None,
         }
     }
 
