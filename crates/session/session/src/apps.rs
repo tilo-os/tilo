@@ -2302,6 +2302,13 @@ pub(crate) fn runs_on_its_device(app: &str) -> bool {
     installed(app).is_some_and(|package| package.manifest.window_runs_on_its_device())
 }
 
+/// Whether every device of a workspace opens a window of `app` on its own, on the record it shows:
+/// the app's installed package does not keep its windows on the device that opened them. Such a
+/// window is the workspace's already. An app this machine holds no package of says nothing.
+pub(crate) fn opens_on_every_device(app: &str) -> bool {
+    installed(app).is_some_and(|package| !package.manifest.window_runs_on_its_device())
+}
+
 /// Whether a window of `app` is its page, as the app's installed package says: its windows run
 /// only on their device (`[entrypoint] window = "device"`) and the app requires a page engine
 /// (`[capabilities] required` names `webview`), so what a window of it shows is the page its

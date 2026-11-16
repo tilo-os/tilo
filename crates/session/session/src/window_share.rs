@@ -260,6 +260,9 @@ pub(crate) struct WindowShares {
     governor: Option<Rc<dyn ShareGovernor>>,
     /// How each window that runs on another device stands on this session ([`hosts`]).
     elsewhere: Vec<hosts::HostedTab>,
+    /// Which apps' windows every device of a workspace opens on its own, on the record the window
+    /// shows ([`Self::opened_everywhere_by`]).
+    everywhere: Option<fn(&str) -> bool>,
 }
 
 /// Who writes the shares of a session whose device governs nothing of its workspace: the workspace's
@@ -320,6 +323,18 @@ impl WindowShares {
             share_by_default,
             ..Self::default()
         }))
+    }
+
+    /// Read from `says` which apps' windows every device of a workspace opens on its own
+    /// ([`crate::apps::opens_on_every_device`]): such a window is the workspace's already, so it
+    /// is never shared and its menu offers no share.
+    pub(crate) fn opened_everywhere_by(&mut self, says: fn(&str) -> bool) {
+        self.everywhere = Some(says);
+    }
+
+    /// Whether every device of a workspace opens a window of `app` on its own.
+    fn opens_everywhere(&self, app: &str) -> bool {
+        self.everywhere.is_some_and(|says| says(app))
     }
 
     /// Hear what a workspace's governance answers a share's write through `landings` : the write
@@ -481,6 +496,14 @@ impl WindowShares {
                     else {
                         continue;
                     };
+                    if self.opens_everywhere(&app_id) {
+                        tracing::debug!(
+                            tab,
+                            app_id,
+                            "every device opens this window on its own: nothing to share"
+                        );
+                        continue;
+                    }
                     // The workspace's governance names the window and the device it runs on, which
                     // is how the other members learn of the share. Only this device's own window is
                     // hosted here.

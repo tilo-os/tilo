@@ -30,18 +30,15 @@ pub fn share_of(grant: &GrantId) -> Option<&str> {
 /// Whether `device` (hex), sharing `node` as `share`, is the device the
 /// window it names runs on: a window's tab id carries the salt of the device
 /// that minted it, which hosts it ([`tilo_desktop_model::peer_salt_of`]).
-/// Nobody shares another device's window, or says what it shows.
+/// Nobody shares another device's window.
 pub fn window_is_the_writers(device: &str, share: &str, node: &TreePath) -> Result<(), String> {
     use tilo_desktop_model::window_share::{window_of_node, window_of_share_id};
-    let window = window_of_node(node).map(|(_, tab)| tab);
-    let named = window_of_share_id(share);
-    let tab = match (window, named) {
+    let tab = match (
+        window_of_node(node).map(|(_, tab)| tab),
+        window_of_share_id(share),
+    ) {
         (None, None) => return Ok(()),
-        // The window's own node: under its share id, or as what the window
-        // shows when that is its app's own record as a whole.
-        (Some(tab), Some((named, _))) if named == tab => tab,
-        // What a window shows: any one resource of the workspace.
-        (None, Some((tab, true))) => tab,
+        (Some(tab), Some(named)) if named == tab => tab,
         _ => return Err("a window is shared under its own share id".into()),
     };
     let salt = tilo_failure::ignored!(

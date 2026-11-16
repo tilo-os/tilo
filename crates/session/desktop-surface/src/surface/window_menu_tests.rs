@@ -877,7 +877,8 @@ impl SessionShares {
     /// The reading as `handle` 's shell is given it.
     fn read_by(self: &Rc<Self>, handle: &DesktopHandle) {
         let shares = Rc::clone(self);
-        let reading: WorkspaceShares = Rc::new(move |tab, workspace| {
+        let reading: WorkspaceShares = Rc::new(move |tab, window| {
+            let workspace = window.workspace;
             shares.asked.borrow_mut().push((tab, workspace.to_owned()));
             if !shares.takes_part.borrow().iter().any(|id| id == workspace) {
                 return None;

@@ -56,19 +56,20 @@ impl WindowShares {
 
 /// What the shell's window menus read of `shares` : how the resource's reading says each window's
 /// share stands when its menu is asked for. A session that takes no part in a workspace (`sync`
-/// holds no topic of it) shares nothing with it, so the windows there offer no share.
+/// holds no topic of it) shares nothing with it, and a window every device opens on its own
+/// ([`WindowShares::opens_everywhere`]) has nothing to share, so neither offers a share.
 pub(crate) fn reading_for_menus(
     shares: &Rc<RefCell<WindowShares>>,
     sync: Option<&Rc<Client>>,
 ) -> WorkspaceShares {
     let shares = Rc::clone(shares);
     let sync = sync.cloned();
-    Rc::new(move |tab, workspace| {
-        sync.as_ref()?.workspace_of(workspace)?;
+    Rc::new(move |tab, window| {
+        sync.as_ref()?.workspace_of(window.workspace)?;
         // A menu is never asked for while the shares take their pass; were it, the window would
         // offer no share for that one reading rather than a wrong one.
         let shares = shares.try_borrow().ok()?;
-        Some(shares.share_of(tab))
+        (!shares.opens_everywhere(window.app_id)).then(|| shares.share_of(tab))
     })
 }
 
@@ -104,7 +105,12 @@ mod tests {
         {
             let shares = Rc::new(RefCell::new(WindowShares::default()));
             let reading = reading_for_menus(&shares, None);
-            assert_eq!(reading(7, WORKSPACE), None);
+            let window = tilo_desktop_model::window_share::MappedWindow {
+                app_id: "so.tilo.notes",
+                surface_id: 41,
+                workspace: WORKSPACE,
+            };
+            assert_eq!(reading(7, window), None);
         }
 
         phase a_window_whose_share_is_starting_reads_as_shared;

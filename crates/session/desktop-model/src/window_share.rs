@@ -1,14 +1,11 @@
-//! A window one member shares with the workspace. A member's windows are their
-//! own until they say otherwise; a member who wants the others to see one shares
-//! it, and the share is the workspace's resource share
-//! ([`tilo_action_policy::share`]) of the window's own node. The governor takes
-//! such a share only from the device that minted the tab's id, so nobody shares
-//! another device's window.
-//! A Tilo app's window is a view of a resource that already lives in the workspace,
-//! so its share also says what the window shows ([`window_shows_share_id`]) and its
-//! sharer streams no pixels; an outside window, whose state lives in its process,
-//! is streamed. A window that closes ends its share as it goes: the grants are in
-//! the same workspace the close already changes.
+//! A window one member shares with the workspace. A Tilo app's window is the
+//! workspace's already: every device opens it on the record it shows. A window
+//! whose state lives in its process on one device shows its contents to the
+//! others only once its member shares it, and the share is the workspace's
+//! resource share ([`tilo_action_policy::share`]) of the window's own node. The
+//! governor takes such a share only from the device that minted the tab's id, so
+//! nobody shares another device's window. A window that closes ends its share as
+//! it goes: the grants are in the same workspace the close already changes.
 
 use std::collections::BTreeMap;
 
@@ -107,29 +104,12 @@ pub fn window_share_id(tab: TabId) -> String {
     format!("{WINDOW_KIND}.{}", tab_key(tab))
 }
 
-/// The share id of what the window `tab` of a Tilo app shows, beside its
-/// own share ([`window_share_id`]). Its grants' ids start with the window
-/// share's prefix, so ending the window's share ends this one with it.
+/// The window a share id names.
 #[must_use]
-pub fn window_shows_share_id(tab: TabId) -> String {
-    format!("{}:{SHOWS}", window_share_id(tab))
-}
-
-/// What [`window_shows_share_id`] adds to the window's share id.
-const SHOWS: &str = "shows";
-
-/// The window a share id names, and whether it is the share of what the
-/// window shows ([`window_shows_share_id`]) rather than of the window.
-#[must_use]
-pub fn window_of_share_id(share: &str) -> Option<(TabId, bool)> {
-    let rest = share.strip_prefix(WINDOW_KIND)?.strip_prefix('.')?;
-    let (key, shows) = match rest.split_once(':') {
-        Some((key, SHOWS)) => (key, true),
-        Some(_) => return None,
-        None => (rest, false),
-    };
+pub fn window_of_share_id(share: &str) -> Option<TabId> {
+    let key = share.strip_prefix(WINDOW_KIND)?.strip_prefix('.')?;
     let tab = tab_of_key(key)?;
-    (tab_key(tab) == key).then_some((tab, shows))
+    (tab_key(tab) == key).then_some(tab)
 }
 
 /// The node of the window `tab` of `app_id` in `workspace`: what a share of it
@@ -163,75 +143,6 @@ pub fn window_of_node(node: &TreePath) -> Option<(String, TabId)> {
     Some((app.to_owned(), tab))
 }
 
-/// What a Tilo app's shared window shows: a record of the workspace, and the
-/// item of it the window is at.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct WindowShows {
-    /// The record, as its route names it: empty for the app's own record
-    /// of the workspace.
-    pub record: String,
-    /// What in the record the window is at (a note of the notebook), as
-    /// the app's `open` takes it; `None` for the record as a whole.
-    pub item: Option<String>,
-}
-
-/// The node a share of what the window `tab` of `app_id` shows grants on:
-/// the item of the record it is at, or the record (`record`, a route, of
-/// kind `kind`). The app's own record as a whole has no node of its own
-/// (a node naming every record of the kind is no one resource), so it is
-/// named by the window's own node.
-#[must_use]
-pub fn shows_node(
-    workspace: &str,
-    app_id: &str,
-    tab: TabId,
-    kind: &str,
-    shows: &WindowShows,
-) -> TreePath {
-    let at = TreePath::workspace(workspace).app(app_id).kind(kind);
-    match (&shows.item, shows.record.is_empty()) {
-        // An item of the app's own record: its id is unique, so any
-        // record of the kind is it.
-        (Some(item), true) => at.any(Level::Resource).item(item.as_str()),
-        (Some(item), false) => at.resource(shows.record.as_str()).item(item.as_str()),
-        (None, false) => at.resource(shows.record.as_str()),
-        (None, true) => window_node(workspace, app_id, tab),
-    }
-}
-
-/// What the share of what the window `tab` of `app_id` shows says, from
-/// its node ([`shows_node`]): `None` for a node of another app or window,
-/// or one that names no record or item.
-#[must_use]
-pub fn shows_of_node(node: &TreePath, app_id: &str, tab: TabId) -> Option<WindowShows> {
-    if window_of_node(node).is_some_and(|(app, window)| app == app_id && window == tab) {
-        return Some(WindowShows::default());
-    }
-    let segments = node.segments();
-    let named = |at: usize, level: Level| match segments.get(at) {
-        Some(Segment::Name(found, id)) if *found == level && !id.is_empty() => Some(id.clone()),
-        _ => None,
-    };
-    if named(0, Level::Workspace).is_none()
-        || named(1, Level::App).as_deref() != Some(app_id)
-        || named(2, Level::Kind)
-            .as_deref()
-            .is_none_or(|kind| kind == WINDOW_KIND)
-    {
-        return None;
-    }
-    let record = match segments.get(3) {
-        Some(Segment::Any(Level::Resource)) => String::new(),
-        _ => named(3, Level::Resource)?,
-    };
-    let item = match segments.len() {
-        4 if !record.is_empty() => None,
-        5 => Some(named(4, Level::Item)?),
-        _ => return None,
-    };
-    Some(WindowShows { record, item })
-}
-
 /// One window shared with a workspace, as its governance records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowShare {
@@ -247,9 +158,6 @@ pub struct WindowShare {
     /// Until when the share lasts, in Unix milliseconds; `None` until the
     /// sharer stops it.
     pub until_ms: Option<u64>,
-    /// What the window shows, when it is a Tilo app's: the others open the
-    /// same app on it. `None` for an outside window, which is streamed.
-    pub shows: Option<WindowShows>,
 }
 
 /// The windows shared with `policy`'s workspace that are live at `now_ms`, by
@@ -297,43 +205,14 @@ pub fn window_shares(
             sharer: giver.to_owned(),
             host: host.clone(),
             until_ms,
-            shows: None,
         });
-    }
-    // What each Tilo app's window shows: the share its sharer made beside
-    // the window's, of the resource's own node.
-    for grant in &policy.grants {
-        let Some(giver) = grant.granted_by.person_id() else {
-            continue;
-        };
-        if grant.answer != Answer::Allow
-            || !grant.kinds.contains(ActionKind::Read)
-            || !grant.is_live(&cx)
-            || grant.node.workspace_id() != Some(policy.workspace.as_str())
-        {
-            continue;
-        }
-        for share in shares.values_mut() {
-            if share.shows.is_some()
-                || share.sharer != *giver
-                || !grant
-                    .id
-                    .as_str()
-                    .starts_with(&share_id_prefix(&window_shows_share_id(share.tab)))
-            {
-                continue;
-            }
-            share.shows = shows_of_node(&grant.node, &share.app_id, share.tab);
-        }
     }
     shares
 }
 
 impl Workspace {
-    /// The window `tab` is gone: the share of it ends here, and with it the
-    /// share of what it showed ([`window_shows_share_id`] starts with the
-    /// window's own share id). [`Workspace::note_close`] calls it as it
-    /// applies a close, so the workspace's record stops naming the window the
+    /// The window `tab` is gone: the share of it ends here.
+    /// [`Workspace::note_close`] calls it as it applies a close, so the workspace's record stops naming the window the
     /// moment it closes, and a window reopened afterwards carries no share of
     /// the one that went. Answers the grants retracted, for whoever mirrors
     /// the workspace's policy into the workspace's document.
@@ -465,7 +344,6 @@ mod tests {
                     sharer: "ana".into(),
                     host: "aa".into(),
                     until_ms: None,
-                    shows: None,
                 })
             );
             assert!(
@@ -497,106 +375,12 @@ mod tests {
             assert!(window_shares(&policy, &owners, 1).is_empty());
         }
 
-        phase a_tilo_apps_window_share_says_what_the_window_shows;
+        phase a_share_id_names_its_window;
         {
             let tab = (0x0A51_u64 << 48) | 4;
-            let app = "so.tilo.notes";
-            assert_eq!(
-                window_of_share_id(&window_share_id(tab)),
-                Some((tab, false))
-            );
-            assert_eq!(
-                window_of_share_id(&window_shows_share_id(tab)),
-                Some((tab, true))
-            );
-            assert_eq!(window_of_share_id("window.x:shows"), None);
+            assert_eq!(window_of_share_id(&window_share_id(tab)), Some(tab));
+            assert_eq!(window_of_share_id("window.x"), None);
             assert_eq!(window_of_share_id("message.1"), None);
-            assert!(
-                window_shows_share_id(tab).starts_with(&format!("{}:", window_share_id(tab))),
-                "ending the window's share ends what it shows with it"
-            );
-
-            let owners = BTreeMap::from([(0x0A51, "aa".to_owned())]);
-            let share = |shows: &WindowShows, kind: &str| {
-                let mut policy = WorkspacePolicy::new(WORKSPACE, "owner".to_owned());
-                for (id, node) in [
-                    (window_share_id(tab), window_node(WORKSPACE, app, tab)),
-                    (
-                        window_shows_share_id(tab),
-                        shows_node(WORKSPACE, app, tab, kind, shows),
-                    ),
-                ] {
-                    policy.grants.extend(
-                        share_grants(WORKSPACE, "ana", &id, &node, ShareAccess::View)
-                            .expect("one resource of the workspace"),
-                    );
-                }
-                window_shares(&policy, &owners, 1)
-                    .remove(&tab)
-                    .expect("the window is shared")
-            };
-            for shows in [
-                // A note of the app's own notebook.
-                WindowShows {
-                    record: String::new(),
-                    item: Some("notes.page/pages/7".into()),
-                },
-                // A record of its own, and an item of it.
-                WindowShows {
-                    record: "derived:default@tab:0a51000000000009".into(),
-                    item: None,
-                },
-                WindowShows {
-                    record: "derived:default@tab:0a51000000000009".into(),
-                    item: Some("7".into()),
-                },
-                // The app's own record as a whole.
-                WindowShows::default(),
-            ] {
-                assert_eq!(share(&shows, "notes.notebook").shows, Some(shows));
-            }
-
-            // A window with nothing shown beside it is an outside window's.
-            let mut policy = WorkspacePolicy::new(WORKSPACE, "owner".to_owned());
-            policy.grants.extend(
-                share_grants(
-                    WORKSPACE,
-                    "ana",
-                    &window_share_id(tab),
-                    &window_node(WORKSPACE, app, tab),
-                    ShareAccess::View,
-                )
-                .expect("a window"),
-            );
-            assert_eq!(window_shares(&policy, &owners, 1)[&tab].shows, None);
-
-            // What another person shares under the window's id is not what it shows.
-            policy.grants.extend(
-                share_grants(
-                    WORKSPACE,
-                    "bo",
-                    &window_shows_share_id(tab),
-                    &TreePath::workspace(WORKSPACE)
-                        .app(app)
-                        .kind("notes.notebook")
-                        .resource("r"),
-                    ShareAccess::View,
-                )
-                .expect("a record"),
-            );
-            assert_eq!(window_shares(&policy, &owners, 1)[&tab].shows, None);
-            // Nor is a node of another app.
-            assert_eq!(
-                shows_of_node(
-                    &TreePath::workspace(WORKSPACE)
-                        .app("so.tilo.chat")
-                        .kind("k")
-                        .resource("r"),
-                    app,
-                    tab
-                ),
-                None
-            );
         }
 
         phase closing_a_window_ends_the_shares_it_showed;
@@ -616,17 +400,7 @@ mod tests {
                 [NOTES, TERMINAL],
                 "both windows are shared with the workspace"
             );
-            assert_eq!(
-                window_shares(&workspace.policy, &owners, 1)[&NOTES].shows,
-                Some(WindowShows {
-                    record: String::new(),
-                    item: Some("notes.page/pages/7".into()),
-                }),
-                "the first window is shared as the note it is at"
-            );
-
-            // The person closes the first window: its share ends there, and what
-            // it showed goes with it.
+            // The person closes the first window            // The person closes the first window: its share ends there.
             let mut mint = || Ok(0_u64);
             let mut create = |_: &str, _: u64| Err("a close opens no record".to_owned());
             assert_eq!(
@@ -685,8 +459,7 @@ mod tests {
     const STRIP: u64 = compose_id(ANA, 7);
 
     /// A workspace in [`WORKSPACE`] holding one group of two windows, both shared
-    /// with the workspace — the first with the note it shows beside its own share
-    /// — and the workspace's devices, as its document lists them.
+    /// with the workspace, and the workspace's devices, as its document lists them.
     fn shared_windows() -> (Workspace, BTreeMap<u16, String>) {
         use crate::app::AppKind;
         use crate::ids::{StripId, WorkspaceId};
@@ -722,14 +495,6 @@ mod tests {
         }];
         for (id, node) in [
             (window_share_id(NOTES), window_node(WORKSPACE, APP, NOTES)),
-            (
-                window_shows_share_id(NOTES),
-                TreePath::workspace(WORKSPACE)
-                    .app(APP)
-                    .kind("notes.notebook")
-                    .any(Level::Resource)
-                    .item("notes.page/pages/7"),
-            ),
             (
                 window_share_id(TERMINAL),
                 window_node(WORKSPACE, APP, TERMINAL),

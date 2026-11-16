@@ -289,7 +289,14 @@ fn a_device_showing_a_page_that_has_not_gone_out_waits_and_watches_once_it_has()
         Some(&host.sync),
     );
     assert_eq!(
-        menus(tab, WORKSPACE),
+        menus(
+            tab,
+            tilo_desktop_model::window_share::MappedWindow {
+                app_id: APP,
+                surface_id: 0,
+                workspace: WORKSPACE,
+            }
+        ),
         Some(WorkspaceShare {
             shared: true,
             viewers: 1,

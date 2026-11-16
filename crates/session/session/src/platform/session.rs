@@ -849,6 +849,9 @@ impl Session {
         window_shares
             .borrow_mut()
             .pages_declared_by(crate::apps::window_is_its_page);
+        window_shares
+            .borrow_mut()
+            .opened_everywhere_by(crate::apps::opens_on_every_device);
         handle.set_peer_picture_wake(Some(options.wake.handle()));
         // A window's menu offers its share with the workspace as these shares read it, and asks
         // them for it.

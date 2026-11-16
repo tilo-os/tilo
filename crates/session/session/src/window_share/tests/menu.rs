@@ -228,3 +228,44 @@ fn the_menu_follows_a_share_started_and_stopped_elsewhere() {
     );
     assert_eq!(label_of(&menu, STOP_ROW), None);
 }
+
+/// A window every device of the workspace opens on its own, on the record it shows, is the
+/// workspace's already: its menu offers no share, and an ask to share it shares nothing.
+#[test]
+fn a_window_every_device_opens_offers_no_share() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x67).as_bytes());
+    let mut host = member_minting_under(
+        0x67,
+        shell(
+            TileContent::LocalApp {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+            tilo_desktop_model::ids::compose_id(salt, 1),
+        ),
+        salt,
+    );
+    host.session
+        .shared
+        .window_shares
+        .borrow_mut()
+        .opened_everywhere_by(|app| app == APP);
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = foreign_tab(&host.session);
+    let mut viewer = member(0x68, own_shell());
+
+    let menu = menu_of(&mut host, tab);
+    assert!(!menu.is_empty(), "the window has a menu");
+    assert_eq!(label_of(&menu, SHARE_ROW), None, "{menu:?}");
+    assert_eq!(label_of(&menu, STOP_ROW), None, "{menu:?}");
+    assert!(!choose(&mut host, SHARE_ROW));
+
+    let by_the_tab = arguments(serde_json::json!({ "tab": tab.to_string() }));
+    host.session
+        .invoke(SHARES_RESOURCE, "share", &by_the_tab)
+        .expect("the ask is taken");
+    settle(&mut host, &mut window, &mut viewer);
+    assert_eq!(shared_count(&host), 0, "nothing of the window is shared");
+}
