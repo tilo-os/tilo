@@ -7,6 +7,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -116,8 +117,52 @@ fn a_new_identity_is_made_once() {
 
 /// What `tilo mcp` may hold of its own while it waits for its agent: it is a thin bridge. Most
 /// of it (about 5 MB) is the program's own data, relocated as it loads, which grows with the
-/// program: the same program is the peer that keeps the person's folders.
+/// program: the same program is the peer that keeps the person's folders, so the toolkit and the
+/// media stack stay out of it (`tools/policy/check_crate_graph.py`).
 const MCP_IDLE_KB: u64 = 7 * 1024;
+
+/// How far the process's own memory may move between two readings half a second apart and still
+/// be called idle: an allocator does not hand pages back at once, and startup's last allocations
+/// go by then.
+const IDLE_DRIFT_KB: u64 = 16;
+
+/// What `pid` holds, in kB: of its own (its private anonymous memory), of its program, and in
+/// threads.
+fn holding(pid: u32) -> (u64, u64, u64) {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    let field = |name: &str| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or_else(|| panic!("{name} in {status}"))
+    };
+    (field("RssAnon:"), field("RssFile:"), field("Threads:"))
+}
+
+/// [`holding`] once the process idles: read until two readings half a second apart move its own
+/// memory by no more than [`IDLE_DRIFT_KB`]. A quiet machine reaches that in the first half
+/// second; a loaded one finishes the process's startup later, and a fixed wait would read it
+/// mid-startup.
+fn idle_holding(pid: u32) -> (u64, u64, u64) {
+    let deadline = tilo_test_env::hang_deadline();
+    let mut last = holding(pid);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let now = holding(pid);
+        if now.0.abs_diff(last.0) <= IDLE_DRIFT_KB {
+            return now;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "tilo mcp never idled: it held {} kB of its own, then {} kB",
+            last.0,
+            now.0
+        );
+        last = now;
+    }
+}
 
 /// `tilo mcp` answers an agent's first calls and then idles small: a bridge between the agent
 /// and the person's workspace holds a few megabytes of its own (its private, anonymous memory;
@@ -153,17 +198,7 @@ fn tilo_mcp_idles_small() {
         output.read_line(&mut answer).unwrap();
         assert!(answer.contains(&format!(r#""id":{id}"#)), "{answer}");
     }
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    let status = std::fs::read_to_string(format!("/proc/{}/status", mcp.id())).unwrap();
-    let field = |name: &str| {
-        status
-            .lines()
-            .find_map(|line| line.strip_prefix(name))
-            .and_then(|rest| rest.split_whitespace().next())
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap()
-    };
-    let (own, program, threads) = (field("RssAnon:"), field("RssFile:"), field("Threads:"));
+    let (own, program, threads) = idle_holding(mcp.id());
     drop(input);
     let _ = mcp.wait();
     assert!(
