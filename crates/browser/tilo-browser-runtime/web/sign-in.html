@@ -63,6 +63,13 @@
     .tilo-sign-in button.primary:hover { background: var(--primary-hover); }
     .tilo-sign-in button:disabled { opacity: .6; cursor: default; }
     .tilo-sign-in button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    /* Nobody signed in here yet: the ways in, under the question. */
+    .tilo-sign-in-signed-out { display: grid; gap: 12px; }
+    .tilo-sign-in a.button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--button-line); color: var(--button); text-decoration: none; }
+    .tilo-sign-in a.button:hover { background: var(--button-hover); }
+    .tilo-sign-in a.button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .tilo-sign-in button.link { justify-self: start; padding: 0; border: 0; background: none; color: var(--quiet); font-size: 13px; text-decoration: underline; text-underline-offset: 2px; }
+    .tilo-sign-in button.link:hover { background: none; color: var(--text); }
     .tilo-sign-in-message { min-height: 1.5em; font-size: 13px; }
     [hidden] { display: none !important; }
   </style>
@@ -94,6 +101,14 @@ setTimeout(function(){
         <div id="sign-in-until-row" hidden><dt>Until</dt><dd id="sign-in-until"></dd></div>
         <div id="sign-in-pages-row" hidden><dt>In Browser</dt><dd id="sign-in-pages"></dd></div>
       </dl>
+    </div>
+    <div id="sign-in-signed-out" class="tilo-sign-in-signed-out" hidden>
+      <p id="sign-in-signed-out-text"></p>
+      <div class="tilo-sign-in-actions">
+        <button id="sign-in-passkey" class="primary" type="button" hidden></button>
+        <a id="sign-in-start" class="button" href="./" target="_blank" rel="noopener"></a>
+      </div>
+      <button id="sign-in-copy" class="link" type="button"></button>
     </div>
     <p id="sign-in-message" class="tilo-sign-in-message" role="status" hidden></p>
     <div class="tilo-sign-in-actions" id="sign-in-actions" hidden>
