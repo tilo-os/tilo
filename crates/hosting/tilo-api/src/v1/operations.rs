@@ -215,6 +215,17 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Arguments)
         .answers(Answer::Action),
         op(
+            "listRuns",
+            Method::GET,
+            "/v1/workspaces/{workspace}/runs",
+            "Every run in the workspace, newest first, whoever ran it",
+        )
+        .query(&[
+            ("limit", "How many runs at most: 50 unless said, at most 200"),
+            ("cursor", "Where the previous page ended"),
+        ])
+        .json(200, "RunList"),
+        op(
             "getRun",
             Method::GET,
             "/v1/workspaces/{workspace}/runs/{run}",

@@ -856,6 +856,72 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/runs": {
+      "get": {
+        "operationId": "listRuns",
+        "summary": "Every run in the workspace, newest first, whoever ran it",
+        "tags": [
+          "Runs"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "How many runs at most: 50 unless said, at most 200"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Where the previous page ended"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every run in the workspace, newest first, whoever ran it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunList"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}/runs/{run}": {
       "get": {
         "operationId": "getRun",
@@ -2860,6 +2926,218 @@
           }
         },
         "description": "What the person is asked before an action runs."
+      },
+      "RunList": {
+        "type": "object",
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunInfo"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Runs the workspace holds, of which `runs` is a page."
+          },
+          "waiting": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Of those, the runs waiting for the person."
+          },
+          "pending": {
+            "type": "boolean",
+            "description": "A record could not be read yet: runs that changed only it are missing\nuntil it can.",
+            "default": false
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Passed back as `cursor` for the next page; absent on the last."
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The page as a person reads it, one line per run: what `tilo runs` and\nan MCP client's `tilo_read workspace/runs` print."
+          }
+        },
+        "required": [
+          "runs",
+          "total",
+          "waiting"
+        ],
+        "description": "`GET /v1/workspaces/{workspace}/runs`: a page of its runs, newest first."
+      },
+      "RunInfo": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What `…/runs/{run}`, its `cancel` and its `undo` take: the invocation of\nits newest call (the undo of any call of a run takes back the whole\nrun). Absent for a run known only from the workspace's records, whose\ncalls the host no longer remembers (it restarted since)."
+          },
+          "calls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every call of it the host remembers, oldest first: one, or each call\nof a run its client named with `Tilo-Run`."
+          },
+          "step": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The undo step its changes are kept under in each record's history\n(`step` of a version there): what tells it apart across the host's\nrestarts."
+          },
+          "by": {
+            "$ref": "#/components/schemas/RunBy"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What its client called it (`Tilo-Run-Title`), when it named it."
+          },
+          "status": {
+            "type": "string",
+            "description": "`waiting` (for the person), `running`, `ended`, `failed`,\n`cancelled` or `undone` (everything it changed was taken back)."
+          },
+          "failure": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed, typed (`confirmation_required` when the person did not\nallow it). Its words stay with whoever ran it."
+          },
+          "started_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it started, in milliseconds since the Unix epoch."
+          },
+          "ended_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When it ended; absent while it has not."
+          },
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What its last call asked for, `<app>#<action>`, while the host\nremembers it."
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What its newest change did, as History says it."
+          },
+          "changes": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "How many changes it made to the workspace's records."
+          },
+          "undone": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "How many of those were taken back since."
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunRecord"
+            },
+            "description": "The records it changed."
+          },
+          "undoable": {
+            "type": "boolean",
+            "description": "Its changes still stand and nobody's change stands on them: its undo\nwould take back exactly its own."
+          },
+          "undo_blocked": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it would not be taken back, when someone's change stands on its own."
+          },
+          "recorded": {
+            "type": "boolean",
+            "description": "The workspace's records keep it: it is listed after the host restarts."
+          },
+          "remembered": {
+            "type": "boolean",
+            "description": "The host remembers its calls: `id` reads, stops and takes it back."
+          }
+        },
+        "required": [
+          "by",
+          "status",
+          "started_ms",
+          "changes",
+          "undone",
+          "undoable",
+          "recorded",
+          "remembered"
+        ],
+        "description": "One run of a workspace, as the listing of its runs answers it."
+      },
+      "RunBy": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name it goes by: a key's, as the person named it, an agent's, or a\nperson's."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`agent` (every key is one, acting for its person), `person`, `bot` or\n`automation`."
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ],
+        "description": "Who ran a run."
+      },
+      "RunRecord": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "description": "The app, as a path names it (`word-processor`)."
+          },
+          "app_id": {
+            "type": "string",
+            "description": "The app's id (`so.tilo.word-processor`)."
+          },
+          "record": {
+            "type": "string",
+            "description": "The record's id there; empty for the app's own record of the workspace.",
+            "default": ""
+          }
+        },
+        "required": [
+          "app",
+          "app_id"
+        ],
+        "description": "A record a run changed."
       },
       "SearchHits": {
         "type": "object",

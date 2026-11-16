@@ -413,7 +413,7 @@ impl<'a> Caller<'a> {
             "listResources" | "readResource" | "search" | "getLink" => {
                 self.resource_operation(operation.id).await
             }
-            "runAction" | "getRun" | "cancelRun" | "undoRun" | "runOutput" => {
+            "runAction" | "listRuns" | "getRun" | "cancelRun" | "undoRun" | "runOutput" => {
                 self.run_operation(operation.id).await
             }
             "listWebhooks" | "createWebhook" | "deleteWebhook" => {
@@ -586,6 +586,7 @@ impl<'a> Caller<'a> {
         let run = self.params.get("run");
         match id {
             "runAction" => self.run_action().await,
+            "listRuns" => self.list_runs().await,
             "getRun" => self.get_run().await,
             "cancelRun" => {
                 let args = json!({"invocation_id": run, "cancel": true});
@@ -827,6 +828,28 @@ impl<'a> Caller<'a> {
         );
         let answered = self.call("tilo_do", call).await?;
         action_answer(answered, &ws)
+    }
+
+    /// A page of the workspace's runs, newest first: what `tilo_ls
+    /// workspace/runs` answers.
+    async fn list_runs(&self) -> Result<Answer, ApiError> {
+        let limit = self
+            .query("limit")
+            .map(|limit| {
+                limit
+                    .parse::<u64>()
+                    .map_err(|_| ApiError::new("invalid_arguments", "`limit` is a number"))
+            })
+            .transpose()?;
+        let args = with(
+            json!({"path": crate::session::runs::ROOT}),
+            "cursor",
+            self.query("cursor"),
+        );
+        let (listed, said) = self
+            .call_said("tilo_ls", with(args, "limit", limit))
+            .await?;
+        shaped::<answers::RunList>(with(listed, "text", said)).map(Answer::ok)
     }
 
     async fn get_run(&self) -> Result<Answer, ApiError> {

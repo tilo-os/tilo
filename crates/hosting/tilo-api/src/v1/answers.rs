@@ -391,6 +391,110 @@ pub struct Hit {
     pub action: Option<String>,
 }
 
+/// Who ran a run.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RunBy {
+    /// The name it goes by: a key's, as the person named it, an agent's, or a
+    /// person's.
+    pub name: String,
+    /// `agent` (every key is one, acting for its person), `person`, `bot` or
+    /// `automation`.
+    pub kind: String,
+}
+
+/// A record a run changed.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RunRecord {
+    /// The app, as a path names it (`word-processor`).
+    pub app: String,
+    /// The app's id (`so.tilo.word-processor`).
+    pub app_id: String,
+    /// The record's id there; empty for the app's own record of the workspace.
+    #[serde(default)]
+    pub record: String,
+}
+
+/// One run of a workspace, as the listing of its runs answers it.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RunInfo {
+    /// What `…/runs/{run}`, its `cancel` and its `undo` take: the invocation of
+    /// its newest call (the undo of any call of a run takes back the whole
+    /// run). Absent for a run known only from the workspace's records, whose
+    /// calls the host no longer remembers (it restarted since).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Every call of it the host remembers, oldest first: one, or each call
+    /// of a run its client named with `Tilo-Run`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<String>,
+    /// The undo step its changes are kept under in each record's history
+    /// (`step` of a version there): what tells it apart across the host's
+    /// restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    pub by: RunBy,
+    /// What its client called it (`Tilo-Run-Title`), when it named it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// `waiting` (for the person), `running`, `ended`, `failed`,
+    /// `cancelled` or `undone` (everything it changed was taken back).
+    pub status: String,
+    /// Why it failed, typed (`confirmation_required` when the person did not
+    /// allow it). Its words stay with whoever ran it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    /// When it started, in milliseconds since the Unix epoch.
+    pub started_ms: i64,
+    /// When it ended; absent while it has not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_ms: Option<i64>,
+    /// What its last call asked for, `<app>#<action>`, while the host
+    /// remembers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// What its newest change did, as History says it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// How many changes it made to the workspace's records.
+    pub changes: u64,
+    /// How many of those were taken back since.
+    pub undone: u64,
+    /// The records it changed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<RunRecord>,
+    /// Its changes still stand and nobody's change stands on them: its undo
+    /// would take back exactly its own.
+    pub undoable: bool,
+    /// Why it would not be taken back, when someone's change stands on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_blocked: Option<String>,
+    /// The workspace's records keep it: it is listed after the host restarts.
+    pub recorded: bool,
+    /// The host remembers its calls: `id` reads, stops and takes it back.
+    pub remembered: bool,
+}
+
+/// `GET /v1/workspaces/{workspace}/runs`: a page of its runs, newest first.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RunList {
+    pub runs: Vec<RunInfo>,
+    /// Runs the workspace holds, of which `runs` is a page.
+    pub total: u64,
+    /// Of those, the runs waiting for the person.
+    pub waiting: u64,
+    /// A record could not be read yet: runs that changed only it are missing
+    /// until it can.
+    #[serde(default)]
+    pub pending: bool,
+    /// Passed back as `cursor` for the next page; absent on the last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// The page as a person reads it, one line per run: what `tilo runs` and
+    /// an MCP client's `tilo_read workspace/runs` print.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SearchHits {
     pub hits: Vec<Hit>,
@@ -562,6 +666,7 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Listing,
         Resource,
         ActionAnswer,
+        RunList,
         SearchHits,
         Link,
         Members,

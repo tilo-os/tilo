@@ -23,6 +23,7 @@
 //! nothing of it itself.
 
 pub mod members;
+pub mod runs;
 pub mod unattended;
 
 use crate::relay::{Connection, Relay, RelayError};
@@ -325,6 +326,14 @@ impl Session {
                     .await;
                 return Reply::one(result(&id, &answered));
             }
+            if runs::addresses(tool, arguments) {
+                let structured = request
+                    .pointer("/params/_meta/so.tilo.mcp/structured")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let answered = self.runs(workspace, arguments, structured).await;
+                return Reply::one(result(&id, &answered));
+            }
         }
         let run = match self.served(workspace).await {
             Ok(run) => run,
@@ -416,7 +425,7 @@ impl Session {
             if answer.get("error").is_some() {
                 return Err(answer);
             }
-            return Ok(answer);
+            return Ok(with_hosted_instructions(answer));
         }
         let asked = request
             .pointer("/params/protocolVersion")
@@ -695,12 +704,27 @@ time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}
 to let keys minted for that workspace alone run commands there without asking (and in branches \
 made from it), answering `pending` until they decide; this key itself is still asked, and \
 `{on: false}` asks again from the next command. \
+`tilo_read workspace/runs` (with `workspace`) lists every run in a workspace, newest first, whoever \
+ran it (`tilo_ls workspace/runs` with `limit` and `cursor` pages on): who ran it, how it stands \
+(`waiting` for the person, `running`, `ended`, `failed`, `cancelled`, `undone`), what it changed and \
+whether it can still be taken back; its `id` is the invocation `tilo_status` reads, stops (`cancel`) \
+and takes back (`undo`). \
 A call that changed a record answers its `link`, and `tilo_link {path, workspace}` answers the link \
 to anything a path names: hand it to the person reviewing your work. It opens the record in its \
 app for the workspace's members and carries no secret, so invite the person first. \
 Files go in with `tilo_put_begin`/`_append`/`_finish` (or `PUT /w/<workspace>/content`), answering \
 a `tilo.content:<hash>` an action takes; an action that makes a file (Writer's `export-content`) \
 names its `tilo.content:` in the answer's resources, and `tilo_get {content, offset}` reads it back.";
+
+/// `initialize`'s answer, telling the client what this server answers beside
+/// the workspace's own tools: the workspace's runs ([`runs`]).
+fn with_hosted_instructions(mut answer: Value) -> Value {
+    if let Some(Value::String(instructions)) = answer.pointer_mut("/result/instructions") {
+        instructions.push(' ');
+        instructions.push_str(runs::INSTRUCTIONS);
+    }
+    answer
+}
 
 /// The tools an account session offers before a workspace served the
 /// workspace tools: the ones the account itself answers.
