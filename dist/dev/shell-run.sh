@@ -53,7 +53,7 @@
 #                     canvas. Development builds only.
 #
 # Drive it from another terminal with the commands it prints:
-#   target/debug/tilolang repl --door "$TILO_MCP_SERVER"
+#   target/debug/tilolang repl --api "$TILO_MCP_SERVER"
 #   TILO_TEST_CONTROL=... target/debug/tilo-control snapshot /tmp/shot.png
 #
 # The tilolang runtime the apps run on: this tree's thin-app build
@@ -563,7 +563,7 @@ TILO_MCP_SERVER=$door
 TILO_TEST_CONTROL=$control
 XDG_RUNTIME_DIR=$runtime
 The session runs (pid $session_pid). From another terminal:
-  the REPL:      $bin/tilolang repl --door $door
+  the REPL:      $bin/tilolang repl --api $door
   a screenshot:  TILO_TEST_CONTROL=$control $bin/tilo-control snapshot /tmp/shot.png
 Stop it with Ctrl+C (or SIGTERM to pid $$); everything it started goes with it.
 EOF
