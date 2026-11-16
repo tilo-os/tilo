@@ -145,7 +145,7 @@ mod tests {
             name: name.into(),
             description: String::new(),
             default_role: Role::Commenter,
-            door: format!("directory/{workspace}/"),
+            entry: format!("directory/{workspace}/"),
             here: Vec::new(),
             here_count: 0,
             members: 12,
