@@ -90,6 +90,59 @@ pub(crate) fn step(
     Some(Step::Display(next, pick))
 }
 
+/// Mirror a window the person dragged along `row` and let go at `index` of it into the tree. On one
+/// display that is its place in the strip. Across several the row lays its windows out display by
+/// display, so `index` is a place in that order: the window goes to the display it was let go on,
+/// and into the strip's order beside the window it was let go next to there. Whether the tree
+/// changed.
+pub(crate) fn carry_dropped(
+    tree: &mut Layout,
+    strip: StripId,
+    row: &GroupRow,
+    group: GroupId,
+    index: usize,
+) -> bool {
+    let Some(display) = row.output_of_group(group).filter(|_| tree.is_partitioned()) else {
+        return tree
+            .reorder_group_within_strip(strip, group, index)
+            .is_some();
+    };
+    let moved = tree.outputs.display_of(group) != Some(display)
+        && tree.outputs.move_group(&tree.workspaces, group, display);
+    // Its neighbours on the display it was let go on, in the row's order.
+    let on = |at: usize| {
+        row.groups
+            .get(at)
+            .map(|g| g.id)
+            .filter(|&id| id != group && row.output_of_group(id) == Some(display))
+    };
+    let next = index.checked_add(1).and_then(on);
+    let previous = index.checked_sub(1).and_then(on);
+    let order: Vec<GroupId> = tree
+        .workspaces
+        .iter()
+        .flat_map(|w| &w.strips)
+        .find(|s| s.id == strip)
+        .map(|s| {
+            s.window_groups
+                .iter()
+                .map(|g| g.id)
+                .filter(|&id| id != group)
+                .collect()
+        })
+        .unwrap_or_default();
+    let place = |id: GroupId| order.iter().position(|&other| other == id);
+    let to = next
+        .and_then(place)
+        .or_else(|| previous.and_then(place).map(|at| at.saturating_add(1)));
+    let reordered =
+        to.is_some_and(|to| tree.reorder_group_within_strip(strip, group, to).is_some());
+    if moved {
+        tree.external_revision = tree.external_revision.wrapping_add(1);
+    }
+    moved || reordered
+}
+
 /// One lane per display of `displays` (in the surface's coordinates), in
 /// `order`, for a row laid out at `row` in a surface at `surface`: each
 /// display's lane keeps the insets the row keeps from the surface's edges,
@@ -556,12 +609,11 @@ impl DesktopHandle {
         else {
             return false;
         };
-        if !tree.outputs.move_group(&tree.workspaces, group, to) {
-            return false;
+        let moved = super::window_menu::move_to_display(&mut shared, group, to);
+        if moved {
+            shared.changed();
         }
-        tree.external_revision = tree.external_revision.wrapping_add(1);
-        shared.changed();
-        true
+        moved
     }
 }
 

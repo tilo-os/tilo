@@ -679,6 +679,13 @@ pub trait SurfaceHost {
     /// A pointer button (evdev code) changed state over the surface.
     fn pointer_button(&mut self, button: u32, pressed: bool);
 
+    /// A press made with Super held over a window at this logical point: whether this surface
+    /// carries that window with the press, as a press on the window's bar would. The press itself
+    /// follows, to this surface, and the pointer stays with it until the press ends.
+    fn carries_window_at(&mut self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
     /// A pointer button was pressed at this logical point, somewhere other than this surface (a
     /// window, the shell, another surface): an open popover closes.
     fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {}
@@ -854,6 +861,7 @@ impl<T: SurfaceHost + ?Sized> SurfaceHost for Rc<RefCell<T>> {
         pointer_motion(x: f64, y: f64);
         pointer_leave();
         pointer_button(button: u32, pressed: bool);
+        carries_window_at(x: f64, y: f64) -> bool;
         press_ended(x: f64, y: f64);
         pointer_axis(scroll: Scroll);
         key(key: &HostKey);

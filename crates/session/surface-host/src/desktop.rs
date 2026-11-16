@@ -256,21 +256,13 @@ impl Desktop {
 
     /// Where `window`'s content is in the logical layout, as last laid out.
     fn shown(&self, window: u64) -> Option<LayoutRect> {
-        let (ox, oy) = self.host.placement().origin;
+        let origin = self.host.placement().origin;
         self.policy
             .placement()
             .shown
             .into_iter()
             .find(|(id, _)| *id == window)
-            .map(|(_, rect)| {
-                LayoutRect::new(
-                    LayoutPoint::from((
-                        ox.saturating_add(round(rect.x0)),
-                        oy.saturating_add(round(rect.y0)),
-                    )),
-                    (round(rect.width()).max(1), round(rect.height()).max(1)).into(),
-                )
-            })
+            .map(|(_, rect)| layout_rect(rect, origin))
     }
 }
 
@@ -281,6 +273,12 @@ impl Desktop {
 )]
 fn round(value: f64) -> i32 {
     value.round() as i32
+}
+
+/// `rect` of the surface in the logical layout where the desktop's origin is `origin` .
+fn layout_rect(rect: ui::kurbo::Rect, origin: (i32, i32)) -> LayoutRect {
+    let (x, y, width, height) = placed(rect, origin);
+    LayoutRect::new(LayoutPoint::from((x, y)), (width, height).into())
 }
 
 /// `rect` of the surface, as it stands in the logical layout where the desktop's origin is
@@ -664,7 +662,13 @@ impl crate::Published for DesktopHost {
         // by the same names — each window's sidebar toggle, each window's "More actions" — and
         // each is named where it is drawn. A window's control is never the desktop's because they
         // share a name; a press by name reaches the window in front ([`Self::press_action`]).
-        for control in self.desktop.borrow().policy.handle().window_controls() {
+        // The windows' controls stand where the desktop draws them, in its coordinates: moved, as
+        // its own are, to where the desktop is placed in the logical layout.
+        let desktop = self.desktop.borrow();
+        let (ox, oy) = desktop.host.placement().origin;
+        for mut control in desktop.policy.handle().window_controls() {
+            control.rect.0 += f64::from(ox);
+            control.rect.1 += f64::from(oy);
             if !shown
                 .iter()
                 .any(|seen| seen.name == control.name && seen.rect == control.rect)
@@ -822,6 +826,13 @@ impl SurfaceHost for DesktopHost {
 
     fn pointer_leave(&mut self) {
         self.desktop.borrow_mut().host.pointer_leave();
+    }
+
+    fn carries_window_at(&mut self, x: f64, y: f64) -> bool {
+        let desktop = self.desktop.borrow();
+        let (ox, oy) = desktop.host.placement().origin;
+        let point = ui::kurbo::Point::new(x - f64::from(ox), y - f64::from(oy));
+        desktop.policy.handle().carry_next_press_at(point)
     }
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
@@ -1146,15 +1157,24 @@ impl WindowPolicy for StripPolicy {
             self.map(window, outputs);
         }
         let desktop = self.desktop.borrow();
+        let placement = desktop.policy.placement();
+        let origin = desktop.host.placement().origin;
+        let of = |rects: &[(u64, ui::kurbo::Rect)], window: u64| {
+            rects
+                .iter()
+                .find(|(id, _)| *id == window)
+                .map(|(_, rect)| layout_rect(*rect, origin))
+        };
         Some(
             windows
                 .iter()
                 .map(|(window, current)| {
-                    if let Some(rect) = desktop.shown(window.id) {
+                    if let Some(rect) = of(&placement.shown, window.id) {
                         return Arrangement {
                             id: window.id,
                             location: rect.loc,
                             size: Some((rect.size.w, rect.size.h)),
+                            clip: of(&placement.clips, window.id),
                         };
                     }
                     let size = (current.size.w, current.size.h);
@@ -1164,6 +1184,7 @@ impl WindowPolicy for StripPolicy {
                             .floating(window.id, size)
                             .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0))),
                         size: None,
+                        clip: None,
                     }
                 })
                 .collect(),

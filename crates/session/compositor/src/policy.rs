@@ -61,6 +61,9 @@ pub struct Arrangement {
     pub location: LayoutPoint,
     /// The size it is configured to, or `None` to leave it to the client.
     pub size: Option<(i32, i32)>,
+    /// The part of the logical layout it may draw on and take the pointer in, or `None` for all of
+    /// it: a window of a strip spread over several displays shows on its own display only.
+    pub clip: Option<LayoutRect>,
 }
 
 /// Which edges of a window a resize drags.

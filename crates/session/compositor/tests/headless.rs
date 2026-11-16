@@ -13,6 +13,8 @@
 
 #[path = "headless/assists.rs"]
 mod assists;
+#[path = "headless/display_cut.rs"]
+mod display_cut;
 #[path = "headless/framing.rs"]
 mod framing;
 #[path = "headless/idle_inhibit.rs"]
@@ -555,6 +557,7 @@ impl WindowPolicy for Columns {
                     id,
                     location: Point::from((column * 300, 0)),
                     size: None,
+                    clip: None,
                 })
                 .collect(),
         )
@@ -745,14 +748,32 @@ fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
     assert!(!client.seen.pointer_inside);
     assert!(client.seen.buttons.is_empty());
 
-    // Moving onto the window hands the pointer back.
+    // While the press lasts the surface keeps the pointer, over the window too, as a window keeps
+    // the pointer it was pressed in.
     compositor
         .input(InputEvent::PointerMotion { x: 250.0, y: 200.0 })
+        .unwrap();
+    assert_eq!(log.borrow().motions.last(), Some(&(250.0, 200.0)));
+    compositor
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: false,
+        })
+        .unwrap();
+    assert_eq!(
+        log.borrow().buttons,
+        vec![(BTN_LEFT, true), (BTN_LEFT, false)]
+    );
+
+    // Once it ends, moving onto the window hands the pointer back.
+    compositor
+        .input(InputEvent::PointerMotion { x: 251.0, y: 200.0 })
         .unwrap();
     pump(&mut compositor, &mut [&mut client], |_, clients| {
         clients[0].seen.pointer_inside
     });
     assert_eq!(log.borrow().left, 1);
+    assert!(client.seen.buttons.is_empty());
 }
 
 #[test]

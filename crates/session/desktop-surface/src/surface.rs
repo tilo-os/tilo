@@ -250,6 +250,9 @@ struct Shared {
     replaced: bool,
     /// Where each shown window stands and the bounds of the tab it shows, as last laid out.
     shown_tabs: ShownTabs,
+    /// Where the next press lands when it carries the window there from anywhere in it, as a
+    /// press on its bar does ([`DesktopHandle::carry_next_press_at`]).
+    carry_press: Option<Point>,
     /// Each window floating over the shell, and what it is drawn whole over the windows under it —
     /// its bar, its body and the shadow that lifts it — as last drawn.
     float_covers: Vec<(TabId, Rect)>,
@@ -1595,10 +1598,7 @@ impl DesktopSurface {
             changed |= window_move::carry_out(&mut shared, strip_id, row, payload, down);
         }
         if let Some((group, index)) = row.take_pending_group_reorder() {
-            changed |= shared
-                .tree
-                .reorder_group_within_strip(strip_id, group, index)
-                .is_some();
+            changed |= displays::carry_dropped(&mut shared.tree, strip_id, row, group, index);
         }
         // A window lifted over the shell, or let go back into its strip.
         if let Some(ask) = row.take_pending_float() {
@@ -2282,6 +2282,11 @@ impl Widget for DesktopSurface {
             ..
         } = event
         {
+            // A press made with Super held over a window carries it, as a press on its bar does.
+            let carry = self.shared.borrow_mut().carry_press.take().is_some();
+            for row in self.rows.values_mut() {
+                row.set_carry_press(carry);
+            }
             self.focus_pressed_display();
             self.focus_clicked_group();
             self.reveal_on_release = self.shown.and_then(|strip| {
@@ -2290,6 +2295,9 @@ impl Widget for DesktopSurface {
             });
         }
         self.route_pointer(event, ctx, &children);
+        for row in self.rows.values_mut() {
+            row.set_carry_press(false);
+        }
         // A tab's name field opened or closed under the event: the shell holds the keyboard for it,
         // or gives it back to the window.
         self.publish_bar_typing();

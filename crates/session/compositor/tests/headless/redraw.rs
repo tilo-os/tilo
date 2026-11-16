@@ -41,6 +41,7 @@ impl WindowPolicy for Movable {
                     id: window.id,
                     location: at,
                     size: None,
+                    clip: None,
                 })
                 .collect(),
         )

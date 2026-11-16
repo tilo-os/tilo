@@ -107,7 +107,7 @@ and Shift+F10 keys continue to reach the app's resource menu.
 | To the strip above / below | `group.move-to-strip-previous` / `-next` | Shift+Ctrl+Super+↑ / ↓ | drag onto another strip | today, except the drag |
 | To a strip chosen by name | `group.move-to-strip` (`strip`) | — | the window menu's Move to strip | today |
 | To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Super+Shift+PageUp / PageDown | — | planned; one tab today via `tab.move-to-workspace` |
-| To the neighbouring display | `group.move-to-display-previous` / `-next` | Alt+Super+Shift+← / → | drag onto the other display | today on Super+Ctrl+Shift+← / → |
+| To the display left / right of it | `group.move-to-display-previous` / `-next` | Alt+Super+Shift+← / → | drag the bar, or the window with Super held, onto the other display | today on Super+Ctrl+Shift+← / → |
 
 A workspace is the sandbox and sharing boundary. Carrying a group there moves
 each tab through the window-transfer consent sheet exactly where

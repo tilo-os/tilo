@@ -84,6 +84,9 @@ pub struct Placement {
     /// fills that display's whole area, the bar's room included, and the
     /// bar steps aside while it does.
     pub fullscreen: Option<u64>,
+    /// Each shown window of a strip spread over several displays, and the display it shows on, in
+    /// surface coordinates: it is cut to that display and never drawn on its neighbour.
+    pub clips: Vec<(u64, Rect)>,
 }
 
 /// Windows waiting for their tab, shared with the surface's tile source.
@@ -1486,13 +1489,33 @@ impl DesktopPolicy {
     /// Where the windows are as of the surface's last layout pass.
     #[must_use]
     pub fn placement(&self) -> Placement {
-        let shown: Vec<(u64, Rect)> = self.handle.read(|tree| {
+        // Each shown window, where it stands, and the display it is cut to across several.
+        let placed: Vec<(u64, Rect, Option<Rect>)> = self.handle.read(|tree| {
             self.handle
                 .shown_tabs()
                 .into_iter()
-                .filter_map(|(tab, rect)| Some((window_of(tree, tab)?, rect)))
+                .filter_map(|(tab, rect)| {
+                    let display = tree.is_partitioned().then(|| {
+                        let group = tree
+                            .workspaces
+                            .iter()
+                            .flat_map(|workspace| &workspace.strips)
+                            .flat_map(|strip| &strip.window_groups)
+                            .find(|group| group.tabs.iter().any(|t| t.id == tab))?
+                            .id;
+                        let id = tree.outputs.display_of(group)?;
+                        tree.outputs.displays.iter().find(|d| d.id == id)
+                    });
+                    let clip = display.flatten().map(tilo_desktop_surface::display_rect);
+                    Some((window_of(tree, tab)?, rect, clip))
+                })
                 .collect()
         });
+        let shown: Vec<(u64, Rect)> = placed.iter().map(|(id, rect, _)| (*id, *rect)).collect();
+        let clips: Vec<(u64, Rect)> = placed
+            .iter()
+            .filter_map(|(id, _, clip)| Some((*id, (*clip)?)))
+            .collect();
         let mut hidden: Vec<u64> = self
             .handle
             .read(windows)
@@ -1533,6 +1556,7 @@ impl DesktopPolicy {
             shown,
             hidden,
             floating,
+            clips,
         }
     }
 

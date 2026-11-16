@@ -2712,3 +2712,82 @@ fn revealing_a_window_scrolls_it_into_view_and_leaves_focus_alone() {
     assert_eq!(handle.snapshot("g", vec![]).active, Some(first));
     assert!(!handle.reveal_tab(9_999_999), "no window shows that tab");
 }
+
+/// Press, carry to `to` in small steps, and let go: the hand that drags a window.
+fn carry(frame: &mut ui::headless::FrameHarness, from: Point, to: Point) {
+    frame.send(&ui::synthetic_input::cursor_moved(from.x, from.y));
+    frame.send(&ui::synthetic_input::mouse_press());
+    for step in 1..=20 {
+        let t = f64::from(step) / 20.0;
+        frame.send(&ui::synthetic_input::cursor_moved(
+            from.x + (to.x - from.x) * t,
+            from.y + (to.y - from.y) * t,
+        ));
+    }
+    frame.send(&ui::synthetic_input::mouse_release());
+    for _ in 0..4 {
+        frame.relayout();
+    }
+}
+
+/// With Super held a window is carried from anywhere in it, as by its bar, and let go on the other
+/// display it stays there: the display under the pointer holds it from then on. Without Super a
+/// press in its body carries nothing.
+#[test]
+fn a_window_carried_onto_the_other_display_lands_there() {
+    let (surface, handle) = desktop(2);
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    let display = |id: u32, x: f64| tilo_desktop_model::Display {
+        id,
+        monitor: format!("monitor-{id}"),
+        x,
+        y: 0.0,
+        width: 640.0,
+        height: 800.0,
+        primary: false,
+    };
+    assert!(handle.set_displays(&[display(0, 0.0), display(1, 640.0)]));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let group = handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].id);
+    assert_eq!(
+        handle.display_of(group),
+        Some(0),
+        "both start on the left display"
+    );
+    let (_, body) = handle
+        .shown_tiles()
+        .into_iter()
+        .find(|(tab, _)| {
+            handle.read(|tree| {
+                tree.workspaces[0].strips[0].window_groups[0]
+                    .tabs
+                    .iter()
+                    .any(|t| t.id == *tab)
+            })
+        })
+        .expect("the first window is shown");
+    let from = body.center();
+    let to = Point::new(960.0, 400.0);
+
+    carry(&mut frame, from, to);
+    assert_eq!(
+        handle.display_of(group),
+        Some(0),
+        "a plain press in a window's body carries nothing"
+    );
+
+    assert!(handle.carry_next_press_at(from), "a window stands there");
+    carry(&mut frame, from, to);
+    assert_eq!(
+        handle.display_of(group),
+        Some(1),
+        "let go on the right display, it stays there"
+    );
+    for _ in 0..8 {
+        frame.relayout();
+    }
+    assert_eq!(handle.display_of(group), Some(1), "and is not put back");
+}

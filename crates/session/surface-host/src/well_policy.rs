@@ -351,6 +351,7 @@ impl WindowPolicy for WellPolicy {
                     id: window.id,
                     location: LayoutPoint::from((OFFSTAGE, 0)),
                     size: None,
+                    clip: None,
                 });
                 continue;
             };
@@ -359,6 +360,7 @@ impl WindowPolicy for WellPolicy {
                     id: window.id,
                     location: LayoutPoint::from((OFFSTAGE, 0)),
                     size: None,
+                    clip: None,
                 });
                 continue;
             }
@@ -381,6 +383,7 @@ impl WindowPolicy for WellPolicy {
                 id: window.id,
                 location: LayoutPoint::from((round(well.x0), round(well.y0))),
                 size: reconfigure.then_some(size),
+                clip: None,
             });
         }
         Some(arrangements)

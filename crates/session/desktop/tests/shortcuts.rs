@@ -512,3 +512,62 @@ fn a_row_a_chord_reaches_shows_the_chord_the_table_binds() {
         "and nothing of the old one: {reads:?}"
     );
 }
+
+/// The display chords go by where the displays stand, not by the order the outputs were listed
+/// in: with the first output on the right, the arrow towards the other display moves the window
+/// there, and the arrow away from it moves nothing.
+#[test]
+fn the_display_chords_follow_where_the_displays_stand() {
+    let (mut shell, mut frame, handle) = shell_and_chrome(&two_windows());
+    let display = |id: u32, monitor: &str, x: f64| tilo_desktop_model::Display {
+        id,
+        monitor: monitor.into(),
+        x,
+        y: 0.0,
+        width: 640.0,
+        height: 800.0,
+        primary: false,
+    };
+    // The first output, where the windows start, stands right of the second.
+    assert!(handle.set_displays(&[display(0, "right", 640.0), display(1, "left", 0.0)]));
+    for _ in 0..4 {
+        shell.relayout();
+    }
+    let (group, _) = in_front_group(&handle).unwrap();
+    assert_eq!(
+        handle.display_of(group),
+        Some(0),
+        "it starts on the right display"
+    );
+
+    press_chord(
+        &mut shell,
+        &mut frame,
+        ShortcutAction::MoveGroupToNextDisplay,
+    );
+    assert_eq!(
+        handle.display_of(group),
+        Some(0),
+        "nothing stands right of the right display"
+    );
+    press_chord(
+        &mut shell,
+        &mut frame,
+        ShortcutAction::MoveGroupToPreviousDisplay,
+    );
+    assert_eq!(
+        handle.display_of(group),
+        Some(1),
+        "the left arrow takes it to the display on the left"
+    );
+    press_chord(
+        &mut shell,
+        &mut frame,
+        ShortcutAction::MoveGroupToNextDisplay,
+    );
+    assert_eq!(
+        handle.display_of(group),
+        Some(0),
+        "and the right arrow back"
+    );
+}

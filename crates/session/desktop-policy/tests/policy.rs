@@ -1056,3 +1056,28 @@ fn a_window_launched_into_another_workspace_opens_there() {
         "the workspace in front shows no calculator of Garden's"
     );
 }
+
+/// A window of a strip spread over two displays is cut to its own display: the part of a window
+/// wider than its display, or panned past its edge, is never drawn on the neighbouring one.
+#[test]
+fn a_window_is_cut_to_the_display_it_shows_on() {
+    let (mut driver, mut policy) = mount();
+    displays(&mut policy);
+    map(&mut driver, &mut policy, 1, "a");
+    let order = policy.displays();
+    assert!(policy.handle().focus_display(order[1]));
+    settle(&mut driver);
+    map(&mut driver, &mut policy, 2, "b");
+    let layout = policy.placement();
+    let clip = |id| layout.clips.iter().find(|(w, _)| *w == id).map(|c| c.1);
+    assert_eq!(
+        clip(1),
+        Some(Rect::new(0.0, 0.0, WIDTH / 2.0, 800.0)),
+        "{layout:?}"
+    );
+    assert_eq!(
+        clip(2),
+        Some(Rect::new(WIDTH / 2.0, 0.0, WIDTH, 800.0)),
+        "{layout:?}"
+    );
+}

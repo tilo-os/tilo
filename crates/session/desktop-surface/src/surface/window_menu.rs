@@ -834,7 +834,7 @@ pub(super) fn apply(
         Admitted::MoveToStrip(ids, strip, before) => move_to_strip(shared, *ids, *strip, *before),
         Admitted::JoinGroup(ids, into) => join_group(shared, *ids, *into),
         Admitted::MoveToWorkspace(ids, to) => move_to_workspace(shared, *ids, *to),
-        Admitted::MoveToDisplay(ids, display) => move_to_display(shared, *ids, *display),
+        Admitted::MoveToDisplay(ids, display) => move_to_display(shared, ids.group, *display),
         Admitted::WidthPreset(ids, width) => width_preset(shared, *ids, *width, ops),
         Admitted::EqualizeWidths(ids) => equalize(shared, *ids, ops),
         // The share is the sharing app's to keep: the ask names the row the window's bar carries,
@@ -959,12 +959,10 @@ fn move_to_workspace(shared: &mut Shared, ids: RouteIds, to: WorkspaceId) -> boo
     moved
 }
 
-/// Carry the window at `ids` onto display `display` .
-fn move_to_display(shared: &mut Shared, ids: RouteIds, display: u32) -> bool {
+/// Carry the window `group` onto display `display` .
+pub(super) fn move_to_display(shared: &mut Shared, group: GroupId, display: u32) -> bool {
     let tree = &mut shared.tree;
-    let moved = tree
-        .outputs
-        .move_group(&tree.workspaces, ids.group, display);
+    let moved = tree.outputs.move_group(&tree.workspaces, group, display);
     if moved {
         tree.external_revision = tree.external_revision.wrapping_add(1);
     }

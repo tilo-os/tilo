@@ -210,6 +210,9 @@ pub struct GroupRow {
     group_reorder_target: Option<usize>,
     group_reorder_lane: Option<usize>,
     pending_group_reorder: Option<(u64, usize)>,
+    /// The next press carries the window it lands in from anywhere in it, its body included, as a
+    /// press on its bar does: the press was made with Super held.
+    carry_press: bool,
     /// Set after a tab crosses a group boundary in this row; the shell drains an identity-only
     /// snapshot and applies it to the persisted workspace tree.
     pending_topology_change: bool,
@@ -938,6 +941,7 @@ impl GroupRow {
             group_reorder_target: None,
             group_reorder_lane: None,
             pending_group_reorder: None,
+            carry_press: false,
             pending_topology_change: false,
             output_spans: Vec::new(),
             last_laid_x: HashMap::new(),
@@ -2623,6 +2627,12 @@ impl GroupRow {
         self.pending_group_reorder.take()
     }
 
+    /// Whether the next press carries the window it lands in from anywhere in it, as a press on
+    /// its bar does (a press made with Super held), or only from its bar.
+    pub fn set_carry_press(&mut self, carry: bool) {
+        self.carry_press = carry;
+    }
+
     pub fn group_drag_active(&self) -> bool {
         self.group_drag.is_some_and(|d| d.moved)
     }
@@ -3005,7 +3015,11 @@ impl GroupRow {
             return;
         }
         let at = self.last_cursor;
+        let anywhere = std::mem::take(&mut self.carry_press);
         if let Some(idx) = self.groups.iter().position(|g| {
+            if anywhere {
+                return g.get_rect().contains(at);
+            }
             if self.canvas.is_some() {
                 return g.carry_grab_hit(at) || (touch.is_some() && g.touch_grab_hit(at));
             }

@@ -349,6 +349,18 @@ where
     elements
 }
 
+/// `rect` of the logical layout on an output whose top left is `origin` , drawn at `scale` .
+fn physical(
+    rect: Rectangle<i32, Logical>,
+    origin: Point<f64, Logical>,
+    scale: f64,
+) -> Rectangle<i32, Physical> {
+    Rectangle::new(
+        (rect.loc.to_f64() - origin).to_physical_precise_round(scale),
+        rect.size.to_f64().to_physical_precise_round(scale),
+    )
+}
+
 /// The window layer, front first: `stack` (the mapped windows, bottom first, reversed by the
 /// caller) and the windows that closed and are still drawn where they stood, each drawn at `scale`
 /// with `origin` at the top left of the area `bounds` .
@@ -389,18 +401,20 @@ where
         };
         let effect = state.effect_of(window);
         let framing = state.framing(window);
+        // The part of this output the window may draw on: all of it, or where the policy cut it to
+        // (a strip's window shows on its own display only).
+        let area = match state.clip_of(window) {
+            None => Some(bounds),
+            Some(clip) => physical(clip, origin, scale).intersection(bounds),
+        };
         // What this window still shows through: what the shells cover it with for the windows in
         // front of it.
-        let visible = outside(bounds, &covers);
-        // Its own cover is over the windows behind it, from here on: in the layout, so placed
-        // from `origin` as the window is.
+        let visible = area.map_or_else(Vec::new, |area| outside(area, &covers));
+        // Its own cover is over the windows behind it, from here on.
         if let Some(cover) = crate::state::describe(state, window)
             .and_then(|info| state.covers.get(&info.id).copied())
         {
-            covers.push(Rectangle::new(
-                (cover.loc.to_f64() - origin).to_physical_precise_round(scale),
-                cover.size.to_physical_precise_round(scale),
-            ));
+            covers.push(physical(cover, origin, scale));
         }
         // What the window drew is kept while it stands, so its close has a frame to animate even
         // once its surface is gone.

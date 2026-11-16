@@ -198,6 +198,9 @@ pub struct State {
     told_primary: Option<String>,
     pub(crate) pointer: Point<f64, Logical>,
     pub(crate) pointer_target: PointerTarget,
+    /// The hosted surface a press is held on, by its index in `hosts`: it keeps the pointer until
+    /// the press ends, over windows too, as a client keeps the pointer it was pressed on.
+    pressed_host: Option<usize>,
     /// The seats beside the person's: an agent's, a viewer's (§ seats).
     pub(crate) seats: crate::seats::Seats,
     /// A seat's keys are the app-facing seat's for this delivery: no hosted surface takes them, and
@@ -235,6 +238,9 @@ pub struct State {
     /// the shell draws a floating window's bar and its lift around it, and the window beneath the
     /// card is drawn around it, as a window under a floating one is.
     pub(crate) covers: std::collections::BTreeMap<u64, smithay::utils::Rectangle<i32, Logical>>,
+    /// The part of the layout each window is cut to, by id, as the policy arranged it: a window
+    /// draws and takes the pointer there only ([`crate::policy::Arrangement::clip`]).
+    pub(crate) clips: std::collections::HashMap<u64, smithay::utils::Rectangle<i32, Logical>>,
     /// How many layers each hosted surface drew in the last frame, by its index in `hosts`: what a
     /// host drew and no longer draws is what the screen keeps until it is drawn again.
     pub(crate) layer_counts: Vec<(usize, usize)>,
@@ -391,6 +397,7 @@ impl State {
             told_primary: None,
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
+            pressed_host: None,
             seats: crate::seats::Seats::default(),
             seat_keys_only: false,
             protocols,
@@ -416,6 +423,7 @@ impl State {
             frame: crate::window_frame::WindowFrame::default(),
             window_frames: std::collections::HashMap::new(),
             covers: std::collections::BTreeMap::new(),
+            clips: std::collections::HashMap::new(),
             layer_counts: Vec::new(),
             frame_images: crate::window_frame::FrameImages::default(),
             closing: Vec::new(),
@@ -717,6 +725,7 @@ impl State {
     pub(crate) fn release_snapshot(&mut self, id: u64) {
         self.closing.retain(|closing| closing.info.id != id);
         self.effects.remove(&id);
+        self.clips.remove(&id);
     }
 
     /// Keep what `window` just drew under `renderer` , for its close.
@@ -728,6 +737,14 @@ impl State {
         if let Some(id) = describe(self, window).map(|info| info.id) {
             self.snapshots.record_shown(id, &self.hdr, renderer, window);
         }
+    }
+
+    /// The part of the layout `window` is cut to, when the policy cut it.
+    pub(crate) fn clip_of(
+        &self,
+        window: &Window,
+    ) -> Option<smithay::utils::Rectangle<i32, Logical>> {
+        describe(self, window).and_then(|info| self.clips.get(&info.id).copied())
     }
 
     /// How `window` is drawn this frame: its effect, or as it stands.
@@ -812,6 +829,9 @@ impl State {
             };
             let element = smithay::utils::Rectangle::from_size(window.geometry().size).to_f64();
             if element.contains(point - location.to_f64())
+                && self
+                    .clip_of(window)
+                    .is_none_or(|clip| clip.to_f64().contains(point))
                 && !covers.iter().any(|cover| cover.contains(point))
             {
                 return Some((window.clone(), location));
@@ -1286,7 +1306,9 @@ impl State {
             .seat
             .get_pointer()
             .is_some_and(|pointer| pointer.is_grabbed());
-        let target = if grabbed {
+        let target = if let Some(index) = self.pressed_host {
+            PointerTarget::Host(index)
+        } else if grabbed {
             PointerTarget::Clients
         } else {
             self.host_under(location)
@@ -1335,6 +1357,9 @@ impl State {
             self.buttons_down.insert(button);
         } else {
             self.buttons_down.remove(&button);
+            if self.buttons_down.is_empty() {
+                self.pressed_host = None;
+            }
             // Every surface hears the press end, before any of them acts on the button: a press and
             // what it is still doing are over together.
             for host in &mut self.hosts {
@@ -1343,6 +1368,9 @@ impl State {
         }
         if self.drag_button(button, pressed, serial, time) {
             return;
+        }
+        if pressed {
+            self.carry_window_under_pointer(serial, time);
         }
         if pressed {
             self.policy.pointer_pressed(self.pointer.x, self.pointer.y);
@@ -1354,6 +1382,9 @@ impl State {
             }
         }
         if let PointerTarget::Host(index) = self.pointer_target {
+            if pressed {
+                self.pressed_host = Some(index);
+            }
             if let Some(host) = self.hosts.get_mut(index) {
                 host.pointer_button(button, pressed);
             }
@@ -1390,6 +1421,48 @@ impl State {
         }
         if !pressed {
             self.x11_drag_motion(self.pointer);
+        }
+    }
+
+    /// A press with Super held over a window: the desktop beneath the windows carries that window
+    /// with the press, as a press on its bar would, and takes the pointer from the window's client
+    /// until the press ends.
+    fn carry_window_under_pointer(&mut self, serial: Serial, time: u32) {
+        let logo = self
+            .seat
+            .get_keyboard()
+            .is_some_and(|keyboard| keyboard.modifier_state().logo);
+        if !logo
+            || self.locked()
+            || self.pointer_target != PointerTarget::Clients
+            || self.window_at(self.pointer).is_none()
+        {
+            return;
+        }
+        let Some(index) = self.hosts.iter().rposition(|host| host.below_windows()) else {
+            return;
+        };
+        let (x, y) = (self.pointer.x, self.pointer.y);
+        let Some(host) = self.hosts.get_mut(index) else {
+            return;
+        };
+        host.pointer_motion(x, y);
+        if !host.carries_window_at(x, y) {
+            return;
+        }
+        self.pointer_target = PointerTarget::Host(index);
+        // The window's client loses the pointer while the desktop carries its window.
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location: self.pointer,
+                    serial,
+                    time,
+                },
+            );
+            pointer.frame(self);
         }
     }
 
@@ -1561,6 +1634,11 @@ impl State {
             if was != Some(arrangement.location) {
                 moved = true;
             }
+            let cut = match arrangement.clip {
+                Some(clip) => self.clips.insert(id, clip) != Some(clip),
+                None => self.clips.remove(&id).is_some(),
+            };
+            moved |= cut;
             if let Some(x11) = window.x11_surface() {
                 let size = arrangement
                     .size
@@ -1586,6 +1664,10 @@ impl State {
             self.space
                 .map_element(window.clone(), arrangement.location, activated);
         }
+        let before = self.clips.len();
+        self.clips
+            .retain(|id, _| arrangements.iter().any(|arrangement| arrangement.id == *id));
+        moved |= self.clips.len() != before;
         if moved {
             // A window the policy placed elsewhere may stand on other outputs now: they are the
             // ones that show it, and what they show changed, so they owe a frame.

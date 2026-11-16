@@ -317,20 +317,12 @@ impl DesktopChrome {
         self.move_focused_group_to(row);
     }
 
-    /// Show the window in front on the display `steps` on, as its menu's row for that display does.
-    fn move_focused_group_to_display(&self, steps: isize) {
-        let row = self.focused_route().and_then(|route| {
-            self.handle.read(|tree| {
-                let group = route.group.parse::<u64>().ok()?;
-                let displays = &tree.outputs.displays;
-                let at = displays
-                    .iter()
-                    .position(|display| Some(display.id) == tree.outputs.display_of(group))?;
-                let display = displays.get(at.checked_add_signed(steps)?)?;
-                Some(window_menu::move_to_display_id(display.id))
-            })
-        });
-        self.move_focused_group_to(row);
+    /// Show the window in front on the display that stands `steps` displays to its right (left
+    /// when negative); with none that way, say the window can go no further.
+    fn move_focused_group_to_display(&self, steps: i32) {
+        if !self.handle.move_focused_to_display(steps) {
+            self.handle.acknowledge(crate::i18n::t("shell-window-edge"));
+        }
     }
 
     /// Choose the menu row `row` carrying the window in front somewhere; with no such place, say

@@ -167,27 +167,38 @@ pub(crate) fn logical_width(output: &Output) -> i32 {
 }
 
 /// Where outputs go in the logical layout, in the order given: an output named in `fixed` at its
-/// place, the others packed left to right (top edge at 0) after every fixed one, so outputs that
-/// come and go leave no holes. `outputs` are `(name, logical width)` .
+/// place, the others packed left to right from 0 (top edge at 0) into the room the fixed ones leave
+/// across, so an output placed beside another (`HDMI-A-1` at 1280) has the unplaced one at 0, left
+/// of it, and outputs that come and go leave no holes. `outputs` are `(name, logical width)` .
 pub(crate) fn arrange(
     outputs: &[(String, i32)],
     fixed: &std::collections::HashMap<String, (i32, i32)>,
 ) -> Vec<(i32, i32)> {
-    let mut next_x = outputs
+    let taken: Vec<(i32, i32)> = outputs
         .iter()
         .filter_map(|(name, width)| {
             fixed
                 .get(name)
-                .map(|(x, _)| x.saturating_add((*width).max(0)))
+                .map(|(x, _)| (*x, x.saturating_add((*width).max(0))))
         })
-        .max()
-        .unwrap_or(0);
+        .collect();
+    let mut next_x = 0;
     outputs
         .iter()
         .map(|(name, width)| {
             fixed.get(name).copied().unwrap_or_else(|| {
+                let width = (*width).max(0);
+                // Past every fixed output this one would overlap across.
+                while let Some(end) = taken
+                    .iter()
+                    .filter(|(x0, x1)| next_x < *x1 && *x0 < next_x.saturating_add(width.max(1)))
+                    .map(|(_, x1)| *x1)
+                    .max()
+                {
+                    next_x = end;
+                }
                 let at = (next_x, 0);
-                next_x = next_x.saturating_add((*width).max(0));
+                next_x = next_x.saturating_add(width);
                 at
             })
         })
@@ -452,6 +463,17 @@ mod tests {
             assert_eq!(
                 arrange(&outputs(&[("eDP-1", 1280), ("DP-1", 1920)]), &fixed),
                 vec![(1920, 0), (0, -1080)]
+            );
+            // An output placed right of the first leaves the first where it is, at 0.
+            let fixed = std::collections::HashMap::from([("HDMI-A-1".to_owned(), (1280, 0))]);
+            assert_eq!(
+                arrange(&outputs(&[("HEADLESS-1", 1280), ("HDMI-A-1", 1280)]), &fixed),
+                vec![(0, 0), (1280, 0)]
+            );
+            // One too wide for the room left of a fixed output goes past it.
+            assert_eq!(
+                arrange(&outputs(&[("HEADLESS-1", 1920), ("HDMI-A-1", 1280)]), &fixed),
+                vec![(2560, 0), (1280, 0)]
             );
         }
 

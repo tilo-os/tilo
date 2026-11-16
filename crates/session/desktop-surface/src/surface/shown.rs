@@ -14,6 +14,20 @@ impl DesktopHandle {
         self.shared.borrow().shown_tabs.content()
     }
 
+    /// Make the next press carry the window it lands in from anywhere in it, as a press on its bar
+    /// does: the press at `point` (the surface's coordinates) was made with Super held. Whether a
+    /// window the shell draws stands there to carry.
+    pub fn carry_next_press_at(&self, point: ui::kurbo::Point) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let under = shared
+            .shown_tabs
+            .tiles()
+            .iter()
+            .any(|(_, rect)| rect.contains(point));
+        shared.carry_press = under.then_some(point);
+        under
+    }
+
     /// Where each drawn window's active tab stands, in the surface's coordinates, as of the last
     /// layout: the tab's content where it has laid out, and the whole window where it has not (a
     /// window this device shows but has not opened, whose position an offset on it still means

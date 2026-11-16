@@ -46,6 +46,7 @@ impl WindowPolicy for Parkable {
                     id: info.id,
                     location: Point::from((x, 0)),
                     size: None,
+                    clip: None,
                 })
                 .collect(),
         )

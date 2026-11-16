@@ -51,6 +51,7 @@ impl Shared {
             top_overlay: 0.0,
             replaced: false,
             shown_tabs: ShownTabs::default(),
+            carry_press: None,
             float_covers: Vec::new(),
             shown_strip: None,
             hint_places: ui::widget::HintPlaces::default(),
