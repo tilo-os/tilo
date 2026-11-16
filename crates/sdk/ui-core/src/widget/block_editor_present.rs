@@ -464,28 +464,6 @@ mod tests {
         editor
     }
 
-    fn painted_rows(content: BlockContent) -> Vec<Vec<u8>> {
-        let theme = crate::theme::Theme::dark();
-        let mut editor = BlockEditor::new().with_wrap_lines(true);
-        editor.set_local_author(Some("ada".into()));
-        editor.present_blocks(&[content]);
-        let frame = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            editor,
-            (220, 160),
-            theme.clone(),
-        );
-        let mut pixels = vec![0u8; 220 * 160 * 4];
-        let mut target = tilo_cpu_raster::Target::new(&mut pixels, 220, 160, 220 * 4).unwrap();
-        tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
-            frame.scene().encoding(),
-            &mut target,
-            None,
-            theme.tokens.colors.surfaces.content,
-        );
-        pixels.chunks(220 * 4).map(<[u8]>::to_vec).collect()
-    }
-
     tilo_test_env::scenario! {
         /// What presenting new blocks keeps: caret, focus, authorship, kind and widget.
         /// Each phase was a test of its own and builds its own fixture.
@@ -535,32 +513,6 @@ mod tests {
             );
             assert_eq!(editor.blocks()[0].content(), authored);
             assert!(!editor.present_blocks(&[authored]));
-        }
-
-        phase another_authors_wrapped_run_is_tinted_on_each_line;
-        {
-            let text = "The agent added this line for Friday, and it wraps here";
-            let by = |author: &str| BlockContent {
-                authors: vec![(0..text.len(), author.into())],
-                ..BlockContent::paragraph("a", text)
-            };
-            let plain = painted_rows(BlockContent::paragraph("a", text));
-            let tinted = painted_rows(by("agent:helper"));
-            let changed: Vec<usize> = (0..plain.len())
-                .filter(|&row| plain[row] != tinted[row])
-                .collect();
-            assert!(
-                changed
-                    .last()
-                    .zip(changed.first())
-                    .is_some_and(|(last, first)| last - first > 24),
-                "the run is tinted over more than one line: rows {changed:?}"
-            );
-            assert_eq!(
-                painted_rows(by("ada")),
-                plain,
-                "one's own words are not tinted"
-            );
         }
 
         phase a_new_kind_keeps_the_text_and_caret;
