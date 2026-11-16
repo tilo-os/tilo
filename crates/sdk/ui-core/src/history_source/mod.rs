@@ -147,6 +147,8 @@ pub struct HistorySource {
     max_entries: usize,
     record_genesis: bool,
     pass_over: Option<PassOver>,
+    /// Only changes made at or after this (Unix milliseconds) make rows.
+    made_since: Option<i64>,
 }
 
 /// Which changes a [`HistorySource`] passes over; see
@@ -168,7 +170,19 @@ impl HistorySource {
             max_entries: DEFAULT_MAX_ENTRIES,
             record_genesis: true,
             pass_over: None,
+            made_since: None,
         }
+    }
+
+    /// Only the changes made at or after `ms` (Unix milliseconds) make rows:
+    /// those made before keep their place in the window, but what they did
+    /// is never read. For a reader that only wants what was done lately, such
+    /// as what a person is doing now, which then reads nothing of a long
+    /// history it was handed.
+    #[must_use]
+    pub fn made_since(mut self, ms: i64) -> Self {
+        self.made_since = Some(ms);
+        self
     }
 
     /// Pass over the changes `pass_over` names: they are part of the

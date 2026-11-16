@@ -1014,9 +1014,15 @@ struct OwnRead {
 }
 
 impl OwnRead {
-    /// Bring the steps up to `doc` as `authors` name them: nothing is read while neither moved,
-    /// and only the changes made since otherwise.
-    fn follow(&mut self, doc: &automerge::AutoCommit, authors: &ui::AuthorDirectory) {
+    /// Bring the steps made since `since_ms` up to `doc` as `authors` name them: nothing is read
+    /// while neither moved, and only the changes made since otherwise. What was done before
+    /// `since_ms` is never read: a record a workspace hands over whole costs nothing to follow.
+    fn follow(
+        &mut self,
+        doc: &automerge::AutoCommit,
+        authors: &ui::AuthorDirectory,
+        since_ms: u64,
+    ) {
         let heads = ui::history_source::committed_heads(doc);
         if heads == self.heads && self.authors.as_ref() == Some(authors) {
             return;
@@ -1027,6 +1033,7 @@ impl OwnRead {
             .without_record_genesis()
             .with_authors(authors.clone())
             .with_max_entries(MAX_OWN_ACTIONS)
+            .made_since(i64::try_from(since_ms).unwrap_or(i64::MAX))
             .entries_since(&mut doc, &mut self.log);
         self.heads = heads;
         self.authors = Some(authors.clone());
@@ -1087,7 +1094,7 @@ impl Activity {
             };
             let key = record.origin().key();
             let mut read = reads.remove(&key).unwrap_or_default();
-            read.follow(doc, &authors);
+            read.follow(doc, &authors, since_ms);
             kept.insert(key.clone(), read);
             let Some(entries) = kept.get(&key).map(|read| read.entries.as_slice()) else {
                 continue;

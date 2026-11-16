@@ -7,9 +7,10 @@
 //! heads before it. Adding changes to a document only appends to its log
 //! ([`automerge::Automerge::change_hashes`]), so the readings of a log's
 //! prefix stay valid and a refresh reads only what was appended. Anything
-//! else (another document, a reordered log after a reload, a change of locale
-//! or of the window) reads the log from scratch, which is what
-//! [`HistorySource::entries`] always does.
+//! else (another document, a reordered log after a reload, a change of the
+//! window) reads the log from scratch, which is what
+//! [`HistorySource::entries`] always does. A change of locale reads nothing
+//! again: the rows are worded from the readings on every read.
 
 use std::collections::HashMap;
 
@@ -29,6 +30,11 @@ use crate::widget::history::{HistoryEntry, HistoryEntryId};
 pub struct HistoryLog {
     /// What the readings were made under; when it differs, they are redone.
     basis: Option<Basis>,
+    /// What the rows were last worded in.
+    words: Words,
+    /// Every change of the log made at or after this (Unix milliseconds) is
+    /// read; the ones before it may not be ([`HistorySource::made_since`]).
+    read_from: i64,
     /// Every change read, in the document's log order.
     changes: Vec<Logged>,
     /// Each change's position in `changes`, by its entry id; the first one
@@ -57,8 +63,16 @@ struct Basis {
     structural: bool,
     /// Whether the source passes over some changes.
     passes_over: bool,
-    /// Readings carry translated words: the active locale, and the
-    /// catalogue revision, which moves whenever a catalogue is added.
+}
+
+/// What the rows' words are made in: the active locale, and the catalogue
+/// revision, which moves whenever a catalogue is added. Readings hold no
+/// words (the rows are worded from them on every read), so a change here
+/// reads nothing again; it only moves [`HistoryLog::rows_revision`]. A page
+/// adds catalogues as its apps' code arrives, which once read every record's
+/// history again each time.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct Words {
     locale: String,
     catalogue: u64,
 }
@@ -145,9 +159,20 @@ impl HistoryLog {
             // the whole document.
             structural: tilo_doc::model::open(doc, &automerge::ROOT).is_ok(),
             passes_over: source.pass_over.is_some(),
+        };
+        let words = Words {
             locale: crate::i18n::I18nManager::window_locale(),
             catalogue: crate::i18n::I18nManager::revision(),
         };
+        if self.words != words {
+            self.words = words;
+            self.rows_revision = self.rows_revision.wrapping_add(1);
+        }
+        // A source that wants older rows than this log read reads them.
+        let read_from = source.made_since.unwrap_or(i64::MIN);
+        if read_from < self.read_from {
+            self.basis = None;
+        }
         let appended = {
             let log = doc.committed_document().change_hashes();
             let read = self.changes.len();
@@ -177,6 +202,8 @@ impl HistoryLog {
         let max_entries = basis.max_entries;
         *self = Self {
             basis: Some(basis),
+            words: std::mem::take(&mut self.words),
+            read_from: source.made_since.unwrap_or(i64::MIN),
             reads: self.reads,
             rows_revision: self.rows_revision.wrapping_add(1),
             ..Self::default()
@@ -196,7 +223,7 @@ impl HistoryLog {
             if position < start {
                 self.push(meta, passed);
             } else {
-                self.read(doc, meta, passed);
+                self.read(source, doc, meta, passed);
             }
         }
     }
@@ -225,8 +252,9 @@ impl HistoryLog {
         if passed_over.len() != metas.len() {
             return false;
         }
+        self.read_from = self.read_from.max(source.made_since.unwrap_or(i64::MIN));
         for (meta, passed) in metas.into_iter().zip(passed_over) {
-            self.read(doc, meta, passed);
+            self.read(source, doc, meta, passed);
         }
         true
     }
@@ -235,7 +263,22 @@ impl HistoryLog {
     /// its heads and as of the heads before it. A diff between two versions
     /// walks only what differs between them, so this costs what the change
     /// changed, except where the tilo-doc snapshots are read.
-    fn read(&mut self, doc: &mut AutoCommit, meta: Logged, passed_over: bool) {
+    fn read(
+        &mut self,
+        source: &HistorySource,
+        doc: &mut AutoCommit,
+        meta: Logged,
+        passed_over: bool,
+    ) {
+        if source.made_since.is_some_and(|since| meta.time_ms < since) {
+            // Made before what the source wants: it takes its place, unread.
+            if !passed_over {
+                self.rows_revision = self.rows_revision.wrapping_add(1);
+            }
+            self.push(meta, passed_over);
+            self.snapshot = None;
+            return;
+        }
         self.reads = self.reads.saturating_add(1);
         let before = self.heads.clone();
         let (hash, time_ms) = (meta.hash, meta.time_ms);
@@ -322,8 +365,13 @@ impl HistoryLog {
         // A person typing on in one field is one row ([`super::typing`]):
         // each author's open run, by the row it is.
         let mut typing = super::typing::TypingRuns::<usize>::default();
+        let made_since = source.made_since.unwrap_or(i64::MIN);
         for logged in self.changes.iter().skip(start) {
-            let Some(reading) = &logged.reading else {
+            let Some(reading) = logged
+                .reading
+                .as_ref()
+                .filter(|_| logged.time_ms >= made_since)
+            else {
                 typing.continues(&logged.actor, None, logged.time_ms);
                 continue;
             };

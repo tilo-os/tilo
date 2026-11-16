@@ -1339,13 +1339,16 @@ fn entries_since_reads_only_appended_changes_and_matches_entries() {
     assert_eq!(read, changes.min(4), "the other document's window");
     assert_matches_a_fresh_read(&source, &mut other, &log, &rows, "another document");
 
-    // phase: a change of locale reads the window again, in its words
+    // phase: a change of locale reads nothing again: the rows are worded in
+    // it, and they moved
+    let revision = log.rows_revision();
     crate::i18n::I18nManager::set_pseudo_locale(crate::i18n::PseudoLocale::Expanded);
     let (rows, read) = read_since(&source, &mut other, &mut log);
     let fresh = source.entries(&mut other);
     crate::i18n::I18nManager::set_pseudo_locale(crate::i18n::PseudoLocale::Off);
-    assert_eq!(read, changes.min(4), "a new locale reads again");
+    assert_eq!(read, 0, "a new locale reads no change again");
     assert_eq!(rows, fresh, "rows in the new locale");
+    assert_ne!(log.rows_revision(), revision, "the rows moved");
 
     // phase: an unschematised document whose window slides one change at a time
     let mut plain = AutoCommit::new();
@@ -1433,4 +1436,40 @@ fn passed_over_changes_make_no_row_and_take_no_place_in_the_window() {
     let mut scratch = HistoryLog::default();
     let (fresh, _) = read_since(&viewer, &mut doc, &mut scratch);
     assert_eq!(fresh, rows);
+}
+
+#[test]
+fn a_source_made_since_a_time_reads_nothing_made_before_it() {
+    let mut doc = AutoCommit::new();
+    doc.set_actor(ActorId::from("alice".as_bytes()));
+    for hour in 0..10_i64 {
+        doc.put(ROOT, "title", format!("draft {hour}")).unwrap();
+        tilo_resource::history::commit_stamped_at(&mut doc, T0 + hour * HOUR);
+    }
+    let since = |hour: i64| source().with_max_entries(16).made_since((T0 + hour * HOUR) * 1000);
+    let mut log = HistoryLog::default();
+    let (rows, read) = read_since(&since(7), &mut doc, &mut log);
+    assert_eq!(read, 3, "only the three changes made since");
+    assert_eq!(rows.len(), 3);
+    assert_matches_a_fresh_read(&since(7), &mut doc, &log, &rows, "since 7");
+
+    // phase: later, the window holds fewer rows and reads nothing again
+    let (rows, read) = read_since(&since(8), &mut doc, &mut log);
+    assert_eq!(read, 0);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows, since(8).entries(&mut doc), "as a fresh read lists them");
+
+    // phase: a change made now is read, one stamped before the time is not
+    doc.put(ROOT, "title", "late").unwrap();
+    tilo_resource::history::commit_stamped_at(&mut doc, T0 + 10 * HOUR);
+    doc.put(ROOT, "title", "backdated").unwrap();
+    tilo_resource::history::commit_stamped_at(&mut doc, T0 + HOUR);
+    let (rows, read) = read_since(&since(8), &mut doc, &mut log);
+    assert_eq!(read, 1, "the change made since");
+    assert_eq!(rows, since(8).entries(&mut doc));
+
+    // phase: asked for older rows, it reads them
+    let (rows, read) = read_since(&since(2), &mut doc, &mut log);
+    assert_eq!(read, 9, "the window's changes made since then");
+    assert_eq!(rows, since(2).entries(&mut doc));
 }
