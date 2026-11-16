@@ -204,17 +204,19 @@ fn a_send_lists_the_workspaces_agents_and_people() {
     let served = admit(&mut session, &questions, &program);
     assert!(served.pointer("/result/serverInfo").is_some(), "{served}");
 
-    let recipients = crate::common::wait_for(&mut session, "the send's recipients", |session| {
-        let reading = session.read("session:send-to")?;
-        let recipients = reading.get("recipients")?.as_array()?.clone();
-        (!recipients.is_empty()).then_some(recipients)
-    });
-    eprintln!("the send lists: {recipients:?}");
-    assert!(
-        recipients
-            .iter()
-            .any(|recipient| recipient["name"] == "Claude Code" && recipient["kind"] == "agent"),
-        "the admitted client is an agent a message can go to: {recipients:?}"
+    // The admission reaches the workspace's members after the program is served: the send lists
+    // the agent once it is one.
+    let recipients = crate::common::wait_for(
+        &mut session,
+        "the admitted client among the send's recipients",
+        |session| {
+            let reading = session.read("session:send-to")?;
+            let recipients = reading.get("recipients")?.as_array()?.clone();
+            recipients
+                .iter()
+                .any(|recipient| recipient["name"] == "Claude Code" && recipient["kind"] == "agent")
+                .then_some(recipients)
+        },
     );
     let mut seen: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
     for recipient in &recipients {
