@@ -116,7 +116,7 @@ fn say(imported: &Imported) {
 /// One operator command over the workspace's socket, and its one answer line.
 fn ask(socket: &std::path::Path, command: &str) -> anyhow::Result<String> {
     use std::io::{Read as _, Write as _};
-    let mut connection = std::os::unix::net::UnixStream::connect(socket)
+    let mut connection = tilo_files::native::socket::connect(socket)
         .with_context(|| format!("the workspace is not listening on {}", socket.display()))?;
     connection.write_all(command.as_bytes())?;
     connection.write_all(b"\n")?;
