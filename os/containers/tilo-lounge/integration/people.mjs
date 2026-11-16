@@ -81,6 +81,8 @@ const APPS = (process.env.TILO_PEOPLE_APPS ?? 'Notes,Sheets,Calculator').split('
 const report = {site, relay, origin, at: new Date().toISOString()};
 // Every page this run opened, so a failure leaves what each one said behind.
 const opened = [];
+// What each press stood on, so a failure says why it did not take.
+const presses = [];
 const failed = async (message, tab) => {
   report.error = message;
   if (tab) report.shown = await snapshot(tab).catch(() => null);
@@ -98,6 +100,7 @@ const failed = async (message, tab) => {
     const lines = (page.log ?? []).slice(-40);
     if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
   }
+  if (presses.length) console.error(`--- presses: ${JSON.stringify(presses.slice(-4))}`);
   console.error(`FAIL: ${message}`);
   if (!message.includes('the machine: ')) console.error(`the machine as it failed: ${waits.machine().text}`);
   process.exit(1);
@@ -604,7 +607,19 @@ const press = async (tab, name, nth = 0) => {
     : [node.bounds.x0 ?? node.bounds.x, node.bounds.y0 ?? node.bounds.y,
        node.bounds.x1 ?? node.bounds.x + node.bounds.width, node.bounds.y1 ?? node.bounds.y + node.bounds.height];
   const corner = JSON.parse(await canvasTopLeft(tab));
-  await click(tab, corner.x + (x0 + x1) / 2, corner.y + (y0 + y1) / 2);
+  const x = corner.x + (x0 + x1) / 2;
+  const y = corner.y + (y0 + y1) / 2;
+  // What stands at the point the press is for: a control drawn by the shell
+  // is under page chrome only when something of the page covers it, and then
+  // the press is that element's.
+  const under = await tab.evaluate(`(() => {
+    const element = document.elementFromPoint(${x}, ${y});
+    if (!element) return null;
+    return JSON.stringify({tag: element.tagName, className: String(element.className),
+      semantic: element.dataset?.tiloSemantic ?? null});
+  })()`);
+  presses.push({name, bounds: node.bounds, at: {x, y}, under});
+  await click(tab, x, y);
   return true;
 };
 // Press the control `name` once the desktop publishes it: the tree is read
