@@ -1002,6 +1002,10 @@ pub(crate) struct Roster {
     /// ([`tilo_session_client::narration::Held`]).
     #[cfg(target_os = "linux")]
     narrated: RefCell<tilo_session_client::narration::Held>,
+    /// The same work, by workspace, for the apps here: each window showing the record an agent
+    /// acts in draws its cursor there ([`Client::take_narrated`]).
+    #[cfg(target_os = "linux")]
+    for_apps: RefCell<Vec<(String, tilo_actions::SemanticInteraction)>>,
 }
 
 /// What this session keeps of the plane beside the client's boards: the roster every surface reads,
@@ -1022,6 +1026,8 @@ impl Roster {
             arrival: RefCell::new(None),
             #[cfg(target_os = "linux")]
             narrated: RefCell::new(tilo_session_client::narration::Held::default()),
+            #[cfg(target_os = "linux")]
+            for_apps: RefCell::new(Vec::new()),
         }
     }
 
@@ -1145,10 +1151,11 @@ impl Roster {
     #[cfg(target_os = "linux")]
     /// Take one semantic frame the plane heard: an agent's narrated action in a workspace's record.
     /// The work is admitted only from a member the workspace's board knows as an agent
-    /// ([`tilo_session_client::narration::Held`]) and bound to that member. A native desktop draws
-    /// no agent cursor inside a window — each app keeps its own presence — so what it takes here is
-    /// where the person's own agent works, which comes into view on the surface's next frame
-    /// ([`Self::reveal_own_agent_work`]). Whether `event` was one.
+    /// ([`tilo_session_client::narration::Held`]) and bound to that member. Each app here keeps its
+    /// own presence, so the work is kept for the apps too ([`Client::take_narrated`]), which draw
+    /// the agent's cursor in the window showing its record; and where the person's own agent works
+    /// comes into view on the surface's next frame ([`Self::reveal_own_agent_work`]). Whether
+    /// `event` was one.
     fn hear_narrated(&self, event: &Event, client: &SessionClient) -> bool {
         let Event::Live { ws, from, frame } = event else {
             return false;
@@ -1166,6 +1173,9 @@ impl Roster {
         drop(narrated);
         if admitted {
             tilo_desktop::here::note_narrated(&mut self.here.borrow_mut(), &work);
+            self.for_apps
+                .borrow_mut()
+                .extend(work.into_iter().map(|work| (workspace.clone(), work)));
         }
         true
     }
@@ -1604,6 +1614,14 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn take_surfaces(&self) -> Vec<ReceivedSurface> {
         self.hosting.local.take_surfaces()
+    }
+
+    /// Take the work the workspaces' agents narrated since the last call, by workspace, admitted
+    /// and bound to the agent that did it: what this device's apps draw as that agent's cursor.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_narrated(&self) -> Vec<(String, tilo_actions::SemanticInteraction)> {
+        std::mem::take(&mut *self.hosting.roster.for_apps.borrow_mut())
     }
 
     /// Take the workspaces whose host said their owner deleted them since the last call.

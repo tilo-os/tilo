@@ -1786,6 +1786,31 @@ tilo_test_env::scenario! {
             .expect("a frame"),
         });
 
+        // The work reaches this device's apps too, as the presence the window on its record draws.
+        let fanout = std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new());
+        let carets = crate::carets::Carets::new(std::sync::Arc::clone(&fanout), std::sync::Arc::new(|| {}));
+        let handed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&handed);
+        let _apps = fanout.subscribe_workspaces(
+            vec![WORKSPACE.to_owned()],
+            Box::new(move |event, _route| {
+                if let runtime_collab::event::CollabEvent::RemotePresenceUpdate { key, payload, .. } = event
+                    && let collab_types::presence::PresencePayload::Interaction(work) = payload
+                {
+                    sink.lock().expect("the handed work").push((key.clone(), work.action.app.clone()));
+                }
+            }),
+        );
+        carets.narrate(sync.take_narrated());
+        let handed = handed.lock().expect("the handed work").clone();
+        assert_eq!(handed.len(), 1, "the agent's work is handed to the apps once");
+        assert!(
+            matches!(&handed[0].0, collab_types::presence::PresenceKey::Resource { app, .. } if app == "so.tilo.notes"),
+            "on the record of the app it acted in: {:?}",
+            handed[0].0
+        );
+        assert!(sync.take_narrated().is_empty(), "taken once");
+
         // Acting where it already was shows that window again, without taking the keyboard.
         let mut tree = shell(WORKSPACE);
         let people = sync.show(&mut tree, &no_records(), &|app: &str| Some(app.to_owned()));

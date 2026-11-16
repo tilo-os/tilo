@@ -33,6 +33,9 @@ impl Session {
                     .collect()
             });
             plane.carets.follow(sync, workspaces);
+            // What the workspaces' agents did, drawn in this device's windows on the record each
+            // acted in.
+            plane.carets.narrate(sync.take_narrated());
             // Who is here in the workspace in front, named and coloured as the bar and People
             // draw them: the apps there are told, so a caret wears its person's face.
             if let Some((workspace, _)) = sync.front_members() {
