@@ -15,8 +15,10 @@ that way repeatedly.
 Only the touched packages are linted, and the Clippy runs start together, so a
 one-crate push costs about one build. Cargo compiles wherever `$CARGO` points
 when it is set - any cargo drop-in, which may build on another machine - and
-otherwise the `cargo` on PATH. The wasm32 pass needs the target, so it is
-skipped with a line saying so where the cargo in use cannot build it.
+otherwise the `cargo` on PATH. Formatting is always checked by the `cargo` on
+PATH: it compiles nothing, so it needs no other machine, and a drop-in that
+builds elsewhere need not format at all. The wasm32 pass needs the target, so
+it is skipped with a line saying so where the cargo in use cannot build it.
 
 There is no switch to skip the lint: `git push --no-verify` is Git's own
 escape, and CONTRIBUTING.md asks contributors never to use it.
@@ -73,6 +75,16 @@ def say(message: str) -> None:
 def cargo_command() -> list[str]:
     """The cargo that builds: any drop-in named in $CARGO (which may build on another machine), else cargo."""
     return shlex.split(os.environ.get("CARGO", "")) or ["cargo"]
+
+
+def format_command() -> list[str]:
+    """The cargo that formats: always the one here.
+
+    Formatting reads source files and compiles nothing, so it never needs the
+    machine `$CARGO` builds on, and a drop-in that builds elsewhere need not
+    run `cargo fmt` at all.
+    """
+    return ["cargo"]
 
 
 def wasm_target_installed() -> bool:
@@ -192,7 +204,7 @@ def lint_runs(native: list[str], web: list[str], formatting: bool) -> list[Lint]
     selected = [item for name in native for item in ("-p", name)]
     runs = []
     if formatting:
-        runs.append(Lint("rustfmt", [*cargo, "fmt", "--check", *selected]))
+        runs.append(Lint("rustfmt", [*format_command(), "fmt", "--check", *selected]))
     runs.append(Lint("clippy (native)",
                      [*cargo, "clippy", "--locked", *selected, "--all-targets", "--", "-D", "warnings"]))
     if web:
@@ -204,7 +216,10 @@ def lint_runs(native: list[str], web: list[str], formatting: bool) -> list[Lint]
 
 
 def rustfmt_available() -> bool:
-    return subprocess.run([*cargo_command(), "fmt", "--version"], capture_output=True,
+    """Whether the cargo here can format, whatever `$CARGO` names to build with."""
+    if shutil.which(format_command()[0]) is None:
+        return False
+    return subprocess.run([*format_command(), "fmt", "--version"], capture_output=True,
                           check=False).returncode == 0
 
 
