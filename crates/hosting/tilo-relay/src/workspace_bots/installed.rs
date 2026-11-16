@@ -30,8 +30,10 @@ use tilo_agent_session::bot::held::HeldRecords;
 use tilo_agent_session::{AppCatalogue, ReplicaActor};
 use tilo_automation::dispatch::queue::{DeadLetter, Finished, FiringQueue};
 use tilo_automation::dispatch::{Armed, ConnectorEvent, Event, Firer, Firing};
-use tilo_automation::run::{AskRequest, ConfirmationRequest, RunHooks};
-use tilo_automation::{RunMode, RunRequest, RunTrigger, Shortcut, TriggerSpec};
+use tilo_automation::run::{AskRequest, ConfirmationRequest, InvocationHooks};
+use tilo_automation::{
+    InvocationMode, InvocationRequest, InvocationTrigger, Shortcut, TriggerSpec,
+};
 use tilo_connector::ConnectorProcess;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
@@ -160,7 +162,7 @@ impl Performer for ConnectorPerformer {
 /// and the API answers every step at once.
 struct Unattended;
 
-impl RunHooks for Unattended {
+impl InvocationHooks for Unattended {
     fn confirm(
         &self,
         _request: ConfirmationRequest,
@@ -179,7 +181,7 @@ impl RunHooks for Unattended {
 
 /// How a firing went on this host.
 enum Fired {
-    Ran(Box<tilo_automation::RunReport>),
+    Ran(Box<tilo_automation::InvocationReport>),
     /// It ran, and the workspace refused what it changed, for this reason.
     Refused(String),
 }
@@ -387,7 +389,7 @@ impl BotRunner {
     ///
     /// # Errors
     /// A record could not be read or the state file written.
-    pub async fn step(&mut self) -> Result<Vec<tilo_automation::RunReport>, String> {
+    pub async fn step(&mut self) -> Result<Vec<tilo_automation::InvocationReport>, String> {
         let now = tilo_clock::unix_now_ms_i64();
         for firing in self.take_in().await? {
             if let Some(dead) = self.progress.queue.push(firing, now) {
@@ -416,12 +418,12 @@ impl BotRunner {
                         .progress
                         .queue
                         .finished(&report, tilo_clock::unix_now_ms_i64());
-                    tracing::info!(installation = %self.bot.installation, run = %firing.run.0, outcome = ?report.outcome, ?finished, "bot run finished");
+                    tracing::info!(installation = %self.bot.installation, run = %firing.invocation.0, outcome = ?report.outcome, ?finished, "bot run finished");
                     reports.push(*report);
                     finished
                 }
                 Err(error) => {
-                    tracing::warn!(installation = %self.bot.installation, run = %firing.run.0, %error, "bot run could not be run");
+                    tracing::warn!(installation = %self.bot.installation, run = %firing.invocation.0, %error, "bot run could not be run");
                     self.progress
                         .queue
                         .not_run(&error, tilo_clock::unix_now_ms_i64())
@@ -607,7 +609,11 @@ impl BotRunner {
             Arc::clone(&self.shortcut),
             tokio::runtime::Handle::current(),
         );
-        let (run, trigger, cause) = (firing.run, firing.trigger.clone(), firing.cause.clone());
+        let (run, trigger, cause) = (
+            firing.invocation,
+            firing.trigger.clone(),
+            firing.cause.clone(),
+        );
         api.set_cause(cause.clone());
         // Replicas and connector performs block; the run is driven on its
         // own blocking thread so they never hold a runtime worker.
@@ -615,12 +621,12 @@ impl BotRunner {
             handle.block_on(tilo_automation::run::run(
                 &*api,
                 &Unattended,
-                RunRequest {
+                InvocationRequest {
                     shortcut: &shortcut,
-                    run,
+                    invocation: run,
                     caller,
-                    mode: RunMode::Unattended,
-                    trigger: RunTrigger::Fired(trigger),
+                    mode: InvocationMode::Unattended,
+                    trigger: InvocationTrigger::Fired(trigger),
                     inputs,
                     caused_by: cause,
                     parent: None,
@@ -656,7 +662,7 @@ impl BotRunner {
                 );
                 tracing::warn!(
                     installation = %self.bot.installation,
-                    run = %firing.run.0,
+                    run = %firing.invocation.0,
                     app = %route.app_id,
                     record = %route.record,
                     change = index.saturating_add(1),
@@ -953,7 +959,7 @@ pub fn governance_events(
             incoming_message: false,
             housekeeping: false,
             shortcut: None,
-            run: None,
+            invocation: None,
         });
     };
     for (person, now) in after {

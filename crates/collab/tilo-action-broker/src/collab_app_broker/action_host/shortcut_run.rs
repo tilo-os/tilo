@@ -61,9 +61,9 @@ impl AppBrokerState {
                 caller,
                 workspace,
                 shortcut,
-                automation::RunStart {
-                    run: tilo_automation::RunId(request.invocation.0),
-                    trigger: tilo_automation::RunTrigger::Manual,
+                automation::InvocationStart {
+                    invocation: tilo_automation::InvocationId(request.invocation.0),
+                    trigger: tilo_automation::InvocationTrigger::Manual,
                     mode: automation::run_mode(request.confirmation.as_ref()),
                     inputs,
                     // A task that invoked this run is its parent: the caller's
@@ -79,7 +79,7 @@ impl AppBrokerState {
                     automation::ApiHooks::new(
                         request.confirmation.clone(),
                         runtime,
-                        self.ended_runs.running.running.clone(),
+                        self.ended_invocations.open.running.clone(),
                         run,
                     )
                 },
@@ -139,19 +139,19 @@ impl AppBrokerState {
                 report,
                 from: asked.from,
             });
-        let prompts = self.ended_runs.running.prompts.clone();
+        let prompts = self.ended_invocations.open.prompts.clone();
         let name = shortcut.name.clone();
-        let runs = self.ended_runs.running.running.clone();
+        let runs = self.ended_invocations.open.running.clone();
         let hooks =
             move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
         self.start_shortcut_run(
             caller,
             workspace,
             shortcut,
-            automation::RunStart {
-                run: tilo_automation::RunId::new(),
-                trigger: tilo_automation::RunTrigger::Manual,
-                mode: tilo_automation::RunMode::Interactive,
+            automation::InvocationStart {
+                invocation: tilo_automation::InvocationId::new(),
+                trigger: tilo_automation::InvocationTrigger::Manual,
+                mode: tilo_automation::InvocationMode::Interactive,
                 inputs,
                 parent: None,
             },
@@ -167,15 +167,15 @@ impl AppBrokerState {
         &self,
         continuation: &tilo_automation::Continuation,
         shortcut_id: &str,
-    ) -> Result<tilo_automation::RunReport, ActionHostError> {
+    ) -> Result<tilo_automation::InvocationReport, ActionHostError> {
         if continuation.from.as_str().is_empty() {
             return Err(ActionHostError::InvalidRequest {
                 reason: "a continued run says which step it goes on from".into(),
             });
         }
-        self.ended_runs
-            .shortcuts
-            .report(continuation.run, shortcut_id)
+        self.ended_invocations
+            .finished
+            .report(continuation.invocation, shortcut_id)
             .ok_or_else(|| ActionHostError::Refused {
                 reason: "that run is not recorded for this shortcut".into(),
             })
@@ -183,7 +183,7 @@ impl AppBrokerState {
 
     /// The oldest step of an interactive run waiting for its person.
     pub(crate) fn take_step_prompt(&self) -> Option<automation::PromptedStep> {
-        self.ended_runs.running.prompts.take_next()
+        self.ended_invocations.open.prompts.take_next()
     }
 
     /// Start one of saved shortcut `shortcut_id`'s triggers, `trigger`, in
@@ -191,7 +191,7 @@ impl AppBrokerState {
     ///
     /// A keyboard trigger means the person is at the screen: its run asks
     /// them through the compositor's sheet, like a palette run. Nobody is
-    /// present at a scheduled run: a step asking for confirmation proceeds
+    /// present at a scheduled invocation: a step asking for confirmation proceeds
     /// only when its saver consented to exactly that action in advance, and
     /// a question stops the run. Before anything runs the
     /// shortcut is checked again against what `caller` is offered now, so a
@@ -203,7 +203,7 @@ impl AppBrokerState {
         workspace: &str,
         shortcut_id: &str,
         trigger: &tilo_automation::TriggerSpec,
-        run: tilo_automation::RunId,
+        invocation: tilo_automation::InvocationId,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, ActionHostError> {
         let shortcut = self.saved_shortcut(caller, workspace, shortcut_id)?;
@@ -248,19 +248,19 @@ impl AppBrokerState {
             }
         })?;
         if matches!(trigger, tilo_automation::TriggerSpec::Keyboard { .. }) {
-            let prompts = self.ended_runs.running.prompts.clone();
+            let prompts = self.ended_invocations.open.prompts.clone();
             let name = shortcut.name.clone();
-            let runs = self.ended_runs.running.running.clone();
+            let runs = self.ended_invocations.open.running.clone();
             let hooks =
                 move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
             return self.start_shortcut_run(
                 caller,
                 workspace,
                 shortcut,
-                automation::RunStart {
-                    run,
-                    trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
-                    mode: tilo_automation::RunMode::Interactive,
+                automation::InvocationStart {
+                    invocation,
+                    trigger: tilo_automation::InvocationTrigger::Fired(trigger.clone()),
+                    mode: tilo_automation::InvocationMode::Interactive,
                     inputs: serde_json::Map::new(),
                     parent: None,
                 },
@@ -273,10 +273,10 @@ impl AppBrokerState {
             caller,
             workspace,
             shortcut,
-            automation::RunStart {
-                run,
-                trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
-                mode: tilo_automation::RunMode::Unattended,
+            automation::InvocationStart {
+                invocation,
+                trigger: tilo_automation::InvocationTrigger::Fired(trigger.clone()),
+                mode: tilo_automation::InvocationMode::Unattended,
                 inputs,
                 parent: None,
             },
@@ -284,7 +284,7 @@ impl AppBrokerState {
                 automation::ApiHooks::new(
                     None,
                     runtime,
-                    self.ended_runs.running.running.clone(),
+                    self.ended_invocations.open.running.clone(),
                     run,
                 )
             },
@@ -332,13 +332,13 @@ impl AppBrokerState {
         caller: &Caller,
         workspace: &str,
         shortcut: tilo_automation::Shortcut,
-        start: automation::RunStart,
-        hooks: impl FnOnce(tokio::runtime::Handle, tilo_automation::RunId) -> K,
+        start: automation::InvocationStart,
+        hooks: impl FnOnce(tokio::runtime::Handle, tilo_automation::InvocationId) -> K,
         admission: Option<ShortcutAdmission<'_>>,
         carried: Option<automation::Continued>,
     ) -> Result<u64, ActionHostError>
     where
-        K: tilo_automation::RunHooks + Send + 'static,
+        K: tilo_automation::InvocationHooks + Send + 'static,
     {
         let runtime = self
             .services
@@ -347,7 +347,7 @@ impl AppBrokerState {
             .ok_or(ActionHostError::UnknownAction)?
             .runtime()
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
-        let hooks = hooks(runtime.clone(), start.run);
+        let hooks = hooks(runtime.clone(), start.invocation);
         let actor = BrokerActor::for_caller(caller).member().clone();
         let _lifecycle = self
             .lifecycle
@@ -366,35 +366,35 @@ impl AppBrokerState {
         let parent = start.parent.clone();
         // Registered before the first step, so a stop can find it; it leaves
         // as it ends, whether or not it was stopped.
-        let running = automation::RunningRun {
+        let running = automation::RunningInvocation {
             workspace: workspace.clone(),
             shortcut: shortcut.id.clone(),
             name: shortcut.name.clone(),
-            run: start.run,
+            invocation: start.invocation,
             at: None,
             stopped: None,
         };
         // What this run's steps say they are part of: the work unit that asked
         // for it, or its own group. Read before the steps run, so it names the
         // shortcut that asked for it among the ones above it.
-        let group = start
-            .parent
-            .as_ref()
-            .map_or_else(|| start.run.0.to_string(), |parent| parent.id.clone());
-        let chain =
-            self.ended_runs
-                .running
-                .running
-                .above(&workspace, Some(group.as_str()), &shortcut.id);
-        self.ended_runs.running.running.register(running);
-        let registered = self.ended_runs.running.running.clone();
+        let group = start.parent.as_ref().map_or_else(
+            || start.invocation.0.to_string(),
+            |parent| parent.id.clone(),
+        );
+        let chain = self.ended_invocations.open.running.above(
+            &workspace,
+            Some(group.as_str()),
+            &shortcut.id,
+        );
+        self.ended_invocations.open.running.register(running);
+        let registered = self.ended_invocations.open.running.clone();
         runtime.spawn(async move {
             let report = tilo_automation::run(
                 &host,
                 &hooks,
-                tilo_automation::RunRequest {
+                tilo_automation::InvocationRequest {
                     shortcut: &shortcut,
-                    run: start.run,
+                    invocation: start.invocation,
                     caller,
                     mode: start.mode,
                     trigger: start.trigger,
@@ -409,16 +409,16 @@ impl AppBrokerState {
                 },
             )
             .await;
-            registered.leave(start.run);
+            registered.leave(start.invocation);
             let update = automation::completion(invocation, &report);
             if let Err(error) = state.complete_host_action(&admitted, update) {
                 tracing::warn!(%error, "shortcut completion could not be recorded");
                 return;
             }
             state
-                .ended_runs
-                .shortcuts
-                .push(automation::FinishedShortcutRun {
+                .ended_invocations
+                .finished
+                .push(automation::FinishedInvocation {
                     workspace,
                     shortcut,
                     invoker: actor,
@@ -433,7 +433,7 @@ impl AppBrokerState {
         caller: &Caller,
         workspace: &str,
         shortcut: &tilo_automation::Shortcut,
-        start: &automation::RunStart,
+        start: &automation::InvocationStart,
         admission: Option<ShortcutAdmission<'_>>,
     ) -> Result<(AdmittedHostAction, Option<InvocationCaller>), ActionHostError> {
         // Palette and trigger entry points do not carry a wire request. Resolve
@@ -449,7 +449,7 @@ impl AppBrokerState {
                 return Err(ActionHostError::NotPermitted);
             }
             request = InvokeRequest {
-                invocation: tilo_actions::InvocationId(start.run.0),
+                invocation: tilo_actions::InvocationId(start.invocation.0),
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: workspace_provider(workspace),
                     address: automation::run_descriptor(shortcut).address,
@@ -485,12 +485,11 @@ impl AppBrokerState {
         };
         // No runtime task may run until admission crosses the journal barrier.
         let trigger = match &start.trigger {
-            tilo_automation::RunTrigger::Manual => serde_json::json!({"trigger": "manual"}),
-            tilo_automation::RunTrigger::Fired(trigger) => {
-                serde_json::to_value(trigger).map_err(|error| ActionHostError::Unavailable {
+            tilo_automation::InvocationTrigger::Manual => serde_json::json!({"trigger": "manual"}),
+            tilo_automation::InvocationTrigger::Fired(trigger) => serde_json::to_value(trigger)
+                .map_err(|error| ActionHostError::Unavailable {
                     reason: error.to_string(),
-                })?
-            }
+                })?,
         };
         let admitted = self.admit_host_action_with_start(
             caller,
@@ -502,7 +501,7 @@ impl AppBrokerState {
                 request: admission.request,
             },
             Some(serde_json::json!({
-                "run": start.run,
+                "run": start.invocation,
                 "shortcut": shortcut,
                 "trigger": trigger,
                 "mode": start.mode,
@@ -513,18 +512,18 @@ impl AppBrokerState {
     }
 
     /// Shortcut runs finished since the last call, oldest first.
-    pub fn take_finished_shortcut_runs(&self) -> Vec<automation::FinishedShortcutRun> {
-        self.ended_runs.shortcuts.take()
+    pub fn take_finished_invocations(&self) -> Vec<automation::FinishedInvocation> {
+        self.ended_invocations.finished.take()
     }
 
     /// Whether a finished shortcut run is waiting to be taken.
     pub fn has_finished_shortcut_runs(&self) -> bool {
-        self.ended_runs.shortcuts.has_finished()
+        self.ended_invocations.finished.has_finished()
     }
 
     /// The runs going in `workspace`, so it can offer to stop one.
-    pub fn running_shortcut_runs(&self, workspace: &str) -> Vec<automation::RunningRun> {
-        self.ended_runs.running.running.going(workspace)
+    pub fn running_shortcut_runs(&self, workspace: &str) -> Vec<automation::RunningInvocation> {
+        self.ended_invocations.open.running.going(workspace)
     }
 
     /// Stop the runs `request` names before their next step.
@@ -533,9 +532,9 @@ impl AppBrokerState {
         workspace: &str,
         request: &automation::StopRequest,
         reason: &str,
-    ) -> Vec<automation::RunningRun> {
-        self.ended_runs
-            .running
+    ) -> Vec<automation::RunningInvocation> {
+        self.ended_invocations
+            .open
             .running
             .stop(workspace, request, reason)
     }

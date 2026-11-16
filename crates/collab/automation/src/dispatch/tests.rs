@@ -52,7 +52,7 @@ fn post(actor: Acting, change: &str, caused_by: Option<Cause>) -> RecordEvent {
         incoming_message: true,
         housekeeping: false,
         shortcut: None,
-        run: None,
+        invocation: None,
     }
 }
 
@@ -290,13 +290,13 @@ fn the_same_change_gives_the_same_run_id() {
     let event = post(person("bob"), &"f".repeat(64), None);
     let first = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
     let again = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
-    assert_eq!(first.firings[0].run, again.firings[0].run);
+    assert_eq!(first.firings[0].invocation, again.firings[0].invocation);
     // Each trigger index is its own run.
-    assert_ne!(first.firings[0].run, first.firings[1].run);
+    assert_ne!(first.firings[0].invocation, first.firings[1].invocation);
     // Another installation of the same program is another run.
     assert_ne!(
-        dispatch(&as_bot("b2", &shortcut), Event::Record(&event)).firings[0].run,
-        first.firings[0].run
+        dispatch(&as_bot("b2", &shortcut), Event::Record(&event)).firings[0].invocation,
+        first.firings[0].invocation
     );
 }
 
@@ -502,13 +502,13 @@ tilo_test_env::scenario! {
         );
         // The same declaration twice is one event, so one run.
         assert_eq!(
-            out.firings[0].run,
+            out.firings[0].invocation,
             dispatch(
                 &as_shortcut(&shortcut),
                 Event::AppEvent(&announced("mail.message"))
             )
             .firings[0]
-                .run
+                .invocation
         );
         // Another app's change of the same kind is no declaration at all.
         let mut foreign = post(person("bob"), &"9".repeat(64), None);

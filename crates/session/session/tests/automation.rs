@@ -414,7 +414,7 @@ fn until_a_run(session: &mut Session, wanted: usize) -> Vec<String> {
     // of the suite is what makes it take a while: the bound is the suite's own, not a second count.
     tilo_test_env::wait_for("a shortcut run to start", || {
         session.step(Duration::from_millis(2)).expect("step");
-        seen.extend(session.take_finished_shortcut_runs());
+        seen.extend(session.take_finished_invocations());
         (seen.len() >= wanted).then_some(())
     });
     seen.iter().map(|run| run.shortcut.id.clone()).collect()
@@ -462,7 +462,7 @@ fn an_edit_that_matches_a_rule_fires_its_action_once() {
     for _ in 0..50 {
         session.step(Duration::from_millis(2)).expect("step");
     }
-    let again = session.take_finished_shortcut_runs();
+    let again = session.take_finished_invocations();
     assert!(again.is_empty(), "the same change started another run");
     assert_eq!(runs, vec!["tidy".to_string()], "the shortcut ran once");
 }
@@ -520,7 +520,7 @@ fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
         session.step(Duration::from_millis(2)).expect("step");
     }
     assert!(
-        session.take_finished_shortcut_runs().is_empty(),
+        session.take_finished_invocations().is_empty(),
         "a shortcut fires on the behalf of the person who saved it, never someone else's"
     );
 }
@@ -613,7 +613,7 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
     assert_eq!(entry["schedule"]["every"], "interval");
     assert_eq!(entry["schedule"]["seconds"], 3600);
     assert!(
-        session.take_finished_shortcut_runs().is_empty(),
+        session.take_finished_invocations().is_empty(),
         "one fire time, one run"
     );
     drop(session);
@@ -631,7 +631,7 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
         session.step(Duration::from_millis(10)).expect("step");
     }
     assert!(
-        session.take_finished_shortcut_runs().is_empty(),
+        session.take_finished_invocations().is_empty(),
         "the fire time the ledger kept ran once, across both restarts"
     );
 }
@@ -676,7 +676,7 @@ fn a_shortcut_armed_on_a_chord_runs_once_when_the_person_presses_it() {
         session.step(Duration::from_millis(2)).expect("step");
     }
     assert!(
-        session.take_finished_shortcut_runs().is_empty(),
+        session.take_finished_invocations().is_empty(),
         "one press, one run"
     );
 }
@@ -722,7 +722,7 @@ fn a_shortcut_armed_on_an_app_runs_once_when_it_starts() {
     // The app keeps running, which starts nothing more.
     pass(&mut session, Duration::from_millis(1200));
     assert!(
-        session.take_finished_shortcut_runs().is_empty(),
+        session.take_finished_invocations().is_empty(),
         "one start, one run"
     );
 }
@@ -766,7 +766,7 @@ fn a_shortcut_armed_on_a_focus_mode_runs_once_when_it_switches_on() {
     );
     pass(&mut session, Duration::from_millis(1200));
     assert!(
-        session.take_finished_shortcut_runs().is_empty(),
+        session.take_finished_invocations().is_empty(),
         "one switch, one run"
     );
 }
@@ -810,7 +810,7 @@ fn a_shortcut_armed_on_a_shared_folder_runs_once_when_a_file_in_it_changes() {
     );
     pass(&mut session, Duration::from_millis(1200));
     assert!(
-        session.take_finished_shortcut_runs().is_empty(),
+        session.take_finished_invocations().is_empty(),
         "one change, one run"
     );
 }

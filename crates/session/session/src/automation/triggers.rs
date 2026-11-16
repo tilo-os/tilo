@@ -25,8 +25,8 @@ use tilo_actions::params::ParamType;
 use tilo_automation::EVENT_INPUT;
 use tilo_automation::dispatch::{AppEvent, RecordEvent, app_event_object};
 use tilo_automation::{
-    CatchUp, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, RunId, Schedule, ScheduleClaim,
-    Shortcut, TriggerSpec, Weekday,
+    CatchUp, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, InvocationId, Schedule,
+    ScheduleClaim, Shortcut, TriggerSpec, Weekday,
 };
 
 /// A fire time this far in the past counts as missed rather than on time.
@@ -343,7 +343,7 @@ pub struct Firing {
     pub workspace: String,
     pub shortcut: String,
     pub trigger: TriggerSpec,
-    pub run: RunId,
+    pub invocation: InvocationId,
     /// The fire time this device takes, to record in the workspace
     /// ([`WorkspaceTree::claim_schedule`](tilo_desktop_model::WorkspaceTree::claim_schedule))
     /// before the run starts.
@@ -375,7 +375,7 @@ impl Firing {
             workspace: armed.workspace.clone(),
             shortcut: armed.shortcut.id.clone(),
             trigger: trigger.clone(),
-            run: RunId::new(),
+            invocation: InvocationId::new(),
             claim: None,
             inputs,
         }
@@ -399,7 +399,7 @@ pub trait TriggerSource: Send {
     ) -> Vec<Firing>;
 
     /// Runs another of the person's devices started; a source holding one for its turn drops it.
-    fn forget_started(&mut self, _started: &BTreeSet<RunId>) {}
+    fn forget_started(&mut self, _started: &BTreeSet<InvocationId>) {}
 
     /// Firings an earlier event produced that were waiting for something to reach the disk and may
     /// run now.
@@ -437,7 +437,7 @@ impl TriggerSource for KeyboardTriggers {
                         workspace: armed.workspace.clone(),
                         shortcut: armed.shortcut.id.clone(),
                         trigger: trigger.clone(),
-                        run: RunId::new(),
+                        invocation: InvocationId::new(),
                         claim: None,
                         inputs: Map::new(),
                     })
@@ -675,7 +675,7 @@ struct ScheduleLedger {
 /// failed and logged, which runs the firings as before) and wakes the loop; a later tick hands the
 /// firings over. A newer value that replaces a queued older one holds at least as much and settles
 /// a higher number, so it releases both. A crash before the write lands leaves the previous ledger
-/// and loses no run: none has started.
+/// and loses no invocation: none has started.
 pub struct ScheduleTriggers {
     ledger: ScheduleLedger,
     path: Option<PathBuf>,
@@ -831,7 +831,7 @@ impl TriggerSource for ScheduleTriggers {
                                 workspace: armed.workspace.clone(),
                                 shortcut: armed.shortcut.id.clone(),
                                 trigger: trigger.clone(),
-                                run: scheduled_run(&key, due),
+                                invocation: scheduled_run(&key, due),
                                 inputs: Map::new(),
                                 claim: context.devices.local.as_ref().map(|device| ScheduleClaim {
                                     shortcut: armed.shortcut.id.clone(),
@@ -929,7 +929,7 @@ fn runner_rank(key: &str, due_ms: i64, device: &str) -> ([u8; 32], String) {
 
 /// The run a scheduled fire starts: the same for the same fire time, so a fire that is somehow
 /// handed over twice reuses every invocation id.
-fn scheduled_run(key: &str, due: DateTime<Utc>) -> RunId {
+fn scheduled_run(key: &str, due: DateTime<Utc>) -> InvocationId {
     let mut hasher = Sha256::new();
     hasher.update(b"tilo.shortcut.schedule\0");
     hasher.update(key.as_bytes());
@@ -939,7 +939,7 @@ fn scheduled_run(key: &str, due: DateTime<Utc>) -> RunId {
     for (byte, digested) in bytes.iter_mut().zip(digest.iter()) {
         *byte = *digested;
     }
-    RunId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
+    InvocationId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
 }
 
 /// The first fire time of `schedule` strictly after `now` . An interval counts from the Unix epoch,
@@ -1067,8 +1067,9 @@ impl RecordElection {
         due.into_iter().map(|held| held.firing).collect()
     }
 
-    fn forget_started(&mut self, started: &BTreeSet<RunId>) {
-        self.held.retain(|held| !started.contains(&held.firing.run));
+    fn forget_started(&mut self, started: &BTreeSet<InvocationId>) {
+        self.held
+            .retain(|held| !started.contains(&held.firing.invocation));
     }
 
     /// Due firings, then the firings of `event` 's changes whose trigger `wanted` accepts, those
@@ -1128,7 +1129,7 @@ fn record_firings(
                 workspace: armed.workspace.clone(),
                 shortcut: armed.shortcut.id.clone(),
                 trigger: fired.trigger,
-                run: fired.run,
+                invocation: fired.invocation,
                 claim: None,
                 inputs: fired.inputs,
             });
@@ -1155,7 +1156,7 @@ impl TriggerSource for RecordChangedTriggers {
         })
     }
 
-    fn forget_started(&mut self, started: &BTreeSet<RunId>) {
+    fn forget_started(&mut self, started: &BTreeSet<InvocationId>) {
         self.election.forget_started(started);
     }
 }
@@ -1217,7 +1218,7 @@ impl TriggerSource for IncomingMessageTriggers {
         })
     }
 
-    fn forget_started(&mut self, started: &BTreeSet<RunId>) {
+    fn forget_started(&mut self, started: &BTreeSet<InvocationId>) {
         self.election.forget_started(started);
     }
 }
@@ -1294,7 +1295,7 @@ impl TriggerHost {
     }
 
     /// Runs another of the person's devices already started: no source starts them here.
-    pub fn forget_started(&mut self, started: &BTreeSet<RunId>) {
+    pub fn forget_started(&mut self, started: &BTreeSet<InvocationId>) {
         for source in &mut self.sources {
             source.forget_started(started);
         }
@@ -1427,7 +1428,7 @@ mod tests {
             let fired = schedules.observe(TriggerEvent::Tick, &armed, context);
             assert_eq!(fired.len(), 1, "the fire time runs");
             assert_eq!(
-                fired[0].run,
+                fired[0].invocation,
                 scheduled_run(
                     &ledger_key("workspace", "tidy", 0),
                     at("2026-09-25T09:00:00Z")

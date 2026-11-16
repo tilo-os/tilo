@@ -1415,7 +1415,7 @@ impl ActionHost for CountedApi {
 /// back to polling it.
 struct NoPolling(crate::automation::ApiHooks);
 
-impl tilo_automation::RunHooks for NoPolling {
+impl tilo_automation::InvocationHooks for NoPolling {
     fn confirm(
         &self,
         request: tilo_automation::ConfirmationRequest,
@@ -1479,8 +1479,8 @@ async fn shortcut_step_observes_once_per_change() {
     let hooks = NoPolling(crate::automation::ApiHooks::new(
         None,
         tokio::runtime::Handle::current(),
-        crate::automation::RunningRuns::default(),
-        tilo_automation::RunId::new(),
+        crate::automation::RunningInvocations::default(),
+        tilo_automation::InvocationId::new(),
     ));
     let running = tokio::spawn({
         let state = Arc::clone(&state);
@@ -1493,12 +1493,12 @@ async fn shortcut_step_observes_once_per_change() {
             tilo_automation::run(
                 &api,
                 &hooks,
-                tilo_automation::RunRequest {
+                tilo_automation::InvocationRequest {
                     shortcut: &shortcut,
-                    run: tilo_automation::RunId::new(),
+                    invocation: tilo_automation::InvocationId::new(),
                     caller,
-                    mode: tilo_automation::RunMode::Unattended,
-                    trigger: tilo_automation::RunTrigger::Manual,
+                    mode: tilo_automation::InvocationMode::Unattended,
+                    trigger: tilo_automation::InvocationTrigger::Manual,
                     inputs: serde_json::Map::new(),
                     caused_by: None,
                     parent: None,
@@ -1551,7 +1551,7 @@ async fn shortcut_step_observes_once_per_change() {
     let report = running.await.expect("the run finishes");
     assert_eq!(
         report.outcome,
-        tilo_automation::RunOutcome::Completed,
+        tilo_automation::InvocationOutcome::Completed,
         "{report:?}"
     );
     let observes = observes.load(Ordering::Relaxed);

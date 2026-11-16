@@ -369,7 +369,7 @@ impl AppBrokerState {
                 return self.finish_framework_action(admitted, Ok(output));
             }
             crate::automation::LibraryPlan::Stop(stop) => {
-                let stopped = self.ended_runs.running.running.stop(
+                let stopped = self.ended_invocations.open.running.stop(
                     &workspace_id,
                     &stop,
                     "asked for from the shortcuts library",

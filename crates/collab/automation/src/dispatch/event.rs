@@ -51,17 +51,17 @@ pub struct RecordEvent {
     /// The Shortcut run the change belongs to (its group id), so a device
     /// that sees a run another device started never starts it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
+    pub invocation: Option<String>,
 }
 
 impl RecordEvent {
     /// The Shortcut run this change belongs to, when it is one's.
     #[must_use]
-    pub fn started_run(&self) -> Option<crate::RunId> {
-        self.run
+    pub fn started_run(&self) -> Option<crate::InvocationId> {
+        self.invocation
             .as_deref()
             .and_then(|id| uuid::Uuid::parse_str(id).ok())
-            .map(crate::RunId)
+            .map(crate::InvocationId)
     }
 }
 
@@ -112,7 +112,7 @@ pub fn event_of(
         incoming_message: facet(tilo_actions::INCOMING_MESSAGE_FACET).is_some(),
         housekeeping: context.is_housekeeping(),
         shortcut: facet("shortcut"),
-        run: context
+        invocation: context
             .group
             .as_ref()
             .filter(|group| group.kind == "shortcut")

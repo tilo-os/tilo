@@ -2726,7 +2726,7 @@ pub struct AppBrokerState {
     /// caller and invocation id so a retried id is idempotent.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
     /// Shortcut runs the API finished, until history records them.
-    ended_runs: crate::automation::EndedRuns,
+    ended_invocations: crate::automation::BrokerInvocations,
     /// What each application declared it may do on the action api under
     /// its own identity.
     app_action_access: RwLock<crate::app_actions::AppActionAccessResolver>,
@@ -3499,7 +3499,7 @@ impl AppBrokerState {
                 approved_check_jobs: Mutex::default(),
                 external_moderation_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
-                ended_runs: crate::automation::EndedRuns::default(),
+                ended_invocations: crate::automation::BrokerInvocations::default(),
                 app_action_access: RwLock::new(
                     services
                         .app_action_access

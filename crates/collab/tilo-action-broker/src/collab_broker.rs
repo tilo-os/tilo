@@ -679,8 +679,8 @@ impl AppActionBroker {
     /// Shortcut runs finished since the last call, oldest first, for the
     /// history recorder to record against the documents they changed.
     #[must_use]
-    pub fn take_finished_shortcut_runs(&self) -> Vec<crate::automation::FinishedShortcutRun> {
-        self.state.take_finished_shortcut_runs()
+    pub fn take_finished_invocations(&self) -> Vec<crate::automation::FinishedInvocation> {
+        self.state.take_finished_invocations()
     }
 
     /// Whether a finished shortcut run is waiting to be taken, without
@@ -693,7 +693,10 @@ impl AppActionBroker {
     /// The shortcut runs going in `workspace`: what the workspace says is
     /// running, and what can be stopped.
     #[must_use]
-    pub fn running_shortcut_runs(&self, workspace: &str) -> Vec<crate::automation::RunningRun> {
+    pub fn running_shortcut_runs(
+        &self,
+        workspace: &str,
+    ) -> Vec<crate::automation::RunningInvocation> {
         self.state.running_shortcut_runs(workspace)
     }
 
@@ -705,7 +708,7 @@ impl AppActionBroker {
         workspace: &str,
         request: &crate::automation::StopRequest,
         reason: &str,
-    ) -> Vec<crate::automation::RunningRun> {
+    ) -> Vec<crate::automation::RunningInvocation> {
         self.state.stop_shortcut_runs(workspace, request, reason)
     }
 
@@ -751,11 +754,11 @@ impl AppActionBroker {
         workspace: &str,
         shortcut: &str,
         trigger: &tilo_automation::TriggerSpec,
-        run: tilo_automation::RunId,
+        invocation: tilo_automation::InvocationId,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         self.state
-            .start_triggered_shortcut_run(caller, workspace, shortcut, trigger, run, inputs)
+            .start_triggered_shortcut_run(caller, workspace, shortcut, trigger, invocation, inputs)
     }
 
     #[cfg(any(test, feature = "test-support"))]

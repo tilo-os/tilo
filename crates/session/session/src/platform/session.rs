@@ -24,7 +24,7 @@ use ui::host_operation::ResourceOperationStart;
 
 use crate::assembly::{Session, Shared};
 
-pub use crate::automation::FinishedShortcutRun;
+pub use crate::automation::FinishedInvocation;
 pub use crate::bars::BarShown;
 pub use crate::clock_wait::ClockWait;
 pub use crate::config::SessionConfig;
@@ -2789,7 +2789,7 @@ impl Session {
     /// The shortcut runs that finished and no history recorder took yet,
     /// oldest first: what the history names its changes by.
     #[must_use]
-    pub fn take_finished_shortcut_runs(&self) -> Vec<FinishedShortcutRun> {
+    pub fn take_finished_invocations(&self) -> Vec<FinishedInvocation> {
         self.automation.take_finished()
     }
 

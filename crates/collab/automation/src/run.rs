@@ -7,7 +7,7 @@
 //! no more than the person could and no more than the shortcut was allowed.
 //!
 //! Each invocation id is derived from the run id and the step's path
-//! (including the loop iteration), so running the same [`RunId`] again — a
+//! (including the loop iteration), so running the same [`InvocationId`] again — a
 //! retry after a crash or a lost reply — first observes what the host already
 //! did and reuses the same id for anything it re-sends, instead of acting
 //! twice.
@@ -16,7 +16,7 @@
 //! the future it returns can be awaited by any executor, or polled from a
 //! frame loop. Waiting for a background action and anything that needs a
 //! person — a confirmation, an [`Ask`](StepKind::Ask) — go through the
-//! caller's [`RunHooks`].
+//! caller's [`InvocationHooks`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -30,7 +30,7 @@ use tilo_actions::ActionKey;
 use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_actions::context::{ActionContext, ActionFacet};
 use tilo_actions::contract::{ConfirmationPolicy, ResultSpec};
-use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId};
+use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId as ActionInvocationId};
 use tilo_actions::params::{ActionArgs, ActionParam, ParamType, validate_json_schema};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CatalogueQuery, CatalogueRow, Confirmation,
@@ -99,16 +99,16 @@ pub const DEFAULT_BACKOFF_MS: u64 = 60_000;
 /// Identity of one run. Reusing it reuses every invocation id the run
 /// derives, which is what makes re-running it safe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct RunId(pub Uuid);
+pub struct InvocationId(pub Uuid);
 
-impl RunId {
+impl InvocationId {
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
 }
 
-impl Default for RunId {
+impl Default for InvocationId {
     fn default() -> Self {
         Self::new()
     }
@@ -118,23 +118,23 @@ impl Default for RunId {
 pub const STEP_FACET: &str = "step";
 
 #[must_use]
-pub fn invocation_id(run: RunId, path: &StepPath) -> InvocationId {
+pub fn step_invocation_id(invocation: InvocationId, path: &StepPath) -> ActionInvocationId {
     let mut hasher = Sha256::new();
     hasher.update(b"tilo.automation.invocation\0");
-    hasher.update(run.0.as_bytes());
+    hasher.update(invocation.0.as_bytes());
     hasher.update(path.as_str().as_bytes());
     let digest = hasher.finalize();
     let mut bytes = [0_u8; 16];
     for (byte, digested) in bytes.iter_mut().zip(digest.iter()) {
         *byte = *digested;
     }
-    InvocationId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
+    ActionInvocationId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
 }
 
 /// Whether a person is at hand to answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RunMode {
+pub enum InvocationMode {
     /// Started by a person who can confirm actions and answer questions.
     Interactive,
     /// Started by a trigger. An action that needs confirmation, or a step
@@ -144,13 +144,13 @@ pub enum RunMode {
 
 /// What started a run.
 #[derive(Clone, Debug, PartialEq)]
-pub enum RunTrigger {
+pub enum InvocationTrigger {
     /// A person ran it.
     Manual,
     Fired(TriggerSpec),
 }
 
-impl RunTrigger {
+impl InvocationTrigger {
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
@@ -162,21 +162,21 @@ impl RunTrigger {
 
 /// Everything one run starts from.
 #[derive(Clone, Debug)]
-pub struct RunRequest<'a> {
+pub struct InvocationRequest<'a> {
     pub shortcut: &'a Shortcut,
-    pub run: RunId,
+    pub invocation: InvocationId,
     /// The authenticated principal who started the run; every step is
     /// invoked as them.
     pub caller: Caller,
-    pub mode: RunMode,
-    pub trigger: RunTrigger,
+    pub mode: InvocationMode,
+    pub trigger: InvocationTrigger,
     /// Values for the shortcut's declared inputs.
     pub inputs: Map<String, Value>,
     /// The bot run this run continues, recorded on every change it makes.
     pub caused_by: Option<tilo_actions::context::Cause>,
     /// The steps an earlier run recorded, when this run continues that one.
     /// See [`resumed`].
-    pub resume: Option<&'a RunReport>,
+    pub resume: Option<&'a InvocationReport>,
     /// The step the run continues from, when it continues an earlier one.
     pub from: Option<StepPath>,
     /// The work unit this run belongs to when something else asked for it (a
@@ -197,7 +197,7 @@ pub struct RunRequest<'a> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Continuation {
     /// The run that happened.
-    pub run: RunId,
+    pub invocation: InvocationId,
     /// The step to go on from: it runs again, and so does everything after
     /// it. The steps before it are taken from the record as they happened.
     pub from: StepPath,
@@ -215,7 +215,10 @@ pub struct Continuation {
 /// the shortcut as it is now, which is how a fixed step takes effect.
 ///
 /// A run with no origin replays nothing.
-fn resumed<'r>(origin: Option<&'r RunReport>, from: Option<&StepPath>) -> Vec<&'r StepRecord> {
+fn resumed<'r>(
+    origin: Option<&'r InvocationReport>,
+    from: Option<&StepPath>,
+) -> Vec<&'r StepEntry> {
     let (Some(origin), Some(from)) = (origin, from) else {
         return Vec::new();
     };
@@ -247,13 +250,13 @@ pub struct AskRequest {
 }
 
 /// How a run reaches its caller while it is running.
-pub trait RunHooks: Sync {
+pub trait InvocationHooks: Sync {
     /// Ask the person to confirm an action; `None` declines it. Only called
-    /// in an [`Interactive`](RunMode::Interactive) run.
+    /// in an [`Interactive`](InvocationMode::Interactive) run.
     fn confirm(&self, request: ConfirmationRequest) -> Pending<Option<Confirmation>>;
 
     /// Ask the person for a value; `None` declines. Only called in an
-    /// [`Interactive`](RunMode::Interactive) run.
+    /// [`Interactive`](InvocationMode::Interactive) run.
     fn ask(&self, request: AskRequest) -> Pending<Option<Value>>;
 
     /// Resolve when the running invocation `invocation` is worth observing
@@ -261,7 +264,7 @@ pub trait RunHooks: Sync {
     /// [`ActionHost::next_change`]
     /// cannot tell when the invocation changes. Abandoning the answer stops
     /// the run.
-    fn settle(&self, invocation: InvocationId) -> Pending<()>;
+    fn settle(&self, invocation: ActionInvocationId) -> Pending<()>;
 
     /// Resolve once `what` has been asked, and every run in this process has
     /// stopped (`Err`), so the run stops too.
@@ -277,7 +280,7 @@ pub trait RunHooks: Sync {
     }
 }
 
-/// What a run was doing when [`RunHooks::stopped`] was asked: the step it is
+/// What a run was doing when [`InvocationHooks::stopped`] was asked: the step it is
 /// at, and when it got there.
 #[derive(Clone, Copy, Debug)]
 pub struct StopWatch<'a> {
@@ -489,15 +492,15 @@ impl StepStatus {
 /// One step as it ran, in order. A loop body's steps appear once per
 /// iteration, each with its own path.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct StepRecord {
+pub struct StepEntry {
     pub path: StepPath,
     pub step: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invocation: Option<InvocationId>,
+    pub invocation: Option<ActionInvocationId>,
     /// Every invocation a retried step sent, in the order it sent them. One
     /// entry for a step that was not retried.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attempts: Vec<InvocationId>,
+    pub attempts: Vec<ActionInvocationId>,
     /// A step that did not succeed, with what the run did about it.
     #[serde(default, skip_serializing_if = "StepOutcome::is_none")]
     pub degraded: StepOutcome,
@@ -505,7 +508,7 @@ pub struct StepRecord {
     pub status: StepStatus,
 }
 
-impl StepRecord {
+impl StepEntry {
     /// This step as a continued run takes it: what it did happened once, so
     /// the invocation is the one it ran under and what it produced is what
     /// the record shows.
@@ -528,7 +531,7 @@ impl StepRecord {
     }
 }
 
-/// How a step left the run: not at all, or short of what it promised.
+/// How a step left the invocation: not at all, or short of what it promised.
 ///
 /// A step the run carried on past is here whether it failed and was
 /// retried, ran a fallback, or stood on its declared default value — a
@@ -576,7 +579,7 @@ impl StepOutcome {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum RunOutcome {
+pub enum InvocationOutcome {
     Completed,
     /// A step failed; nothing after it ran.
     Failed {
@@ -592,8 +595,8 @@ pub enum RunOutcome {
 
 /// The history entry of one run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RunReport {
-    pub run: RunId,
+pub struct InvocationReport {
+    pub invocation: InvocationId,
     pub shortcut: String,
     /// BLAKE3 hex of the version of the shortcut that ran
     /// ([`program_hash`](crate::program::program_hash)), so the record of a
@@ -602,8 +605,8 @@ pub struct RunReport {
     pub version: Option<String>,
     /// The trigger kind (`manual`, `schedule`, …).
     pub trigger: String,
-    pub mode: RunMode,
-    pub steps: Vec<StepRecord>,
+    pub mode: InvocationMode,
+    pub steps: Vec<StepEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Value>,
     /// The steps that fell short and what the run did about them, in run
@@ -612,10 +615,10 @@ pub struct RunReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub degraded: Vec<StepOutcome>,
     #[serde(flatten)]
-    pub outcome: RunOutcome,
+    pub outcome: InvocationOutcome,
 }
 
-impl RunReport {
+impl InvocationReport {
     /// What the run reports, with a note saying which of its steps fell
     /// short when any did. A degraded run really did finish, so its caller
     /// needs both: the value it produced and the fact that value may rest on
@@ -636,7 +639,7 @@ impl RunReport {
 
     /// Every invocation id the run used, in order.
     #[must_use]
-    pub fn invocations(&self) -> Vec<InvocationId> {
+    pub fn invocations(&self) -> Vec<ActionInvocationId> {
         self.steps
             .iter()
             .filter_map(|step| step.invocation)
@@ -645,7 +648,7 @@ impl RunReport {
 
     /// Every invocation id the run sent, retries included, in order.
     #[must_use]
-    pub fn sent(&self) -> Vec<InvocationId> {
+    pub fn sent(&self) -> Vec<ActionInvocationId> {
         self.steps
             .iter()
             .flat_map(|step| {
@@ -687,14 +690,14 @@ impl RunReport {
 /// Run `request.shortcut` on `host`.
 ///
 /// Stops at the first step that fails; the report says which and why.
-pub async fn run<H: ActionHost + Sync, K: RunHooks>(
+pub async fn run<H: ActionHost + Sync, K: InvocationHooks>(
     host: &H,
     hooks: &K,
-    request: RunRequest<'_>,
-) -> RunReport {
-    let RunRequest {
+    request: InvocationRequest<'_>,
+) -> InvocationReport {
+    let InvocationRequest {
         shortcut,
-        run,
+        invocation,
         caller,
         mode,
         trigger,
@@ -705,8 +708,8 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         ..
     } = request;
     let resumed = resumed(request.resume, request.from.as_ref());
-    let mut report = RunReport {
-        run,
+    let mut report = InvocationReport {
+        invocation,
         shortcut: shortcut.id.clone(),
         version: crate::program::canonical_bytes(shortcut)
             .ok()
@@ -716,12 +719,12 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         steps: Vec::new(),
         output: None,
         degraded: Vec::new(),
-        outcome: RunOutcome::Completed,
+        outcome: InvocationOutcome::Completed,
     };
     let inputs = match ActionArgs::bind_json(&shortcut.inputs, &inputs) {
         Ok(bound) => bound.to_json(),
         Err(error) => {
-            report.outcome = RunOutcome::Failed {
+            report.outcome = InvocationOutcome::Failed {
                 path: StepPath::root(),
                 failure: StepFailure::Inputs {
                     reason: error.to_string(),
@@ -734,7 +737,7 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         host,
         hooks,
         shortcut,
-        run,
+        invocation,
         caller,
         mode,
         trigger: report.trigger.clone(),
@@ -766,8 +769,8 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
     });
     if let Err((path, failure)) = finished {
         report.outcome = match runner.stopped.clone() {
-            Some(at) => RunOutcome::Cancelled { at },
-            None => RunOutcome::Failed { path, failure },
+            Some(at) => InvocationOutcome::Cancelled { at },
+            None => InvocationOutcome::Failed { path, failure },
         };
     }
     report.steps = runner.records;
@@ -786,21 +789,21 @@ struct Runner<'a, H, K> {
     host: &'a H,
     hooks: &'a K,
     shortcut: &'a Shortcut,
-    run: RunId,
+    invocation: InvocationId,
     caller: Caller,
-    mode: RunMode,
+    mode: InvocationMode,
     trigger: String,
     inputs: Map<String, Value>,
     vars: BTreeMap<String, Value>,
     secret_vars: BTreeSet<String>,
     outputs: BTreeMap<String, Value>,
-    records: Vec<StepRecord>,
+    records: Vec<StepEntry>,
     /// The steps an earlier run recorded, when this run continues it: their
     /// output is taken as it was instead of being produced again.
-    resumed: Vec<&'a StepRecord>,
+    resumed: Vec<&'a StepEntry>,
     caused_by: Option<tilo_actions::context::Cause>,
     parent: Option<tilo_actions::context::WorkGroup>,
-    /// The shortcuts running above this one (see [`RunRequest::chain`]).
+    /// The shortcuts running above this one (see [`InvocationRequest::chain`]).
     chain: Vec<String>,
     /// How long each step of the run may take.
     timeout: std::time::Duration,
@@ -832,9 +835,9 @@ struct FailedStep {
 
 /// A step's result before it is recorded.
 struct Done {
-    invocation: Option<InvocationId>,
+    invocation: Option<ActionInvocationId>,
     /// Every invocation the step sent, retries included.
-    attempts: Vec<InvocationId>,
+    attempts: Vec<ActionInvocationId>,
     /// Whether the step is one that can be tried again at all.
     retryable: bool,
     /// The step already has its record: an `if` or a loop writes it before
@@ -1008,7 +1011,7 @@ where
             if !stopped_done {
                 match stopped.as_mut().poll(waker) {
                     Poll::Ready(Some(Err(reason))) => return Poll::Ready(Wait::Stopped(reason)),
-                    // Nothing stopped the run: only the move is left to wait
+                    // Nothing stopped the invocation: only the move is left to wait
                     // for, and the clock bounds it.
                     Poll::Ready(Some(Ok(()))) | Poll::Pending => {}
                     // The hook gave no answer: it cannot stop this run.
@@ -1053,7 +1056,7 @@ impl Future for WaitUntil {
     }
 }
 
-impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
+impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
     fn block<'s>(&'s mut self, steps: &'a [Step], path: StepPath) -> Block<'s>
     where
         'a: 's,
@@ -1079,7 +1082,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     && record.step == id
                     && matches!(record.status, StepStatus::Succeeded { .. })
             })
-            .map(StepRecord::taken)
+            .map(StepEntry::taken)
     }
 
     /// A loop an earlier run already ran: walk the iterations it recorded,
@@ -1269,7 +1272,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 return Ok((made, None));
             };
             // An action may have moved on, or the person may have stopped
-            // the run: another try would not go differently for either.
+            // the invocation: another try would not go differently for either.
             if !done.retryable || !failure.transient() {
                 break;
             }
@@ -1403,7 +1406,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         if !degraded.is_none() && !recovered.is_stopped() {
             self.degraded.push(degraded.clone());
         }
-        self.records.push(StepRecord {
+        self.records.push(StepEntry {
             path: path.clone(),
             step: step.id.clone(),
             invocation: done.invocation,
@@ -1419,7 +1422,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         &mut self,
         step: &'a Step,
         path: &StepPath,
-    ) -> Result<(Vec<InvocationId>, Done), Stop> {
+    ) -> Result<(Vec<ActionInvocationId>, Done), Stop> {
         let mut sent = Vec::new();
         let done = self.attempt(step, path, &mut sent).await?;
         Ok((sent, done))
@@ -1429,7 +1432,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         &mut self,
         step: &'a Step,
         path: &StepPath,
-        sent: &mut Vec<InvocationId>,
+        sent: &mut Vec<ActionInvocationId>,
     ) -> Result<Done, Stop> {
         // A step an earlier run already took is taken as it was: this run
         // goes on from what that step left instead of doing it again.
@@ -1496,7 +1499,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         &mut self,
         step: &'a Step,
         path: &StepPath,
-        sent: &mut Vec<InvocationId>,
+        sent: &mut Vec<ActionInvocationId>,
     ) -> Result<Done, Stop> {
         match &step.kind {
             StepKind::Invoke {
@@ -1621,7 +1624,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 self.mode,
             ) {
                 (Answer::Deny, _) => return Err(StepFailure::OutsideGrant { app_id, action }),
-                (Answer::Ask, RunMode::Unattended) => {
+                (Answer::Ask, InvocationMode::Unattended) => {
                     return Err(StepFailure::AsksFirst { app_id, action });
                 }
                 _ => {}
@@ -1708,7 +1711,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         path: &StepPath,
         param: &ActionParam,
     ) -> Result<Option<Value>, StepFailure> {
-        if self.mode == RunMode::Unattended {
+        if self.mode == InvocationMode::Unattended {
             return Err(StepFailure::NeedsPerson);
         }
         let answer = self
@@ -1896,7 +1899,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         Ok(Prepared {
             request: InvokeRequest {
                 on_behalf_of: None,
-                invocation: invocation_id(self.run, path),
+                invocation: step_invocation_id(self.invocation, path),
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: row.provider.clone(),
                     address: ActionAddress::new(
@@ -1959,7 +1962,9 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         let (app_id, action) = (app_id.to_string(), action.to_string());
         match (granted.answer, self.mode) {
             (Answer::Deny, _) => Err(StepFailure::OutsideGrant { app_id, action }),
-            (Answer::Ask, RunMode::Unattended) => Err(StepFailure::AsksFirst { app_id, action }),
+            (Answer::Ask, InvocationMode::Unattended) => {
+                Err(StepFailure::AsksFirst { app_id, action })
+            }
             _ => Ok(granted),
         }
     }
@@ -1992,7 +1997,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         if policy == ConfirmationPolicy::None {
             return Ok(None);
         }
-        if self.mode == RunMode::Unattended {
+        if self.mode == InvocationMode::Unattended {
             // Only a rule that names this exact action consents in advance
             // for a run nobody is present at, and nothing does for one that
             // needs its person attending.
@@ -2049,7 +2054,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 parent.kind.clone(),
             ),
             None => context.with_group(
-                self.run.0.to_string(),
+                self.invocation.0.to_string(),
                 self.shortcut.name.clone(),
                 "shortcut",
             ),

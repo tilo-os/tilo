@@ -27,7 +27,7 @@ use tilo_action_broker::automation::chord_target;
 use tilo_action_broker::collab_broker::AppActionBroker;
 use tilo_actions::remote::Caller;
 use tilo_automation::dispatch::RecordEvent;
-use tilo_automation::{RunId, ScheduleClaim, TriggerSpec};
+use tilo_automation::{InvocationId, ScheduleClaim, TriggerSpec};
 use tilo_desktop_model::WorkspaceId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
@@ -55,7 +55,7 @@ fn devices_of(fabric: Option<&crate::platform::fabric::SharedLink>) -> PersonalD
     }
 }
 
-pub use tilo_action_broker::automation::FinishedShortcutRun;
+pub use tilo_action_broker::automation::FinishedInvocation;
 
 /// How often the passing of time is shown to the schedules.
 const TICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -102,7 +102,7 @@ pub struct Automation {
     /// When the passing of time was last shown to the schedules.
     last_tick: RefCell<Option<Instant>>,
     /// Runs that finished and no history recorder took yet.
-    finished: RefCell<Vec<FinishedShortcutRun>>,
+    finished: RefCell<Vec<FinishedInvocation>>,
     /// Firings that came while the apps' broker was still starting: they start once it serves,
     /// rather than being lost.
     waiting: RefCell<Vec<Firing>>,
@@ -331,7 +331,7 @@ impl Automation {
         if !events.is_empty() {
             // A run's own first change is its claim: a firing another device already started is not
             // held for this one.
-            let started: BTreeSet<RunId> =
+            let started: BTreeSet<InvocationId> =
                 events.iter().filter_map(RecordEvent::started_run).collect();
             self.triggers.forget_started(&started);
             firings.extend(
@@ -448,7 +448,7 @@ impl Automation {
                 &firing.workspace,
                 &firing.shortcut,
                 &firing.trigger,
-                firing.run,
+                firing.invocation,
                 firing.inputs.clone(),
             ) {
                 // A shortcut deleted or changed elsewhere, or one whose saver may not run it here:
@@ -509,7 +509,7 @@ impl Automation {
             return;
         };
         let mut finished = self.finished.borrow_mut();
-        finished.extend(broker.take_finished_shortcut_runs());
+        finished.extend(broker.take_finished_invocations());
         if finished.len() > KEPT_RUNS {
             let excess = finished.len().saturating_sub(KEPT_RUNS);
             finished.drain(..excess);
@@ -518,7 +518,7 @@ impl Automation {
 
     /// The shortcut runs that finished and no history recorder took yet,
     /// oldest first.
-    pub fn take_finished(&self) -> Vec<FinishedShortcutRun> {
+    pub fn take_finished(&self) -> Vec<FinishedInvocation> {
         std::mem::take(&mut *self.finished.borrow_mut())
     }
 }
