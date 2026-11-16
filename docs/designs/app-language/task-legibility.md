@@ -91,7 +91,7 @@ Each run has a presentation, chosen by the person who started it and switchable 
 It's kept in their own record; the agent is never told which.
 
 **Contained** (default for runs started from chat or the tracker): nothing in the person's
-arrangement changes. The run's log shows each step as the program it ran, then a live embedded
+layout changes. The run's log shows each step as the program it ran, then a live embedded
 view of every resource it touched (`std.view(r)` with marks), so the log is where the work is
 read and undone.
 
@@ -100,7 +100,7 @@ it happens.
 
 - What the run creates appears near where the person asked: the shell places a reference
   to it beside the ask's anchor, as if the person had activated it (shell.md §3). It is an
-  arrangement change, attributed to the ask, undone with the run.
+  layout change, attributed to the ask, undone with the run.
 - The run's presence moves to what it's working on, like a collaborator's: its face on the
   window or row it is reading or changing. Presence comes from the steps; the agent does not
   report it.

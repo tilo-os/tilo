@@ -125,7 +125,7 @@ struct Placed {
     browsers: PlacedBrowsers,
     asked: Arc<Opened>,
     hosted: Hosted,
-    /// The member and its profile, up as long as the arrangement is.
+    /// The member and its profile, up as long as the layout is.
     _member: take_work::Member,
     _profile: tempfile::TempDir,
     _service: tempfile::TempDir,

@@ -128,7 +128,7 @@ widget-without-html 2 crates/sdk/ui-core/src/widget/data_table.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/date_picker.rs
 widget-without-html 2 crates/sdk/ui-core/src/widget/decorator.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/disclosure_band.rs
-widget-without-html 1 crates/sdk/ui-core/src/widget/display_arrangement.rs
+widget-without-html 1 crates/sdk/ui-core/src/widget/display_placement.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/divider.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/document_view.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/document_viewport.rs

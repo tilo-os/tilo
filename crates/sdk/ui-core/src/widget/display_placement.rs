@@ -38,7 +38,7 @@ fn t(key: &str) -> String {
 
 /// One display as the canvas draws it.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ArrangedDisplay {
+pub struct PlacedDisplay {
     pub connector: String,
     /// The device whose screens move together with this one. A device's screens go where they
     /// are dropped, apart from the others too; a screen with no group is placed against the
@@ -65,14 +65,14 @@ pub struct SharedDisplayState {
     pub reachable: bool,
 }
 
-impl ArrangedDisplay {
+impl PlacedDisplay {
     fn status(&self) -> Option<String> {
         let shared = self.shared.as_ref()?;
         match (shared.online, shared.reachable) {
             (true, true) => None,
-            (false, true) => Some(t("display-arrangement-offline")),
-            (true, false) => Some(t("display-arrangement-apart")),
-            (false, false) => Some(t("display-arrangement-offline-apart")),
+            (false, true) => Some(t("display-placement-offline")),
+            (true, false) => Some(t("display-placement-apart")),
+            (false, false) => Some(t("display-placement-offline-apart")),
         }
     }
 
@@ -86,16 +86,16 @@ impl ArrangedDisplay {
 /// What the canvas is doing with the hand: a drag in progress, a dropped display settling
 /// into place, and the part of the shell the canvas frames while either happens.
 #[derive(Clone, Debug, Default)]
-pub struct ArrangementGesture {
-    drag: Option<ArrangementDrag>,
+pub struct PlacementGesture {
+    drag: Option<PlacementDrag>,
     settle: Option<Settle>,
     /// The shell rect the canvas frames, in shell units: growing as a
-    /// held display goes past the arrangement, settling back to fit it
-    /// after the drop. `None` while the canvas simply fits the arrangement.
+    /// held display goes past the placement, settling back to fit it
+    /// after the drop. `None` while the canvas simply fits the placement.
     view: Option<MotionValue<Rect>>,
 }
 
-impl ArrangementGesture {
+impl PlacementGesture {
     /// Whether a display is held by the pointer or a finger.
     pub fn dragging(&self) -> bool {
         self.drag.as_ref().is_some_and(|drag| drag.active)
@@ -106,7 +106,7 @@ impl ArrangementGesture {
     #[must_use]
     pub fn held(connector: &str, preview: Placement) -> Self {
         Self {
-            drag: Some(ArrangementDrag {
+            drag: Some(PlacementDrag {
                 connector: connector.to_owned(),
                 grab: (0.0, 0.0),
                 pressed_at: Point::ZERO,
@@ -124,7 +124,7 @@ impl ArrangementGesture {
 }
 
 #[derive(Clone, Debug)]
-struct ArrangementDrag {
+struct PlacementDrag {
     connector: String,
     grab: (f64, f64),
     pressed_at: Point,
@@ -235,11 +235,11 @@ fn round_to_i32(value: f64) -> i32 {
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
-#[crate::component::not_a_component(system, "the display settings' arrangement of screens")]
-pub struct DisplayArrangement {
-    displays: Vec<ArrangedDisplay>,
+#[crate::component::not_a_component(system, "the display settings' placement of screens")]
+pub struct DisplayPlacement {
+    displays: Vec<PlacedDisplay>,
     moves: Vec<(String, ActionEmitter<(i32, i32)>)>,
-    gesture: ui::LocalState<ArrangementGesture>,
+    gesture: ui::LocalState<PlacementGesture>,
     selection: Option<ui::LocalState<String>>,
     identify: Option<(Instant, Instant)>,
     hovered: Option<String>,
@@ -252,11 +252,11 @@ pub struct DisplayArrangement {
     rect: Rect,
 }
 
-impl DisplayArrangement {
+impl DisplayPlacement {
     pub fn new(
-        displays: Vec<ArrangedDisplay>,
+        displays: Vec<PlacedDisplay>,
         moves: Vec<(String, tilo_actions::ActionBinding<(i32, i32)>)>,
-        gesture: ui::LocalState<ArrangementGesture>,
+        gesture: ui::LocalState<PlacementGesture>,
     ) -> Self {
         Self {
             displays,
@@ -323,7 +323,7 @@ impl DisplayArrangement {
     /// the shell by `mapping`, pulled onto the lines it is near, and those
     /// lines. It goes wherever the hand takes it, even off on its own: only
     /// the drop brings it back into contact ([`placement::settle`]).
-    fn held_at(&self, drag: &ArrangementDrag, mapping: Mapping) -> (Placement, Vec<Guide>) {
+    fn held_at(&self, drag: &PlacementDrag, mapping: Mapping) -> (Placement, Vec<Guide>) {
         let Some(display) = self
             .displays
             .iter()
@@ -351,7 +351,7 @@ impl DisplayArrangement {
         )
     }
 
-    /// Frame a capture's held display with the arrangement, so its held
+    /// Frame a capture's held display with the placement, so its held
     /// drag is in sight on its first frame. A real drag never reframes: the
     /// press pins the view where it stands until the drop.
     fn frame_held_capture(&self) {
@@ -390,7 +390,7 @@ impl DisplayArrangement {
         })
     }
 
-    fn moves_together(&self, connector: &str, display: &ArrangedDisplay) -> bool {
+    fn moves_together(&self, connector: &str, display: &PlacedDisplay) -> bool {
         display.connector == connector
             || self
                 .displays
@@ -405,7 +405,7 @@ impl DisplayArrangement {
         &self,
         connector: &str,
         destination: Placement,
-        display: &ArrangedDisplay,
+        display: &PlacedDisplay,
     ) -> Placement {
         let Some(selected) = self
             .displays
@@ -430,7 +430,7 @@ impl DisplayArrangement {
     /// preview for the one being dragged (and its device's other screens),
     /// the settling place for one just dropped, its stored placement for
     /// the rest; and whether it is held.
-    fn drawn_at(&self, now: Instant) -> Vec<(ArrangedDisplay, Vec2, bool)> {
+    fn drawn_at(&self, now: Instant) -> Vec<(PlacedDisplay, Vec2, bool)> {
         let gesture = self.gesture.with(Clone::clone);
         let held = gesture
             .drag
@@ -458,7 +458,7 @@ impl DisplayArrangement {
             .iter()
             .map(|display| match (&held, &settle) {
                 (Some((connector, preview)), _) if self.moves_together(connector, display) => (
-                    ArrangedDisplay {
+                    PlacedDisplay {
                         placement: self.moved_placement(connector, *preview, display),
                         ..display.clone()
                     },
@@ -474,7 +474,7 @@ impl DisplayArrangement {
     }
 
     #[cfg(test)]
-    fn drawn(&self) -> Vec<(ArrangedDisplay, bool)> {
+    fn drawn(&self) -> Vec<(PlacedDisplay, bool)> {
         self.drawn_at(crate::motion::frame_now())
             .into_iter()
             .map(|(display, _, held)| (display, held))
@@ -558,7 +558,7 @@ impl DisplayArrangement {
         )
     }
 
-    fn display_at(&self, point: Point) -> Option<ArrangedDisplay> {
+    fn display_at(&self, point: Point) -> Option<PlacedDisplay> {
         let mapping = self.mapping();
         self.displays
             .iter()
@@ -599,7 +599,7 @@ impl DisplayArrangement {
         self.gesture.update(|gesture| {
             gesture.settle = None;
             gesture.view = Some(MotionValue::new(view));
-            gesture.drag = Some(ArrangementDrag {
+            gesture.drag = Some(PlacementDrag {
                 connector: display.connector.clone(),
                 grab: (
                     share(dx - f64::from(display.placement.x), display.placement.width),
@@ -760,7 +760,7 @@ impl DisplayArrangement {
         let Some(connector) = self.selected() else {
             return false;
         };
-        if self.gesture.with(ArrangementGesture::dragging) {
+        if self.gesture.with(PlacementGesture::dragging) {
             return false;
         }
         let Some(from) = self
@@ -787,7 +787,7 @@ impl DisplayArrangement {
 
     /// Send `connector`'s new place once and spring it there from `from`,
     /// carrying `velocity` (shell units per second), then frame the view
-    /// to the new arrangement.
+    /// to the new placement.
     fn place(
         &mut self,
         connector: &str,
@@ -906,7 +906,7 @@ impl DisplayArrangement {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        display: &ArrangedDisplay,
+        display: &PlacedDisplay,
         state: TileState,
     ) {
         let colors = &theme.tokens.colors;
@@ -973,7 +973,7 @@ impl DisplayArrangement {
             || display.label.clone(),
             |status| {
                 widget_format(
-                    "display-arrangement-caption-status",
+                    "display-placement-caption-status",
                     &[
                         ("status", status.into()),
                         ("name", display.label.clone().into()),
@@ -1022,7 +1022,7 @@ struct TileState {
     identify: f32,
 }
 
-impl Widget for DisplayArrangement {
+impl Widget for DisplayPlacement {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn build_layout(
@@ -1150,7 +1150,7 @@ impl Widget for DisplayArrangement {
             self.gesture.update(|gesture| gesture.view = None);
         }
         if drawn.is_empty() {
-            let message = t("display-arrangement-empty");
+            let message = t("display-placement-empty");
             let style = theme.text(ui::TextRole::Body);
             let (w, h) = text_renderer.measure_style(&message, None, &style);
             text_renderer.draw_style(
@@ -1210,7 +1210,7 @@ impl Widget for DisplayArrangement {
     }
 
     /// Frames while a dropped display settles, the view springs to frame
-    /// the arrangement, or Identify's numbers fade; none at rest, and a held
+    /// the placement, or Identify's numbers fade; none at rest, and a held
     /// drag otherwise asks for its frames by each move of the hand.
     fn needs_animation_frame(&self) -> bool {
         let now = crate::motion::frame_now();
@@ -1315,14 +1315,14 @@ impl Widget for DisplayArrangement {
         let mapping = self.mapping();
         let selected = self.selected();
         let mut group = AccessNode::new(Role::Group)
-            .with_name(t("display-arrangement-name"))
-            .with_description(t("display-arrangement-description"))
+            .with_name(t("display-placement-name"))
+            .with_description(t("display-placement-description"))
             .with_bounds(self.rect);
         for display in &self.displays {
             let key = if display.primary {
-                "display-arrangement-item-primary"
+                "display-placement-item-primary"
             } else {
-                "display-arrangement-item"
+                "display-placement-item"
             };
             let chosen = selected.as_deref() == Some(display.connector.as_str());
             let node = AccessNode::new(if self.selection.is_some() {
@@ -1341,7 +1341,7 @@ impl Widget for DisplayArrangement {
                 ],
             ))
             .with_description(widget_format(
-                "display-arrangement-item-position",
+                "display-placement-item-position",
                 &[
                     (
                         "x",
@@ -1373,7 +1373,7 @@ impl Widget for DisplayArrangement {
             let mut node = if let Some(status) = display.status() {
                 let position = node.description.clone().unwrap_or_default();
                 node.with_description(widget_format(
-                    "display-arrangement-item-status",
+                    "display-placement-item-status",
                     &[("position", position.into()), ("status", status.into())],
                 ))
             } else {
@@ -1394,15 +1394,15 @@ impl Widget for DisplayArrangement {
     }
 
     fn name(&self) -> &'static str {
-        "DisplayArrangement"
+        "DisplayPlacement"
     }
 
     fn test_id(&self) -> Option<&str> {
-        Some("display.arrangement")
+        Some("display.placement")
     }
 }
 
-impl ui::widget::controls::ActionControls for DisplayArrangement {
+impl ui::widget::controls::ActionControls for DisplayPlacement {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.moves
             .iter_mut()
@@ -1429,9 +1429,9 @@ mod tests {
         MoveDisplay { display: String, x: i32, y: i32 },
     }
 
-    fn displays() -> Vec<ArrangedDisplay> {
+    fn displays() -> Vec<PlacedDisplay> {
         vec![
-            ArrangedDisplay {
+            PlacedDisplay {
                 connector: "eDP-1".into(),
                 movement_group: None,
                 shared: None,
@@ -1441,7 +1441,7 @@ mod tests {
                 primary: true,
                 movable: true,
             },
-            ArrangedDisplay {
+            PlacedDisplay {
                 connector: "HDMI-A-1".into(),
                 movement_group: None,
                 shared: None,
@@ -1454,7 +1454,7 @@ mod tests {
         ]
     }
 
-    fn canvas() -> DisplayArrangement {
+    fn canvas() -> DisplayPlacement {
         let moves = displays()
             .iter()
             .map(|display| {
@@ -1482,17 +1482,17 @@ mod tests {
                 (display.connector.clone(), binding)
             })
             .collect();
-        let mut canvas = DisplayArrangement::new(
+        let mut canvas = DisplayPlacement::new(
             displays(),
             moves,
-            ui::LocalState::new(ArrangementGesture::default()),
+            ui::LocalState::new(PlacementGesture::default()),
         );
         canvas.rect = Rect::new(0.0, 0.0, 600.0, 220.0);
         canvas
     }
 
     tilo_test_env::scenario! {
-        /// The tiles of the display arrangement: availability, hover, accessibility, arrow keys and selection.
+        /// The tiles of the display placement: availability, hover, accessibility, arrow keys and selection.
         /// Each phase was a test of its own and builds its own fixture.
         fn displays_are_described_selected_and_hovered;
 
@@ -1560,7 +1560,7 @@ mod tests {
             assert!(description.contains("Offline") && description.contains("apart"));
         }
 
-        phase retained_arrangement_hover_preserves_geometry_without_remeasurement;
+        phase retained_placement_hover_preserves_geometry_without_remeasurement;
         {
             let mut host =
                 ui::headless::FrameHarness::new(ui::State::new(), Box::new(canvas()), (800, 600));
@@ -1568,9 +1568,9 @@ mod tests {
             assert!(!host.last_relayout().measured);
             let rect = host
                 .targets()
-                .get("display.arrangement")
+                .get("display.placement")
                 .copied()
-                .expect("the actual arrangement is mounted");
+                .expect("the actual placement is mounted");
             host.send(&crate::synthetic_input::cursor_moved(
                 rect.center().x,
                 rect.center().y,
@@ -1583,9 +1583,9 @@ mod tests {
             assert_eq!(host.layout_node_ids(), nodes, "resize keeps the tree");
             assert!(
                 host.targets()
-                    .get("display.arrangement")
+                    .get("display.placement")
                     .copied()
-                    .expect("the actual arrangement is mounted")
+                    .expect("the actual placement is mounted")
                     .width()
                     > rect.width()
             );
@@ -1662,7 +1662,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// Dragging a display in the arrangement.
+        /// Dragging a display in the placement.
         /// Each phase was a test of its own and builds its own fixture.
         fn a_display_drags_to_its_place;
 
@@ -1695,7 +1695,7 @@ mod tests {
             let mut canvas = canvas();
             canvas.displays[0].movable = false;
             canvas.displays[1].movement_group = Some("peer".into());
-            canvas.displays.push(ArrangedDisplay {
+            canvas.displays.push(PlacedDisplay {
                 connector: "peer/DP-2".into(),
                 movement_group: Some("peer".into()),
                 shared: None,
@@ -1823,19 +1823,19 @@ mod tests {
 
         phase a_dragged_display_moves_without_a_relayout;
         {
-            let bare = DisplayArrangement::new(
+            let bare = DisplayPlacement::new(
                 displays(),
                 Vec::new(),
-                ui::LocalState::new(ArrangementGesture::default()),
+                ui::LocalState::new(PlacementGesture::default()),
             );
             let mut host =
                 ui::headless::FrameHarness::new(ui::State::new(), Box::new(bare), (800, 600));
             host.profile_frame();
             let rect = host
                 .targets()
-                .get("display.arrangement")
+                .get("display.placement")
                 .copied()
-                .expect("the arrangement is mounted");
+                .expect("the placement is mounted");
             let rebuilt = host.rebuilt_frames();
             let start = Point::new(rect.x0 + rect.width() * 0.75, rect.center().y);
             host.send(&crate::synthetic_input::cursor_moved(start.x, start.y));
@@ -1973,7 +1973,7 @@ mod tests {
             assert!(
                 (rest.center().x - canvas.rect.center().x).abs() < 1.0
                     && (rest.center().y - canvas.rect.center().y).abs() < 1.0,
-                "the arrangement is centred: {rest:?} in {:?}",
+                "the placement is centred: {rest:?} in {:?}",
                 canvas.rect
             );
             let monitor = fitted.to_canvas(displays()[1].placement);
@@ -2005,7 +2005,7 @@ mod tests {
             );
             assert!(
                 (settled.scale - expected.scale).abs() < 1e-6,
-                "it refits the new arrangement after the drop"
+                "it refits the new placement after the drop"
             );
             let resting = settled.to_canvas(canvas.displays[1].placement);
             assert!(
@@ -2083,7 +2083,7 @@ mod tests {
         phase a_drag_follows_the_hand_in_every_direction;
         {
             // The two side-by-side 1080p displays: the monitor dragged straight
-            // right (past the arrangement's edge), left, up and down, one move
+            // right (past the placement's edge), left, up and down, one move
             // per 120 Hz frame. Every frame the point it was taken by stays
             // under the hand, off the snap lines exactly, on them within the
             // snap's pull, and it never stands still while the hand moves.
@@ -2173,7 +2173,7 @@ mod tests {
             "nothing further that way keeps the choice"
         );
         let place_of = |host: &mut ui::headless::FrameHarness, connector: &str| {
-            host.root_mut::<DisplayArrangement>()
+            host.root_mut::<DisplayPlacement>()
                 .displays
                 .iter()
                 .find(|display| display.connector == connector)
@@ -2196,7 +2196,7 @@ mod tests {
         );
         assert_eq!(selection.with(Clone::clone), "eDP-1", "and stays chosen");
 
-        let mut canvas = host.root_mut::<DisplayArrangement>();
+        let mut canvas = host.root_mut::<DisplayPlacement>();
         let tiles = canvas.accessibility().unwrap().children;
         assert_eq!(tiles.len(), 2);
         for tile in &tiles {
@@ -2221,7 +2221,7 @@ mod tests {
         );
     }
 
-    fn selected_canvas() -> (DisplayArrangement, ui::LocalState<String>) {
+    fn selected_canvas() -> (DisplayPlacement, ui::LocalState<String>) {
         let selection = ui::LocalState::new("eDP-1".to_owned());
         let canvas = canvas().with_selection(selection.clone());
         (canvas, selection)
@@ -2235,19 +2235,19 @@ mod tests {
     }
 
     fn trace_drag(path: impl Fn(f64) -> Vec2, frames: u32) -> DragTrace {
-        let mut canvas = DisplayArrangement::new(
+        let mut canvas = DisplayPlacement::new(
             vec![
-                ArrangedDisplay {
+                PlacedDisplay {
                     placement: Placement::new(0, 0, 1920, 1080),
                     ..displays()[0].clone()
                 },
-                ArrangedDisplay {
+                PlacedDisplay {
                     placement: Placement::new(1920, -360, 2560, 1440),
                     ..displays()[1].clone()
                 },
             ],
             Vec::new(),
-            ui::LocalState::new(ArrangementGesture::default()),
+            ui::LocalState::new(PlacementGesture::default()),
         );
         canvas.rect = Rect::new(0.0, 0.0, 560.0, 360.0);
         let start = crate::time::now();

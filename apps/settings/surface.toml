@@ -1058,19 +1058,19 @@ fields = [
 ]
 
 [[resources]]
-kind = "settings.display-arrangement"
-label = "Display arrangement"
+kind = "settings.display-placement"
+label = "Display layout"
 version = 1
 person = true
 fields = [
-  { path = "arrangement", type = "any", readonly = true },
+  { path = "placement", type = "any", readonly = true },
 ]
 
 [[resources.verbs]]
 id = "arrange-displays"
 kind = "undoable"
 params = [
-  { name = "arrangement", required = true, schema = {} },
+  { name = "placement", required = true, schema = {} },
 ]
 
 [[resources]]

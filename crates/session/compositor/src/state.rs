@@ -239,7 +239,7 @@ pub struct State {
     /// are drawn around it, as a window under a floating one is, and under its shadows.
     pub(crate) covers: Vec<tilo_session_core::surface::WindowCover>,
     /// The part of the layout each window is cut to, by id, as the policy arranged it: a window
-    /// draws and takes the pointer there only ([`crate::policy::Arrangement::clip`]).
+    /// draws and takes the pointer there only ([`crate::policy::WindowPlacement::clip`]).
     pub(crate) clips: std::collections::HashMap<u64, smithay::utils::Rectangle<i32, Logical>>,
     /// What the shell draws over one window itself, under the windows: the bar of a window covering
     /// its display, over its content. That window and the ones behind it are drawn around it.
@@ -605,7 +605,7 @@ impl State {
 
     /// The connector the person made primary, as their settings name it,
     /// whether or not it is lit. Everything that places windows, bars and
-    /// sheets for the person learns of it on the next arrangement, which
+    /// sheets for the person learns of it on the next placement, which
     /// this asks for when the choice changed.
     pub(crate) fn set_primary_output(&mut self, connector: Option<String>) {
         if self.primary_output == connector {
@@ -1640,7 +1640,7 @@ impl State {
         self.outputs_changed();
         let windows = self.windows();
         let outputs = self.output_geometries();
-        let Some(arrangements) = self.policy.arrange(&windows, &outputs) else {
+        let Some(placement) = self.policy.arrange(&windows, &outputs) else {
             // The stacking, focus and closes the policy asked for apply all the same.
             self.restack();
             self.apply_policy_focus_and_closes();
@@ -1652,37 +1652,36 @@ impl State {
             let Some(id) = describe(self, &window).map(|info| info.id) else {
                 continue;
             };
-            let Some(arrangement) = arrangements.iter().find(|arrangement| arrangement.id == id)
-            else {
+            let Some(placement) = placement.iter().find(|placement| placement.id == id) else {
                 continue;
             };
             let was = self.space.element_location(&window);
-            if was != Some(arrangement.location) {
+            if was != Some(placement.location) {
                 moved = true;
             }
-            let cut = match arrangement.clip {
+            let cut = match placement.clip {
                 Some(clip) => self.clips.insert(id, clip) != Some(clip),
                 None => self.clips.remove(&id).is_some(),
             };
             moved |= cut;
-            let gave_back = arrangement.fullscreen == Some(false)
-                && crate::requests::give_back_display(&window);
+            let gave_back =
+                placement.fullscreen == Some(false) && crate::requests::give_back_display(&window);
             if let Some(x11) = window.x11_surface() {
-                let size = arrangement
+                let size = placement
                     .size
                     .map_or_else(|| x11.geometry().size, Into::into);
-                let _ = x11.configure(Rectangle::new(arrangement.location, size));
+                let _ = x11.configure(Rectangle::new(placement.location, size));
                 self.space
-                    .map_element(window.clone(), arrangement.location, false);
+                    .map_element(window.clone(), placement.location, false);
                 continue;
             }
             let Some(toplevel) = window.toplevel() else {
                 continue;
             };
-            if let Some((w, h)) = arrangement.size {
+            if let Some((w, h)) = placement.size {
                 toplevel.with_pending_state(|state| state.size = Some((w, h).into()));
             }
-            if arrangement.size.is_some() || gave_back {
+            if placement.size.is_some() || gave_back {
                 toplevel.send_pending_configure();
             }
             let activated = window.toplevel().is_some_and(|toplevel| {
@@ -1692,11 +1691,11 @@ impl State {
             });
             // Re-mapping in stacking order keeps the order.
             self.space
-                .map_element(window.clone(), arrangement.location, activated);
+                .map_element(window.clone(), placement.location, activated);
         }
         let before = self.clips.len();
         self.clips
-            .retain(|id, _| arrangements.iter().any(|arrangement| arrangement.id == *id));
+            .retain(|id, _| placement.iter().any(|placement| placement.id == *id));
         moved |= self.clips.len() != before;
         if moved {
             // A window the policy placed elsewhere may stand on other outputs now: they are the

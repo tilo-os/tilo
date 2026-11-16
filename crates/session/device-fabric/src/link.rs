@@ -131,7 +131,7 @@ pub trait FabricLink {
         let _ = session;
     }
     /// Offer the displays this device shows now to the person's other devices and to the
-    /// shared arrangement, replacing what it offered before. A link whose transport does
+    /// shared placement, replacing what it offered before. A link whose transport does
     /// not carry displays yet ignores the offer.
     fn share_display(
         &self,
@@ -151,7 +151,7 @@ pub trait FabricLink {
     }
 
     /// The person's devices and the outputs each says it shows, as the
-    /// shared arrangement lays them out. Empty while this session is no
+    /// shared placement lays them out. Empty while this session is no
     /// certified device of theirs.
     fn person_displays(&self) -> Vec<settings_store::person_displays::PersonDevice> {
         Vec::new()

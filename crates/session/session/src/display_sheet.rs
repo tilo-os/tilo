@@ -530,7 +530,7 @@ mod tests {
     /// The name a layout is chosen by is the one the displays' own action takes, so a choice at the
     /// sheet arranges them.
     #[test]
-    fn every_layout_is_chosen_by_the_name_its_arrangement_answers_to() {
+    fn every_layout_is_chosen_by_the_name_its_layout_answers_to() {
         for (layout, mode) in [
             (Layout::Extend, DisplayMode::Extend),
             (Layout::Mirror, DisplayMode::Mirror),

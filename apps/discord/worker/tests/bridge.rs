@@ -1656,8 +1656,8 @@ async fn chat_categories(workspace: &Workspace) -> Vec<String> {
         .collect()
 }
 
-/// The bridge's arrangements of Discord's channels so far.
-fn arrangements(fake: &FakeDiscord) -> usize {
+/// The bridge's orders of Discord's channels so far.
+fn orders(fake: &FakeDiscord) -> usize {
     changes(fake)
         .into_iter()
         .filter(|call| *call == format!("PATCH /guilds/{GUILD}/channels"))
@@ -1703,7 +1703,7 @@ async fn moving_channels_in_discord_rearranges_chat() {
     })
     .await;
     quiet(&mut runner, &bridge, "settled").await;
-    assert_eq!(arrangements(fake), 0, "Discord's own move is not sent back");
+    assert_eq!(orders(fake), 0, "Discord's own move is not sent back");
     assert_eq!(
         discord_list(fake, Some(CATEGORY_CHANNELS), 0),
         ["general", "roadmap"]
@@ -1819,13 +1819,13 @@ async fn moving_channels_in_chat_rearranges_discord() {
         chat_list(&bridge.workspace, Some("Channels")).await,
         in_chat
     );
-    let sent = arrangements(fake);
+    let sent = orders(fake);
     let idle = quiet(&mut runner, &bridge, "idle").await;
     assert!(
         !idle.iter().any(|call| call.starts_with("PATCH")),
         "{idle:#?}"
     );
-    assert_eq!(arrangements(fake), sent);
+    assert_eq!(orders(fake), sent);
 }
 
 /// Lay the workspace's Chat out as its owner did before any bridge ran:

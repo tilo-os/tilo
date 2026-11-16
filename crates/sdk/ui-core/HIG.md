@@ -605,7 +605,7 @@ Choose a shared composition by what the region contains:
 | Long command strip | `Toolbar` | Measured plain commands, toggles as lifts, separators only between shown commands, a More menu that keeps every command reachable, keyboard navigation and accessible command bounds |
 | Main writing surface | `Scrollable::with_content_min_viewport_height()` | Short auto-height content fills the viewport; long content retains its intrinsic scroll extent |
 | Empty list or first-use pane | `EmptyState` | Wrapped title/message, measured action height, centering and decorative shedding |
-| Authored canvas or custom arrangement | `Manual` or existing layout primitives | Shared child measurement and ordinary control behavior; the author chooses geometry |
+| Authored canvas or custom layout | `Manual` or existing layout primitives | Shared child measurement and ordinary control behavior; the author chooses geometry |
 
 Give primary content the remaining workspace. Empty optional docks should not
 reserve a large area before they have useful content. A short query or request

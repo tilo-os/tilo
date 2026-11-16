@@ -5,7 +5,7 @@
 //! the compositor paints each display's number and name in a corner of that
 //! display for [`IDENTIFY_MS`]. The number
 //! comes from [`display_numbers`] and the name from [`display_names`] on
-//! both sides, so "2" in the arrangement canvas is the "2" on the physical
+//! both sides, so "2" in the placement canvas is the "2" on the physical
 //! screen.
 
 use serde::{Deserialize, Serialize};

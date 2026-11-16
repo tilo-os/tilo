@@ -4,9 +4,8 @@ use std::path::Path;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::state::State;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::display_arrangement::{
-    ArrangedDisplay, ArrangementGesture, DisplayArrangement, SharedDisplayState,
-    placement::Placement,
+use tilo_ui::widget::display_placement::{
+    DisplayPlacement, PlacedDisplay, PlacementGesture, SharedDisplayState, placement::Placement,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("high-contrast", Theme::high_contrast()),
     ] {
         let screens = vec![
-            ArrangedDisplay {
+            PlacedDisplay {
                 movement_group: None,
                 shared: Some(SharedDisplayState {
                     device: "fixture-laptop".into(),
@@ -36,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 primary: true,
                 movable: true,
             },
-            ArrangedDisplay {
+            PlacedDisplay {
                 movement_group: None,
                 shared: Some(SharedDisplayState {
                     device: "fixture-tower".into(),
@@ -51,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 primary: false,
                 movable: true,
             },
-            ArrangedDisplay {
+            PlacedDisplay {
                 connector: "fixture-pi/HDMI-A-1".into(),
                 movement_group: Some("fixture-pi".into()),
                 shared: Some(SharedDisplayState {
@@ -66,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 primary: false,
                 movable: true,
             },
-            ArrangedDisplay {
+            PlacedDisplay {
                 connector: "fixture-tv/HDMI-A-1".into(),
                 movement_group: Some("fixture-tv".into()),
                 shared: Some(SharedDisplayState {
@@ -82,10 +81,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 movable: false,
             },
         ];
-        let canvas = DisplayArrangement::new(
+        let canvas = DisplayPlacement::new(
             screens,
             Vec::new(),
-            tilo_ui::LocalState::new(ArrangementGesture::default()),
+            tilo_ui::LocalState::new(PlacementGesture::default()),
         );
         let frame =
             FrameHarness::new_with_theme(State::new(), Box::new(canvas), (1000, 320), theme);

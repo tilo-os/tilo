@@ -222,7 +222,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   view is app-shaped names the view of it that is not: `place view all_inboxes for Mail`, a view
   of the resource alone with no sidebar, bar or menu of the app's (E018 otherwise, E011 for a
   second). It is published as the resource view whose `place` flag is set
-  (`ResourceViewSpec::place`), and the arrangement's `place` with no view takes it. Text typed on
+  (`ResourceViewSpec::place`), and the layout's `place` with no view takes it. Text typed on
   the canvas takes it unless the words are the app's name alone, with at most `open`, `launch`,
   `start`, `app` or `the` around it; "my mails" and "my notes" name what the app holds, "Mail" and
   "open Mail" the app (`Target::view_for`). Neither `default view` nor `row view` could say it:

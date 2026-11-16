@@ -10,7 +10,7 @@
 //!    etc.) and hash the concatenation with BLAKE3-256.
 //!
 //! The Ed25519 signature is then produced over the 32-byte hash, not
-//! the raw bytes. Two reasons the design pins this arrangement:
+//! the raw bytes. Two reasons the design pins this ordering:
 //!
 //! - **Domain separation**: the tag stops a signature made under
 //!   one tag from being replayed under another (a `DeviceCert`

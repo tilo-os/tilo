@@ -49,10 +49,10 @@ use std::time::{Duration, Instant};
 
 use smithay::utils::{Logical, Point, Rectangle};
 use tilo_compositor::{
-    Arrangement, Compositor, GestureEvent, IconArtwork, InputEvent, KeyboardLayout, LayoutPoint,
-    LayoutRect, OutputConfig, PadAction, Shadow, StackPolicy, Switch, TabletEvent, TabletPadEvent,
-    TabletPhase, TextField, TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon,
-    WindowInfo, WindowPolicy,
+    Compositor, GestureEvent, IconArtwork, InputEvent, KeyboardLayout, LayoutPoint, LayoutRect,
+    OutputConfig, PadAction, Shadow, StackPolicy, Switch, TabletEvent, TabletPadEvent, TabletPhase,
+    TextField, TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon, WindowInfo,
+    WindowPlacement, WindowPolicy,
 };
 use tilo_session_core::surface::{
     BackdropImage, BackdropRequest, HostKey, KeyClaim, WindowCover, WindowPicture,
@@ -579,7 +579,7 @@ impl WindowPolicy for Columns {
         &mut self,
         windows: &[(WindowInfo, Rectangle<i32, Logical>)],
         _: &[Rectangle<i32, Logical>],
-    ) -> Option<Vec<Arrangement>> {
+    ) -> Option<Vec<WindowPlacement>> {
         // Packed left to right by id, so closing one closes the gap.
         let mut ids: Vec<u64> = windows.iter().map(|(info, _)| info.id).collect();
         ids.sort_unstable();
@@ -587,7 +587,7 @@ impl WindowPolicy for Columns {
         Some(
             ids.into_iter()
                 .zip(0..)
-                .map(|(id, column)| Arrangement {
+                .map(|(id, column)| WindowPlacement {
                     id,
                     location: Point::from((column * 300, 0)),
                     size: None,

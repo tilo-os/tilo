@@ -1059,7 +1059,7 @@ session-magnifier-toggle = Turn the magnifier on or off
 session-magnifier-zoom-in = Magnify more
 session-magnifier-zoom-out = Magnify less
 session-displays = Displays
-session-displays-next = Next display arrangement
+session-displays-next = Next display mode
 session-displays-set = Arrange the displays
 session-clipboard = Clipboard
 

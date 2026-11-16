@@ -371,7 +371,7 @@ pub fn selection_floor(theme: &Theme, ground: Color) -> Color {
 }
 
 /// An alignment guide: the line a dragged object lines up with while it is near enough to snap (a
-/// display on the arrangement canvas, a shape on a slide), from `from` to `to`.
+/// display on the layout canvas, a shape on a slide), from `from` to `to`.
 pub fn paint_alignment_guide(
     scene: &mut Scene,
     transform: Affine,

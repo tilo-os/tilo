@@ -214,7 +214,7 @@ fn every_settings_section_is_edited_by_path() {
         "settings.agent-providers",
         "settings.default-apps",
         "settings.clock",
-        "settings.display-arrangement",
+        "settings.display-placement",
         "settings.automatic-display",
         "settings.osk-sources",
     ] {

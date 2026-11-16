@@ -2,7 +2,7 @@
 //! device, and how it reaches the person's other devices.
 //!
 //! The shell keeps the person's shell choices in its own record (`records: .own`): the style,
-//! the bar and the dock, the strips' and the frames' settings, and the person's arrangement. That
+//! the bar and the dock, the strips' and the frames' settings, and the person's layout. That
 //! record is the person's as any app's is, so it is kept where an app's own record of the person's
 //! is kept: one document opened through `app_state` — the store `ui::record` opens a record
 //! through — under the app's own person scope (`ui::record::person::PERSONAL_SCOPE`), in the

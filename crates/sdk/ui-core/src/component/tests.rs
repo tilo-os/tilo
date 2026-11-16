@@ -349,7 +349,7 @@ tilo_test_env::scenario! {
     // parts it already has, and is built again when they name others.
     //
     // The alternative is what left a stale node behind after `5fab1bdd584`: a map patched the pins
-    // it recognised and kept the pin of a place the arrangement had closed, so a closed window's
+    // it recognised and kept the pin of a place the layout had closed, so a closed window's
     // title stayed on the canvas and in the accessibility tree; and a board rebuilt its cards from
     // props that carried none of their views, so every card showed empty.
     phase a_widget_holding_parts_takes_other_parts_only_by_being_built_again;

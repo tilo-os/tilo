@@ -45,6 +45,8 @@ the graph may make it.
 ## Screen
 
 - **Display**: a screen.
+- **Display placement**: where each of a person's displays stands and in what order, across their
+  devices. One setting of the person's; the Displays pane edits it.
 - **Layout**: a workspace's strips, window groups and tabs. Workspace data, shared by its members.
 - **Strip**, **window group**, **tab**: the parts of a layout.
 - **View**: how the shell shows a layout (strips, canvas, others a shell adds).

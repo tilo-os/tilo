@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@ee82969e4c06ecce";
+export const SURFACE = "so.tilo.settings@096be6572527d4b3";
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
@@ -448,7 +448,7 @@ export interface SetDefaultAppHandlerArgs {
 
 /** The arguments of `arrange-displays`. */
 export interface ArrangeDisplaysArgs {
-  arrangement: unknown;
+  placement: unknown;
 }
 
 /** The arguments of `set-automatic-display-input`. */
@@ -1212,19 +1212,19 @@ export function clock(ws: tilo.Workspace, path: string): Clock {
   return resourceProxy(ws, path, SURFACE) as unknown as Clock;
 }
 
-/** Display arrangement — `settings.display-arrangement`. */
-export interface DisplayArrangement extends tilo.Resource {
-  readonly arrangement: unknown;
+/** Display layout — `settings.display-placement`. */
+export interface DisplayPlacement extends tilo.Resource {
+  readonly placement: unknown;
   arrangeDisplays(args: {
-    arrangement: unknown;
+    placement: unknown;
   }): Promise<tilo.Run | void>;
   /** Runs `arrange-displays` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   arrangeDisplaysMany(items: ArrangeDisplaysArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
-/** The `settings.display-arrangement` kind at `path`. */
-export function displayArrangement(ws: tilo.Workspace, path: string): DisplayArrangement {
-  return resourceProxy(ws, path, SURFACE) as unknown as DisplayArrangement;
+/** The `settings.display-placement` kind at `path`. */
+export function displayPlacement(ws: tilo.Workspace, path: string): DisplayPlacement {
+  return resourceProxy(ws, path, SURFACE) as unknown as DisplayPlacement;
 }
 
 /** Automatic display input — `settings.automatic-display`. */

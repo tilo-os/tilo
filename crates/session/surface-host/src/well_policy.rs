@@ -6,18 +6,18 @@
 //! by the place, to the [`Wells`] handle the surface host shares with this policy — as
 //! [`DesktopHost`](crate::DesktopHost) and
 //! [`StripPolicy`](crate::StripPolicy) share their desktop. The policy answers a window's initial
-//! size, its place and the arrangement of every window from that: a window maps into the
+//! size, its place and the placement of every window from that: a window maps into the
 //! desktop's tab model (giving it a tab id), and its well is the one keyed by that tab id.
 //!
 //! A well that moves without changing size moves its window in the same frame: the compositor
-//! asks for an arrangement after every frame the host drew, so a canvas pan or a strip scroll
+//! asks for a placement after every frame the host drew, so a canvas pan or a strip scroll
 //! places the window at the well before the frame is shown. A well that changed size configures
 //! the client, which catches up on its next commit. A place with no well on screen (scrolled
 //! away, or on a workspace the shell does not draw) leaves its window off the output, so it
 //! gets no frame callbacks.
 //!
 //! The desktop model the tabs live in is the policy's own ([`well_policy`]), or the session's
-//! ([`crate::DesktopHost::well_policy`]), so a place in the person's arrangement names the
+//! ([`crate::DesktopHost::well_policy`]), so a place in the person's placement names the
 //! window's tab there.
 
 use std::cell::{RefCell, RefMut};
@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use tilo_compositor::gestures::GestureConfig;
 use tilo_compositor::policy::{LayoutPoint, LayoutRect};
-use tilo_compositor::{Arrangement, GestureEvent, WindowInfo, WindowPolicy};
+use tilo_compositor::{GestureEvent, WindowInfo, WindowPlacement, WindowPolicy};
 
 use tilo_desktop_policy::DesktopPolicy;
 use ui::widget::Wells;
@@ -312,7 +312,7 @@ impl WindowPolicy for WellPolicy {
         &mut self,
         windows: &[(WindowInfo, LayoutRect)],
         outputs: &[LayoutRect],
-    ) -> Option<Vec<Arrangement>> {
+    ) -> Option<Vec<WindowPlacement>> {
         self.desktop.cover(outputs);
         // A launched window whose tab came with the last layout goes to its own workspace.
         self.desktop.policy().carry_launched();
@@ -336,7 +336,7 @@ impl WindowPolicy for WellPolicy {
         }
         self.mapped.retain(|id| !gone.contains(id));
         self.configured.retain(|id, _| !gone.contains(id));
-        let mut arrangements = Vec::with_capacity(windows.len());
+        let mut placement = Vec::with_capacity(windows.len());
         for (window, current) in windows {
             if let Some(title) = &window.title {
                 self.desktop.policy().retitle(window.id, title);
@@ -347,7 +347,7 @@ impl WindowPolicy for WellPolicy {
             let tab = self.tab(window);
             let Some(well) = tab.as_deref().and_then(|key| self.wells.well(key)) else {
                 // No well on screen: the window waits off it, with the size it has.
-                arrangements.push(Arrangement {
+                placement.push(WindowPlacement {
                     id: window.id,
                     location: LayoutPoint::from((OFFSTAGE, 0)),
                     size: None,
@@ -357,7 +357,7 @@ impl WindowPolicy for WellPolicy {
                 continue;
             };
             if well.width() < 1.0 || well.height() < 1.0 {
-                arrangements.push(Arrangement {
+                placement.push(WindowPlacement {
                     id: window.id,
                     location: LayoutPoint::from((OFFSTAGE, 0)),
                     size: None,
@@ -381,7 +381,7 @@ impl WindowPolicy for WellPolicy {
             if reconfigure {
                 self.configured.insert(window.id, size);
             }
-            arrangements.push(Arrangement {
+            placement.push(WindowPlacement {
                 id: window.id,
                 location: LayoutPoint::from((round(well.x0), round(well.y0))),
                 size: reconfigure.then_some(size),
@@ -389,7 +389,7 @@ impl WindowPolicy for WellPolicy {
                 fullscreen: None,
             });
         }
-        Some(arrangements)
+        Some(placement)
     }
 
     fn withdrawn(&mut self, window: &WindowInfo) {

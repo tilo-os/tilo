@@ -4723,7 +4723,7 @@ impl AppBrokerState {
     }
 
     /// The host's own steps changed what they offer (the session's
-    /// arrangement gained a place, a window opened): every connection
+    /// layout gained a place, a window opened): every connection
     /// following the catalogue is handed it again.
     pub fn host_steps_changed(&self) {
         self.catalogue_changed();

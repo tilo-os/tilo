@@ -329,10 +329,10 @@ tilo_test_env::scenario! {
     }
 
     phase a_stored_layout_scope_is_no_governance;
-    // A workspace made while the arrangement could be one member's own stores
+    // A workspace made while the layout could be one member's own stores
     // the scope it was given (`layout_v1`). This build reads no scope: the value
     // is no longer governance, so a member's batch that carries it is admitted as
-    // any other change, and the arrangement a workspace holds is its members'.
+    // any other change, and the layout a workspace holds is its members'.
     {
         let before = governed();
         let edit = changes_after(&before, |doc| {

@@ -1,4 +1,4 @@
-//! Pure rearrangements of the window topology.
+//! Pure changes of the window topology.
 //!
 //! Each operation edits the [`Layout`] cache only and reports what it
 //! did, so a host can mirror the same change into its replication document

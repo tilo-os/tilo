@@ -2102,13 +2102,13 @@ mod tests {
         assert_eq!(after, before, "both keep their pane");
     }
 
-    fn arrangement(
+    fn layout(
         element: &mut Element,
     ) -> &mut ui::widget::arrange::Arranged<ui::widget::arrange::FlexLayout> {
         element
             .as_any_mut()
             .and_then(|any| any.downcast_mut())
-            .expect("a stack is an arrangement")
+            .expect("a stack is a layout")
     }
 
     #[test]
@@ -2118,13 +2118,13 @@ mod tests {
         led.props.insert("lead".to_owned(), Value::Int(1));
         let mut built = reconciler.build(&led);
         assert_eq!(
-            arrangement(&mut built).lead(),
+            layout(&mut built).lead(),
             1,
             "the node's lead is the container's"
         );
         let mut plain = reconciler.build(&stack("p", vec![text("b", "b")]));
         assert_eq!(
-            arrangement(&mut plain).lead(),
+            layout(&mut plain).lead(),
             0,
             "a container without one keeps its edge"
         );

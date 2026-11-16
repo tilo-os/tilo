@@ -79,7 +79,7 @@ pub trait Screen {
     }
 
     /// Whether the desktop has settled, so a press reaches its control: the
-    /// shell refuses one while the desktop moves between two arrangements
+    /// shell refuses one while the desktop moves between two layouts
     /// (`desktop_in_transition`), as onboarding's pages do when they change.
     /// By default: always.
     fn settled(&mut self) -> Result<bool, Self::Error> {

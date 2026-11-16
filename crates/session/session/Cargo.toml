@@ -81,7 +81,7 @@ tilo-desktop = { path = "../desktop" }
 # The participant's own client of the collaboration plane: the boards of who is here and this
 # device's own word, which this session hosts with its own endpoint.
 tilo-session-client = { path = "../client" }
-# The roles every host runs: the shell's document and the arrangement it holds.
+# The roles every host runs: the shell's document and the layout it holds.
 tilo-session-core = { path = "../core" }
 tilo-desktop-model = { path = "../desktop-model" }
 # The shell's window policy, whose tab calls an app's asks are answered with.

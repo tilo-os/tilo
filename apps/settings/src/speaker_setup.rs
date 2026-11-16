@@ -14,30 +14,30 @@ pub const ROOM_RADIUS_MM: i32 = 2_000;
 pub const ROOM_EXTENT_MM: i32 = 5_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Arrangement {
+pub enum Placement {
     Stereo,
     Surround,
     Room,
 }
 
-impl Arrangement {
+impl Placement {
     pub const ALL: [Self; 3] = [Self::Stereo, Self::Surround, Self::Room];
 
     #[must_use]
     pub fn label(self) -> String {
         t(match self {
-            Self::Stereo => "speakers-arrangement-stereo",
-            Self::Surround => "speakers-arrangement-surround",
-            Self::Room => "speakers-arrangement-room",
+            Self::Stereo => "speakers-placement-stereo",
+            Self::Surround => "speakers-placement-surround",
+            Self::Room => "speakers-placement-room",
         })
     }
 
     #[must_use]
     pub fn description(self) -> String {
         t(match self {
-            Self::Stereo => "speakers-arrangement-stereo-description",
-            Self::Surround => "speakers-arrangement-surround-description",
-            Self::Room => "speakers-arrangement-room-description",
+            Self::Stereo => "speakers-placement-stereo-description",
+            Self::Surround => "speakers-placement-surround-description",
+            Self::Room => "speakers-placement-room-description",
         })
     }
 
@@ -45,7 +45,7 @@ impl Arrangement {
     pub fn from_label(label: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
-            .find(|arrangement| arrangement.label() == label)
+            .find(|placement| placement.label() == label)
     }
 
     const fn member_range(self) -> (usize, usize) {
@@ -168,7 +168,7 @@ pub enum Step {
         index: usize,
         played: bool,
     },
-    /// Drag each speaker to where it stands (room arrangement only).
+    /// Drag each speaker to where it stands (room placement only).
     Layout,
     Name,
     Calibrate {
@@ -179,7 +179,7 @@ pub enum Step {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpeakerSetup {
     step: Step,
-    arrangement: Arrangement,
+    placement: Placement,
     chosen: Vec<Candidate>,
     roles: Vec<Option<SpeakerRoleSpec>>,
     name: String,
@@ -199,7 +199,7 @@ impl Default for SpeakerSetup {
     fn default() -> Self {
         Self {
             step: Step::Overview,
-            arrangement: Arrangement::Stereo,
+            placement: Placement::Stereo,
             chosen: Vec::new(),
             roles: Vec::new(),
             name: t("speakers-default-name"),
@@ -258,8 +258,8 @@ impl SpeakerSetup {
     }
 
     #[must_use]
-    pub fn arrangement(&self) -> Arrangement {
-        self.arrangement
+    pub fn placement(&self) -> Placement {
+        self.placement
     }
 
     #[must_use]
@@ -433,8 +433,8 @@ impl SpeakerSetup {
         };
     }
 
-    pub fn set_arrangement(&mut self, arrangement: Arrangement) {
-        self.arrangement = arrangement;
+    pub fn set_placement(&mut self, placement: Placement) {
+        self.placement = placement;
         self.roles = vec![None; self.chosen.len()];
     }
 
@@ -459,20 +459,20 @@ impl SpeakerSetup {
     /// Why the chosen outputs cannot continue yet, if they cannot.
     #[must_use]
     pub fn outputs_problem(&self) -> Option<String> {
-        let (low, high) = self.arrangement.member_range();
+        let (low, high) = self.placement.member_range();
         let count = self.chosen.len();
         if count < low {
-            return Some(t(match self.arrangement {
-                Arrangement::Stereo => "speakers-problem-stereo-too-few",
-                Arrangement::Surround => "speakers-problem-surround-too-few",
-                Arrangement::Room => "speakers-problem-room-too-few",
+            return Some(t(match self.placement {
+                Placement::Stereo => "speakers-problem-stereo-too-few",
+                Placement::Surround => "speakers-problem-surround-too-few",
+                Placement::Room => "speakers-problem-room-too-few",
             }));
         }
         (count > high).then(|| {
-            t(match self.arrangement {
-                Arrangement::Stereo => "speakers-problem-stereo-too-many",
-                Arrangement::Surround => "speakers-problem-surround-too-many",
-                Arrangement::Room => "speakers-problem-room-too-many",
+            t(match self.placement {
+                Placement::Stereo => "speakers-problem-stereo-too-many",
+                Placement::Surround => "speakers-problem-surround-too-many",
+                Placement::Room => "speakers-problem-room-too-many",
             })
         })
     }
@@ -482,7 +482,7 @@ impl SpeakerSetup {
             return Err(problem);
         }
         self.roles = vec![None; self.chosen.len()];
-        if self.arrangement == Arrangement::Room {
+        if self.placement == Placement::Room {
             let count = self.chosen.len();
             self.roles = (0..count)
                 .map(|index| Some(default_room_point(index, count)))
@@ -512,9 +512,9 @@ impl SpeakerSetup {
     /// Roles the current speaker may still take.
     #[must_use]
     pub fn remaining_roles(&self) -> Vec<SpeakerRoleSpec> {
-        let all: &[SpeakerRoleSpec] = match self.arrangement {
-            Arrangement::Stereo => &[SpeakerRoleSpec::Left, SpeakerRoleSpec::Right],
-            Arrangement::Surround => &[
+        let all: &[SpeakerRoleSpec] = match self.placement {
+            Placement::Stereo => &[SpeakerRoleSpec::Left, SpeakerRoleSpec::Right],
+            Placement::Surround => &[
                 SpeakerRoleSpec::Left,
                 SpeakerRoleSpec::Right,
                 SpeakerRoleSpec::Center,
@@ -522,7 +522,7 @@ impl SpeakerSetup {
                 SpeakerRoleSpec::SurroundLeft,
                 SpeakerRoleSpec::SurroundRight,
             ],
-            Arrangement::Room => &[],
+            Placement::Room => &[],
         };
         let current = match self.step {
             Step::Identify { index, .. } => Some(index),
@@ -544,7 +544,7 @@ impl SpeakerSetup {
         let Step::Identify { index, .. } = self.step else {
             return Err(t("speakers-assign-listen-first"));
         };
-        if self.arrangement == Arrangement::Room {
+        if self.placement == Placement::Room {
             if !matches!(role, SpeakerRoleSpec::Room { .. }) {
                 return Err(t("speakers-assign-room-on-layout"));
             }
@@ -557,7 +557,7 @@ impl SpeakerSetup {
         if let Some(slot) = self.roles.get_mut(index) {
             *slot = Some(role);
         }
-        if self.arrangement == Arrangement::Stereo {
+        if self.placement == Placement::Stereo {
             let other = if role == SpeakerRoleSpec::Left {
                 SpeakerRoleSpec::Right
             } else {
@@ -589,20 +589,20 @@ impl SpeakerSetup {
             .iter()
             .enumerate()
             .skip(index.saturating_add(1))
-            .find(|(_, role)| role.is_none() || self.arrangement == Arrangement::Room)
+            .find(|(_, role)| role.is_none() || self.placement == Placement::Room)
             .map(|(next, _)| next);
         self.step = match next {
             Some(next) => Step::Identify {
                 index: next,
                 played: false,
             },
-            None if self.arrangement == Arrangement::Room => Step::Layout,
+            None if self.placement == Placement::Room => Step::Layout,
             None => Step::Name,
         };
     }
 
     pub fn place(&mut self, index: usize, x_mm: i32, y_mm: i32) {
-        if self.arrangement != Arrangement::Room {
+        if self.placement != Placement::Room {
             return;
         }
         if let Some(slot) = self.roles.get_mut(index) {
@@ -768,7 +768,7 @@ impl SpeakerSetup {
                 index: self.chosen.len().saturating_sub(1),
                 played: false,
             },
-            Step::Name if self.arrangement == Arrangement::Room => Step::Layout,
+            Step::Name if self.placement == Placement::Room => Step::Layout,
             Step::Name => Step::Identify {
                 index: 0,
                 played: false,
@@ -906,7 +906,7 @@ mod tests {
             snap.devices.push(device("tv", &["HDMI"], false));
             setup.update(snap);
             setup.begin();
-            setup.set_arrangement(Arrangement::Surround);
+            setup.set_placement(Placement::Surround);
             for candidate in setup.candidates() {
                 setup.toggle(&candidate);
             }
@@ -924,7 +924,7 @@ mod tests {
         {
             let mut setup = setup();
             setup.begin();
-            setup.set_arrangement(Arrangement::Room);
+            setup.set_placement(Placement::Room);
             for candidate in setup.candidates() {
                 setup.toggle(&candidate);
             }

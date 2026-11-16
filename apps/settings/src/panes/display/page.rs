@@ -1,6 +1,6 @@
 //! The Displays page as view code over the person's night light, this device's
-//! display preferences and the displays' arrangement, and what the area reads
-//! of the displays: the change being tried, the arrangement canvas of this
+//! display preferences and the displays' placement, and what the area reads
+//! of the displays: the change being tried, the placement canvas of this
 //! device's displays and the person's other devices' screens, the chosen
 //! screen's settings and the trusted layout tools.
 
@@ -35,8 +35,8 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     let app = Rc::clone(app);
     let shared = cx.settings::<SharedDisplayPrefs>();
     cx.record(&shared, move |cx| {
-        let arrangement = cx.value(|prefs: &SharedDisplayPrefs| prefs.arrangement.clone());
-        cx.switch(&arrangement, move |cx, _| {
+        let placement = cx.value(|prefs: &SharedDisplayPrefs| prefs.placement.clone());
+        cx.switch(&placement, move |cx, _| {
             let (app, actions, dispatcher, shown, following) = (
                 Rc::clone(&app),
                 actions.clone(),
@@ -86,12 +86,12 @@ fn page(
 ) -> Element {
     let connected = model.connected_outputs();
     // What is being tried, or waits to be, leads: its countdown must be
-    // seen. Then the arrangement, which is the selection, and below it the
+    // seen. Then the placement, which is the selection, and below it the
     // one selected display's settings: never a list of every display, and
     // no brightness outside the selected display's. Then the comforts that
     // are not one display's, and the displays of other devices.
     let mut cards: Vec<SettingsSection> = model.safety_card(cx, actions).into_iter().collect();
-    cards.push(model.arrangement_card(cx, actions, dispatcher, &connected));
+    cards.push(model.placement_card(cx, actions, dispatcher, &connected));
     if let Some(notice) = &model.notice {
         cards.push(section(&t("display-card-title"), rows(vec![note(notice)])));
     }
@@ -150,13 +150,13 @@ fn night_light_card(cx: &ViewCx<NightLightPrefs>) -> SettingsSection {
 }
 
 impl DisplayModel {
-    /// The arrangement card: the canvas of the connected displays and the
+    /// The placement card: the canvas of the connected displays and the
     /// person's other devices' screens, which is also where a screen is
     /// chosen (by pointer, touch, keyboard or screen reader). Identify sits
     /// in the card's header; under the canvas, once there are other devices,
     /// whether they may use this screen. See [`Self::connected_outputs`] for
     /// why disconnected ports aren't enumerated.
-    fn arrangement_card(
+    fn placement_card(
         &self,
         cx: &ViewCx<NightLightPrefs>,
         actions: &Actions<Settings>,
@@ -174,7 +174,7 @@ impl DisplayModel {
             );
         }
         let disconnected = self.outputs.len() - connected.len();
-        let canvas = self.arrangement_canvas(dispatcher, connected);
+        let canvas = self.placement_canvas(dispatcher, connected);
         let identify = invoking(
             actions,
             Button::new("settings.display.identify", &t("display-identify"))

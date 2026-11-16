@@ -212,7 +212,7 @@ impl SessionFabric {
             PersonalFabricPayload::Request => self.announce(false),
             // Where one of the person's devices says its outputs stand, and what their hardware
             // says: the fabric admits both for the exact revision the device's own record carries,
-            // and the shared arrangement reads them from there.
+            // and the shared layout reads them from there.
             PersonalFabricPayload::DisplayConnectors { stamp, outputs } => {
                 let taken = self.runtime.lock_recover().observe_display_connectors(
                     peer,

@@ -18,7 +18,7 @@ path = "tests/it.rs"
 tilo-compositor = { path = "../compositor" }
 tilo-desktop-policy = { path = "../desktop-policy" }
 tilo-desktop-surface = { path = "../desktop-surface" }
-# The arrangement's readings, which every host's arrangement holds.
+# The layout's readings, which every host's layout holds.
 tilo-session-core = { path = "../core" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 vello.workspace = true

@@ -1893,7 +1893,7 @@ fn light(
     } = lighting;
     let output = new_output(&gpu.node, info, name);
     let output_mode = OutputMode::from(mode);
-    // Right of the others until the arrangement places it.
+    // Right of the others until the placement places it.
     let location = Point::from((next_x(state), 0));
     output.change_current_state(
         Some(output_mode),

@@ -442,17 +442,17 @@ pub fn columns_for(width: f32, min: f32, gap: f32) -> usize {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Arrangement {
+pub enum PaneSplit {
     SideBySide,
     Collapsed,
 }
 
 #[must_use]
-pub fn arrangement_for(width: f32, primary_min: f32, secondary_min: f32, gap: f32) -> Arrangement {
+pub fn pane_split_for(width: f32, primary_min: f32, secondary_min: f32, gap: f32) -> PaneSplit {
     if width >= primary_min + secondary_min + gap {
-        Arrangement::SideBySide
+        PaneSplit::SideBySide
     } else {
-        Arrangement::Collapsed
+        PaneSplit::Collapsed
     }
 }
 
@@ -469,9 +469,9 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        /// The pure arithmetic of arrangement: lengths, classes, orientation, columns, splits, pages and direction.
+        /// The pure arithmetic of layout: lengths, classes, orientation, columns, splits, pages and direction.
         /// Each phase was a test of its own and builds its own fixture.
-        fn arrangement_units_resolve_against_the_space_offered;
+        fn layout_units_resolve_against_the_space_offered;
 
         phase lengths_resolve_against_the_text_size;
         {
@@ -529,17 +529,17 @@ mod tests {
             let (primary, secondary, gap) = (18.0 * 16.0, 22.0 * 16.0, 16.0);
             let needed = primary + secondary + gap;
             assert_eq!(
-                arrangement_for(needed, primary, secondary, gap),
-                Arrangement::SideBySide
+                pane_split_for(needed, primary, secondary, gap),
+                PaneSplit::SideBySide
             );
             assert_eq!(
-                arrangement_for(needed - 0.5, primary, secondary, gap),
-                Arrangement::Collapsed
+                pane_split_for(needed - 0.5, primary, secondary, gap),
+                PaneSplit::Collapsed
             );
             // At 150 % text the same window collapses.
             assert_eq!(
-                arrangement_for(needed, 1.5 * primary, 1.5 * secondary, gap),
-                Arrangement::Collapsed
+                pane_split_for(needed, 1.5 * primary, 1.5 * secondary, gap),
+                PaneSplit::Collapsed
             );
         }
 

@@ -478,8 +478,8 @@ tilo_test_env::scenario! {
     // greetd gave up. Either way the card is on the panel, the monitor shows
     // the time, and the window's frame fits the device.
     {
-        use crate::output_scale::{Arrangement, Display, Displays};
-        let arrangements = [
+        use crate::output_scale::{Layout, Display, Displays};
+        let layouts = [
             (
                 Rect::new(0.0, 0.0, 1472.0, 920.0),
                 Rect::new(1472.0, 0.0, 3392.0, 1080.0),
@@ -489,8 +489,8 @@ tilo_test_env::scenario! {
                 Rect::new(2944.0, 0.0, 4864.0, 1080.0),
             ),
         ];
-        for (panel, monitor) in arrangements {
-            let displays = Displays::fixed(Arrangement {
+        for (panel, monitor) in layouts {
+            let displays = Displays::fixed(Layout {
                 displays: vec![
                     Display {
                         rect: panel,
@@ -570,13 +570,13 @@ tilo_test_env::scenario! {
 
     phase several_outputs_put_the_card_on_the_built_in_panel_and_the_backdrop_on_each;
     {
-        use crate::output_scale::{Arrangement, Display, Displays};
+        use crate::output_scale::{Layout, Display, Displays};
         // The reported laptop: its 2944x1840 panel at scale 2 beside a 1080p
         // monitor. `cage` stretches the one window over both, so a card
         // centred in the window straddled the seam between the displays.
         let panel = Rect::new(0.0, 0.0, 1472.0, 920.0);
         let monitor = Rect::new(1472.0, 0.0, 3392.0, 1080.0);
-        let displays = Displays::fixed(Arrangement {
+        let displays = Displays::fixed(Layout {
             displays: vec![
                 Display {
                     rect: panel,
@@ -747,14 +747,14 @@ tilo_test_env::scenario! {
 
 #[test]
 fn the_passcode_keeps_focus_and_takes_keys_when_the_window_spans_two_outputs() {
-    use crate::output_scale::{Arrangement, Display, Displays};
+    use crate::output_scale::{Display, Displays, Layout};
     // The reported laptop: its panel at scale 2 beside a 1080p monitor.
     // The window starts at the panel's size and grows to span both once
     // the kiosk has applied the layout, re-laying the card out on the
     // panel after the passcode field already had focus.
     let panel = Rect::new(0.0, 0.0, 1472.0, 920.0);
     let monitor = Rect::new(1472.0, 0.0, 3392.0, 1080.0);
-    let displays = Displays::fixed(Arrangement {
+    let displays = Displays::fixed(Layout {
         displays: vec![
             Display {
                 rect: panel,

@@ -313,7 +313,7 @@ tilo_test_env::scenario! {
         assert_eq!(to_discord(&guild(), &workspace), None);
     }
 
-    phase the_echo_of_the_bridges_arrangement_is_no_move_and_not_asked_again;
+    phase the_echo_of_the_bridges_order_is_no_move_and_not_asked_again;
     {
         let mut workspace = workspace();
         workspace.channels.swap(1, 4);
@@ -356,7 +356,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_move_in_discord_while_an_arrangement_is_on_its_way_keeps_the_arrangement;
+    phase a_move_in_discord_while_an_order_is_on_its_way_keeps_the_order;
     {
         let mut workspace = workspace();
         workspace.categories.reverse();
@@ -371,7 +371,7 @@ tilo_test_env::scenario! {
         assert_eq!(arranged.channels[1], place("c_plans", None));
     }
 
-    phase a_failed_arrangement_is_done_with_and_laid_over_nothing;
+    phase a_failed_order_is_done_with_and_laid_over_nothing;
     {
         let mut workspace = workspace();
         workspace.categories.reverse();
@@ -410,7 +410,7 @@ tilo_test_env::scenario! {
             }),
             "{op:?}"
         );
-        // Discord showing it last before the arrangement lands is no move.
+        // Discord showing it last before the order lands is no move.
         let waiting = asked(&guild, op, None);
         let mut shown = waiting.clone();
         shown

@@ -206,12 +206,12 @@ def show_canvas(session: CanvasSession) -> dict:
 
 def canvas_places(session: CanvasSession) -> dict[str, dict]:
     """Where each window group of the shell stands on its workspace's canvas, by group: the
-    arrangement's own rows, as the shell publishes them (`arrangement.places` of each workspace,
+    layout's own rows, as the shell publishes them (`layout.places` of each workspace,
     a place being where its top-leading corner is and how wide and tall it stands there)."""
     tree = session.state_dump().get("workspace_tree") or {}
     places: dict[str, dict] = {}
     for workspace in tree.get("workspaces") or []:
-        for group, place in (workspace.get("arrangement") or {}).get("places", {}).items():
+        for group, place in (workspace.get("layout") or {}).get("places", {}).items():
             places[str(group)] = place
     return places
 

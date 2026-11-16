@@ -1,7 +1,7 @@
 //! What the session's own actions ask of the session that holds them.
 //!
-//! The session's own actions — the arrangement, its undo, the windows, the notices — are decided
-//! by the broker like any other step and carried out on the session's pass, where the arrangement
+//! The session's own actions — the layout, its undo, the windows, the notices — are decided
+//! by the broker like any other step and carried out on the session's pass, where the layout
 //! lives on the thread that shows it. A role that offers them names this seam; the host's own
 //! APIs answer it (the native session's API queue, the page's own).
 
@@ -12,7 +12,7 @@ use tilo_actions::remote::{ActionHostError, Completer};
 pub(crate) trait SessionSteps: Send + Sync {
     /// Run `address` as `actor` with `slot` (its arguments in the slot form the broker carries),
     /// as a step of `run` when its invocation names one:
-    /// completed on the session's pass, which is where the arrangement and the windows are. The
+    /// completed on the session's pass, which is where the layout and the windows are. The
     /// answer is `None` for a step the session accepted and carries on with.
     ///
     /// `beside` is the place the ask is in, by the resource that place shows — the conversation

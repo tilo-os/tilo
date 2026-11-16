@@ -139,7 +139,7 @@ tilo_test_env::scenario! {
     // (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes views; it
     // opens nothing"). The record publishes the `open` so an agent reading the catalogue finds it,
     // and invoking it changes nothing of the record — the place it asks for waits for the session to
-    // stand through its arrangement, beside the place the asking step was in.
+    // stand through its layout, beside the place the asking step was in.
     {
         let (mut service, _) = service();
         let note = new_note(&mut service);

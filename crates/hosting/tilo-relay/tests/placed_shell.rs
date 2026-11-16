@@ -208,10 +208,10 @@ async fn run(placed: &Arc<Placed>, session: &str, command: &str) -> Result<Shell
     .unwrap()
 }
 
-/// Stop the host, once nothing else holds the arrangement.
+/// Stop the host, once nothing else holds the layout.
 async fn stop(placed: Arc<Placed>) {
     let Ok(placed) = Arc::try_unwrap(placed) else {
-        panic!("nothing else holds the arrangement");
+        panic!("nothing else holds the layout");
     };
     placed.hosted.stop().await;
 }

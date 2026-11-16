@@ -857,7 +857,7 @@ fn step_action(words: &Words, id: &'static str, label: &str) -> ActionSpec {
 /// (three windows were three identical "Stand a place" rows in search).
 #[expect(
     clippy::expect_used,
-    reason = "an layout action always serializes to JSON"
+    reason = "a layout action always serializes to JSON"
 )]
 pub(super) fn action(
     words: &Words,
@@ -875,7 +875,7 @@ pub(super) fn action(
         params,
         move |args| {
             EncodedAction::encode_operation(OPERATION, &build(args))
-                .expect("an layout action always serializes")
+                .expect("a layout action always serializes")
         },
     );
     spec.type_mut().contract = ActionContract {

@@ -1527,14 +1527,14 @@
       "verbs": [
         {
           "id": "next-mode",
-          "label": "Next arrangement",
-          "description": "Use the displays together in the next arrangement",
+          "label": "Next display mode",
+          "description": "Use the displays together in the next mode",
           "kind": "outside",
           "params": []
         },
         {
           "id": "set-mode",
-          "label": "Use this arrangement",
+          "label": "Arrange the displays",
           "description": "Use the displays together this way",
           "kind": "outside",
           "params": [

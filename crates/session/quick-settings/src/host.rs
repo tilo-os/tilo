@@ -37,7 +37,7 @@ impl Showing {
     }
 
     /// Whether the page stands deeper than the controls: a section, an
-    /// accessory, the clipboard opened to paste or the arrangement. Such a
+    /// accessory, the clipboard opened to paste or the controls. Such a
     /// page arrives over the controls and Back returns to them.
     #[must_use]
     pub fn is_deeper(&self) -> bool {
@@ -112,11 +112,11 @@ impl PanelHost for FixtureHost {
     }
 
     fn run(&self, effect: QsEffect) -> Result<(), String> {
-        // The arrangement is a published action like any other: a fixture
+        // The controls are a published action like any other: a fixture
         // carries it out on the readings it keeps, so arranging can be seen
         // without a desktop.
         self.readings.update(|state| {
-            arrange(&mut state.arrangement, &effect);
+            arrange(&mut state.config, &effect);
             if effect == QsEffect::DismissRefusal {
                 state.refusal = None;
             }
@@ -126,24 +126,24 @@ impl PanelHost for FixtureHost {
     }
 }
 
-/// Apply an arrangement effect (show, hide, move or reset controls) to
-/// `arrangement`. Whether it was one, and changed something.
+/// Apply a config effect (show, hide, move or reset controls) to
+/// `config`. Whether it was one, and changed something.
 pub fn arrange(
-    arrangement: &mut settings_store::hardware::QuickSettingsConfig,
+    config: &mut settings_store::hardware::QuickSettingsConfig,
     effect: &QsEffect,
 ) -> bool {
     match effect {
-        QsEffect::ShowControl { control } => show_control(arrangement, control),
-        QsEffect::HideControl { control } => hide_control(arrangement, control),
+        QsEffect::ShowControl { control } => show_control(config, control),
+        QsEffect::HideControl { control } => hide_control(config, control),
         QsEffect::MoveControl { control, before } => {
-            move_control(arrangement, control, before.as_deref())
+            move_control(config, control, before.as_deref())
         }
-        QsEffect::ResetControls => reset_controls(arrangement),
+        QsEffect::ResetControls => reset_controls(config),
         _ => false,
     }
 }
 
-/// Show the control `control` names on the panel. Whether the arrangement changed.
+/// Show the control `control` names on the panel. Whether the controls changed.
 pub fn show_control(
     config: &mut settings_store::hardware::QuickSettingsConfig,
     control: &str,
@@ -159,7 +159,7 @@ pub fn show_control(
 }
 
 /// Take the control `control` names off the panel: Wi-Fi stays, as the way a desktop without a
-/// network gets online. Whether the arrangement changed.
+/// network gets online. Whether the controls changed.
 pub fn hide_control(
     config: &mut settings_store::hardware::QuickSettingsConfig,
     control: &str,
@@ -175,7 +175,7 @@ pub fn hide_control(
 }
 
 /// Move the control `control` names to stand before `before`, the last place when none is named.
-/// Whether the arrangement changed.
+/// Whether the controls changed.
 pub fn move_control(
     config: &mut settings_store::hardware::QuickSettingsConfig,
     control: &str,
@@ -198,14 +198,14 @@ pub fn move_control(
     })
 }
 
-/// Put the panel's controls back as they were at first. Whether the arrangement changed.
+/// Put the panel's controls back as they were at first. Whether the controls changed.
 pub fn reset_controls(config: &mut settings_store::hardware::QuickSettingsConfig) -> bool {
     let mut fresh = settings_store::hardware::QuickSettingsConfig::default();
     std::mem::swap(config, &mut fresh);
     fresh != *config
 }
 
-/// `change` applied to `config`, and the arrangement kept as a panel reads it: duplicates gone,
+/// `change` applied to `config`, and the controls kept as a panel reads them: duplicates gone,
 /// Wi-Fi where every panel starts. Whether it changed.
 fn settled(
     config: &mut settings_store::hardware::QuickSettingsConfig,

@@ -6,7 +6,7 @@
 
 use super::*;
 
-/// The session's own surface: the arrangement, two places standing, and the person's viewing
+/// The session's own surface: the layout, two places standing, and the person's viewing
 /// record whose `show-style` switches the style.
 const SESSION_PEER: u64 = 31;
 /// The desktop's opens of the host programs installed on this computer.
@@ -98,23 +98,23 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
     ]
 }
 
-/// The session's own actions: the arrangement's, two places' steps, the viewing record's
+/// The session's own actions: the layout's, two places' steps, the viewing record's
 /// `show-style`, the chrome's `open-app` and a network setting.
 fn session_actions() -> Vec<ExportedAction> {
     let text = |name: &'static str| ActionParam::optional(name, ParamType::Text, name);
     let int = |name: &'static str| ActionParam::optional(name, ParamType::Integer, name);
-    let arrangement = |action: &str, label: &str, params| {
+    let layout = |action: &str, label: &str, params| {
         on(
             "shell:layout",
             "shell",
-            "The person's arrangement",
+            "The person's layout",
             action,
             label,
             params,
         )
     };
     let mut session = vec![
-        arrangement(
+        layout(
             "place",
             "Show a resource on the canvas, as one of its views",
             vec![
@@ -125,7 +125,7 @@ fn session_actions() -> Vec<ExportedAction> {
                 text("beside"),
             ],
         ),
-        arrangement(
+        layout(
             "open",
             "Open a resource with its own view, beside what the ask is in",
             vec![

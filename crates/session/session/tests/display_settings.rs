@@ -1,5 +1,5 @@
 //! The person's settings reaching the compositor, and what the compositor reports reaching
-//! Settings: their arrangement of the displays applied and kept, a change that could darken a
+//! Settings: their display settings applied and kept, a change that could darken a
 //! screen waiting for their answer and being put back when it does not come, and the keyboard
 //! typing in the input source they chose.
 
@@ -202,7 +202,7 @@ fn a_scale_chosen_in_settings_reaches_the_displays_and_is_kept() {
     baseline
         .outputs
         .insert(connector.clone(), OutputConfig::default());
-    baseline.save_for(&set).expect("the arrangement so far");
+    baseline.save_for(&set).expect("the settings so far");
 
     let mut candidate = DisplayConfig::default();
     candidate.outputs.insert(
@@ -276,7 +276,7 @@ fn a_change_that_could_dark_a_screen_waits_and_is_put_back() {
     assert_eq!(
         DisplayTransaction::load().map(|transaction| transaction.state),
         Some(DisplayTransactionState::Reverted),
-        "the previous arrangement is back"
+        "the previous settings are back"
     );
     assert!(
         lit(&mut session, &left),
@@ -712,7 +712,7 @@ fn the_mode_scale_and_rotation_chosen_in_settings_are_back_after_a_restart() {
             ..OutputConfig::default()
         },
     );
-    chosen.save_for(&set).expect("the arrangement is kept");
+    chosen.save_for(&set).expect("the settings are kept");
     drop(first);
 
     // The next session starts from nothing and reads the same choices.

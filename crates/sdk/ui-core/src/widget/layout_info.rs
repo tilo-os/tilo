@@ -55,7 +55,7 @@ pub struct SectionLayout {
     pub field_spacing: Effective<f32>,
     pub label_placement: Effective<LabelPlacement>,
 }
-/// The label policy and measured reason for its current arrangement.
+/// The label policy and measured reason for its current layout.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct FieldLayout {
     pub label_placement: Effective<LabelPlacement>,

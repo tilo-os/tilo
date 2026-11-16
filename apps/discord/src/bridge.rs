@@ -135,7 +135,7 @@ pub struct BridgePlan {
     /// channels left empty.
     pub drop_categories: Vec<Value>,
     /// Chat `arrange-channels`: Chat put in Discord's order.
-    pub chat_arrangements: Vec<Value>,
+    pub chat_orders: Vec<Value>,
     /// `finish-import`, with the Tilo channels left Tilo's own.
     pub finish: Vec<Value>,
     /// Plan again after this pass: something here unblocks more.
@@ -517,7 +517,7 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>, arranged: bool) {
     );
     // Adopted, the workspace lists the server's channels as the server does.
     if !import.finish.is_empty() {
-        plan.chat_arrangements
+        plan.chat_orders
             .extend(values(order::to_chat(guild, guild, &tilo)));
     }
     plan.finish.extend(values(import.finish));
@@ -659,7 +659,7 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
         reconcile(plan, read, false);
         // Back after a while: what moved in Discord meanwhile shows in Chat.
         if adopted && layout.connected {
-            plan.chat_arrangements
+            plan.chat_orders
                 .extend(values(order::to_chat(read.guild, read.guild, &workspace)));
         }
         // On every start too: the workspace's emoji made while the bridge
@@ -676,11 +676,11 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
             "emojis": layout.emojis,
         }));
         // Someone moved a channel or category in Discord: Chat follows. The
-        // bridge's own arrangement on its way there is no such move.
+        // bridge's own order on its way there is no such move.
         if adopted
             && (layout.connected || order::moved_in_discord(read.guild, &observed, &workspace))
         {
-            plan.chat_arrangements
+            plan.chat_orders
                 .extend(values(order::to_chat(&observed, read.guild, &workspace)));
         }
     }

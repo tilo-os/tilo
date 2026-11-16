@@ -7,7 +7,7 @@
 //! like any other. Loading it here publishes the record it keeps: the app's root made and filled
 //! by its first scenario (the seed data its shots and tests start from), published as the session
 //! publishes a room's records ([`tilolang_tilo::records_service::RecordService`]), so every note,
-//! task, channel and mailbox is a resource the session's `find` finds, an layout places and
+//! task, channel and mailbox is a resource the session's `find` finds, a layout places and
 //! an agent reads and changes through its actions.
 //!
 //! Each app's record is the one its windows open: once the session holds the workspace the

@@ -43,7 +43,7 @@ view b_row(x: Item) {
 "#;
 
 /// The caller: a view that calls the callee's view by name, and one that composes it from text
-/// as an arrangement names it.
+/// as a layout names it.
 const CALLER: &str = r#"app test.a "A"
 
 use test.b as b

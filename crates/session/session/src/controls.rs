@@ -449,7 +449,7 @@ impl crate::Session {
             }
             SessionCommand::Displays { mode } => {
                 let changes = displays::arrange(mode, &self.compositor.outputs());
-                // A refused arrangement leaves the displays as they were.
+                // A refused display mode leaves the displays as they were.
                 if !changes.is_empty()
                     && let Err(error) = self.compositor.configure_outputs(&changes)
                 {

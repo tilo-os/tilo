@@ -2,7 +2,7 @@
 
 Use `FormPage`, `Form`, `Section`, `Field`, and `Actions` for ordinary forms. They
 supply readable width, gutters, spacing, label alignment, wrapping, scrolling,
-and action arrangement. See [Form composition](FORM_COMPOSITION.md) for the
+and action layout. See [Form composition](FORM_COMPOSITION.md) for the
 content-first API and independent guided overrides.
 
 Every region can instead use existing Row/Column/Grid builders or `Manual` to

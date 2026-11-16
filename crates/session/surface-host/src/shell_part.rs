@@ -613,7 +613,7 @@ impl SessionOrigin {
             .iter()
             .find(|ty| ty.kind == format!("{ORIGIN}.layout"))
         else {
-            // A shell without an layout view keeps its bar alone: nothing to write.
+            // A shell without a layout view keeps its bar alone: nothing to write.
             return false;
         };
         let root = if cx.host.store().contains(&format!("root-{}", kind.ty)) {

@@ -23,7 +23,7 @@ use crate::replies::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::speaker_setup::{
-    Arrangement, BrokerSpeakers, SpeakerService, SpeakerSetup, Step, member_status_text,
+    BrokerSpeakers, Placement, SpeakerService, SpeakerSetup, Step, member_status_text,
     playback_text, role_answer, role_text,
 };
 use provider_settings_ui::widgets::{
@@ -394,7 +394,7 @@ pub struct SpeakersModel {
     in_flight: usize,
     refresh: Refresh,
     shown: std::rc::Weak<()>,
-    arrangement_state: ui::LocalState<String>,
+    placement_state: ui::LocalState<String>,
     name_state: ui::LocalState<String>,
     listening_state: ui::LocalState<String>,
     microphone_states: Vec<(String, ui::LocalState<bool>)>,
@@ -425,7 +425,7 @@ impl SpeakersModel {
             in_flight: 0,
             refresh: Refresh::Idle,
             shown: std::rc::Weak::new(),
-            arrangement_state: ui::LocalState::new(Arrangement::Stereo.label()),
+            placement_state: ui::LocalState::new(Placement::Stereo.label()),
             name_state: ui::LocalState::new(t("speakers-default-name")),
             listening_state: ui::LocalState::new(String::new()),
             microphone_states: Vec::new(),
@@ -453,8 +453,8 @@ impl SpeakersModel {
             return;
         };
         self.setup.begin();
-        self.setup.set_arrangement(Arrangement::Room);
-        self.arrangement_state.set(Arrangement::Room.label());
+        self.setup.set_placement(Placement::Room);
+        self.placement_state.set(Placement::Room.label());
         for candidate in self.setup.candidates() {
             self.setup.toggle(&candidate);
         }
@@ -544,7 +544,7 @@ impl SpeakersModel {
         let job = match step {
             SpeakerFlow::BeginSpeakerSetup => {
                 self.setup.begin();
-                self.arrangement_state.set(Arrangement::Stereo.label());
+                self.placement_state.set(Placement::Stereo.label());
                 self.name_state.set(self.setup.name().to_string());
                 self.chosen_states.clear();
                 None
@@ -796,11 +796,11 @@ impl SpeakersModel {
     }
 
     fn read_controls(&mut self) {
-        let arrangement = self.arrangement_state.with(Clone::clone);
-        if let Some(arrangement) = Arrangement::from_label(&arrangement)
-            && arrangement != self.setup.arrangement()
+        let placement = self.placement_state.with(Clone::clone);
+        if let Some(placement) = Placement::from_label(&placement)
+            && placement != self.setup.placement()
         {
-            self.setup.set_arrangement(arrangement);
+            self.setup.set_placement(placement);
             self.changed = true;
         }
         let name = self.name_state.with(Clone::clone);
@@ -1110,20 +1110,20 @@ impl SpeakersModel {
     }
 
     fn build_choose(&self, actions: &Actions<Settings>) -> Vec<SettingsSection> {
-        let arrangement = Dropdown::from_state(
-            Arrangement::ALL
+        let placement = Dropdown::from_state(
+            Placement::ALL
                 .iter()
-                .map(|arrangement| arrangement.label())
+                .map(|placement| placement.label())
                 .collect(),
-            &self.arrangement_state,
+            &self.placement_state,
         )
-        .with_id("speakers.arrangement")
-        .with_accessible_name(t("speakers-arrangement"));
+        .with_id("speakers.placement")
+        .with_accessible_name(t("speakers-placement"));
         let candidates = self.setup.candidates();
         let mut body = vec![setting_row_described(
-            &t("speakers-arrangement"),
-            &self.setup.arrangement().description(),
-            Box::new(arrangement),
+            &t("speakers-placement"),
+            &self.setup.placement().description(),
+            Box::new(placement),
         )];
         if candidates.is_empty() {
             body.push(note(&t("speakers-no-outputs")));
@@ -1187,7 +1187,7 @@ impl SpeakersModel {
                 SpeakerFlow::PlayIdentifySound,
             ))),
         )));
-        if self.setup.arrangement() == Arrangement::Room {
+        if self.setup.placement() == Placement::Room {
             body.push(note(&t("speakers-identify-room-next")));
             body.push(Self::nav_buttons(actions, true, None));
             body.push(row(Box::new(
@@ -2253,7 +2253,7 @@ mod tests {
         settle_window(&mut app);
         take(&mut app, SpeakerFlow::BeginSpeakerSetup);
         change_model(&mut app, |pane| {
-            pane.arrangement_state.set(Arrangement::Room.label());
+            pane.placement_state.set(Placement::Room.label());
         });
         change_model(&mut app, |pane| {
             for (_, _, state) in &pane.chosen_states {

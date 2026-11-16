@@ -367,7 +367,7 @@ impl RowControl {
 /// reserves this, so its app's own controls end where the window's begin.
 ///
 /// The furniture laid out in a row wider than any window says it: what a row keeps and what stands
-/// in it are one arrangement, never two that can drift apart.
+/// in it are one layout, never two that can drift apart.
 #[must_use]
 pub fn merged_row_width() -> f64 {
     merged_row_width_in(WIDE_ENOUGH)

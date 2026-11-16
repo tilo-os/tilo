@@ -373,7 +373,7 @@ pub const SETTINGS: &[Setting] = &[
     s("network.hotspot", "network", "network.hotspot"),
     s("network.mobile", "network", "network.mobile"),
     s("bluetooth.enabled", "bluetooth", "bluetooth.toggle"),
-    s("display.arrangement", "displays", "display.arrangement"),
+    s("display.placement", "displays", "display.placement"),
     s("display.brightness", "displays", "display.brightness"),
     s(
         "display.auto_brightness",

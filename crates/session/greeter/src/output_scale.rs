@@ -11,7 +11,7 @@
 //!   left to right in their existing order, at their new logical widths.
 //! - The window spans every output, so a centred sign-in card lands on the
 //!   seam between two displays, or in a gap where no display shows it. The
-//!   greeter reads [`Displays::arrangement`] and places the card on the
+//!   greeter reads [`Displays::layout`] and places the card on the
 //!   primary output; the backdrop covers each output.
 //!
 //! A connection stays open for the greeter's lifetime: a hotplugged display
@@ -53,11 +53,11 @@ pub struct Display {
 
 /// Every enabled output, ordered left to right.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Arrangement {
+pub struct Layout {
     pub displays: Vec<Display>,
 }
 
-impl Arrangement {
+impl Layout {
     /// The layout's bounding box: what `cage` stretches the window over.
     #[must_use]
     pub fn extent(&self) -> Option<Rect> {
@@ -100,44 +100,44 @@ impl Arrangement {
 /// The shared view of the kiosk's outputs, kept current by the watcher.
 #[derive(Clone, Default)]
 pub struct Displays {
-    arrangement: Arc<Mutex<Arrangement>>,
+    layout: Arc<Mutex<Layout>>,
     wake: Arc<OnceLock<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl std::fmt::Debug for Displays {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Displays")
-            .field("arrangement", &self.arrangement())
+            .field("layout", &self.layout())
             .finish_non_exhaustive()
     }
 }
 
 impl Displays {
-    /// A fixed arrangement, for renders and tests without a compositor.
+    /// A fixed layout, for renders and tests without a compositor.
     #[must_use]
-    pub fn fixed(arrangement: Arrangement) -> Self {
+    pub fn fixed(layout: Layout) -> Self {
         Self {
-            arrangement: Arc::new(Mutex::new(arrangement)),
+            layout: Arc::new(Mutex::new(layout)),
             wake: Arc::default(),
         }
     }
 
     /// The outputs as the kiosk last described them.
     #[must_use]
-    pub fn arrangement(&self) -> Arrangement {
-        self.arrangement.lock_recover().clone()
+    pub fn layout(&self) -> Layout {
+        self.layout.lock_recover().clone()
     }
 
-    /// Called whenever the arrangement changes, once the UI can be woken.
+    /// Called whenever the layout changes, once the UI can be woken.
     pub fn set_wake(&self, wake: impl Fn() + Send + Sync + 'static) {
         let _ = self.wake.set(Box::new(wake));
     }
 
-    fn publish(&self, arrangement: Arrangement) {
+    fn publish(&self, layout: Layout) {
         let changed = {
-            let mut current = self.arrangement.lock_recover();
-            let changed = *current != arrangement;
-            *current = arrangement;
+            let mut current = self.layout.lock_recover();
+            let changed = *current != layout;
+            *current = layout;
             changed
         };
         if changed && let Some(wake) = self.wake.get() {
@@ -281,7 +281,7 @@ fn differs(heads: &[Facts], targets: &[Option<Target>]) -> bool {
 }
 
 /// The outputs as currently configured, for the greeter's layout.
-fn arrangement(heads: &[Facts]) -> Arrangement {
+fn layout(heads: &[Facts]) -> Layout {
     let displays = layout_order(heads)
         .into_iter()
         .filter_map(|(_, head)| {
@@ -298,7 +298,7 @@ fn arrangement(heads: &[Facts]) -> Arrangement {
             })
         })
         .collect();
-    Arrangement { displays }
+    Layout { displays }
 }
 
 struct Head {
@@ -374,7 +374,7 @@ impl Outputs {
             return;
         };
         let heads = self.facts();
-        self.displays.publish(arrangement(&heads));
+        self.displays.publish(layout(&heads));
         if self.pending.is_some() || self.rejected == Some(serial) {
             return;
         }
@@ -822,7 +822,7 @@ mod tests {
             let mut heads = laptop_and_monitor();
             heads[1].position = Some((-1920, 0));
             heads[0].scale = Some(2.0);
-            let arranged = arrangement(&heads);
+            let arranged = layout(&heads);
             assert_eq!(
                 arranged.extent(),
                 Some(Rect::new(-1920.0, 0.0, 1472.0, 1080.0))
@@ -841,7 +841,7 @@ mod tests {
 
             heads[0].name = Some("HDMI-A-1".into());
             assert_eq!(
-                arrangement(&heads).primary_in_window(),
+                layout(&heads).primary_in_window(),
                 Some(Rect::new(0.0, 0.0, 1920.0, 1080.0))
             );
 

@@ -1768,7 +1768,7 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
     relay.shutdown().await;
 }
 
-/// `windows`, the arrangement of `workspace` as `member`'s device minting in
+/// `windows`, the layout of `workspace` as `member`'s device minting in
 /// `salt` writes it onto `doc`: what it made is its person's.
 fn write_windows(
     doc: &mut automerge::AutoCommit,
@@ -1803,7 +1803,7 @@ fn write_windows(
     .unwrap();
 }
 
-/// The window titles `doc`'s arrangement holds.
+/// The window titles `doc`'s layout holds.
 fn titles_in(doc: &automerge::AutoCommit) -> Vec<String> {
     tilo_desktop_model::shared_record::read(doc, None)
         .map(|desktop| {
@@ -1849,7 +1849,7 @@ fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
 }
 
 /// A window a member opens after joining is a change to the workspace's
-/// arrangement, made by the member's person. The governor takes it in as the workspace's next
+/// layout, made by the member's person. The governor takes it in as the workspace's next
 /// generation, so every other member sees the window; before, only record
 /// writes were taken in and the window reached nobody.
 #[tokio::test]
@@ -2145,7 +2145,7 @@ async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
         .publish_refusal(
             &workspace,
             &topology,
-            "a change of arrangement is no record write",
+            "a change of layout is no record write",
         )
         .await
         .unwrap();
@@ -2199,7 +2199,7 @@ async fn the_windows_a_member_opens_are_shared_by_the_workspace() {
     relay.shutdown().await;
 }
 
-/// `member`'s change to `workspace`'s arrangement closing every window it made
+/// `member`'s change to `workspace`'s layout closing every window it made
 /// in its namespace `salt`, as its device would send it.
 async fn windows_closed(
     workspaces: &Workspaces,
@@ -2368,8 +2368,8 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
     relay.shutdown().await;
 }
 
-/// A workspace becomes public in the directory: its arrangement stays what it
-/// was. Open admission is not a decision about the arrangement: the workspace keeps
+/// A workspace becomes public in the directory: its layout stays what it
+/// was. Open admission is not a decision about the layout: the workspace keeps
 /// sharing its members' windows and strips across a restart, exactly as before
 /// it was listed.
 #[allow(

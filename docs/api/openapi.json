@@ -21061,13 +21061,13 @@
         ],
         "description": ""
       },
-      "settings.display-arrangement.arrange-displays.Arguments": {
+      "settings.display-placement.arrange-displays.Arguments": {
         "type": "object",
         "properties": {
-          "arrangement": {}
+          "placement": {}
         },
         "required": [
-          "arrangement"
+          "placement"
         ],
         "description": ""
       },
@@ -30387,9 +30387,9 @@
     },
     {
       "app": "so.tilo.settings",
-      "resource": "settings.display-arrangement",
+      "resource": "settings.display-placement",
       "action": "arrange-displays",
-      "arguments": "#/components/schemas/settings.display-arrangement.arrange-displays.Arguments"
+      "arguments": "#/components/schemas/settings.display-placement.arrange-displays.Arguments"
     },
     {
       "app": "so.tilo.settings",

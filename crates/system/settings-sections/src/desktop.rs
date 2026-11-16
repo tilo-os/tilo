@@ -1,5 +1,5 @@
 //! The desktop's own sections: how the shell is navigated, which app opens
-//! each kind of file, the clock, the displays' arrangement and the display
+//! each kind of file, the clock, the displays' placement and the display
 //! change being tried. The session keeps them like every other section, so
 //! an agent reads and changes them whether or not Settings is open.
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use settings_store::hardware::{
     DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
 };
-use settings_store::person_displays::Arrangement;
+use settings_store::person_displays::Placements;
 use ui::tilo_resource;
 
 /// The shell's desktop navigation preferences, as the person's settings
@@ -133,15 +133,15 @@ impl ClockPrefs {}
 #[serde(default)]
 pub struct SharedDisplayPrefs {
     #[model(readonly)]
-    pub arrangement: Arrangement,
+    pub placement: Placements,
 }
 
 impl ui::storage::SettingsSchema for SharedDisplayPrefs {
     const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::person_displays::ARRANGEMENT_SECTION);
+        ui::storage::Scope::Shared(settings_store::person_displays::PLACEMENTS_SECTION);
 }
 
-#[ui::tilo_resource::resource(kind = "settings.display-arrangement")]
+#[ui::tilo_resource::resource(kind = "settings.display-placement")]
 impl SharedDisplayPrefs {
     /// Arrange the person's displays: each display entry given takes the
     /// place of the stored one where it differs, at a revision above every
@@ -149,12 +149,12 @@ impl SharedDisplayPrefs {
     #[action(id = "arrange-displays")]
     pub fn arrange_displays(
         &mut self,
-        #[param("The arrangement, as its display entries")] arrangement: serde_json::Value,
+        #[param("The placement, as its display entries")] placement: serde_json::Value,
     ) -> Result<(), tilo_resource::Refusal> {
-        let arrangement = Arrangement::from_value(&arrangement).ok_or_else(|| {
-            tilo_resource::Refusal::new("the arrangement is malformed or out of bounds")
+        let placement = Placements::from_value(&placement).ok_or_else(|| {
+            tilo_resource::Refusal::new("the placement is malformed or out of bounds")
         })?;
-        self.arrangement = self.arrangement.with_changes(arrangement.displays);
+        self.placement = self.placement.with_changes(placement.displays);
         Ok(())
     }
 }
@@ -206,10 +206,10 @@ pub struct PendingDisplayChange {
     /// The monitors the change was arranged for.
     #[model(readonly)]
     pub set: DisplaySet,
-    /// The arrangement before it, which reverting restores.
+    /// The configuration before it, which reverting restores.
     #[model(readonly)]
     pub previous: DisplayConfig,
-    /// The arrangement being tried.
+    /// The configuration being tried.
     #[model(readonly)]
     pub candidate: DisplayConfig,
     /// When it reverts unless kept, in Unix milliseconds.

@@ -93,7 +93,7 @@ impl tilo_mcp::TaskHosts for TaskHosts {
         // The apps the task's programs are compiled against: every package the session runs itself
         // (the shell), whose records a program reads by the app, every installed tilolang app by
         // its package, every native app this device has, from its signed surface, and the
-        // platform's own (the device and its arrangement, Settings).
+        // platform's own (the device and its layout, Settings).
         let (done, whole) = tilo_actions::remote::pending();
         self.session.ask(ApiAsk::Apps(done));
         let mut apps = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();

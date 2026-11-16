@@ -268,7 +268,7 @@ impl Project {
 
     /// Place every clip covering `at` on the two sides of the frame: the
     /// bottom-most visible video track on the left, the next one on the right.
-    /// Two angles then play together, and the track order is the arrangement.
+    /// Two angles then play together, and the track order is the layout.
     #[action(id = "place-two-angles")]
     pub fn place_side_by_side(
         &mut self,

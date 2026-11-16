@@ -12,7 +12,7 @@ use super::{
     RESOURCE,
 };
 
-/// The answer an layout action that asks the record gives: complete, with nothing for the
+/// The answer a layout action that asks the record gives: complete, with nothing for the
 /// caller to read back. A place that stands on a later pass is complete when it is asked, never
 /// left pending (`Accepted` would be, and nothing completes it).
 fn completed() -> ui::host_operation::ResourceOperationStart {
@@ -85,7 +85,7 @@ impl LayoutActions {
         arguments: &serde_json::Map<String, Json>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         // The layout publishes its record's undo and redo beside its layout actions: both
-        // step the record, never decode as an layout action.
+        // step the record, never decode as a layout action.
         if address.resource == RECORD_RESOURCE
             || (address.resource == RESOURCE && matches!(address.action.as_str(), "undo" | "redo"))
         {
@@ -149,7 +149,7 @@ impl LayoutActions {
         Ok(self.shown(&action))
     }
 
-    /// What an layout action that shows a resource answers once it ran: the title of the place
+    /// What a layout action that shows a resource answers once it ran: the title of the place
     /// showing it, as every surface captions it ("All inboxes", canvas.md §7 "Captions name the
     /// thing"), so whoever asked says what it showed by that name (an agent's step line). Any
     /// other action, or one whose place does not stand yet (it waits for the person's gesture),
@@ -269,7 +269,7 @@ impl LayoutActions {
         });
         self.find_and_place_found(asked, text, view, *strip, ((*x, *y), size, seen), busy);
         // The search is under way and the place stands on a later pass: the API answers as it
-        // always did for an layout action, which is complete when the ask is taken. Nothing of
+        // always did for a layout action, which is complete when the ask is taken. Nothing of
         // the place is left for the caller to read back, so it is not a pending invocation
         // (`Accepted` would be, and nothing completes it).
         Some(Ok(completed()))

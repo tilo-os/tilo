@@ -123,7 +123,7 @@ impl Live {
     }
 
     /// Carry out the effects the panel keeps to itself: the prompts it opens,
-    /// the arrangement it keeps, the player it steers. `false` for an effect
+    /// the controls it keeps, the player it steers. `false` for an effect
     /// that changes the device, which goes to the session.
     fn local(&self, effect: &QsEffect) -> Result<bool, String> {
         let readings = self.kept();

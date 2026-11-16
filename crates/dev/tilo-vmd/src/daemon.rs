@@ -82,7 +82,7 @@ fn onboarding_target_names(reply: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether a `state_dump` answer says the desktop is between two arrangements; an answer that does
+/// Whether a `state_dump` answer says the desktop is between two layouts; an answer that does
 /// not say counts as settled.
 fn desktop_in_transition(reply: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {

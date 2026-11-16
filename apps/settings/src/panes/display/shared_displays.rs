@@ -1,15 +1,13 @@
-//! The person's other devices' screens, drawn on the arrangement canvas beside this device's own
+//! The person's other devices' screens, drawn on the placement canvas beside this device's own
 //! where the person's layout places them, through the Settings resource api.
 
 use super::{
     DisplayEffect, DisplayModel, LiveRow, SettingsEffect, SettingsSection, effect, t, t_args,
 };
-use crate::panes::display_arrangement::{
-    ArrangedDisplay, SharedDisplayState, placement::Placement,
-};
+use crate::panes::display_placement::{PlacedDisplay, SharedDisplayState, placement::Placement};
 use provider_settings_ui::bound::SettingRows as _;
 use provider_settings_ui::widgets::{rows, section, value_row};
-use settings_store::person_displays::{Arrangement, Layout, Rect, ResolvedDisplay};
+use settings_store::person_displays::{Layout, Placements, Rect, ResolvedDisplay};
 use ui::framework::{Dispatcher, ViewCx};
 use ui::tilo_resource::Effect as _;
 
@@ -20,16 +18,16 @@ use crate::resource::Settings;
 type Move = (String, ui::tilo_actions::ActionBinding<(i32, i32)>);
 
 impl DisplayModel {
-    fn arrangement(&self) -> Arrangement {
+    fn placement(&self) -> Placements {
         self.storage
             .settings::<SharedDisplayPrefs>()
             .get()
-            .arrangement
+            .placement
     }
 
-    /// Store `next` as the person's arrangement, through the section's
+    /// Store `next` as the person's placement, through the section's
     /// verb: only the displays whose entries it changes are written.
-    fn arrange(&self, next: &Arrangement) -> Result<(), String> {
+    fn arrange(&self, next: &Placements) -> Result<(), String> {
         self.sections
             .invoke::<SharedDisplayPrefs>(
                 SharedDisplayPrefs::ARRANGE_DISPLAYS.with(next.to_value()),
@@ -37,14 +35,14 @@ impl DisplayModel {
             .map_err(|error| t_args("display-shared-save-failed", &[("error", error.into())]))
     }
 
-    /// The person's screens as their arrangement lays them out: the layout the pointer crosses
+    /// The person's screens as their placement lays them out: the layout the pointer crosses
     /// between their devices by, so the edge shown here is the edge that crosses.
     pub(super) fn shared_layout(&self) -> Layout {
-        Layout::resolve(&self.person_devices, &self.arrangement())
+        Layout::resolve(&self.person_devices, &self.placement())
     }
 
     fn shared_revision(&self, device: &str, output: &str) -> u64 {
-        self.arrangement()
+        self.placement()
             .entry(device, output)
             .map_or(0, |entry| entry.rev)
     }
@@ -111,7 +109,7 @@ impl DisplayModel {
             return Err(t("display-shared-stale"));
         }
         let next = layout.move_device(
-            &self.arrangement(),
+            &self.placement(),
             &moved.device,
             x.saturating_sub(moved.rect.x),
             y.saturating_sub(moved.rect.y),
@@ -123,12 +121,12 @@ impl DisplayModel {
 
     /// Put the person's other devices' screens on the canvas beside this device's `displays`,
     /// where their layout places them, and answer where this device stands in that layout and
-    /// how the shared tiles move. This device's own displays keep their native arrangement
+    /// how the shared tiles move. This device's own displays keep their native placement
     /// against each other; with only one of them, it moves as its device does.
     pub(super) fn join_other_screens(
         &self,
         dispatcher: &Dispatcher<Settings>,
-        displays: &mut Vec<ArrangedDisplay>,
+        displays: &mut Vec<PlacedDisplay>,
     ) -> ((i32, i32), Vec<Move>) {
         let Some(layout) = self.with_other_devices() else {
             return ((0, 0), Vec::new());
@@ -193,7 +191,7 @@ impl DisplayModel {
                 self.device_move(dispatcher, display)
                     .map(|binding| (key.clone(), binding)),
             );
-            displays.push(ArrangedDisplay {
+            displays.push(PlacedDisplay {
                 connector: key,
                 movement_group: Some(display.device.clone()),
                 shared: Some(shared(display)),
@@ -252,7 +250,7 @@ impl DisplayModel {
         serde_json::json!({
             "devices": self.person_devices,
             "layout": self.shared_layout(),
-            "arrangement": self.arrangement(),
+            "placement": self.placement(),
             "automatic_input": self
                 .storage
                 .settings::<AutomaticDisplayPrefs>()
@@ -375,7 +373,7 @@ mod tests {
     /// The canvas's tiles as a screen reader meets them, with where they are drawn.
     fn tiles(app: &mut App) -> Vec<ui::a11y::AccessNode> {
         fn visit(widget: &dyn ui::widget::Widget, found: &mut Vec<ui::a11y::AccessNode>) {
-            if widget.name() == "DisplayArrangement" {
+            if widget.name() == "DisplayPlacement" {
                 found.extend(widget.accessibility().unwrap().children);
             }
             for child in widget.children() {
@@ -406,14 +404,14 @@ mod tests {
     /// Where the session's pointer goes from the middle of the laptop's panel edge `toward` the
     /// screen there: the device it lands on.
     fn crossing(app: &mut App, toward: (f64, f64)) -> String {
-        let (people, arrangement) = read_model(app, |model| {
-            (model.person_devices.clone(), model.arrangement())
+        let (people, placement) = read_model(app, |model| {
+            (model.person_devices.clone(), model.placement())
         });
         let layout = PersonDisplays {
             devices: people,
             ..Default::default()
         }
-        .layout(&arrangement);
+        .layout(&placement);
         let here = layout
             .displays
             .iter()
@@ -544,14 +542,13 @@ mod tests {
     #[test]
     fn settings_lays_out_unplaced_devices_as_the_crossing_pointer_does() {
         let mut app = beside_the_tower(true);
-        let (shown, arrangement) = read_model(&mut app, |model| {
-            (model.shared_layout(), model.arrangement())
-        });
+        let (shown, placement) =
+            read_model(&mut app, |model| (model.shared_layout(), model.placement()));
         let crossed = PersonDisplays {
             devices: devices(true),
             ..Default::default()
         }
-        .layout(&arrangement);
+        .layout(&placement);
         assert_eq!(
             shown, crossed,
             "Settings shows the layout the session's pointer crosses by"

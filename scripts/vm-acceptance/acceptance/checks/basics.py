@@ -1,5 +1,5 @@
 """Essential 6: brightness, Wi-Fi and Bluetooth without hardware, keyboard
-layout import, display arrangement and hotplug."""
+layout import, display modes and hotplug."""
 
 from __future__ import annotations
 
@@ -184,8 +184,8 @@ def keyboard_layout(ctx, res):
 # compose:ralt and requires the session to import them.
 
 
-@check("B05", AREA, "Display arrangement: mirror and extend apply, and extending restores the layout")
-def arrangement(ctx, res):
+@check("B05", AREA, "Display modes: mirror and extend apply, and extending restores the layout")
+def display_modes(ctx, res):
     ctx.reset()
     st = ctx.state()
     before = core.display_rects(st)

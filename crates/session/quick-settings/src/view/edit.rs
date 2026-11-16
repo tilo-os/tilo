@@ -11,23 +11,21 @@ use ui::tokens::Rhythm;
 use ui::widget::virtual_list::{ListModel as _, VirtualList};
 use ui::widget::{Button, ButtonRole, Column, Container, Element, ListRow, Row, Spacer, Text};
 
-use super::{Arrangement, Parts};
+use super::{Controls, Parts};
 use crate::effect::QsEffect;
 use crate::faces::{control_id, control_label};
 use crate::i18n::t;
 use crate::resource::QuickSettings;
 
 pub(super) fn page(cx: &ViewCx<QuickSettings>, parts: &Parts) -> Element {
-    cx.switch(&parts.arrangement, move |cx, arrangement| {
-        editor(cx, arrangement)
-    })
+    cx.switch(&parts.config, move |cx, config| editor(cx, config))
 }
 
 #[allow(
     clippy::too_many_lines,
     reason = "the editor's parts in the order they stand"
 )]
-fn editor(cx: &ViewCx<QuickSettings>, arrangement: &Arrangement) -> Element {
+fn editor(cx: &ViewCx<QuickSettings>, config: &Controls) -> Element {
     let actions = cx.actions();
     let done = actions.bind_invocation(
         Button::new("qs-edit-done", &t("qs-edit-done")).role(ButtonRole::Primary),
@@ -55,7 +53,7 @@ fn editor(cx: &ViewCx<QuickSettings>, arrangement: &Arrangement) -> Element {
                 .with_role(TextRole::Label)
                 .strong(),
         ));
-    let visible = arrangement.active.clone();
+    let visible = config.active.clone();
     let count = visible.len();
     let rows_cx = cx.actions();
     let list = VirtualList::from_items(
@@ -147,14 +145,14 @@ fn editor(cx: &ViewCx<QuickSettings>, arrangement: &Arrangement) -> Element {
                 .with_child(Box::new(list)),
         ));
     }
-    if !arrangement.available.is_empty() {
+    if !config.available.is_empty() {
         page = page.push(Box::new(
             Text::new(&t("qs-edit-available-heading"))
                 .with_role(TextRole::Label)
                 .strong(),
         ));
         let mut chips = Row::new().with_rhythm(Rhythm::Sibling);
-        for control in &arrangement.available {
+        for control in &config.available {
             chips = chips.push(Box::new(
                 actions.bind_effect_invocation(
                     Button::new(

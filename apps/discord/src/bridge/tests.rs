@@ -531,7 +531,7 @@ tilo_test_env::scenario! {
         let first = planned_on(&g, &talk(&["c_one", "c_two"]), &event);
         assert_eq!(first.observe.len(), 1);
         assert_eq!(
-            first.chat_arrangements,
+            first.chat_orders,
             [json!({"categories": ["k_talk"], "channels": [
                 {"channel": "c_two", "category": "k_talk"},
                 {"channel": "c_one", "category": "k_talk"},
@@ -542,7 +542,7 @@ tilo_test_env::scenario! {
         let mut recorded = g;
         observed(&mut recorded, &[("d_one", 1), ("d_two", 0)]);
         let second = planned_on(&recorded, &talk(&["c_two", "c_one"]), &event);
-        assert!(second.chat_arrangements.is_empty() && second.arrange_channels.is_empty());
+        assert!(second.chat_orders.is_empty() && second.arrange_channels.is_empty());
     }
 
     phase a_reconnect_brings_chat_in_line_with_discord;
@@ -552,14 +552,14 @@ tilo_test_env::scenario! {
         let same = layout_payload(&[("d_one", 0), ("d_two", 1)], false);
         assert!(
             planned_on(&g, &chat, &discord("layout-changed", &same))
-                .chat_arrangements
+                .chat_orders
                 .is_empty(),
             "a layout that moved nothing leaves Chat's order be"
         );
         let connected = layout_payload(&[("d_one", 0), ("d_two", 1)], true);
         assert_eq!(
             planned_on(&g, &chat, &discord("layout-changed", &connected))
-                .chat_arrangements
+                .chat_orders
                 .len(),
             1
         );
@@ -579,7 +579,7 @@ tilo_test_env::scenario! {
                 {"channel": "d_one", "parent": "d_talk", "position": 1},
             ]})]
         );
-        assert!(plan.chat_arrangements.is_empty());
+        assert!(plan.chat_orders.is_empty());
         // A change that rearranges nothing does not move Discord's channels.
         let read = json!({"kind": CHAT_KIND, "did": verb("mark-read"), "item": {"id": "c_two"}});
         assert!(planned_on(&g, &chat, &read).arrange_channels.is_empty());

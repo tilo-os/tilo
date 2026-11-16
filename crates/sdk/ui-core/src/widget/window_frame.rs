@@ -132,7 +132,7 @@ pub struct WindowFrame {
     /// The window arriving where it stands and gliding when its place changes
     /// (`motion::Placed`: `WindowMotion::OPEN` and `MOVE`, landing at once for a still theme and
     /// reduced motion). Drawn as a component of the shell's do: a window a view builds again
-    /// each time the arrangement changes still moves rather than jumping.
+    /// each time the layout changes still moves rather than jumping.
     placed: crate::motion::Placed,
     /// The resource the bar carries when it is picked up, by its published address: what a
     /// press on the bar's empty area publishes on the drag bus once it travels past the

@@ -230,7 +230,7 @@ pub const WORKSPACE: &str = "/params/capabilities/experimental/so.tilo/workspace
 /// ["so.tilo"].key`. `--connect` and `tilo mcp` write the key [`AGENT_KEY_ENV`] names.
 pub const KEY: &str = "/params/capabilities/experimental/so.tilo/key";
 
-/// The provider the session's own resources (its shell, arrangement, windows and notices) are
+/// The provider the session's own resources (its shell, layout, windows and notices) are
 /// published under on its servers: what the catalogue lists them under and an invocation names.
 pub const SESSION_PROVIDER: &str = "so.tilo.session";
 

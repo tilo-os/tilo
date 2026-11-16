@@ -513,7 +513,7 @@ fn text(s: &str) -> Value {
     Value::Text(s.to_owned())
 }
 
-/// The fields of an layout workspace, as it is written into the shell's record.
+/// The fields of a layout workspace, as it is written into the shell's record.
 pub(super) fn workspace_fields(w: &LayoutWorkspaceReading) -> Vec<(&'static str, Value)> {
     vec![
         ("key", text(&w.key)),

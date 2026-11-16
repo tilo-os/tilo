@@ -383,7 +383,7 @@ impl GovernedWorkspace {
             // first use: a seed record would go out in the clear before its
             // channel exists, and every member who joins after the channel
             // opened refuses that cleartext. The shared desktop starts with
-            // the first arrangement written to it, sealed, as in a workspace that
+            // the first layout written to it, sealed, as in a workspace that
             // never had one (`prepare_desktop_record`).
             seed.documents.clear();
         }
@@ -2373,7 +2373,7 @@ impl Workspaces {
     }
 
     /// Take a member's own windows into the workspace's governance: the changes
-    /// a member publishes to the workspace's arrangement. The workspace's admission decides
+    /// a member publishes to the workspace's layout. The workspace's admission decides
     /// them exactly as every member's does (a change to what someone else
     /// made, without the workspace's leave, is refused); the governor commits what
     /// it admitted as the workspace's next generation, which every member then

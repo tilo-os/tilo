@@ -62,8 +62,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui::clock::freeze_for_capture();
         let mut viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         if let Some(spec) = args.value("--displays") {
-            let arrangement = shot_displays(spec)?;
-            if let Some(extent) = arrangement.extent() {
+            let layout = shot_displays(spec)?;
+            if let Some(extent) = layout.extent() {
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
@@ -72,7 +72,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let size = (extent.width() as u32, extent.height() as u32);
                 viewport = size;
             }
-            widget = widget.with_displays(greeter::output_scale::Displays::fixed(arrangement));
+            widget = widget.with_displays(greeter::output_scale::Displays::fixed(layout));
         }
         let mut frame = ui::headless::FrameHarness::new_with_theme(
             ui::State::new(),
@@ -198,7 +198,7 @@ fn serve_console(console: &console_control::ConsoleServer, proxy: EventLoopProxy
 /// `--displays 1472x920+1920x1080`: the kiosk's outputs left to right, in
 /// logical pixels, the first a built-in panel. The shot's viewport becomes
 /// their span, as the kiosk stretches the window over them.
-fn shot_displays(spec: &str) -> Result<greeter::output_scale::Arrangement, String> {
+fn shot_displays(spec: &str) -> Result<greeter::output_scale::Layout, String> {
     let mut displays = Vec::new();
     let mut x = 0.0;
     for (index, size) in spec.split('+').enumerate() {
@@ -214,7 +214,7 @@ fn shot_displays(spec: &str) -> Result<greeter::output_scale::Arrangement, Strin
             internal: index == 0,
         });
     }
-    Ok(greeter::output_scale::Arrangement { displays })
+    Ok(greeter::output_scale::Layout { displays })
 }
 
 /// Every `--scenario` name and the login-card state it captures.

@@ -101,15 +101,15 @@ fn attached(session: &mut Session) -> (Vec<String>, DisplaySet) {
     (connectors, DisplaySet::of_descriptors(&descriptors))
 }
 
-/// Make `primary` the display the person chose, the way Settings does: the arrangement the displays
+/// Make `primary` the display the person chose, the way Settings does: the configuration the displays
 /// attached now already have, with that one made primary, asked for as the display change the
 /// person made. Changing only the primary leaves no screen dark, so the session keeps it at once
 /// instead of waiting for an answer.
 fn make_primary(session: &mut Session, primary: &str) {
     let (connectors, set) = attached(session);
-    let mut arrangement = DisplayConfig::default();
+    let mut config = DisplayConfig::default();
     for (index, connector) in connectors.iter().enumerate() {
-        arrangement.outputs.insert(
+        config.outputs.insert(
             connector.clone(),
             StoredOutput {
                 x: WIDTH * i32::try_from(index).expect("a handful of displays"),
@@ -117,8 +117,8 @@ fn make_primary(session: &mut Session, primary: &str) {
             },
         );
     }
-    arrangement.save_for(&set).expect("the arrangement so far");
-    let mut candidate = arrangement.clone();
+    config.save_for(&set).expect("the configuration so far");
+    let mut candidate = config.clone();
     for (connector, output) in &mut candidate.outputs {
         output.primary = connector == primary;
     }

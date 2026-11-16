@@ -799,7 +799,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
             DEVICE_DISPLAYS | DISPLAYS_TWO | DISPLAYS_CANVAS | DISPLAYS_DRAGGING
             | DISPLAYS_IDENTIFY,
         ) => Staged::Pane(Category::Displays),
-        Some(DISPLAYS_KEYBOARD) => Staged::Focused(Category::Displays, "display.arrangement"),
+        Some(DISPLAYS_KEYBOARD) => Staged::Focused(Category::Displays, "display.placement"),
         Some(STORAGE_DRIVES) => Staged::Pane(Category::Storage),
         Some(PERMISSIONS_ALL) => Staged::Pane(Category::Permissions),
         Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
@@ -981,7 +981,7 @@ mod tests {
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),
-            Staged::Focused(Category::Displays, "display.arrangement")
+            Staged::Focused(Category::Displays, "display.placement")
         );
         for scenario in [
             DISPLAYS_TWO,

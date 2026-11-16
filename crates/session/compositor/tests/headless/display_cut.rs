@@ -28,11 +28,11 @@ impl WindowPolicy for Cut {
         &mut self,
         windows: &[(WindowInfo, Rectangle<i32, Logical>)],
         _: &[Rectangle<i32, Logical>],
-    ) -> Option<Vec<Arrangement>> {
+    ) -> Option<Vec<WindowPlacement>> {
         Some(
             windows
                 .iter()
-                .map(|(window, _)| Arrangement {
+                .map(|(window, _)| WindowPlacement {
                     id: window.id,
                     location: Point::from((100, 100)),
                     size: None,

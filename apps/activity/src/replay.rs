@@ -128,7 +128,7 @@ fn frames_view(cx: &ViewCx<Filter>, nav: &Nav, replay: &wire::Replay) -> Element
 
 /// A workspace's windows as they were side by side, each as wide as its share of the strip:
 /// the window's tab in front names it, and the others it holds follow.
-fn arrangement(workspace: &wire::ReplayWorkspace) -> Element {
+fn layout(workspace: &wire::ReplayWorkspace) -> Element {
     let mut row = Row::new()
         .no_wrap()
         .with_rhythm(ui::tokens::Rhythm::Related);
@@ -191,7 +191,7 @@ fn frame_view(frame: &wire::Frame, index: usize, total: usize, note: Option<&str
     for workspace in &frame.workspaces {
         parts.push(Box::new(Section::titled(
             workspace.name.clone(),
-            vec![arrangement(workspace)],
+            vec![layout(workspace)],
         )));
     }
     if !frame.pointers.is_empty() {

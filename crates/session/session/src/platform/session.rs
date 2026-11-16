@@ -198,8 +198,8 @@ impl Session {
         let watched_continuity = continuity.clone();
         // Where the person placed their devices' screens beside each other, which the pointer
         // crosses between them by.
-        let arranged = crate::shared_input::Arranged::loaded();
-        let watched_arranged = arranged.clone();
+        let placed = crate::shared_input::PlacementWatch::loaded();
+        let watched_placed = placed.clone();
         // The bar's own setting, read on the same watch: it changes what the
         // shell's band takes and when the bars show.
         let hide_top_bar = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
@@ -234,7 +234,7 @@ impl Session {
             watched_wallpapers.follow(&document);
             crate::background::follow_prefs(&watched_widgets, &document);
             watched_continuity.read(&document);
-            watched_arranged.read(&document);
+            watched_placed.read(&document);
             watched_night_light.read(&document);
             crate::ambient_brightness::read(&watched_auto, &document);
             watched_hide.store(
@@ -772,7 +772,7 @@ impl Session {
             Arc::new(crate::shared_input::SharedInput::new(
                 Arc::clone(link),
                 continuity.clone(),
-                arranged,
+                placed,
             ))
         });
         // Nearby Send: one engine for every file that leaves this device for
@@ -1447,7 +1447,7 @@ impl Session {
             .add(Box::new(crate::window_share::WindowShareService::new(
                 Rc::clone(&window_shares),
             )));
-        // The displays, on the same API: their arrangements land as the
+        // The displays, on the same API: their modes land as the
         // commands the loop carries out, their brightness is set at once, and
         // the reading says where each display stands.
         let displays_service = crate::displays::Displays::mount(

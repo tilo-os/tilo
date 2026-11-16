@@ -45,7 +45,7 @@ fn visible(
     state: &tilo_quick_settings::QuickSettingsState,
     control: settings_store::hardware::QuickSettingsControl,
 ) -> bool {
-    state.arrangement.controls.contains(&control)
+    state.config.controls.contains(&control)
         && tilo_quick_settings::control_available(control, state)
 }
 

@@ -1,9 +1,9 @@
 //! The person's screens as their devices say they stand: this device's outputs offered to the
-//! others, and every device's screens read back as the shared arrangement lays them out.
+//! others, and every device's screens read back as the shared placement lays them out.
 //! The display sheet and Settings read the published view
 //! ([`settings_store::person_displays::PersonDisplays`]); the session publishes it in memory and on
 //! disk whenever what the person's devices show changed, so a screen that appears on the tablet or
-//! the desktop appears in the arrangement without either device asking.
+//! the desktop appears in the placement without either device asking.
 
 use crate::platform::fabric::SharedLink;
 use settings_store::hardware::{DisplayHardwareSnapshot, DisplaySet};
@@ -301,8 +301,8 @@ mod tests {
             assert!(outputs.iter().all(|fact| fact.output.enabled));
         }
 
-        phase this_device_s_screens_are_published_for_the_arrangement;
-        // What this device shows is published for the shared arrangement: its own device, with the
+        phase this_device_s_screens_are_published_for_the_placement;
+        // What this device shows is published for the shared placement: its own device, with the
         // screens it shows, once per change.
         {
             let _home = tilo_test_env::TestHome::new().expect("a home");
@@ -334,7 +334,7 @@ mod tests {
             assert_eq!(
                 PersonDisplays::published_generation(),
                 generation,
-                "and the arrangement is not written again"
+                "and the placement is not written again"
             );
         }
 
