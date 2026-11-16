@@ -1,0 +1,77 @@
+reason = "Each amount is that app's overage plus the ratchet's 1 % headroom, rounded up to 64 KiB, measured by t's app-sizes-x86_64 (run r1a9de479eb). The budgets were last raised at 9ee2d3e1439 on 2026-11-09; the growth since is each app's own code and the codec instances its new types compile, split by crate in docs/measurements/app-package-size.md: Browser's page forms, page record and page review (+184,689 named bytes), Mail's own mailbox per member and page sends (+30,829) with 102,422 bytes of serde instances, Tasks' import inbox (+9,498) and its model crate (+55,098), Video Editor's inspector and timeline (+24,294), Notes' metadata and notebook (+13,023), Pdf Viewer's page rendering (+13,266), and Calendar and Ebook, whose own crates grew 2,601 and 8,339 bytes while the serde instances for the shared action and document types they read grew 100,236 and 97,994. No crate is carried whole in several tapps: re-exporting serde, serde_json and tilo-resource from the runtime changed 84 bytes across the 65 tapps."
+run = "r1a9de479eb"
+
+[apps."so.tilo.backups"]
+x86_64 = 65536
+
+[apps."so.tilo.browser"]
+x86_64 = 720896
+
+[apps."so.tilo.calendar"]
+x86_64 = 262144
+
+[apps."so.tilo.chat"]
+x86_64 = 196608
+
+[apps."so.tilo.clocks"]
+x86_64 = 65536
+
+[apps."so.tilo.code-editor"]
+x86_64 = 131072
+
+[apps."so.tilo.contacts"]
+x86_64 = 65536
+
+[apps."so.tilo.db-client"]
+x86_64 = 131072
+
+[apps."so.tilo.discord"]
+x86_64 = 131072
+
+[apps."so.tilo.ebook"]
+x86_64 = 262144
+
+[apps."so.tilo.feeds"]
+x86_64 = 65536
+
+[apps."so.tilo.mail"]
+x86_64 = 393216
+
+[apps."so.tilo.maps"]
+x86_64 = 65536
+
+[apps."so.tilo.messages"]
+x86_64 = 131072
+
+[apps."so.tilo.notes"]
+x86_64 = 196608
+
+[apps."so.tilo.passwords"]
+x86_64 = 65536
+
+[apps."so.tilo.pdf-viewer"]
+x86_64 = 65536
+
+[apps."so.tilo.remote"]
+x86_64 = 65536
+
+[apps."so.tilo.shortcuts"]
+x86_64 = 65536
+
+[apps."so.tilo.snippets"]
+x86_64 = 65536
+
+[apps."so.tilo.tasks"]
+x86_64 = 327680
+
+[apps."so.tilo.terminal"]
+x86_64 = 65536
+
+[apps."so.tilo.totp"]
+x86_64 = 65536
+
+[apps."so.tilo.video-editor"]
+x86_64 = 131072
+
+[apps."so.tilo.weather"]
+x86_64 = 65536

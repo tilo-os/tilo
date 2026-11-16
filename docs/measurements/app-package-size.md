@@ -134,22 +134,22 @@ larger by its unwind tables, read-only data and the package format.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | browser | 3,276,800 | 3,901,440 | +624,640 | 1,841,759 | 2,262,552 | +184,689 | +36,206 | +16,698 | +96,289 |
 | mail | 3,866,624 | 4,194,816 | +328,192 | 2,046,296 | 2,314,242 | +30,829 | +22,435 | +102,422 | +28,288 |
-| tasks | 2,686,976 | 2,969,600 | +282,624 | 1,609,550 | 1,810,409 | +9,498 | +26,756 | +21,976 | +50,982 |
+| tasks | 2,686,976 | 2,969,088 | +282,112 | 1,609,550 | 1,810,409 | +9,498 | +26,756 | +21,976 | +50,982 |
 | calendar | 2,752,512 | 2,981,376 | +228,864 | 1,588,919 | 1,770,317 | +2,601 | +10,572 | +100,236 | +12,757 |
 | ebook | 2,490,368 | 2,698,240 | +207,872 | 1,417,038 | 1,587,559 | +8,339 | +5,683 | +97,994 | +10,942 |
-| notes | 2,293,760 | 2,446,336 | +152,576 | 1,264,180 | 1,405,165 | +13,023 | +12,653 | +11,851 | +45,381 |
+| notes | 2,293,760 | 2,453,504 | +159,744 | 1,264,180 | 1,405,165 | +13,023 | +12,653 | +11,851 | +45,381 |
 | chat | 4,390,912 | 4,515,328 | +124,416 | 2,562,583 | 2,698,611 | +10,362 | +3,456 | +17,342 | +22,048 |
 | discord | 2,162,688 | 2,270,720 | +108,032 | 1,176,930 | 1,229,467 | -1,867 | +16,030 | +4,625 | +28,047 |
 | messages | 2,162,688 | 2,240,000 | +77,312 | 1,274,188 | 1,347,562 | +2,756 | +7,373 | +908 | +20,524 |
-| video-editor | 2,293,760 | 2,370,560 | +76,800 | 1,331,499 | 1,369,113 | +24,294 | +384 | +5 | +10,777 |
+| video-editor | 2,293,760 | 2,378,240 | +84,480 | 1,331,499 | 1,369,113 | +24,294 | +384 | +5 | +10,777 |
 | snippets | 1,310,720 | 1,356,800 | +46,080 | 675,593 | 703,583 | -1,124 | +621 | -9 | +10,899 |
 | clocks | 1,507,328 | 1,545,728 | +38,400 | 770,347 | 799,621 | +2,588 | +1,402 | +161 | +12,457 |
 | shortcuts | 2,228,224 | 2,263,040 | +34,816 | 1,190,967 | 1,217,913 | +5,498 | +1,045 | -37 | +10,268 |
-| code-editor | 3,604,480 | 3,638,272 | +33,792 | 2,100,555 | 2,146,906 | +3,922 | +5,106 | +177 | +12,552 |
+| code-editor | 3,604,480 | 3,640,320 | +35,840 | 2,100,555 | 2,146,906 | +3,922 | +5,106 | +177 | +12,552 |
 | passwords | 1,835,008 | 1,866,752 | +31,744 | 1,053,147 | 1,091,444 | +9,400 | +810 | +82 | +11,891 |
 | db-client | 4,390,912 | 4,422,144 | +31,232 | 3,126,259 | 3,189,925 | +1,778 | +1,352 | -25 | +4,471 |
 | totp | 1,376,256 | 1,405,952 | +29,696 | 747,597 | 770,440 | -637 | +928 | -14 | +5,356 |
-| terminal | 1,900,544 | 1,922,560 | +22,016 | 1,068,174 | 1,087,292 | +2,632 | +2,621 | +264 | +3,800 |
+| terminal | 1,900,544 | 1,924,608 | +24,064 | 1,068,174 | 1,087,292 | +2,632 | +2,621 | +264 | +3,800 |
 | contacts | 1,900,544 | 1,914,880 | +14,336 | 995,005 | 1,012,003 | +859 | +1,724 | +47 | +6,529 |
 | remote | 2,949,120 | 2,962,432 | +13,312 | 2,001,831 | 2,020,867 | +616 | +1,171 | +1 | +8,591 |
 | maps | 1,572,864 | 1,583,104 | +10,240 | 882,102 | 892,608 | -1,796 | +1,460 | +189 | +3,974 |
@@ -168,9 +168,10 @@ What the columns say:
   its serde instances 100,236; Ebook 8,339 and 97,994; Mail 30,829 and 102,422. Each record and
   action type an app reads out of a `Value` compiles
   `<Map<String, Value> as Deserializer>::deserialize_any` for its own visitor again, 1.5 to
-  6 KB a type, and nested shared types (`tilo_document::action::RichTextAction` in Calendar,
-  10 instances of 1.5 to 1.9 KB) are instantiated in the app that reads them. The types are the
-  apps'; the machinery is one set of code compiled again in each of the 65 tapps.
+  6 KB a type, and nested shared types (`tilo_document::action::RichTextAction` in Calendar: a
+  dozen instances of 1.5 to 1.9 KB in its largest twenty) are instantiated in the app that reads
+  them. The types are the apps'; the machinery is one set of code compiled again in each of the
+  65 tapps.
 - **`core` and `alloc`** are the fallout of those instances: drop glue, iterators and
   formatting for the same types.
 - **Two tapps carry a dependency of their own.** Db Client links the bundled SQLite itself (a C
