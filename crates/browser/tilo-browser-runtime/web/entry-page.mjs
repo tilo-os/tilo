@@ -1692,9 +1692,13 @@ function homeAdmissionWorkspace(entry) {
   return match ? match[1] : null;
 }
 
-/** The workspace this browser was admitted to through the home workspace's door. */
+/** The site's home workspace: the one its sign-up address names, else the one
+ * this browser was first let into on the home's host. The workspace kept for
+ * that host is not the home when an invitation into another of its workspaces
+ * was the person's way in. */
 function homeWorkspaceOf(entry) {
-  return entry?.home ? keptMembership(entry.home)?.workspace ?? null : null;
+  if (!entry?.home) return null;
+  return homeAdmissionWorkspace(entry) ?? keptMembership(entry.home)?.workspace ?? null;
 }
 
 /** The address that opens `choice` (`workspaceChoices`): the bare entry for the home. */

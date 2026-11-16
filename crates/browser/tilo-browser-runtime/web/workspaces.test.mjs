@@ -494,6 +494,23 @@ test('a host set up again is joined again through its door once, without asking'
     {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)});
 });
 
+test('a person invited into another workspace of the home\'s host comes to the home through its door', async () => {
+  // The site's home names its workspace in its door's address; this browser
+  // was let in first by an invitation into another workspace on that host.
+  const home = {...commons, admission: 'https://workspaces.example/peer/v1/directory/HOME/'};
+  const {calls, options} = harness({person: identity(0x11),
+    membership: {origin: 'https://workspaces.example', workspace: 'INVITED', userPublicKey: '11'.repeat(32)}});
+  await joinViaHost({...options, workspace: home});
+  assert.equal(calls.connected.length, 0, 'the workspace it was invited into is not the home');
+  assert.equal(calls.joined[0].door, home.admission, 'the home\'s door lets them in');
+  // Kept for the home itself, the membership reconnects without the door.
+  const member = harness({person: identity(0x11),
+    membership: {origin: 'https://workspaces.example', workspace: 'HOME', userPublicKey: '11'.repeat(32)}});
+  await joinViaHost({...member.options, workspace: home});
+  assert.equal(member.calls.connected[0].workspace, 'HOME');
+  assert.equal(member.calls.posted.length, 0);
+});
+
 test('a membership kept for another person is not reused for this one', async () => {
   const {calls, options} = harness({person: identity(0x33), membership: {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)}});
   await joinViaHost(options);

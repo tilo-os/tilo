@@ -624,10 +624,13 @@ export async function joinViaHost({
 }) {
   const door = admissionDoor(workspace);
   const known = keptMembership(workspace, memberships);
-  // The workspace this listing's door admits into, when it names one. A
-  // membership kept for another of the host's workspaces is not this one's:
-  // only a bare entry, which names none, is the membership's workspace.
-  const asking = typeof workspace.workspace === 'string' && workspace.workspace ? workspace.workspace : null;
+  // The workspace this listing's door admits into, when it names one, or
+  // its door's address does (`<relay>/peer/v1/directory/<workspace>/`, a
+  // site's home). A membership kept for another of the host's workspaces is
+  // not this one's: a person invited into that one comes to the home through
+  // its door. Only an entry that names none is the membership's workspace.
+  const asking = typeof workspace.workspace === 'string' && workspace.workspace
+    ? workspace.workspace : door.match(/\/directory\/([^/]+)\/?$/)?.[1] ?? null;
   const forThisWorkspace = !asking || known?.workspace === asking;
   if (known?.paired) {
     // A device paired to a person kept elsewhere: only that person's
