@@ -163,6 +163,7 @@ impl TreeReplica {
             pulling: Paced::new(LOOK_AGAIN),
             counting: Paced::new(COUNT_EVERY),
             counted_heads: None,
+            unread: None,
             standing: Arc::clone(&standing),
             content,
         };
@@ -212,6 +213,8 @@ struct Sync {
     pulling: Paced,
     /// The heads the files and bytes in `standing` were counted at.
     counted_heads: Option<Vec<automerge::ChangeHash>>,
+    /// Why the last read of the record failed, said once until it reads or fails otherwise.
+    unread: Option<String>,
     standing: Arc<Mutex<Standing>>,
     content: Arc<SessionContent>,
 }
@@ -331,17 +334,20 @@ impl Sync {
             Ok(RecordReading::Changes { heads, bytes, .. }) => {
                 (DocumentMutation::Incremental(bytes), heads)
             }
-            Ok(RecordReading::Unchanged(_)) => return,
-            Ok(RecordReading::Pending) | Err(_) => {
-                // Nothing here yet: once the host answered with none, the
-                // workspace has no tree, and this device's first change
-                // founds it.
-                if engine
-                    .record_answer(&workspace, &self.route.app_id, &self.route.record)
-                    .is_some()
-                {
-                    self.standing.lock_recover().opened = true;
+            Ok(RecordReading::Unchanged(_)) => {
+                self.unread = None;
+                return;
+            }
+            Err(error) => {
+                if self.unread.as_ref() != Some(&error) {
+                    tracing::warn!(%error, workspace = %self.workspace, "the workspace's tree does not read here");
+                    self.unread = Some(error);
                 }
+                self.note_answered(&workspace);
+                return;
+            }
+            Ok(RecordReading::Pending) => {
+                self.note_answered(&workspace);
                 return;
             }
         };
@@ -361,6 +367,7 @@ impl Sync {
                 }
             }
         };
+        self.unread = None;
         let shared = record_heads(&heads);
         self.merged = Some(heads);
         self.founded = true;
@@ -380,6 +387,19 @@ impl Sync {
         // write of this device as building on changes it never got.
         if self.sent.is_empty() {
             self.sent = shared;
+        }
+    }
+
+    /// Nothing of the tree reads here yet: once the host answered with none, the workspace has
+    /// no tree, and this device's first change founds it.
+    fn note_answered(&self, workspace: &str) {
+        if self
+            .link
+            .engine()
+            .record_answer(workspace, &self.route.app_id, &self.route.record)
+            .is_some()
+        {
+            self.standing.lock_recover().opened = true;
         }
     }
 

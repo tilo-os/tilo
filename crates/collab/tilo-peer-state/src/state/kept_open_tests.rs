@@ -30,6 +30,30 @@ fn read_kept(
     Ok((document, opened.get()))
 }
 
+/// [`read_kept`] with room for a write larger than one frame.
+fn read_large(
+    peer: &StatePeer,
+    reader: [u8; 32],
+    keys: &ContentKeys,
+    kept: &mut KeptRecord,
+) -> (Result<AutoCommit, crate::PeerDocumentReadError>, usize) {
+    let opened = Cell::new(0_usize);
+    let read = peer
+        .open_document(
+            reader,
+            (APP, RECORD),
+            peer_now(),
+            8 * 1024 * 1024,
+            Some(&mut |op| {
+                opened.set(opened.get().saturating_add(1));
+                open(keys, op)
+            }),
+            kept,
+        )
+        .map(|document| AutoCommit::load(&document.save()).unwrap());
+    (read, opened.get())
+}
+
 fn peer_now() -> SystemTime {
     SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(2000))
@@ -313,5 +337,58 @@ tilo_test_env::scenario! {
         ));
         assert_eq!(opened.get(), 0, "nothing is opened for a removed member");
         assert!(!kept.is_open(), "nothing stays open for a removed member");
+    }
+
+    phase a_write_whose_segments_are_still_arriving_keeps_what_opened_before_it;
+    {
+        let mut f = fixture();
+        let keys = f.keys();
+        let reader = f.authority.device_public_key;
+        let mut author = Author::new(&f.host);
+        let mut kept = KeptRecord::default();
+        let message = write(&f.host, &f.owner, &keys, &author.edit("value", "one"), f.now);
+        admit(&mut f.host, &f.owner, message, f.now);
+        read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+        // A file larger than one frame goes out as segments, each a sealed write of its own.
+        let mut noise = 0x9e37_79b9_u32;
+        let file = (0..collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES * 3 / 2)
+            .map(|_| {
+                noise ^= noise << 13;
+                noise ^= noise >> 17;
+                noise ^= noise << 5;
+                noise.to_le_bytes()[0]
+            })
+            .collect::<Vec<_>>();
+        let frames = DocumentMutation::decode(&author.edit_bytes("file", file.clone()))
+            .unwrap()
+            .encode_frames()
+            .unwrap();
+        assert!(frames.len() > 1, "the write goes out as segments");
+        let (first, rest) = frames.split_first().unwrap();
+        let message = write(&f.host, &f.owner, &keys, first, f.now);
+        admit(&mut f.host, &f.owner, message, f.now);
+        let (read, opened) = read_large(&f.host, reader, &keys, &mut kept);
+        assert!(matches!(read, Err(crate::PeerDocumentReadError::Incomplete)));
+        assert_eq!(opened, 1, "the first segment alone");
+        assert!(kept.is_open(), "what opened before the segments stays kept");
+        // Read again while the rest has not come: nothing is opened again.
+        let (read, opened) = read_large(&f.host, reader, &keys, &mut kept);
+        assert!(read.is_err());
+        assert_eq!(opened, 0, "a read while segments arrive opens nothing twice");
+        for frame in rest {
+            let message = write(&f.host, &f.owner, &keys, frame, f.now);
+            admit(&mut f.host, &f.owner, message, f.now);
+        }
+        let (read, opened) = read_large(&f.host, reader, &keys, &mut kept);
+        let document = read.unwrap();
+        assert_eq!(opened, rest.len(), "only the segments that came since");
+        assert_eq!(
+            document.get(ROOT, "file").unwrap().unwrap().0.as_bytes(),
+            Some(file.as_slice())
+        );
+        assert_eq!(
+            document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("one")
+        );
     }
 }

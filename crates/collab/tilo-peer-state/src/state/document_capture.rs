@@ -241,6 +241,18 @@ struct Opened {
 }
 
 impl Opened {
+    /// The record opened, unless a write's segments are not all here yet. What opened before such
+    /// a write is kept all the same: the next read opens only what was admitted since. Dropped,
+    /// every read opened the whole history again, and a reader that follows the record read it so
+    /// on every pass while one of its writes was still arriving, or never would.
+    fn read(&self) -> Result<&Automerge, PeerDocumentReadError> {
+        if self.transfers.is_empty() {
+            Ok(self.document.committed_document())
+        } else {
+            Err(PeerDocumentReadError::Incomplete)
+        }
+    }
+
     /// Whether `document`'s history continues the one this opened.
     fn continues(&self, document: &PeerDocument) -> bool {
         let snapshot = match (&self.snapshot, &document.covered_snapshot) {
@@ -405,7 +417,8 @@ impl StatePeer {
 }
 
 /// `document`'s sealed history opened onto its covered snapshot, continuing what `kept` opened
-/// of it before. A history that does not open whole leaves nothing kept.
+/// of it before. A history that does not open leaves nothing kept; one that waits for the rest
+/// of a write's segments keeps what opened.
 fn open_history<'a>(
     document: &PeerDocument,
     open: OpenSealed<'_>,
@@ -465,9 +478,6 @@ fn open_history<'a>(
         opened.count = index.saturating_add(1);
         opened.last = Some(op.signature);
     }
-    if !opened.transfers.is_empty() {
-        return Err(PeerDocumentReadError::Incomplete);
-    }
     // Admission order may differ from causal order on a keyless replica. A
     // write whose sequences the record already holds is folded away: the
     // record cannot carry both changes of one writer's sequence, and the
@@ -524,5 +534,5 @@ fn open_history<'a>(
         }
     }
     opened.document = merged;
-    Ok(kept.0.insert(opened).document.committed_document())
+    kept.0.insert(opened).read()
 }
