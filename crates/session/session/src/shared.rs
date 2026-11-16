@@ -280,8 +280,8 @@ impl Shared {
     }
 
     /// Tell the person when someone mentions them in one of the workspaces' records, and open the
-    /// places they chose from those notices: the app's own `open` of the item, as the person's
-    /// choice runs it.
+    /// places they chose from those notices: the app's `open` at the item, as a search hit on it
+    /// runs.
     pub(crate) fn serve_mentions(&self) {
         let Some(mentions) = &self.mentions else {
             return;
@@ -296,9 +296,9 @@ impl Shared {
         };
         let workspace = self.active_workspace_id();
         for place in chosen {
-            let target = crate::platform::notice::open_target(&workspace, &place);
+            let open = tilo_desktop_search::InvokeTarget::place(workspace.as_str(), &place);
             if let Err(error) =
-                crate::search::AppActions::invoke(&**apps, target, serde_json::Map::new())
+                crate::search::AppActions::invoke(&**apps, open.remote(), open.arguments)
             {
                 tracing::warn!(%error, app = %place.app, "a mention was not opened");
             }

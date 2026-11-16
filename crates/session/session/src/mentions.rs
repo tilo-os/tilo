@@ -100,16 +100,17 @@ impl Held {
             {
                 continue;
             }
-            // Without a kind the item has no address: the record opens.
-            let resource = mention
-                .item
-                .as_ref()
-                .filter(|_| !kind.is_empty())
-                .map_or_else(String::new, |(field, id)| format!("{kind}/{field}/{id}"));
+            // The item opens through the record's resource, published under its kind, as a search
+            // hit on it does. Without a kind the item has no address: the record opens.
+            let (resource, anchor) = match mention.item.as_ref().filter(|_| !kind.is_empty()) {
+                Some((field, id)) => (kind.clone(), format!("{kind}/{field}/{id}")),
+                None => Default::default(),
+            };
             let place = Place {
                 app: look.app.to_owned(),
                 record: record.clone(),
                 resource,
+                anchor,
             };
             let tag = place.tag(&mention.person);
             if standing.contains_key(&tag) {

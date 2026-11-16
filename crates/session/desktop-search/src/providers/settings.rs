@@ -23,7 +23,7 @@ use crate::model::{Hit, InvokeTarget, Source, Target};
 
 pub use ui::shell::SETTINGS_APP;
 /// The resource Settings' window publishes, whose `open` shows a page.
-const SETTINGS_ROOT: &str = "settings.root";
+pub const SETTINGS_ROOT: &str = "settings.root";
 /// The anchor of a page of Settings, by its slug.
 const PAGE_ANCHOR: &str = "settings.section:";
 /// The anchor of one setting, by its id.

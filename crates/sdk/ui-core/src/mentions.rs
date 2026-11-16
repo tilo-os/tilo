@@ -431,16 +431,19 @@ fn excerpt(text: &str, at: usize) -> String {
     }
 }
 
-/// Where choosing a notice lands: the app keeping a record, the record, and the item in it.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// Where choosing a notice lands: the app keeping a record, the record, and the item in it, opened
+/// as a search hit is: the `open` of `resource`, told `anchor` as the item to show.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Place {
     /// The app keeping the record, by package id.
     pub app: String,
     /// The record, as its route names it: empty for the app's own record of the workspace.
     pub record: String,
-    /// The resource whose `open` shows the item (`<kind>/<field>/<id>`), or empty for the record as a
-    /// whole.
+    /// The resource whose `open` shows the item, or empty for the record as a whole.
     pub resource: String,
+    /// The item that `open` shows (`<kind>/<field>/<id>` for an item of a record), or empty for
+    /// the resource itself.
+    pub anchor: String,
 }
 
 /// The activation scheme a notice's [`Place`] is carried by: what a host that reports clicks hands back
@@ -452,15 +455,16 @@ pub const SCHEME: &str = "tilo-mention";
 pub const TAGS: &str = "mention:";
 
 impl Place {
-    /// The activation URI a host carries the place by: `tilo-mention:<app>?<record>#<resource>`, each
-    /// part percent-encoded.
+    /// The activation URI a host carries the place by:
+    /// `tilo-mention:<app>?<record>#<resource>#<anchor>`, each part percent-encoded.
     #[must_use]
     pub fn activation(&self) -> String {
         format!(
-            "{SCHEME}:{}?{}#{}",
+            "{SCHEME}:{}?{}#{}#{}",
             encode(&self.app),
             encode(&self.record),
-            encode(&self.resource)
+            encode(&self.resource),
+            encode(&self.anchor)
         )
     }
 
@@ -469,11 +473,13 @@ impl Place {
     pub fn from_activation(uri: &str) -> Option<Self> {
         let rest = uri.strip_prefix(SCHEME)?.strip_prefix(':')?;
         let (app, rest) = rest.split_once('?')?;
-        let (record, resource) = rest.split_once('#')?;
+        let (record, rest) = rest.split_once('#')?;
+        let (resource, anchor) = rest.split_once('#')?;
         let place = Self {
             app: decode(app)?,
             record: decode(record)?,
             resource: decode(resource)?,
+            anchor: decode(anchor)?,
         };
         (!place.app.is_empty()).then_some(place)
     }
@@ -483,8 +489,8 @@ impl Place {
     #[must_use]
     pub fn tag(&self, person: &str) -> String {
         format!(
-            "{TAGS}{}/{}/{}/{}",
-            self.app, self.record, self.resource, person
+            "{TAGS}{}/{}/{}/{}/{}",
+            self.app, self.record, self.resource, self.anchor, person
         )
     }
 }

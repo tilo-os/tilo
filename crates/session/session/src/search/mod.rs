@@ -32,8 +32,7 @@ mod host;
 use tilo_actions::ApiError;
 use tilo_actions::remote::downloaded_apps as downloaded_wire;
 use tilo_actions::remote::{
-    ActionHostError, Caller, Found, RemoteActionTarget, ResourceSearch, application_action_target,
-    application_open_target,
+    ActionHostError, Caller, Found, RemoteActionTarget, ResourceSearch, application_open_target,
 };
 use tilo_desktop_search::preferences;
 use tilo_desktop_search::providers::PublishedActions;
@@ -1180,15 +1179,7 @@ impl SessionSearch {
                 "only an app's action answers what it did".into(),
             ));
         };
-        self.with_apps(|apps| {
-            let target = application_action_target(
-                &invoke.workspace,
-                &invoke.app,
-                invoke.address.resource.as_str(),
-                invoke.address.action.as_str(),
-            );
-            apps.invoke_answered(target, invoke.arguments, answered)
-        })
+        self.with_apps(|apps| apps.invoke_answered(invoke.remote(), invoke.arguments, answered))
     }
 
     /// Carry out the rows the person chose in `handle`'s palette since the last call, naming the
@@ -1230,12 +1221,7 @@ impl SessionSearch {
             }
             Target::Invoke(invoke) if invoke.app == DESKTOP_APP => own(&invoke),
             Target::Invoke(invoke) => self.with_apps(|apps| {
-                let target = application_action_target(
-                    &invoke.workspace,
-                    &invoke.app,
-                    invoke.address.resource.as_str(),
-                    invoke.address.action.as_str(),
-                );
+                let target = invoke.remote();
                 if invoke.place != LaunchPlace::Beside {
                     return apps.invoke(target, invoke.arguments);
                 }
@@ -1257,15 +1243,15 @@ impl SessionSearch {
                 // A record this workspace holds opens as a link to it does: its app's `open` on
                 // the record, which brings the window on it forward or opens its app there.
                 if let Some((app, record)) = tilo_desktop_search::launched_record(&app) {
-                    let place = crate::platform::notice::Place {
-                        app: app.to_owned(),
-                        record: record.to_owned(),
-                        resource: String::new(),
-                    };
-                    return apps.invoke(
-                        crate::platform::notice::open_target(workspace, &place),
-                        serde_json::Map::new(),
+                    let open = InvokeTarget::place(
+                        workspace,
+                        &crate::platform::notice::Place {
+                            app: app.to_owned(),
+                            record: record.to_owned(),
+                            ..Default::default()
+                        },
                     );
+                    return apps.invoke(open.remote(), open.arguments);
                 }
                 match host_apps::launched(&app) {
                     // The machine's own app places its window itself.
@@ -2034,14 +2020,15 @@ mod tests {
             search
                 .perform_checked("here", hit.target, &mut |_| Ok(()))
                 .expect("the record opens");
-            let link = crate::platform::notice::open_target(
+            let link = InvokeTarget::place(
                 "here",
                 &crate::platform::notice::Place {
                     app: PDF.into(),
                     record: FORM.into(),
-                    resource: String::new(),
+                    ..Default::default()
                 },
-            );
+            )
+            .remote();
             assert_eq!(
                 opened.borrow().as_slice(),
                 [(link.provider, link.address.action)],

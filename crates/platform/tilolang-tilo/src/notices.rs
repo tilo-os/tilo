@@ -167,10 +167,13 @@ impl Held {
             || schema.app.clone(),
             |package| crate::publish::app_name(&*host.runtime().words(), &package.meta),
         );
+        // Every published resource opens itself, at itself, as its search hit does.
+        let resource = crate::publish::resource_id(&schema.app, &self.opens.id_string());
         let place = Place {
             app: schema.app.clone(),
             record,
-            resource: crate::publish::resource_id(&schema.app, &self.opens.id_string()),
+            anchor: resource.clone(),
+            resource,
         };
         Some(
             Notice::opens(app, self.title.clone(), self.body.clone(), place)

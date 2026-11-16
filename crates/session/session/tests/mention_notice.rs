@@ -154,12 +154,18 @@ fn opening_in(
         Some(RECORD),
         "on the record the notice names: {target:?}"
     );
+    // The record's own `open`, told the item, as a search hit on it opens.
     assert_eq!(
         target.address,
-        ActionAddress::new(format!("{KIND}/pages/p1"), OPEN_ACTION),
-        "at the mention's own place in it"
+        ActionAddress::new(KIND, OPEN_ACTION),
+        "the record's own open: {target:?}"
     );
-    assert!(arguments.is_empty(), "the open carries nothing else");
+    assert_eq!(
+        arguments.get("anchor").and_then(serde_json::Value::as_str),
+        Some(format!("{KIND}/pages/p1").as_str()),
+        "at the mention's own place in it: {arguments:?}"
+    );
+    assert_eq!(arguments.len(), 1, "the open carries nothing else");
 }
 
 /// A home whose device has an identity, and the app a record of the test's is kept by: the state a
