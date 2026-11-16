@@ -246,7 +246,11 @@ async fn a_branch_the_member_refuses_fails_in_its_words() {
     let fleet = fleet().await;
     let source = fleet.workspace("Template").await;
     let branch = fleet.workspace("Task").await;
-    *fleet.placer.lock().unwrap() = Box::new(|_| on_host());
+    *fleet.placer.lock().unwrap() = Box::new(|request| match request {
+        // The host made nothing, so it lists nothing to keep the placement.
+        Request::Delete { .. } => Reply::Done,
+        _ => on_host(),
+    });
     *fleet.service.lock().unwrap() = Box::new(|request| {
         let Request::Branch { from, .. } = request else {
             return Reply::Error("only a branch is asked".into());
@@ -259,6 +263,25 @@ async fn a_branch_the_member_refuses_fails_in_its_words() {
     assert!(
         refused.starts_with(&format!("{VM_HOST}: ")) && refused.ends_with("is no smaller"),
         "the refusal names the host and says why: {refused}"
+    );
+    let asked = Request::Branch {
+        vm: vm(&branch),
+        from: source.clone(),
+    };
+    assert_eq!(
+        fleet.asked(),
+        [
+            ("placer", asked.clone()),
+            ("service", asked),
+            (
+                "placer",
+                Request::Delete {
+                    workspace: branch.clone(),
+                    environment: "default".into(),
+                }
+            ),
+        ],
+        "the placement made for the machine that did not come is forgotten"
     );
 
     // The member takes the work of its own person's relay alone: asked by a
@@ -287,11 +310,15 @@ async fn a_branch_the_member_refuses_fails_in_its_words() {
     assert!(refused.contains("refused"), "{refused}");
     let asked = fleet.asked();
     assert_eq!(
-        (fleet.generation(&other).await, asked.len()),
-        (before.0, before.1 + 1),
-        "the stranger's ask reached the placer alone: no member entered, no machine was made"
+        fleet.generation(&other).await,
+        before.0,
+        "the stranger's ask made no member enter"
     );
-    assert_eq!(asked.last().unwrap().0, "placer");
+    assert!(
+        asked[before.1..].iter().all(|(who, _)| *who == "placer"),
+        "and reached the placer alone, which placed it and forgot it again: no machine was made \
+         ({asked:?})"
+    );
     fleet.stop().await;
 }
 

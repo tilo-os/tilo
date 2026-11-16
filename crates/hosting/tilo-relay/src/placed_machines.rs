@@ -15,6 +15,9 @@
 //!    branch's machine there on its own hosted-VM service
 //!    ([`environment_machines`]).
 //!
+//! A branch whose machine did not come is undone as a deletion is, so the
+//! placer keeps no placement for it.
+//!
 //! A workspace's machine is deleted in the same two steps the other way round,
 //! while the workspace is still there for the member to hold: its host's
 //! member deletes it, and only then does the placer forget it, which it does
@@ -107,18 +110,31 @@ impl WorkspaceMachines for PlacedMachines {
             Reply::Busy(words) | Reply::Error(words) => return Err(format!("the placer: {words}")),
             other => return Err(format!("the placer answered {other:?}")),
         };
-        let device = self.member(&host, branch)?;
         let made = BranchMachine {
             from: source.to_owned(),
             account: self.placed.account().to_owned(),
             size: self.placed.size().as_str().to_owned(),
         };
-        let branched: MachineBranched =
-            follow(&device, environment_machines::branch_target(), &made)
-                .map_err(|words| format!("{host}: {words}"))?
-                .and_then(|value| serde_json::from_value(value).ok())
-                .ok_or_else(|| format!("{host} answered no branch"))?;
-        Ok(branched.branched)
+        let branched = self
+            .member(&host, branch)
+            .and_then(|device| follow(&device, environment_machines::branch_target(), &made))
+            .map_err(|words| format!("{host}: {words}"))
+            .and_then(|answer| {
+                answer
+                    .and_then(|value| serde_json::from_value::<MachineBranched>(value).ok())
+                    .ok_or_else(|| format!("{host} answered no branch"))
+            });
+        match branched {
+            Ok(branched) => Ok(branched.branched),
+            // The placer holds a placement for a machine that did not come:
+            // it goes as any machine does, so the placer forgets it once its
+            // host does not list it, and a machine the host did make is
+            // deleted there first.
+            Err(why) => match self.delete(branch) {
+                Ok(()) => Err(why),
+                Err(left) => Err(format!("{why}; and what it left stays: {left}")),
+            },
+        }
     }
 
     fn delete(&self, workspace: &str) -> Result<(), String> {
