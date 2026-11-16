@@ -31,8 +31,9 @@ use std::collections::{HashMap, VecDeque};
 use serde::{Deserialize, Serialize};
 
 pub use window_actions::{
-    APPLICATION_ACTIVATE_ACTION, APPLICATION_ACTIVATE_TYPE, APPLICATION_OPEN_TYPE, activate_spec,
-    activation_requested,
+    APPLICATION_ACTIVATE_ACTION, APPLICATION_ACTIVATE_TYPE, APPLICATION_OPEN_LINK_ACTION,
+    APPLICATION_OPEN_LINK_TYPE, APPLICATION_OPEN_TYPE, OPEN_LINK_PARAM, activate_spec,
+    activation_requested, link_scheme, open_link_arguments,
 };
 
 mod application;

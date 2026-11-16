@@ -2215,6 +2215,11 @@ impl AppActions for Apps {
             None => crate::documents::opener(shell.as_ref(), workspace, &person, uri),
         }
         .ok_or_else(|| ApiError::Failed(format!("nothing on this device opens {uri}")))?;
+        // A Tilo app shows a link through its `open-link`, in the window it has or one the
+        // delivery starts: the same action the page hands a link to.
+        if let Some((target, arguments)) = crate::documents::link_delivery(workspace, &launch) {
+            return self.deliver(target, arguments, workspace);
+        }
         let workspace = self.workspace_named(workspace);
         self.start(&launch, &workspace)
     }

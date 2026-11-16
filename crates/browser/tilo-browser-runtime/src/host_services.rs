@@ -417,20 +417,20 @@ thread_local! {
     /// person directly while they are elsewhere.
     static BROWSER: RefCell<Option<Arc<dyn ui::notify::Notifier>>> = const { RefCell::new(None) };
     /// The request queues of the desktops this page shows, by mount: where a
-    /// `settings:` link an app opens lands, so the page shows the page it
-    /// names in a window of its own ([`crate::shell::HostRequest::ShowInApp`]).
+    /// link an app opens lands when an app here claims it, so the page shows
+    /// it in that app's window ([`crate::shell::HostRequest::OpenLink`]).
     static DESKTOP_REQUESTS: RefCell<std::collections::BTreeMap<u64, crate::shell::HostRequests>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
     /// The page's next frame: a request an app made outside an input event
-    /// (a `settings:` link the browser hands over later) has no frame of its
-    /// own, so it asks for one; the desktop reads the request there.
+    /// (a link the browser hands over later) has no frame of its own, so it
+    /// asks for one; the desktop reads the request there.
     static WAKE: RefCell<Option<Arc<dyn Fn() + Send + Sync>>> = const { RefCell::new(None) };
 }
 
-/// Where a `settings:` link opened on this page lands: the requests of the
+/// Where a link an app on this page claims lands: the requests of the
 /// desktop the page shows under `mount`, or nowhere when it shows one
-/// application alone (which has no Settings to open).
-pub(crate) fn serve_settings_links(mount: u64, requests: Option<crate::shell::HostRequests>) {
+/// application alone (which has no other app to hand it to).
+pub(crate) fn serve_links(mount: u64, requests: Option<crate::shell::HostRequests>) {
     DESKTOP_REQUESTS.with_borrow_mut(|by_mount| match requests {
         Some(requests) => {
             by_mount.insert(mount, requests);
@@ -442,24 +442,29 @@ pub(crate) fn serve_settings_links(mount: u64, requests: Option<crate::shell::Ho
 }
 
 /// The page closed the mount `mount`: its links land nowhere.
-pub(crate) fn stop_serving_settings_links(mount: u64) {
+pub(crate) fn stop_serving_links(mount: u64) {
     DESKTOP_REQUESTS.with_borrow_mut(|by_mount| {
         by_mount.remove(&mount);
     });
 }
 
-/// Show `uri`'s Settings page in this page's own window, through the session
-/// as a notice's choice is: the app's `open` of the pane, anchored on it.
-/// Whether a desktop was here to show it.
-fn show_settings(uri: &str) -> bool {
-    let Some(place) = ui::shell::settings_anchor(uri).map(crate::settings_link::page) else {
+/// Show what `link` names in the app on this page that claims its scheme
+/// (`ui::application::registry::link_claim`), through the session as a notice's
+/// choice is: the app's `open-link`, in its window or one the session opens.
+/// Whether an app claimed it and a desktop was here to show it.
+fn open_in_app(link: &str) -> bool {
+    let Some(claim) = ui::application::registry::link_claim(link) else {
         return false;
     };
-    let request = crate::shell::HostRequest::ShowInApp(place);
+    let request = crate::shell::HostRequest::OpenLink {
+        app: claim.app_id.to_owned(),
+        resource: claim.resource.to_owned(),
+        link: link.to_owned(),
+    };
     let shown = DESKTOP_REQUESTS.with_borrow(|by_mount| {
         let Some(requests) = by_mount.values().next() else {
             web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
-                "settings link {uri}: no desktop"
+                "link {link}: no desktop"
             )));
             return false;
         };
@@ -472,16 +477,16 @@ fn show_settings(uri: &str) -> bool {
     shown
 }
 
-/// The page's URI opener: a `settings:` link an app opens shows Settings in a
-/// window of this page, as it does on the desktop; every other link is the
-/// browser's, which has no apps of its own to hand one to.
+/// The page's URI opener: a link of a scheme an app on this page claims shows
+/// in that app's window, as it does on a device; every other link is the
+/// browser's.
 struct PageOpener {
     elsewhere: Arc<dyn ui::host::UriOpener>,
 }
 
 impl ui::host::UriOpener for PageOpener {
     fn open(&self, uri: &str) -> std::io::Result<()> {
-        if uri.starts_with("settings:") && show_settings(uri) {
+        if open_in_app(uri) {
             return Ok(());
         }
         self.elsewhere.open(uri)

@@ -116,6 +116,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "show-point"
+kind = "read"
+params = [
+  { name = "lat", type = "float", required = true },
+  { name = "lon", type = "float", required = true },
+]
+
+[[resources.verbs]]
 id = "delete-offline-area"
 destructive = true
 kind = "read"

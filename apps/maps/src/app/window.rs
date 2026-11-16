@@ -123,6 +123,12 @@ impl MapsApp {
                 self.select_poi(&poi);
                 self.poi_directions();
             }
+            MapsEffect::ShowPoint { lat, lon } => {
+                if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+                    return Err(failure::t("maps-point-off-earth"));
+                }
+                self.center_on(crate::model::LatLon::new(lat, lon));
+            }
             MapsEffect::DeleteOfflineArea { area } => self.delete_region(&area)?,
             MapsEffect::ClearOfflineAreas => self.clear_offline_areas(),
         }

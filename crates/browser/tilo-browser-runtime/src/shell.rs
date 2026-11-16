@@ -97,6 +97,15 @@ pub(crate) enum HostRequest {
     /// embedding page.
     #[serde(skip)]
     ShowInApp(tilo_session_core::notice::Place),
+    /// Show what `link` names in `app`, the app that claims its scheme, through its `open-link` on
+    /// `resource`: the page has the workspace's session hand it the link, in the window it has or
+    /// one it opens. It never reaches the embedding page.
+    #[serde(skip)]
+    OpenLink {
+        app: String,
+        resource: String,
+        link: String,
+    },
     /// The person takes back a key of theirs (a device, an agent's grant):
     /// the page's root signs the revocation and every session of theirs
     /// announces it (`onHostAction('revoke-device', {key, reason})`).
@@ -124,7 +133,7 @@ const RENAME_ACTION: &str = "set-name";
 /// The avatar menu's "Report a problem…", which the page answers itself.
 const REPORT_PROBLEM: &str = "report-problem";
 /// Settings at one of its pages, which a person's own card opens.
-use crate::settings_link::page as settings_page;
+use crate::link_requests::page as settings_page;
 /// Settings' page that lists the person's devices and agents and takes them
 /// back: the card's own way to what acts as them.
 const DEVICES_ACCESS: &str = tilo_session::people::DEVICES_ACCESS;

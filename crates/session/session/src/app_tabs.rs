@@ -23,7 +23,6 @@ use std::sync::{Arc, Mutex};
 use crate::platform::surfaces::DesktopHost;
 use launcher::services::{SHELL_UI_LAUNCH_PROTOCOL, SHELL_UI_SERVICE};
 use serde::Deserialize;
-use tilo_app_launch::routing;
 use tilo_app_launch::{Connects, Launch, Open};
 use tilo_compositor::{Compositor, ReadableWatch};
 
@@ -1506,7 +1505,7 @@ fn target_open(app: &str, target: &str) -> Option<Open> {
     {
         return None;
     }
-    let scheme = routing::scheme_of(target)?;
+    let scheme = tilo_actions::remote::link_scheme(target)?;
     let installed = app_catalogue::apps::read_one_from_env(app).ok().flatten()?;
     installed
         .opens_uri_schemes

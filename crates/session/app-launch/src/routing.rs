@@ -85,7 +85,7 @@ pub fn documents(path: &Path, candidates: &[AppCandidate], defaults: &Defaults<'
 /// The app that opens `uri`; `None` when no app here claims its scheme.
 #[must_use]
 pub fn link(uri: &str, candidates: &[AppCandidate], defaults: &Defaults<'_>) -> Option<Launch> {
-    let scheme = scheme_of(uri)?;
+    let scheme = tilo_actions::remote::link_scheme(uri)?;
     let kind = ResourceKind::scheme(&scheme).ok()?;
     let resolver = resolver(candidates, defaults);
     let chosen = resolver.resolve_document(
@@ -108,21 +108,6 @@ pub fn link(uri: &str, candidates: &[AppCandidate], defaults: &Defaults<'_>) -> 
 #[must_use]
 pub fn record(record: &str) -> Option<Open> {
     Some(Open::Uri(RecordId::parse(record)?.uri()))
-}
-
-/// The scheme `uri` names, when it is one: a letter followed by letters,
-/// digits, `+`, `-` or `.`, then a colon. Anything else is not a link this
-/// desktop routes — in particular not a bare path.
-#[must_use]
-pub fn scheme_of(uri: &str) -> Option<String> {
-    let (scheme, rest) = uri.split_once(':')?;
-    let valid = scheme.starts_with(|first: char| first.is_ascii_alphabetic())
-        && scheme
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
-        && !scheme.is_empty()
-        && !rest.is_empty();
-    valid.then(|| scheme.to_ascii_lowercase())
 }
 
 /// The kinds of file `path` is, the narrowest first: its extension, then the type its name
@@ -528,16 +513,6 @@ mod tests {
                     open: Some(Open::Uri("https://code.tilo.so".into())),
                 })
             );
-        }
-
-        phase only_a_real_scheme_names_a_link;
-        {
-            assert_eq!(scheme_of("https://example.com"), Some("https".into()));
-            assert_eq!(scheme_of("web+tilo:thing"), Some("web+tilo".into()));
-            assert_eq!(scheme_of("1http://example.com"), None);
-            assert_eq!(scheme_of("ht tp://example.com"), None);
-            assert_eq!(scheme_of("https:"), None);
-            assert_eq!(scheme_of("no-scheme-here"), None);
         }
     }
 }

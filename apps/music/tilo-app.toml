@@ -85,3 +85,12 @@ mime = [
 ]
 ext = ["wav", "wave", "mp3", "flac", "ogg", "oga", "opus", "m4a", "aac", "aif", "aiff", "wma"]
 schemes = ["music"]
+
+# A link of a scheme above reaches the app through the `open-link` every app
+# publishes; offered here so a link starts the app when no window of it runs.
+[[offers]]
+resource  = "music.library"
+action    = "open-link"
+label     = "Open link"
+kind      = "read"
+operation = "view"

@@ -109,18 +109,39 @@ impl Desktop {
 
     /// Show, as this person, what the desktop asked to see in an app's window
     /// ([`crate::shell::HostRequest::ShowInApp`]): through the session, which opens the window and
-    /// shows it there, as a notice's place.
+    /// shows it there, as a notice's place; and each link it asked an app to show
+    /// ([`crate::shell::HostRequest::OpenLink`]): the app's `open-link`, the same way.
     fn show_asked_in_apps(&self) {
         let mut asked = Vec::new();
+        let mut links = Vec::new();
         self.requests.borrow_mut().retain(|request| match request {
             crate::shell::HostRequest::ShowInApp(place) => {
                 asked.push(place.clone());
+                false
+            }
+            crate::shell::HostRequest::OpenLink {
+                app,
+                resource,
+                link,
+            } => {
+                links.push(
+                    InvokeTarget::action(
+                        app.clone(),
+                        self.workspace.as_str(),
+                        resource.clone(),
+                        tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+                    )
+                    .with_argument(tilo_actions::remote::OPEN_LINK_PARAM, link.clone()),
+                );
                 false
             }
             _ => true,
         });
         for place in asked {
             self.open(&place);
+        }
+        for link in links {
+            self.invoke_as_person(&link);
         }
     }
 

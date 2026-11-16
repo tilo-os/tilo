@@ -172,7 +172,7 @@ ClearArgs = TypedDict("ClearArgs", {
 
 class Workspace(Resource):
     """Maps — `maps.workspace`."""
-    __surface__ = "so.tilo.maps@1d336b57d5b8f8c7"
+    __surface__ = "so.tilo.maps@bff2580c0be19545"
     places: list[Place]
     @property
     def recents(self) -> Any:
@@ -305,6 +305,14 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("poi-directions", poi=poi)
 
+    def show_point(self,
+        *,
+        lat: float,
+        lon: float,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("show-point", lat=lat, lon=lon)
+
     def delete_offline_area(self, *, area: str) -> None:
         """Runs the app's action."""
         return self.action("delete-offline-area", area=area)
@@ -316,7 +324,7 @@ class Workspace(Resource):
 
 class OfflineAreas(Resource):
     """Offline areas — `maps.offline-areas`."""
-    __surface__ = "so.tilo.maps@1d336b57d5b8f8c7"
+    __surface__ = "so.tilo.maps@bff2580c0be19545"
     devices: dict[str, Any]
 
     def record(self,

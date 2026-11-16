@@ -99,6 +99,37 @@ pub fn defer_arriving(
     true
 }
 
+/// An app's claim on links: the schemes its manifest declares (`[providers] schemes`) and the
+/// resource it offers `open-link` on (`[[offers]]`), which a host hands a link of those schemes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinkClaim {
+    /// The app, by its package id.
+    pub app_id: &'static str,
+    /// The resource the app shows a link through `open-link` on.
+    pub resource: &'static str,
+    /// The schemes it claims, lowercase.
+    pub schemes: &'static [&'static str],
+}
+
+static LINK_CLAIMS: Mutex<Vec<LinkClaim>> = Mutex::new(Vec::new());
+
+/// Register `claim`, replacing an earlier one of the same app.
+pub fn claim_links(claim: LinkClaim) {
+    let mut claims = LINK_CLAIMS.lock_recover();
+    claims.retain(|known| known.app_id != claim.app_id);
+    claims.push(claim);
+}
+
+/// The registered app that claims `link`'s scheme, the first registered when several do.
+pub fn link_claim(link: &str) -> Option<LinkClaim> {
+    let scheme = tilo_actions::remote::link_scheme(link)?;
+    LINK_CLAIMS
+        .lock_recover()
+        .iter()
+        .find(|claim| claim.schemes.iter().any(|claimed| *claimed == scheme))
+        .copied()
+}
+
 /// The shape `app_id` declared for its window while it has nothing of it to show — its code on its
 /// way, or its first frame not drawn yet; [`SkeletonShape::Ground`] for an app whose host was told no
 /// declaration.
@@ -300,5 +331,20 @@ mod tests {
                 return value;
             }
         }
+    }
+
+    /// A host finds the app that claims a link's scheme, and the resource it shows the link on.
+    #[test]
+    fn a_link_names_the_app_that_claims_its_scheme() {
+        claim_links(LinkClaim {
+            app_id: "so.tilo.probe-maps",
+            resource: "maps.workspace",
+            schemes: &["geo-probe"],
+        });
+        let claim = link_claim("GEO-PROBE:52.5,13.4").expect("the scheme is claimed");
+        assert_eq!(claim.app_id, "so.tilo.probe-maps");
+        assert_eq!(claim.resource, "maps.workspace");
+        assert_eq!(link_claim("unclaimed-probe:x"), None);
+        assert_eq!(link_claim("/a/path"), None);
     }
 }

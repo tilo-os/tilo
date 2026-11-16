@@ -124,3 +124,12 @@ ext  = []
 # `settings://models/<model-id>` opens Agent Models at that model's card;
 # `settings://<pane>` opens a pane. A link only shows; it changes nothing.
 schemes = ["settings"]
+
+# A link of a scheme above reaches the app through the `open-link` every app
+# publishes; offered here so a link starts the app when no window of it runs.
+[[offers]]
+resource  = "settings.root"
+action    = "open-link"
+label     = "Open link"
+kind      = "read"
+operation = "view"

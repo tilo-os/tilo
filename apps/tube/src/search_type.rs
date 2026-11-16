@@ -128,16 +128,15 @@ pub fn opened(anchor: &str) -> Option<crate::actions::TubeEffect> {
 /// The scheme a launch names a search under: `tube:search?q=<query>`, the query percent-encoded.
 pub const SEARCH_URI_PREFIX: &str = "tube:search?q=";
 
-pub fn launch_search(arguments: &[String]) -> Option<String> {
-    arguments.iter().find_map(|arg| {
-        let prefix = arg.get(..SEARCH_URI_PREFIX.len())?;
-        if !prefix.eq_ignore_ascii_case(SEARCH_URI_PREFIX) || arg.len() > 8 * 1024 {
-            return None;
-        }
-        let query = percent_decode(arg.get(SEARCH_URI_PREFIX.len()..)?)?;
-        let query = query.trim();
-        (!query.is_empty() && !query.chars().any(char::is_control)).then(|| query.to_owned())
-    })
+/// The search a `tube:search?q=` link names, decoded.
+pub fn link_search(link: &str) -> Option<String> {
+    let prefix = link.get(..SEARCH_URI_PREFIX.len())?;
+    if !prefix.eq_ignore_ascii_case(SEARCH_URI_PREFIX) || link.len() > 8 * 1024 {
+        return None;
+    }
+    let query = percent_decode(link.get(SEARCH_URI_PREFIX.len()..)?)?;
+    let query = query.trim();
+    (!query.is_empty() && !query.chars().any(char::is_control)).then(|| query.to_owned())
 }
 
 fn percent_decode(text: &str) -> Option<String> {
@@ -164,14 +163,14 @@ mod tests {
     tilo_test_env::scenario! {
         fn searches_are_named_offered_and_opened_by_their_uris;
 
-        phase a_launch_names_a_search_by_its_uri;
+        phase a_link_names_a_search_by_its_uri;
         {
             assert_eq!(
-                launch_search(&["tube:search?q=cats".into()]).as_deref(),
+                link_search("tube:search?q=cats").as_deref(),
                 Some("cats")
             );
             assert_eq!(
-                launch_search(&["tube:search?q=lo-fi+k%C3%B6ln%20mix".into()]).as_deref(),
+                link_search("tube:search?q=lo-fi+k%C3%B6ln%20mix").as_deref(),
                 Some("lo-fi köln mix")
             );
             for value in [
@@ -180,7 +179,7 @@ mod tests {
                 "tube:video?v=1",
                 "cats",
             ] {
-                assert_eq!(launch_search(&[value.into()]), None, "{value}");
+                assert_eq!(link_search(value), None, "{value}");
             }
         }
 

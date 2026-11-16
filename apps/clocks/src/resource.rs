@@ -161,17 +161,12 @@ impl ResourceApp for ClocksShell {
         crate::native_timers::activation_record(input.arguments().first()?)
     }
 
-    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Clocks>> {
-        input
-            .arguments()
-            .first()
-            .and_then(|uri| crate::native_timers::activation_alarm(uri))
-            .map(|alarm| {
-                vec![Invoke::effect(&ClocksEffect::OpenAlarm {
-                    alarm: alarm.to_owned(),
-                })]
-            })
-            .unwrap_or_default()
+    /// An alarm's link (`tilo-clocks:alarm/<id>`, as its notice names it) opens that alarm.
+    fn open_link(link: &str) -> Option<Vec<Invoke<Clocks>>> {
+        let alarm = crate::native_timers::activation_alarm(link)?;
+        Some(vec![Invoke::effect(&ClocksEffect::OpenAlarm {
+            alarm: alarm.to_owned(),
+        })])
     }
 
     fn scenarios() -> &'static [&'static str] {

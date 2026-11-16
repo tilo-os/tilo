@@ -301,7 +301,7 @@ mod settings;
 mod reveal;
 // Where a `settings:` link goes on a page: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
-mod settings_link;
+mod link_requests;
 // The person's settings sections the page keeps: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod kept_settings;

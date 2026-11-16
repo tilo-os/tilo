@@ -8,7 +8,6 @@ use std::rc::Rc;
 use ui::widget::VideoPlayer;
 use vello::kurbo::Rect;
 
-use crate::action::{self, Action};
 use crate::model::{Route, TubeModel};
 
 #[cfg(feature = "samples")]
@@ -86,11 +85,6 @@ impl Tube {
         let (worker, results) = crate::api::Worker::scripted(self.wake.clone());
         self.worker = Some(worker);
         results
-    }
-
-    fn search_on_launch(&self, query: &str) {
-        self.search_query.set(query.to_owned());
-        action::push(&self.bus, Action::SubmitSearch);
     }
 
     fn stage_search(&mut self, query: &str, video_ids: Vec<String>) {
@@ -234,12 +228,6 @@ impl TubeApp {
     #[doc(hidden)]
     pub fn script_worker_for_test(&mut self) -> crate::api::Updates {
         self.tube().script_worker_for_test()
-    }
-
-    #[must_use]
-    pub fn searching(self, query: &str) -> Self {
-        self.tube().search_on_launch(query);
-        self
     }
 
     #[must_use]

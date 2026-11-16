@@ -89,6 +89,49 @@ pub(crate) fn opener(
     routing::link(uri, &deciding.lists.candidates, &deciding.defaults(person))
 }
 
+/// Where a link `launch` opens reaches its app: the app's `open-link` on the resource its signed
+/// manifest offers it on, which starts the app when no window of it runs. `None` for a launch that
+/// is no Tilo app opening a link, or an app that offers no `open-link`.
+pub(crate) fn link_delivery(
+    workspace: &str,
+    launch: &Launch,
+) -> Option<(
+    tilo_actions::remote::RemoteActionTarget,
+    serde_json::Map<String, serde_json::Value>,
+)> {
+    let Launch::Package {
+        app,
+        open: Some(tilo_app_launch::Open::Uri(link)),
+    } = launch
+    else {
+        return None;
+    };
+    let lists = crate::app_icons::app_lists().unwrap_or_default();
+    link_offer(&lists, app).map(|resource| {
+        (
+            tilo_actions::remote::application_action_target(
+                workspace,
+                app,
+                resource,
+                tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+            ),
+            tilo_actions::remote::open_link_arguments(link),
+        )
+    })
+}
+
+/// The resource `app`'s signed manifest offers `open-link` on.
+fn link_offer(lists: &AppLists, app: &str) -> Option<String> {
+    lists
+        .launchable
+        .iter()
+        .find(|launchable| launchable.package_id == app)?
+        .offers
+        .iter()
+        .find(|offer| offer.action == tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION)
+        .map(|offer| offer.resource.clone())
+}
+
 /// The app `launch` starts, as a launch names it: a Tilo package's id, or a desktop-file id of one
 /// of the machine's own apps.
 pub(crate) fn app_of(launch: &Launch) -> Option<&str> {
@@ -268,5 +311,45 @@ mod tests {
             &lists(),
         );
         assert_eq!(repeated.len(), 1);
+    }
+
+    /// A link reaches a Tilo app through the `open-link` its manifest offers, on the resource it
+    /// names; an app offering none, or a launch that opens no link, is started as before.
+    #[test]
+    fn a_link_reaches_the_app_through_its_offered_open_link() {
+        use tilo_app_package::manifest::{OfferKind, OfferOperation, OfferedAction};
+        let offer = |action: &str| OfferedAction {
+            resource: "maps.workspace".into(),
+            resource_kind: None,
+            action: action.into(),
+            label: "Open link".into(),
+            description: None,
+            kind: OfferKind::default(),
+            operation: OfferOperation::View,
+            confirm: false,
+        };
+        let app = |id: &str, offers| tilo_broker_core::services::LaunchableApplication {
+            package_id: id.into(),
+            display_name: id.into(),
+            unconfined: false,
+            offers,
+            capabilities: Vec::new(),
+        };
+        let lists = AppLists {
+            launchable: vec![
+                app(
+                    "so.tilo.maps",
+                    vec![offer("show-recent"), offer("open-link")],
+                ),
+                app("so.tilo.notes", vec![offer("show-recent")]),
+            ],
+            ..AppLists::default()
+        };
+        assert_eq!(
+            link_offer(&lists, "so.tilo.maps").as_deref(),
+            Some("maps.workspace")
+        );
+        assert_eq!(link_offer(&lists, "so.tilo.notes"), None);
+        assert_eq!(link_offer(&lists, "so.tilo.absent"), None);
     }
 }

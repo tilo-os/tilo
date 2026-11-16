@@ -96,12 +96,17 @@ impl ResourceApp for TubeShell {
                 Ok(())
             },
         );
-        let window = Self::window(cx.mode());
-        let window = match crate::search_type::launch_search(cx.launch_arguments()) {
-            Some(query) if cx.mode().is_live() => window.searching(&query),
-            _ => window,
-        };
-        crate::app::window(cx, window)
+        crate::app::window(cx, Self::window(cx.mode()))
+    }
+
+    /// A `tube:search?q=<query>` link searches for its query.
+    fn open_link(link: &str) -> Option<Vec<ui::tilo_resource::Invoke<Library>>> {
+        let query = crate::search_type::link_search(link)?;
+        Some(vec![ui::tilo_resource::Invoke::effect(
+            &crate::actions::TubeEffect::Search {
+                query: ui::tilo_resource::NonBlank::parse(&query)?,
+            },
+        )])
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {

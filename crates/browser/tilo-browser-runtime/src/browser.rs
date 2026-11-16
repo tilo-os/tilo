@@ -1275,7 +1275,7 @@ pub fn close(id: u64) -> Result<JsValue, JsValue> {
             .map_err(|_| error("the runtime is busy (an owned mount callback)"))?;
         REQUESTS.with_borrow_mut(|r| r.remove(&id));
         DESKTOPS.with_borrow_mut(|desktops| desktops.remove(&id));
-        crate::host_services::stop_serving_settings_links(id);
+        crate::host_services::stop_serving_links(id);
         attention::forget(id);
         let Some(lease) = lease.as_mut() else { return Ok(js_sys::Array::new().into()); };
         let mut mount = lease.take_mount().map_err(|_| error("closed mount"))?;
@@ -1914,7 +1914,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     };
     // A `settings:` link an app opens shows Settings in this page's own
     // window: the desktop carries the links there, as its card's own opens do.
-    crate::host_services::serve_settings_links(
+    crate::host_services::serve_links(
         id,
         mount
             .desktop
@@ -3386,10 +3386,14 @@ impl Mount {
                 .and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone())))
                 .filter(|name| !name.trim().is_empty())
                 .or_else(|| self.workspace_name.clone()),
-            "hostRequests": self.desktop.as_ref().map(|d| crate::settings_link::take_for_page(
+            "hostRequests": self.desktop.as_ref().map(|d| crate::link_requests::take_for_page(
                 &mut d.requests.borrow_mut(),
                 // The desktop shows what an app asked to see itself.
-                |request| matches!(request, crate::shell::HostRequest::ShowInApp { .. }),
+                |request| matches!(
+                    request,
+                    crate::shell::HostRequest::ShowInApp { .. }
+                        | crate::shell::HostRequest::OpenLink { .. }
+                ),
             )).filter(|r| !r.is_empty()),
             "ime": ime,
         });

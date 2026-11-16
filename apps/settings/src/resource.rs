@@ -141,24 +141,27 @@ impl ResourceApp for SettingsShell {
         crate::window::window(cx, app)
     }
 
+    /// A `settings:` link (`settings://keyboard`), or an anchor a card hands
+    /// (`settings.section:keyboard`), shows the page it names.
+    fn open_link(link: &str) -> Option<Vec<Invoke<Settings>>> {
+        parse_settings_uri(link)
+            .ok()
+            .map(|effect| vec![Invoke::effect(&effect)])
+    }
+
+    /// A launch the system's own tools made names the pane they open.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Settings>> {
-        let parsed = match input.argument() {
-            Some(argument) => parse_settings_uri(argument),
-            #[cfg(feature = "tilo-os")]
-            None => match os_actions::tool_intent_from_env() {
-                Some(intent) => tool_effect(&intent),
-                None => return Vec::new(),
-            },
-            #[cfg(not(feature = "tilo-os"))]
-            None => return Vec::new(),
-        };
-        match parsed {
-            Ok(effect) => vec![Invoke::effect(&effect)],
-            Err(error) => {
-                tracing::warn!(%error, "ignoring the Settings link");
-                Vec::new()
+        #[cfg(feature = "tilo-os")]
+        if input.argument().is_none()
+            && let Some(intent) = os_actions::tool_intent_from_env()
+        {
+            match tool_effect(&intent) {
+                Ok(effect) => return vec![Invoke::effect(&effect)],
+                Err(error) => tracing::warn!(%error, "ignoring the tool's Settings page"),
             }
         }
+        let _ = input;
+        Vec::new()
     }
 
     fn scenarios() -> &'static [&'static str] {

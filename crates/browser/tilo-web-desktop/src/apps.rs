@@ -364,6 +364,11 @@ mod clocks_split {
 
     pub(super) fn register() {
         registry::defer_arriving(APP, "Clocks", SkeletonShape::Ground, open);
+        registry::claim_links(registry::LinkClaim {
+            app_id: APP,
+            resource: "clocks.collection",
+            schemes: &["tilo-clocks"],
+        });
     }
 }
 
@@ -679,6 +684,11 @@ mod maps_split {
 
     pub(super) fn register() {
         registry::defer_arriving(APP, "Maps", SkeletonShape::Ground, open);
+        registry::claim_links(registry::LinkClaim {
+            app_id: APP,
+            resource: "maps.workspace",
+            schemes: &["geo"],
+        });
     }
 }
 
@@ -784,6 +794,11 @@ mod music_split {
 
     pub(super) fn register() {
         registry::defer_arriving(APP, "Music", SkeletonShape::Ground, open);
+        registry::claim_links(registry::LinkClaim {
+            app_id: APP,
+            resource: "music.library",
+            schemes: &["music"],
+        });
     }
 }
 
@@ -1029,6 +1044,11 @@ mod settings_split {
 
     pub(super) fn register() {
         registry::defer_arriving(APP, "Settings", SkeletonShape::Ground, open);
+        registry::claim_links(registry::LinkClaim {
+            app_id: APP,
+            resource: "settings.root",
+            schemes: &["settings"],
+        });
     }
 }
 
@@ -1344,6 +1364,11 @@ mod tube_split {
 
     pub(super) fn register() {
         registry::defer_arriving(APP, "Tube", SkeletonShape::Ground, open);
+        registry::claim_links(registry::LinkClaim {
+            app_id: APP,
+            resource: "tube.library",
+            schemes: &["tube"],
+        });
     }
 }
 

@@ -50,3 +50,12 @@ splash-budget = 250
 schemes = ["tilo-clocks"]
 mime = []
 ext = []
+
+# A link of a scheme above reaches the app through the `open-link` every app
+# publishes; offered here so a link starts the app when no window of it runs.
+[[offers]]
+resource  = "clocks.collection"
+action    = "open-link"
+label     = "Open link"
+kind      = "read"
+operation = "view"

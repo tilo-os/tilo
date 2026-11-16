@@ -283,6 +283,27 @@ impl ResourceApp for MusicShell {
         crate::commands::COMMANDS
     }
 
+    /// A `music://` link plays its track or shows its album, artist or playlist.
+    fn open_link(link: &str) -> Option<Vec<Invoke<Library>>> {
+        use crate::search_type::DeepLink;
+        let effect = match DeepLink::parse(link)? {
+            DeepLink::Track(track) => MusicEffect::Play {
+                track,
+                queued: None,
+            },
+            DeepLink::Album(album) => MusicEffect::Open {
+                place: Place::Album(album),
+            },
+            DeepLink::Artist(artist) => MusicEffect::Open {
+                place: Place::Artist(artist),
+            },
+            DeepLink::Playlist(playlist) => MusicEffect::Open {
+                place: Place::Playlist(playlist),
+            },
+        };
+        Some(vec![Invoke::effect(&effect)])
+    }
+
     fn scenario(name: Option<&str>) -> Vec<Invoke<Library>> {
         if matches!(
             name,

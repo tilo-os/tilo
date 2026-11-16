@@ -75,6 +75,25 @@ def arrival_skeleton(manifest: dict, manifest_path: pathlib.Path) -> str:
     return ARRIVAL_SKELETONS[declared]
 
 
+def link_claim(manifest: dict, manifest_path: pathlib.Path) -> tuple[str, list[str]] | None:
+    """The resource the app shows a link on and the schemes it claims:
+    `[providers] schemes`, handed to the `open-link` its `[[offers]]` names.
+    An app claiming schemes it offers no `open-link` for has nowhere a link
+    reaches it."""
+    schemes = [
+        scheme.strip().rstrip(":").lower()
+        for scheme in manifest.get("providers", {}).get("schemes", [])
+    ]
+    if not schemes:
+        return None
+    for offer in manifest.get("offers", []):
+        if offer.get("action") == "open-link":
+            return offer["resource"], schemes
+    raise ValueError(
+        f"{manifest_path}: claims schemes {schemes} but offers no `open-link`"
+    )
+
+
 def all_apps(repo: pathlib.Path) -> list[dict]:
     apps = []
     for manifest_path in sorted((repo / "apps").glob("*/tilo-app.toml")):
@@ -102,6 +121,7 @@ def all_apps(repo: pathlib.Path) -> list[dict]:
                 web_features=web_features,
                 platforms=list(platforms),
                 arrival_skeleton=arrival_skeleton(manifest, manifest_path),
+                links=link_claim(manifest, manifest_path),
             )
         )
     return apps
@@ -126,6 +146,21 @@ def cargo_block(apps: list[dict]) -> str:
 def split_point(app: dict) -> tuple[str, str]:
     """The app's module name and the splitter's hash for its split point."""
     return app["lib"], hashlib.sha256(app["id"].encode()).hexdigest()[:16]
+
+
+def link_registration(app: dict) -> str:
+    """The app's claim on links, registered beside it."""
+    if app["links"] is None:
+        return ""
+    resource, schemes = app["links"]
+    listed = ", ".join(json.dumps(scheme) for scheme in schemes)
+    return (
+        "        registry::claim_links(registry::LinkClaim {\n"
+        "            app_id: APP,\n"
+        f"            resource: {json.dumps(resource)},\n"
+        f"            schemes: &[{listed}],\n"
+        "        });\n"
+    )
 
 
 def apps_rs(apps: list[dict]) -> str:
@@ -183,7 +218,8 @@ def apps_rs(apps: list[dict]) -> str:
             "    pub(super) fn register() {\n"
             f"        registry::defer_arriving(APP, "
             f"{json.dumps(app['name'], ensure_ascii=False)}, {app['arrival_skeleton']}, open);\n"
-            "    }\n"
+            + link_registration(app)
+            + "    }\n"
             "}\n"
         )
     return text

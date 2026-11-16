@@ -38,6 +38,8 @@ use ui_core::widget::DrawChild;
 mod controls;
 mod facts;
 mod live_head;
+mod open_link;
+pub(crate) use open_link::OpenLink;
 mod overlay;
 mod past_page;
 use overlay::OverlayCache;
@@ -112,6 +114,9 @@ pub(crate) struct ResourceRoot {
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
+    /// Shows what a link names ([`ResourceApp::open_link`](super::ResourceApp::open_link)): the
+    /// framework's `open-link` on the resource.
+    open_link: Option<OpenLink>,
     /// The resource's and its surfaces' search entries, indexed.
     search: Rc<std::cell::RefCell<SearchCache>>,
     /// The document-owned tree at one live and translation revision, shared
@@ -325,6 +330,7 @@ pub fn reserved_action_ids() -> Vec<String> {
     .map(str::to_owned)
     .collect();
     ids.push(open_spec().id.clone());
+    ids.push(open_link::spec().id.clone());
     ids.push(tilo_resource::read::spec(None).id.clone());
     ids.push(facts::FACTS.to_owned());
     ids.push(tilo_resource::share::SHARE_LINK.to_owned());
@@ -545,6 +551,7 @@ impl ResourceRoot {
             swapped: false,
             arrived: None,
             presentation: Vec::new(),
+            open_link: None,
             search: Rc::default(),
             publication_tree: std::cell::RefCell::new(None),
             item_children: std::cell::RefCell::new(None),
@@ -1118,7 +1125,7 @@ impl ResourceRoot {
         }
         // A link to the record opens it in this app, views or not.
         tilo_resource::share::offer_record(&mut resource);
-        resource
+        self.offer_open_link(resource)
     }
 
     /// Show why the record does not read as the resource instead of the
@@ -1693,6 +1700,9 @@ impl RootModel for ResourceRoot {
         if self.stages.opens() {
             handlers.insert(OPEN_TYPE.to_owned());
         }
+        if self.open_link.is_some() {
+            handlers.insert(tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE.to_owned());
+        }
         // Opening another app is routed by the host to the workspace
         // broker, whichever resource offers it.
         handlers.insert(tilo_actions::remote::ApplicationLaunch::TYPE.to_owned());
@@ -1842,6 +1852,9 @@ impl RootModel for ResourceRoot {
                     tilo_actions::ActionOutput::default(),
                 ),
             ));
+        }
+        if let Some(started) = self.start_open_link(op)? {
+            return Ok(Some(started));
         }
         // An effect reads the resource as the document stands, though no
         // frame has run since a collaborator's change arrived.

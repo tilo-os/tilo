@@ -1039,4 +1039,6 @@ fn host_location(outcome: LocationOutcome) -> LocationChannel {
 mod tests;
 
 #[cfg(test)]
+mod link_tests;
+#[cfg(test)]
 mod search_arrival_tests;

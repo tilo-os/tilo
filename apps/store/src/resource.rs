@@ -411,6 +411,32 @@ impl ResourceApp for StoreShell {
         crate::app::window(cx, StoreApp::new())
     }
 
+    /// A Store link opens what it names: the catalogue, the bots, an app's
+    /// page (`tilo-store:app/<id>`) or a runtime's.
+    fn open_link(link: &str) -> Option<Vec<Invoke<Reports>>> {
+        let effect = if link == "tilo-store:catalogue" {
+            StoreEffect::ShowCatalogue
+        } else if link == BOTS_LINK {
+            StoreEffect::ShowView {
+                view: "bots".to_owned(),
+            }
+        } else if let Some(runtime) = link.strip_prefix("tilo-store:runtime/") {
+            StoreEffect::ShowRuntimeDetails {
+                runtime: runtime.to_owned(),
+                registry: None,
+            }
+        } else {
+            match parse_store_uri(link) {
+                Ok(app) => StoreEffect::ShowDetails { app },
+                Err(error) => {
+                    tracing::warn!(%error, "ignoring the App Store link");
+                    return None;
+                }
+            }
+        };
+        Some(vec![Invoke::effect(&effect)])
+    }
+
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Reports>> {
         let effect = if let Some(file) = input.file() {
             if std::path::Path::new(file.name())
@@ -446,48 +472,26 @@ impl ResourceApp for StoreShell {
                 contents: Some(contents.to_owned()),
             }
         } else if let Some(argument) = input.argument() {
-            if argument == "tilo-store:catalogue" {
-                StoreEffect::ShowCatalogue
-            } else if argument == BOTS_LINK {
-                StoreEffect::ShowView {
-                    view: "bots".to_owned(),
+            let path = match AbsolutePath::new(argument) {
+                Ok(path) => path,
+                Err(error) => {
+                    tracing::warn!(%error, "ignoring the opened file");
+                    return Vec::new();
                 }
-            } else if argument.starts_with("tilo-store:") {
-                if let Some(runtime) = argument.strip_prefix("tilo-store:runtime/") {
-                    return vec![Invoke::effect(&StoreEffect::ShowRuntimeDetails {
-                        runtime: runtime.to_owned(),
-                        registry: None,
-                    })];
-                }
-                match parse_store_uri(argument) {
-                    Ok(app) => StoreEffect::ShowDetails { app },
-                    Err(error) => {
-                        tracing::warn!(%error, "ignoring the App Store link");
-                        return Vec::new();
-                    }
+            };
+            if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("tapp"))
+            {
+                StoreEffect::ImportPackage {
+                    path: Some(path),
+                    content: None,
+                    reported_size: None,
                 }
             } else {
-                let path = match AbsolutePath::new(argument) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        tracing::warn!(%error, "ignoring the opened file");
-                        return Vec::new();
-                    }
-                };
-                if path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tapp"))
-                {
-                    StoreEffect::ImportPackage {
-                        path: Some(path),
-                        content: None,
-                        reported_size: None,
-                    }
-                } else {
-                    StoreEffect::OpenReference {
-                        path: Some(path),
-                        contents: None,
-                    }
+                StoreEffect::OpenReference {
+                    path: Some(path),
+                    contents: None,
                 }
             }
         } else {
@@ -667,8 +671,8 @@ mod tests {
 
         phase a_store_link_opens_the_app_page_and_installs_nothing;
         {
-            let arguments = vec!["tilo-store:app/com.spotify.Client".to_owned()];
-            let invokes = StoreShell::launch(&LaunchInput::new(&arguments, None), false);
+            let invokes = StoreShell::open_link("tilo-store:app/com.spotify.Client")
+                .expect("a Store link opens");
             let expected = Invoke::<Reports>::effect(&StoreEffect::ShowDetails {
                 app: "com.spotify.Client".into(),
             });

@@ -16845,6 +16845,18 @@
         ],
         "description": ""
       },
+      "maps.workspace.show-point.Arguments": {
+        "type": "object",
+        "properties": {
+          "lat": {},
+          "lon": {}
+        },
+        "required": [
+          "lat",
+          "lon"
+        ],
+        "description": ""
+      },
       "maps.workspace.delete-offline-area.Arguments": {
         "type": "object",
         "properties": {
@@ -29250,6 +29262,12 @@
       "resource": "maps.workspace",
       "action": "poi-directions",
       "arguments": "#/components/schemas/maps.workspace.poi-directions.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "maps.workspace",
+      "action": "show-point",
+      "arguments": "#/components/schemas/maps.workspace.show-point.Arguments"
     },
     {
       "app": "so.tilo.maps",

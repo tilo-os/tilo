@@ -1,7 +1,8 @@
-//! Where a `settings:` link an app opens goes on the page: the session opens
-//! Settings on the page the link names ([`ui::shell::settings_anchor`]), as a
-//! notice's choice does ([`crate::shell::HostRequest::ShowInApp`]), and the
-//! request stays for the page's own desktop.
+//! Where a link an app opens goes on the page when an app here claims it: the
+//! session hands it to that app's `open-link`
+//! ([`crate::shell::HostRequest::OpenLink`]), as a notice's choice opens an
+//! app ([`crate::shell::HostRequest::ShowInApp`]), and the request stays for
+//! the page's own desktop.
 
 use tilo_desktop_search::providers::settings::SETTINGS_ROOT;
 use tilo_session_core::notice::Place;
@@ -19,7 +20,7 @@ pub(crate) fn page(anchor: String) -> Place {
 }
 
 /// Take from `queue` what the embedding page answers, leaving each request
-/// `stays` keeps for the page's own desktop: a `settings:` link queued
+/// `stays` keeps for the page's own desktop: a link queued
 /// between frames waits there for the desktop to show it, and the page's
 /// status never carries it off to an embedding page that does nothing with
 /// it.
@@ -38,11 +39,11 @@ mod tests {
     /// A link queued after a frame is still there for the desktop once the
     /// page reported its status, which took everything else.
     #[test]
-    fn the_status_leaves_a_settings_link_for_the_desktop() {
-        let mut queue = vec!["copy", "show-in-app", "named"];
-        let taken = take_for_page(&mut queue, |request| *request == "show-in-app");
+    fn the_status_leaves_a_link_for_the_desktop() {
+        let mut queue = vec!["copy", "open-link", "named"];
+        let taken = take_for_page(&mut queue, |request| *request == "open-link");
         assert_eq!(taken, ["copy", "named"]);
-        assert_eq!(queue, ["show-in-app"]);
+        assert_eq!(queue, ["open-link"]);
     }
 
     /// A page of Settings opens through the `open` Settings' window

@@ -360,6 +360,15 @@ impl ResourceApp for BrowserShell {
     const ARGUMENTS: usize = 1;
     const PRIVATE_WINDOWS: bool = true;
     const FLAGS: &'static [&'static str] = &[ui::webview::VISITOR_WINDOW_FLAG];
+    /// The window is the page it was launched on: its view opens that page itself.
+    const OPENS_LAUNCH_LINK: bool = false;
+
+    /// A web address, or a web search (`web+search:<query>`), opens in the window it is handed to.
+    fn open_link(link: &str) -> Option<Vec<Invoke<Browser>>> {
+        let arguments = [link.to_owned()];
+        let url = launch_target(&arguments).or_else(|| launch_search(&arguments))?;
+        Some(vec![Invoke::effect(&BrowserEffect::Navigate { url })])
+    }
 
     fn commands() -> &'static [Command] {
         &[

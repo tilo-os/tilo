@@ -96,3 +96,12 @@ ext  = [
 # `web+search:` is a web search desktop search hands over; the browser runs
 # it on the search engine the person chose.
 schemes = ["http", "https", "web+search"]
+
+# A link of a scheme above reaches the app through the `open-link` every app
+# publishes; offered here so a link starts the app when no window of it runs.
+[[offers]]
+resource  = "browser.application"
+action    = "open-link"
+label     = "Open link"
+kind      = "read"
+operation = "view"

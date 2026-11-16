@@ -236,6 +236,25 @@ pub trait ResourceApp: 'static {
         Vec::new()
     }
 
+    /// What showing `link` takes: the effects (or edits) that bring up what
+    /// the link names, `None` for a link this app does not open. A link
+    /// reaches it however it arrives: the framework's `open-link` action,
+    /// which a shell invokes on the app that claims the link's scheme
+    /// (`[providers] schemes` in its manifest) whether or not a window of it
+    /// runs, and a launch naming the link, whose
+    /// [`launch`](Self::launch) is then not asked.
+    fn open_link(link: &str) -> Option<Vec<Invoke<Self::Resource>>> {
+        let _ = link;
+        None
+    }
+
+    /// Whether a launch naming a link shows it through
+    /// [`open_link`](Self::open_link). `false` for an app whose window is the
+    /// thing it was launched on, which its view reads from the launch itself
+    /// (Browser's window is the page it opened on); a link handed to a window
+    /// already open still goes through `open_link`.
+    const OPENS_LAUNCH_LINK: bool = true;
+
     /// What a record a launch naming `input` creates starts with besides
     /// the resource's [`initialize`](Resource::initialize): the content of
     /// the file it was launched on. The actions are written into the
@@ -902,6 +921,15 @@ pub(crate) fn build_root<A: ResourceApp>(
             .then(|| Effects::invoked(dispatch.clone(), live.clone(), shows, A::OPENS))
     };
     let awaiting = run.workspace.clone();
+    let links = dispatch.clone();
+    let open_link: super::root::OpenLink = Rc::new(move |link: &str| {
+        let invokes =
+            A::open_link(link).ok_or_else(|| format!("{} does not open {link}", A::ID))?;
+        for invoke in invokes {
+            links.submit(invoke);
+        }
+        Ok(())
+    });
     let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);
     if let Some(effects) = effects {
         cx.env.effects = effects;
@@ -916,7 +944,8 @@ pub(crate) fn build_root<A: ResourceApp>(
     let live = permissions.is_some();
     let mut root = ResourceRoot::new(app.title(), icon(app), live_label::<A>, cx, alive, content)
         .following(permissions, scope)
-        .with_presentation((app.local_operations)());
+        .with_presentation((app.local_operations)())
+        .opening_links(open_link);
     // A window shown over other apps' content paints no ground of its own:
     // what it does not paint shows what is under it, and a keyboard that
     // hides its keys takes the whole of its window with them.
@@ -1146,7 +1175,15 @@ fn open_root<A: ResourceApp>(
         let record = typed.live.get();
         let launch = root.launch().with_record(&*record);
         if !capture || !launch.is_empty() {
-            for invoke in A::launch(&launch, created) {
+            // A launch naming a link the app opens shows it as `open-link` does.
+            let invokes = launch
+                .argument()
+                .filter(|argument| {
+                    A::OPENS_LAUNCH_LINK && tilo_actions::remote::link_scheme(argument).is_some()
+                })
+                .and_then(A::open_link)
+                .unwrap_or_else(|| A::launch(&launch, created));
+            for invoke in invokes {
                 typed.dispatch.submit(invoke);
             }
         }

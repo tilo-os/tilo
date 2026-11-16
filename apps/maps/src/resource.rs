@@ -55,6 +55,14 @@ pub enum MapsEffect {
         #[param("The point of interest's id")]
         poi: String,
     },
+    /// Show a point on the map.
+    #[effect(kind = "read")]
+    ShowPoint {
+        #[param("Latitude, in degrees north")]
+        lat: f64,
+        #[param("Longitude, in degrees east")]
+        lon: f64,
+    },
     /// Delete offline area.
     #[effect(destructive, kind = "read")]
     DeleteOfflineArea {
@@ -101,8 +109,20 @@ impl ResourceApp for MapsShell {
         crate::scenario::actions(name)
     }
 
+    /// A `geo:` link shows its search (`geo:0,0?q=cafe`), else its point
+    /// (`geo:52.52,13.40`).
+    fn open_link(link: &str) -> Option<Vec<ui::tilo_resource::Invoke<Workspace>>> {
+        let effect = if let Some(query) = geo_search(link) {
+            MapsEffect::Search { query }
+        } else {
+            let (lat, lon) = geo_point(link)?;
+            MapsEffect::ShowPoint { lat, lon }
+        };
+        Some(vec![ui::tilo_resource::Invoke::effect(&effect)])
+    }
+
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
-        let mut app = match cx.mode() {
+        let app = match cx.mode() {
             RunMode::Live => match cx.storage().files().paths().cache().native_path() {
                 Ok(cache) => MapsApp::new_with_cache_dir(cache.join("tiles")),
                 Err(_) => MapsApp::new(),
@@ -116,11 +136,6 @@ impl ResourceApp for MapsShell {
             RunMode::Capture => MapsApp::offline_empty(),
             RunMode::Past => MapsApp::past(),
         };
-        if cx.mode() == RunMode::Live
-            && let Some(query) = launch_search(cx.launch_arguments())
-        {
-            app.search_for(query);
-        }
         let dispatcher = cx.dispatcher();
         cx.on_open(
             move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
@@ -135,20 +150,30 @@ impl ResourceApp for MapsShell {
     }
 }
 
-fn launch_search(arguments: &[String]) -> Option<String> {
-    arguments.iter().find_map(|arg| {
-        let (scheme, rest) = arg.split_once(':')?;
-        if !scheme.eq_ignore_ascii_case("geo") || arg.len() > 8 * 1024 {
-            return None;
-        }
-        let (_, parameters) = rest.split_once('?')?;
-        let query = parameters.split('&').find_map(|pair| {
-            let (key, value) = pair.split_once('=')?;
-            (key == "q").then(|| percent_decode(value)).flatten()
-        })?;
-        let query = query.trim();
-        (!query.is_empty() && !query.chars().any(char::is_control)).then(|| query.to_owned())
-    })
+/// The `geo:` part of `link` (`52.52,13.40?q=x`), past its scheme; `None` for any other link.
+fn geo(link: &str) -> Option<&str> {
+    let (scheme, rest) = link.split_once(':')?;
+    (scheme.eq_ignore_ascii_case("geo") && link.len() <= 8 * 1024).then_some(rest)
+}
+
+/// The search a `geo:` link names (`geo:0,0?q=caf%C3%A9`), decoded.
+fn geo_search(link: &str) -> Option<String> {
+    let (_, parameters) = geo(link)?.split_once('?')?;
+    let query = parameters.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == "q").then(|| percent_decode(value)).flatten()
+    })?;
+    let query = query.trim();
+    (!query.is_empty() && !query.chars().any(char::is_control)).then(|| query.to_owned())
+}
+
+/// The point a `geo:` link names (RFC 5870: `geo:<lat>,<lon>[,<alt>][;…]`), when it is on Earth.
+fn geo_point(link: &str) -> Option<(f64, f64)> {
+    let place = geo(link)?.split(['?', ';']).next()?;
+    let mut parts = place.split(',');
+    let lat: f64 = parts.next()?.trim().parse().ok()?;
+    let lon: f64 = parts.next()?.trim().parse().ok()?;
+    ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)).then_some((lat, lon))
 }
 
 /// `text` with `+` as a space and `%XX` as its byte; `None` on a malformed escape or bytes that are
@@ -174,20 +199,6 @@ fn percent_decode(text: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_geo_launch_names_its_search() {
-        assert_eq!(
-            launch_search(&["geo:0,0?q=caf%C3%A9+berlin".into()]).as_deref(),
-            Some("café berlin")
-        );
-        assert_eq!(
-            launch_search(&["geo:48.1,11.5?z=12&q=Marienplatz".into()]).as_deref(),
-            Some("Marienplatz")
-        );
-        for value in ["geo:0,0", "geo:0,0?q=", "https://example.test/?q=a", "cafe"] {
-            assert_eq!(launch_search(&[value.into()]), None, "{value}");
-        }
-    }
     use crate::model::{Category, LatLon, Place, TravelMode};
     use crate::offline_areas::OfflineAreas;
     use ui::framework::testing::TestApp;

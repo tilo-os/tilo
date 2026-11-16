@@ -64,3 +64,12 @@ ext  = ["flatpakref", "tapp"]
 # The shell's global palette opens an uninstalled app in this trusted detail
 # route. The target is a stable package id, never an install command.
 schemes = ["tilo-store"]
+
+# A link of a scheme above reaches the app through the `open-link` every app
+# publishes; offered here so a link starts the app when no window of it runs.
+[[offers]]
+resource  = "store.catalog"
+action    = "open-link"
+label     = "Open link"
+kind      = "read"
+operation = "view"

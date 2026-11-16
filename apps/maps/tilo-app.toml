@@ -81,3 +81,12 @@ ext  = []
 # `geo:0,0?q=<query>` (RFC 5870 with the common `q` search) opens on the
 # places a query finds, as desktop search's "Search Maps for …" does.
 schemes = ["geo"]
+
+# A link of a scheme above reaches the app through the `open-link` every app
+# publishes; offered here so a link starts the app when no window of it runs.
+[[offers]]
+resource  = "maps.workspace"
+action    = "open-link"
+label     = "Open link"
+kind      = "read"
+operation = "view"

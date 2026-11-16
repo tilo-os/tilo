@@ -70,3 +70,12 @@ ext  = []
 # `tube:search?q=<query>` opens on the results for a query, as desktop
 # search's "Search YouTube for …" does.
 schemes = ["tube"]
+
+# A link of a scheme above reaches the app through the `open-link` every app
+# publishes; offered here so a link starts the app when no window of it runs.
+[[offers]]
+resource  = "tube.library"
+action    = "open-link"
+label     = "Open link"
+kind      = "read"
+operation = "view"
