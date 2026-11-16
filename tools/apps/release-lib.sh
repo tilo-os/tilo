@@ -17,19 +17,33 @@ secret_file() {
   printf '%s' "$file"
 }
 
-# Every core compiles, bounded by memory: 2 GiB per job.
+# How many apps compile at once in a release build: the cores and the memory the
+# job is given, whichever runs out first, at 2 GiB a job.
+#
+# t gives a job its cores (`CARGO_BUILD_JOBS`) and its memory in the job's
+# cgroup: the booking in `memory.low`, and `memory.high` (or, for a fixed limit,
+# `memory.max`) at the booking plus room for the page cache of what it reads. A
+# release link maps the rlibs of everything it links, so jobs past the booking
+# are the ones a node ends. Outside t no cgroup bounds the job, and the machine's
+# own memory is the bound there.
 cargo_jobs() {
-  local cpus memory limit quota period jobs
+  local cpus memory limit quota period jobs file
   cpus=$(nproc)
   if read -r quota period 2>/dev/null < /sys/fs/cgroup/cpu.max && [[ $quota != max ]]; then
     cpus=$(( (quota + period - 1) / period ))
   fi
   memory=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) << 10 ))
-  if read -r limit 2>/dev/null < /sys/fs/cgroup/memory.max && [[ $limit =~ ^[0-9]+$ ]]; then
+  for file in memory.low memory.max memory.high; do
+    [[ -r /sys/fs/cgroup/$file ]] || continue
+    limit=$(<"/sys/fs/cgroup/$file")
+    [[ $limit =~ ^[1-9][0-9]*$ ]] || continue
     (( limit < memory )) && memory=$limit
-  fi
+  done
   jobs=$(( memory / (2 << 30) ))
   (( jobs > cpus )) && jobs=$cpus
+  if [[ ${CARGO_BUILD_JOBS:-} =~ ^[1-9][0-9]*$ ]] && (( CARGO_BUILD_JOBS < jobs )); then
+    jobs=$CARGO_BUILD_JOBS
+  fi
   (( jobs < 1 )) && jobs=1
   printf '%s' "$jobs"
 }

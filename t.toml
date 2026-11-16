@@ -2745,7 +2745,7 @@ run = '''set -euo pipefail
 export CARGO_INCREMENTAL=0
 export CARGO_PROFILE_RELEASE_LTO=thin
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
-export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(bash -c 'source tools/apps/release-lib.sh; cargo_jobs')}"
+export CARGO_BUILD_JOBS=$(bash -c 'source tools/apps/release-lib.sh; cargo_jobs')
 export CARGO_TARGET_DIR=/target/apps-build/{arch}
 export TILO_RELEASE_APPS=$(python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | python3 -c 'import json, sys; print(" ".join(json.load(sys.stdin)["apps"]))')
 export TILO_APP_COMPILE_ONLY=1
@@ -2824,7 +2824,7 @@ run = '''set -euo pipefail
 export CARGO_INCREMENTAL=0
 export CARGO_PROFILE_RELEASE_LTO=thin
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
-export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(bash -c 'source tools/apps/release-lib.sh; cargo_jobs')}"
+export CARGO_BUILD_JOBS=$(bash -c 'source tools/apps/release-lib.sh; cargo_jobs')
 export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$T_COMMIT")
 python3 -I tools/ci/python.py tools/apps/browser_runtime_release.py compile \
   --arch {arch} --source "$T_COMMIT" --out /target/engine-release/{arch}/compiled'''
@@ -2886,7 +2886,7 @@ arch = ["x86_64", "aarch64"]
 name = "app-sizes-{arch}"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -euo pipefail\n# One release build of the default collection, then the two budgets over it: every app's\n# signed tapp (tools/perf/tapp-size-budget/) and the shared runtime's bytes, relocations and\n# symbol lookups (tools/perf/runtime-size-budget/). package-apps.sh builds with throwaway\n# identities when no publisher key is given, which is all a size build needs.\nexport CARGO_INCREMENTAL=0\nexport CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-$(bash -c 'source tools/apps/release-lib.sh; cargo_jobs')}\nexport TILO_RELEASE_APPS=$(python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | python3 -c 'import json, sys; print(\" \".join(json.load(sys.stdin)[\"apps\"]))')\nexport TILO_APP_RELEASE_OUT=/target/app-sizes/{arch}\ndist/apps/package-apps.sh\npython3 tools/perf/tapp_size_ratchet.py measure /target/app-sizes/{arch} --arch {arch}\nlibdir=$(rustc --print target-libdir)\npython3 tools/perf/runtime_size_ratchet.py measure \"$CARGO_TARGET_DIR/thin-app/libruntime_dylib.so\" --arch {arch} --apps-dir \"$CARGO_TARGET_DIR/thin-app\" --library-dir \"$libdir\" $(sed \"s|^|--engine $CARGO_TARGET_DIR/thin-app/|\" \"$CARGO_TARGET_DIR/thin-app/runtime-engines\")\n"
+run = "set -euo pipefail\n# One release build of the default collection, then the two budgets over it: every app's\n# signed tapp (tools/perf/tapp-size-budget/) and the shared runtime's bytes, relocations and\n# symbol lookups (tools/perf/runtime-size-budget/). package-apps.sh builds with throwaway\n# identities when no publisher key is given, which is all a size build needs.\n# Each measure prints its numbers and its own verdict, so an over-budget tapp never hides\n# the runtime's numbers, or the reverse.\nexport CARGO_INCREMENTAL=0\nexport CARGO_BUILD_JOBS=$(bash -c 'source tools/apps/release-lib.sh; cargo_jobs')\nexport TILO_RELEASE_APPS=$(python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | python3 -c 'import json, sys; print(\" \".join(json.load(sys.stdin)[\"apps\"]))')\nexport TILO_APP_RELEASE_OUT=/target/app-sizes/{arch}\ndist/apps/package-apps.sh\nfailed=\npython3 tools/perf/tapp_size_ratchet.py measure /target/app-sizes/{arch} --arch {arch} || failed=1\nlibdir=$(rustc --print target-libdir)\npython3 tools/perf/runtime_size_ratchet.py measure \"$CARGO_TARGET_DIR/thin-app/libruntime_dylib.so\" --arch {arch} --apps-dir \"$CARGO_TARGET_DIR/thin-app\" --library-dir \"$libdir\" $(sed \"s|^|--engine $CARGO_TARGET_DIR/thin-app/|\" \"$CARGO_TARGET_DIR/thin-app/runtime-engines\") || failed=1\n[[ -z $failed ]]\n"
 outputs = ["/target/app-sizes/{arch}/**"]
 requires = ["arch={arch}"]
 timeout_secs = 5400
@@ -6195,3 +6195,4 @@ pointers = { api = "/target/publish/api/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch"]
+
