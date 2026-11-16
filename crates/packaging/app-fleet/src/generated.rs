@@ -153,7 +153,12 @@ pub(super) const APPS: &[FleetApp] = &[
             ("browser.page-record", "Page record"),
             ("browser.personal-bookmarks", "Personal bookmarks"),
         ],
-        actions: &[],
+        actions: &[FleetAction {
+            resource: "browser.application",
+            action: "open-link",
+            label: "Open link",
+            description: "",
+        }],
     },
     FleetApp {
         id: "so.tilo.calculator",
@@ -360,7 +365,12 @@ pub(super) const APPS: &[FleetApp] = &[
             "zeit",
         ],
         resource_types: &[],
-        actions: &[],
+        actions: &[FleetAction {
+            resource: "clocks.collection",
+            action: "open-link",
+            label: "Open link",
+            description: "",
+        }],
     },
     FleetApp {
         id: "so.tilo.code-editor",
@@ -393,7 +403,7 @@ pub(super) const APPS: &[FleetApp] = &[
         name: "Console",
         category: "System",
         platforms: &["tilo-os", "web"],
-        tagline: "What your agents do in your workspaces, and the way they come in by",
+        tagline: "What your agents do in your workspaces, and the MCP server they come in by",
         names: &[],
         keywords: &[
             "agents",
@@ -892,7 +902,12 @@ pub(super) const APPS: &[FleetApp] = &[
             "anfahrt",
         ],
         resource_types: &[],
-        actions: &[],
+        actions: &[FleetAction {
+            resource: "maps.workspace",
+            action: "open-link",
+            label: "Open link",
+            description: "",
+        }],
     },
     FleetApp {
         id: "so.tilo.messages",
@@ -1009,7 +1024,12 @@ pub(super) const APPS: &[FleetApp] = &[
             "lieblingslieder",
         ],
         resource_types: &[],
-        actions: &[],
+        actions: &[FleetAction {
+            resource: "music.library",
+            action: "open-link",
+            label: "Open link",
+            description: "",
+        }],
     },
     FleetApp {
         id: "so.tilo.notes",
@@ -1304,7 +1324,12 @@ pub(super) const APPS: &[FleetApp] = &[
             "einstellung",
         ],
         resource_types: &[],
-        actions: &[],
+        actions: &[FleetAction {
+            resource: "settings.root",
+            action: "open-link",
+            label: "Open link",
+            description: "",
+        }],
     },
     FleetApp {
         id: "so.tilo.sheets",
@@ -1479,7 +1504,12 @@ pub(super) const APPS: &[FleetApp] = &[
             "programme installieren",
         ],
         resource_types: &[],
-        actions: &[],
+        actions: &[FleetAction {
+            resource: "store.catalog",
+            action: "open-link",
+            label: "Open link",
+            description: "",
+        }],
     },
     FleetApp {
         id: "so.tilo.tasks",
@@ -1635,7 +1665,12 @@ pub(super) const APPS: &[FleetApp] = &[
             "videoportal",
         ],
         resource_types: &[],
-        actions: &[],
+        actions: &[FleetAction {
+            resource: "tube.library",
+            action: "open-link",
+            label: "Open link",
+            description: "",
+        }],
     },
     FleetApp {
         id: "so.tilo.typst-editor",
