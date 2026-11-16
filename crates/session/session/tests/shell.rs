@@ -1061,6 +1061,16 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     });
     // The panel comes up on the frame after the reading moves: its keys are drawn with it.
     until(&mut session, |session| says(session, "Go there"));
+    // Its keys are named with it, and stand where the frame that draws them lays them out.
+    let keys = crate::common::wait_for(
+        &mut session,
+        "the keys standing in the switcher",
+        |session| {
+            let labels = session.accessible_labels();
+            let keys = labels.iter().find(|label| label.contains("Alt + Tab"))?;
+            session.shell_control(keys)
+        },
+    );
     let held = keep(&mut session, "shell-switcher");
     // The switcher names every window it walks, each with the app it shows, and the keys stand
     // under them rather than over their titles.
@@ -1086,13 +1096,6 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
             .unwrap_or_else(|| panic!("{name:?} stands in the switcher"));
         titles.push(bounds);
     }
-    let keys = labels
-        .iter()
-        .find(|label| label.contains("Alt + Tab"))
-        .unwrap_or_else(|| panic!("the switcher names its keys: {labels:?}"));
-    let keys = session
-        .shell_control(keys)
-        .unwrap_or_else(|| panic!("the keys stand in the switcher"));
     for title in &titles {
         assert!(
             keys.1 >= title.1 + title.3,
