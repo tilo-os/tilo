@@ -74,14 +74,15 @@ def in_guest() -> dict[str, list[str]]:
     ]
     say(f"running the proofs in {WORKSPACE}'s VM")
     # The host suspends a VM that went idle, and takes no new run while it does:
-    # it says so, and the run a moment later wakes the VM again.
-    deadline = time.monotonic() + 60
+    # it says so, and the run once it finished wakes the VM again. Saving a
+    # VM's memory takes as long as the machine holding it takes to write.
+    deadline = time.monotonic() + 240
     while True:
         ran = subprocess.run(command, text=True, capture_output=True, timeout=900)
         held = (ran.stdout + ran.stderr).find("is being suspended") >= 0
         if not held or time.monotonic() >= deadline:
             break
-        time.sleep(2)
+        time.sleep(3)
     sys.stderr.write(ran.stderr)
     if ran.returncode != 0:
         fail(f"the proofs did not run in the VM ({ran.returncode}): {ran.stdout[-2000:]}{ran.stderr[-2000:]}")
