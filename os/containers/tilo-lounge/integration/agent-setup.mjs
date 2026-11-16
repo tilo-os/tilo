@@ -27,7 +27,7 @@ import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'no
 import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, shellMetrics, machine, browserMemory} from './waits.mjs';
+import {stepLimit, shellMetrics, machine, browserMemory, reloaded} from './waits.mjs';
 
 const [site, relay, tiloBin, out] = process.argv.slice(2);
 if (!site || !relay || !tiloBin || !out) {
@@ -498,22 +498,29 @@ mark('a second agent on the computer wrote a note the tab shows, the first still
 
 // Loaded again while the agent's MCP server is still connected, the tab is the
 // same person in the same workspace, titled after it, with the agent still
-// there.
-await first.reload();
+// there. The browser takes the reload before the new document answers, and the
+// document being replaced keeps answering until it does: a tab read then is the
+// page that is going away, titled "" rather than after its workspace. So the
+// reload is waited out on the new document's own shell (waits.mjs, `reloaded`)
+// before anything is read of the tab.
+const how = await reloaded(first);
+if (how !== 'presented') {
+  await fail(`the reloaded tab never came back (${how}): ${(await pageText(first)).slice(0, 600)}`);
+}
 await until(first, `!!globalThis.tiloMount && JSON.stringify(globalThis.tiloMount.people?.() ?? null).includes('Claude Code')`,
   'Claude Code present in the workspace after a reload', stepLimit(2));
 server.stdin.end();
-const reloaded = await person(first);
+const after = await person(first);
 mark('the tab reloaded as the same person, with the agent still there');
-report.reloaded = reloaded;
-if (!signedUp.user || reloaded.user !== signedUp.user) {
-  await fail(`after a reload the tab is ${reloaded.user ?? 'nobody'}, not the person who set up (${signedUp.user ?? 'unknown'})`);
+report.reloaded = after;
+if (!signedUp.user || after.user !== signedUp.user) {
+  await fail(`after a reload the tab is ${after.user ?? 'nobody'}, not the person who set up (${signedUp.user ?? 'unknown'})`);
 }
-if (!signedUp.workspace || reloaded.workspace !== signedUp.workspace) {
-  await fail(`after a reload the tab is in ${reloaded.workspace ?? 'no workspace'}, not the person's own (${signedUp.workspace ?? 'unknown'})`);
+if (!signedUp.workspace || after.workspace !== signedUp.workspace) {
+  await fail(`after a reload the tab is in ${after.workspace ?? 'no workspace'}, not the person's own (${signedUp.workspace ?? 'unknown'})`);
 }
-if (/lounge/i.test(reloaded.title) || reloaded.title !== signedUp.title) {
-  await fail(`after a reload the tab is titled "${reloaded.title}", not "${signedUp.title}"`);
+if (/lounge/i.test(after.title) || after.title !== signedUp.title) {
+  await fail(`after a reload the tab is titled "${after.title}", not "${signedUp.title}"`);
 }
 
 // 2. Back on a browser that keeps nothing: signed in through the agent.

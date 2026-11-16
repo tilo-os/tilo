@@ -4,7 +4,7 @@
 // read the shell's own answer, it would already be done.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {settle, settleSearch, searching} from './waits.mjs';
+import {reloaded, settle, settleSearch, searching} from './waits.mjs';
 
 /** A page whose frames never advance and whose search owes nothing: the shell
  * has finished, it is just not drawing. */
@@ -123,4 +123,77 @@ test('a shell still drawing keeps an idle wait alive until its frames come', asy
     timeoutMs: 20_000,
   });
   assert.equal(how, 'frames');
+});
+
+/** A tab mid-reload: the old document answers (marked, its shell presented)
+ * until `turns` polls in, when the new one takes over and presents after
+ * `presents` more turns (never, when `presents` is null). */
+function reloading({turns = 2, presents = 1} = {}) {
+  let turn = 0;
+  let reloadedAt = null;
+  return {
+    tab: {
+      reload: async () => {},
+      evaluate: async expression => {
+        if (!expression.includes('readyState')) return true; // marking the old document
+        turn += 1;
+        if (reloadedAt === null && turn > turns) reloadedAt = turn;
+        const old = reloadedAt === null;
+        const up = presents === null ? null : reloadedAt !== null && turn > reloadedAt + presents ? 'presented' : null;
+        return JSON.stringify({old, ready: true, phase: old ? 'presented' : up, seen: old ? 'old' : 'new'});
+      },
+    },
+    turns: () => turn,
+  };
+}
+
+test('a reload wait ends on the new document’s shell, never the one going away', async () => {
+  // The old document keeps answering as a presented shell after the browser
+  // took the reload. A wait that read that would judge the page that is going
+  // away; this one ends only once the new document's shell says it is up.
+  const {tab} = reloading({turns: 3, presents: 1});
+  let clock = 0;
+  const how = await reloaded(tab, {sleep: async ms => { clock += ms; }, now: () => clock, timeoutMs: 20_000});
+  assert.equal(how, 'presented', 'the wait ended on the new document, not the old one’s shell');
+  assert.ok(clock >= 500, `it waited ${clock} ms for the new document to stay`);
+});
+
+test('a page that presents and is replaced by the next navigation is waited past', async () => {
+  // The reloaded document presents, then a navigation replaces it before the
+  // next read: the wait must not take the first for the page that stayed.
+  let turn = 0;
+  const tab = {
+    reload: async () => {},
+    evaluate: async expression => {
+      if (!expression.includes('readyState')) return true; // marking the old document
+      turn += 1;
+      const at = turn <= 1 ? {old: true, ready: true, phase: 'presented', seen: 'old'}
+        : turn === 2 ? {old: false, ready: true, phase: 'presented', seen: 'first'}
+        : turn === 3 ? {old: false, ready: true, phase: 'gpu-pending', seen: 'second'}
+        : {old: false, ready: true, phase: 'presented', seen: 'second'};
+      return JSON.stringify(at);
+    },
+  };
+  let clock = 0;
+  const how = await reloaded(tab, {sleep: async ms => { clock += ms; }, now: () => clock, timeoutMs: 20_000});
+  assert.equal(how, 'presented');
+  assert.ok(clock >= 300, `it waited past the page that was replaced (${clock} ms)`);
+});
+
+test('a reloaded document whose shell never says it is up is stalled', async () => {
+  // A failure screen: the new document is there, its shell never is.
+  const {tab} = reloading({turns: 1, presents: null});
+  let clock = 0;
+  const how = await reloaded(tab, {sleep: async ms => { clock += ms; }, now: () => clock, timeoutMs: 1_000});
+  assert.equal(how, 'stalled');
+});
+
+test('a document that never reloads times out instead of judging the old page', async () => {
+  const tab = {reload: async () => {}, evaluate: async expression =>
+    (expression.includes('readyState')
+      ? JSON.stringify({old: true, ready: true, phase: 'presented'})
+      : true)};
+  let clock = 0;
+  const how = await reloaded(tab, {sleep: async ms => { clock += ms; }, now: () => clock, timeoutMs: 1_000});
+  assert.equal(how, 'timeout');
 });

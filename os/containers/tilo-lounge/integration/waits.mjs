@@ -121,6 +121,64 @@ export async function settle({
 export const settleSearch = (tab, {evaluate = tab.evaluate.bind(tab), ...rest} = {}) =>
   settle({evaluate, owed: () => searching(tab), ...rest});
 
+/**
+ * Reload `tab` and wait until the document that answers is the one it loaded,
+ * with its shell drawn.
+ *
+ * `tab.reload()` resolves when the browser took the reload, not when the new
+ * document replaced the old one. Until it does, the old document still answers
+ * every read — its own shell, its own people — and a title read then is the
+ * page that is going away: a reloaded tab read straight after its reload is
+ * titled "", not after its workspace. So the document is marked before the
+ * reload, and this ends once a document *without* the mark answers, its shell
+ * says it is presented (`state().phase`), and it answers that way twice in a
+ * row: which is when the page holds its workspace and titles itself after it.
+ * The second read is what tells a page that stayed from one a navigation is
+ * about to replace — every document gets a fresh `globalThis`, so the token
+ * planted here is the document's identity, and two reads that disagree are two
+ * documents.
+ *
+ * `tab` answers `evaluate` and `reload`; `sleep` and `now` are injectable so a
+ * test proves the wait ends on the new document's own state.
+ *
+ * Resolves 'presented' when the new shell says it is up, 'stalled' when the
+ * new document loaded but its shell never said so (a failure screen, say), and
+ * 'timeout' when no new document answered at all: the caller says what the
+ * page showed.
+ */
+export async function reloaded(
+  tab,
+  {
+    evaluate = tab.evaluate.bind(tab),
+    timeoutMs = stepLimit(8),
+    pollMs = 100,
+    sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+  } = {},
+) {
+  const mark = `__gateDocument${Math.random().toString(36).slice(2)}`;
+  const token = '__gateDocumentSeen';
+  await evaluate(`globalThis[${JSON.stringify(mark)}] = true`).catch(() => {});
+  await tab.reload();
+  const deadline = now() + timeoutMs;
+  let presentedIn = null;
+  for (;;) {
+    const read = Math.random().toString(36).slice(2);
+    const at = await evaluate(`JSON.stringify({
+      old: globalThis[${JSON.stringify(mark)}] === true,
+      ready: document.readyState === 'complete',
+      phase: globalThis.tiloMount?.state?.()?.phase ?? null,
+      seen: (globalThis[${JSON.stringify(token)}] ??= ${JSON.stringify(read)}),
+    })`).then(text => JSON.parse(text ?? '{}'), () => ({old: true, ready: false, phase: null, seen: null}));
+    const presented = !at.old && at.phase === 'presented';
+    // The same document, its shell up, on two reads in a row.
+    if (presented && at.seen === presentedIn) return 'presented';
+    presentedIn = presented ? at.seen : null;
+    if (now() > deadline) return at.old || !at.ready ? 'timeout' : 'stalled';
+    await sleep(pollMs);
+  }
+}
+
 /** What the machine was doing when a wait ran out, so a run that timed out
  * because the machine never gave the page a turn reads differently from one
  * where the page itself hung. It reads the load against this machine's cores,
