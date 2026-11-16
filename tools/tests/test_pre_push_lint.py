@@ -36,7 +36,7 @@ LIB = """pub fn answer() -> u32 {{
 CARGO_STUB = """#!/bin/sh
 case "$1" in
   metadata) printf '%s\\n' "$STUB_METADATA"; exit 0 ;;
-  fmt) printf 'fmt %s\\n' "$*" >> "$HOOK_LOG"; exit 0 ;;
+  fmt) printf 'fmt %s\\n' "$*" >> "$HOOK_LOG"; [ "$2" = "--version" ] && exit 0; exit "${STUB_FMT_STATUS:-0}" ;;
 esac
 printf 'start %s %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
 sleep "${STUB_SLEEP:-0}"
@@ -45,9 +45,14 @@ printf 'stub says: unreachable value in a page build\\n'
 printf 'end %s %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
 exit "${STUB_STATUS:-0}"
 """
-# The same, named by $CARGO: a drop-in that may build somewhere else.
+# The same, named by $CARGO: a drop-in that may build somewhere else. It only
+# builds: asked to format, it refuses, as a cargo that compiles on another
+# machine does.
 DROP_IN_STUB = (CARGO_STUB.replace("printf 'start ", "printf 'dropin ")
-                .replace("printf 'end ", "printf 'dropin-end "))
+                .replace("printf 'end ", "printf 'dropin-end ")
+                .replace('''  fmt) printf 'fmt %s\\n' "$*" >> "$HOOK_LOG"; [ "$2" = "--version" ] && exit 0; exit "${STUB_FMT_STATUS:-0}" ;;''',
+                         '''  fmt) printf 'dropin-fmt %s\\n' "$*" >> "$HOOK_LOG"; exit 2 ;;'''))
+assert "dropin-fmt" in DROP_IN_STUB, "the drop-in stub must refuse to format"
 # The toolchain's installed targets, which say whether the page build can be linted here.
 RUSTUP_STUB = """#!/bin/sh
 case "$*" in
@@ -130,7 +135,7 @@ class PrePushLintTests(unittest.TestCase):
         ]
         return json.dumps({"packages": packages})
 
-    def environment(self, page=True, status=0, sleep=0, drop_in=False) -> dict:
+    def environment(self, page=True, status=0, sleep=0, drop_in=False, unformatted=False) -> dict:
         """The hook's environment: only the stubs, never this machine's toolchain."""
         env = dict(os.environ)
         env.pop("CARGO", None)
@@ -139,7 +144,7 @@ class PrePushLintTests(unittest.TestCase):
                                if not any(os.access(Path(entry) / tool, os.X_OK)
                                           for tool in ("cargo", "rustup")))])
         env.update(HOOK_LOG=str(self.log), STUB_STATUS=str(status), STUB_SLEEP=str(sleep),
-                   STUB_METADATA=self.metadata(),
+                   STUB_METADATA=self.metadata(), STUB_FMT_STATUS="1" if unformatted else "0",
                    STUB_TARGETS=WITH_PAGE if page else HOST_ONLY)
         if drop_in:
             env["CARGO"] = str(self.bin / "drop-in")
@@ -213,6 +218,27 @@ class PrePushLintTests(unittest.TestCase):
             NATIVE_CLIPPY.replace("native", "web"),
         ]))
         self.assertEqual(self.calls(), [], "the local cargo must not compile at all")
+
+    def test_formatting_is_checked_here_when_the_drop_in_only_builds(self):
+        self.write("web/src/lib.rs", LIB.format(answer=14))
+        self.commit("feat: answer 14 in the page")
+        result = self.push(drop_in=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = self.log.read_text().splitlines()
+        self.assertIn("fmt fmt --check -p fixture-web", log, "the cargo here must check the formatting")
+        self.assertEqual([line for line in log if line.startswith("dropin-fmt ")], [],
+                         "the drop-in builds; it must not be asked to format")
+        self.assertNotIn("rustfmt is not installed", result.stderr)
+        self.assertIn("clippy and rustfmt for", result.stderr)
+
+    def test_a_formatting_difference_refuses_a_push_linted_through_a_drop_in(self):
+        self.write("web/src/lib.rs", LIB.format(answer=15))
+        self.commit("feat: answer 15 in the page")
+        result = self.push(drop_in=True, unformatted=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("pre-push: rustfmt failed - rerun: cargo fmt --check -p fixture-web",
+                      result.stderr)
+        self.assertIn("refusing the push", result.stderr)
 
     def test_a_lint_failure_refuses_the_push(self):
         self.write("web/src/lib.rs", LIB.format(answer=9))
