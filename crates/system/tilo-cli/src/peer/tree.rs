@@ -391,14 +391,15 @@ impl Sync {
     }
 
     /// Nothing of the tree reads here yet: once the host answered with none, the workspace has
-    /// no tree, and this device's first change founds it.
+    /// no tree, and this device's first change founds it. A host that sent some of it holds a
+    /// tree, which this device then waits to read: a tree it founded beside that one would go
+    /// out whole, and the workspace refuses it for good.
     fn note_answered(&self, workspace: &str) {
-        if self
-            .link
-            .engine()
-            .record_answer(workspace, &self.route.app_id, &self.route.record)
-            .is_some()
-        {
+        let answer =
+            self.link
+                .engine()
+                .record_answer(workspace, &self.route.app_id, &self.route.record);
+        if holds_none(answer) {
             self.standing.lock_recover().opened = true;
         }
     }
@@ -497,6 +498,12 @@ impl Sync {
     }
 }
 
+/// Whether the host's `answer` about the tree (the frames it sent of it, `None` while it owes
+/// one) says the workspace has none of it.
+fn holds_none(answer: Option<u32>) -> bool {
+    answer == Some(0)
+}
+
 /// What a namespace has to send after `sent`.
 enum Outgoing {
     /// Nothing, or nothing it may send yet.
@@ -563,6 +570,17 @@ mod tests {
         paced.ran(start, start + Duration::from_millis(200));
         assert!(!paced.due(start + Duration::from_secs(4)));
         assert!(paced.due(start + Duration::from_millis(4200)));
+    }
+
+    #[test]
+    fn a_tree_the_host_sent_but_that_does_not_read_here_is_not_founded_again() {
+        // The host owes its answer still: nothing is known.
+        assert!(!super::holds_none(None));
+        // It sent frames of the tree: the workspace holds one, though it may not read here
+        // yet (a write still on its way), and a tree founded now would go out whole beside it.
+        assert!(!super::holds_none(Some(3)));
+        // It sent none: the workspace has no tree, and this device's first change founds it.
+        assert!(super::holds_none(Some(0)));
     }
 
     #[test]
