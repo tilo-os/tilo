@@ -6,8 +6,10 @@ use std::{
 };
 
 use wayland_server::{
+    Client,
     backend::{protocol::Message, ClientId, Handle, ObjectData, ObjectId},
     protocol::{
+        wl_data_device::WlDataDevice,
         wl_data_device_manager::DndAction,
         wl_data_offer::{self, WlDataOffer},
         wl_seat::WlSeat,
@@ -42,6 +44,9 @@ pub struct ServerDnDGrab<D: SeatHandler> {
     metadata: super::SourceMetadata,
     current_focus: Option<WlSurface>,
     pending_offers: Vec<wl_data_offer::WlDataOffer>,
+    /// The devices the drag was entered on at `current_focus` ; one the client makes later is
+    /// entered too.
+    entered_devices: Vec<WlDataDevice>,
     offer_data: Option<Arc<Mutex<ServerDndOfferData>>>,
     seat: Seat<D>,
 }
@@ -55,6 +60,7 @@ impl<D: SeatHandler + 'static> fmt::Debug for ServerDnDGrab<D> {
             .field("metadata", &self.metadata)
             .field("current_focus", &self.current_focus)
             .field("pending_offers", &self.pending_offers)
+            .field("entered_devices", &self.entered_devices)
             .field("offer_data", &self.offer_data)
             .field("seat", &self.seat)
             .finish()
@@ -75,6 +81,7 @@ impl<D: SeatHandler> ServerDnDGrab<D> {
             metadata,
             current_focus: None,
             pending_offers: Vec::with_capacity(1),
+            entered_devices: Vec::with_capacity(1),
             offer_data: None,
             seat,
         }
@@ -93,6 +100,7 @@ impl<D: SeatHandler> ServerDnDGrab<D> {
             metadata,
             current_focus: None,
             pending_offers: Vec::with_capacity(1),
+            entered_devices: Vec::with_capacity(1),
             offer_data: None,
             seat,
         }
@@ -128,6 +136,7 @@ where
                 }
                 // disable the offers
                 self.pending_offers.clear();
+                self.entered_devices.clear();
                 if let Some(offer_data) = self.offer_data.take() {
                     offer_data.lock().unwrap().active = false;
                 }
@@ -155,43 +164,49 @@ where
                     .known_data_devices()
                     .filter(|d| d.id().same_client_as(&surface.id()))
                 {
-                    let handle = self.dh.backend_handle();
-                    let wl_seat = match device.data::<DataDeviceUserData>() {
-                        Some(data) => data.wl_seat.clone(),
-                        None => continue,
+                    let Some(offer) = make_offer::<D>(
+                        &self.dh,
+                        &client,
+                        device,
+                        &self.metadata,
+                        offer_data.clone(),
+                    ) else {
+                        continue;
                     };
-                    // create a data offer
-                    let offer = handle
-                        .create_object::<D>(
-                            client.id(),
-                            WlDataOffer::interface(),
-                            device.version(),
-                            Arc::new(ServerDndData {
-                                metadata: self.metadata.clone(),
-                                offer_data: offer_data.clone(),
-                                wl_seat,
-                            }),
-                        )
-                        .unwrap();
-                    let offer = WlDataOffer::from_id(&self.dh, offer).unwrap();
-
-                    // advertize the offer to the client
-                    device.data_offer(&offer);
-                    for mime_type in self.metadata.mime_types.iter().cloned() {
-                        offer.offer(mime_type);
-                    }
-                    offer.source_actions(self.metadata.dnd_action);
                     device.enter(serial.into(), &surface, x, y, Some(&offer));
                     self.pending_offers.push(offer);
+                    self.entered_devices.push(device.clone());
                 }
                 self.offer_data = Some(offer_data);
                 self.current_focus = Some(surface.into_owned());
             } else {
                 // make a move
-                for device in seat_data.known_data_devices() {
-                    if device.id().same_client_as(&surface.id()) {
-                        device.motion(time, x, y);
+                for device in seat_data
+                    .known_data_devices()
+                    .filter(|d| d.id().same_client_as(&surface.id()))
+                {
+                    // A device its client made after the drag entered takes the drag too: it
+                    // gets an offer of its own and the enter it missed.
+                    if !self
+                        .entered_devices
+                        .iter()
+                        .any(|entered| entered.id() == device.id())
+                    {
+                        if let Some(offer) = self.offer_data.as_ref().and_then(|offer_data| {
+                            make_offer::<D>(
+                                &self.dh,
+                                &client,
+                                device,
+                                &self.metadata,
+                                offer_data.clone(),
+                            )
+                        }) {
+                            device.enter(serial.into(), &surface, x, y, Some(&offer));
+                            self.pending_offers.push(offer);
+                        }
+                        self.entered_devices.push(device.clone());
                     }
+                    device.motion(time, x, y);
                 }
             }
         }
@@ -241,6 +256,42 @@ where
             }
         }
     }
+}
+
+/// A data offer of the compositor's drag for `device` : its mime types and the actions it takes.
+fn make_offer<D>(
+    dh: &DisplayHandle,
+    client: &Client,
+    device: &WlDataDevice,
+    metadata: &SourceMetadata,
+    offer_data: Arc<Mutex<ServerDndOfferData>>,
+) -> Option<WlDataOffer>
+where
+    D: DataDeviceHandler + 'static,
+{
+    let wl_seat = device.data::<DataDeviceUserData>()?.wl_seat.clone();
+    let offer = dh
+        .backend_handle()
+        .create_object::<D>(
+            client.id(),
+            WlDataOffer::interface(),
+            device.version(),
+            Arc::new(ServerDndData {
+                metadata: metadata.clone(),
+                offer_data,
+                wl_seat,
+            }),
+        )
+        .unwrap();
+    let offer = WlDataOffer::from_id(dh, offer).unwrap();
+
+    // advertize the offer to the client
+    device.data_offer(&offer);
+    for mime_type in metadata.mime_types.iter().cloned() {
+        offer.offer(mime_type);
+    }
+    offer.source_actions(metadata.dnd_action);
+    Some(offer)
 }
 
 impl<D> PointerGrab<D> for ServerDnDGrab<D>

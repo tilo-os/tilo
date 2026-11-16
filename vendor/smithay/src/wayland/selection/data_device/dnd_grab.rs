@@ -6,8 +6,10 @@ use std::{
 };
 
 use wayland_server::{
+    Client,
     backend::{protocol::Message, ClientId, Handle, ObjectData, ObjectId},
     protocol::{
+        wl_data_device::WlDataDevice,
         wl_data_device_manager::DndAction,
         wl_data_offer::{self, WlDataOffer},
         wl_data_source::{self, WlDataSource},
@@ -41,6 +43,9 @@ pub struct DnDGrab<D: SeatHandler> {
     data_source: Option<wl_data_source::WlDataSource>,
     current_focus: Option<WlSurface>,
     pending_offers: Vec<wl_data_offer::WlDataOffer>,
+    /// The devices the drag was entered on at `current_focus` ; one the client makes later is
+    /// entered too.
+    entered_devices: Vec<WlDataDevice>,
     offer_data: Option<Arc<Mutex<OfferData>>>,
     icon: Option<WlSurface>,
     origin: WlSurface,
@@ -56,6 +61,7 @@ impl<D: SeatHandler + 'static> fmt::Debug for DnDGrab<D> {
             .field("data_source", &self.data_source)
             .field("current_focus", &self.current_focus)
             .field("pending_offers", &self.pending_offers)
+            .field("entered_devices", &self.entered_devices)
             .field("offer_data", &self.offer_data)
             .field("icon", &self.icon)
             .field("origin", &self.origin)
@@ -80,6 +86,7 @@ impl<D: SeatHandler> DnDGrab<D> {
             data_source: source,
             current_focus: None,
             pending_offers: Vec::with_capacity(1),
+            entered_devices: Vec::with_capacity(1),
             offer_data: None,
             origin,
             icon,
@@ -102,6 +109,7 @@ impl<D: SeatHandler> DnDGrab<D> {
             data_source: source,
             current_focus: None,
             pending_offers: Vec::with_capacity(1),
+            entered_devices: Vec::with_capacity(1),
             offer_data: None,
             origin,
             icon,
@@ -141,6 +149,7 @@ where
                     }
                     // disable the offers
                     self.pending_offers.clear();
+                    self.entered_devices.clear();
                     if let Some(offer_data) = self.offer_data.take() {
                         offer_data.lock().unwrap().active = false;
                     }
@@ -171,33 +180,10 @@ where
                         .known_data_devices()
                         .filter(|d| d.id().same_client_as(&surface.id()))
                     {
-                        let handle = self.dh.backend_handle();
-
-                        // create a data offer
-                        let offer = handle
-                            .create_object::<D>(
-                                client.id(),
-                                WlDataOffer::interface(),
-                                device.version(),
-                                Arc::new(DndDataOffer {
-                                    offer_data: offer_data.clone(),
-                                    source: source.clone(),
-                                }),
-                            )
-                            .unwrap();
-                        let offer = WlDataOffer::from_id(&self.dh, offer).unwrap();
-
-                        // advertize the offer to the client
-                        device.data_offer(&offer);
-                        with_source_metadata(source, |meta| {
-                            for mime_type in meta.mime_types.iter().cloned() {
-                                offer.offer(mime_type);
-                            }
-                            offer.source_actions(meta.dnd_action);
-                        })
-                        .unwrap();
+                        let offer = make_offer::<D>(&self.dh, &client, device, source, offer_data.clone());
                         device.enter(serial.into(), &surface, x, y, Some(&offer));
                         self.pending_offers.push(offer);
+                        self.entered_devices.push(device.clone());
                     }
                     self.offer_data = Some(offer_data);
                 } else {
@@ -206,6 +192,7 @@ where
                         for device in seat_data.known_data_devices() {
                             if device.id().same_client_as(&surface.id()) {
                                 device.enter(serial.into(), &surface, x, y, None);
+                                self.entered_devices.push(device.clone());
                             }
                         }
                     }
@@ -214,10 +201,34 @@ where
             } else {
                 // make a move
                 if self.data_source.is_some() || self.origin.id().same_client_as(&surface.id()) {
-                    for device in seat_data.known_data_devices() {
-                        if device.id().same_client_as(&surface.id()) {
-                            device.motion(time, x, y);
+                    for device in seat_data
+                        .known_data_devices()
+                        .filter(|d| d.id().same_client_as(&surface.id()))
+                    {
+                        // A device its client made after the drag entered takes the drag too:
+                        // it gets an offer of its own and the enter it missed.
+                        if !self
+                            .entered_devices
+                            .iter()
+                            .any(|entered| entered.id() == device.id())
+                        {
+                            let offer = match (&self.data_source, &self.offer_data) {
+                                (Some(source), Some(offer_data)) => Some(make_offer::<D>(
+                                    &self.dh,
+                                    &client,
+                                    device,
+                                    source,
+                                    offer_data.clone(),
+                                )),
+                                _ => None,
+                            };
+                            device.enter(serial.into(), &surface, x, y, offer.as_ref());
+                            if let Some(offer) = offer {
+                                self.pending_offers.push(offer);
+                            }
+                            self.entered_devices.push(device.clone());
                         }
+                        device.motion(time, x, y);
                     }
                 }
             }
@@ -292,6 +303,43 @@ where
             }
         }
     }
+}
+
+/// A data offer of `source` for `device` : its mime types and the actions the source takes.
+fn make_offer<D>(
+    dh: &DisplayHandle,
+    client: &Client,
+    device: &WlDataDevice,
+    source: &WlDataSource,
+    offer_data: Arc<Mutex<OfferData>>,
+) -> WlDataOffer
+where
+    D: DataDeviceHandler + 'static,
+{
+    let offer = dh
+        .backend_handle()
+        .create_object::<D>(
+            client.id(),
+            WlDataOffer::interface(),
+            device.version(),
+            Arc::new(DndDataOffer {
+                offer_data,
+                source: source.clone(),
+            }),
+        )
+        .unwrap();
+    let offer = WlDataOffer::from_id(dh, offer).unwrap();
+
+    // advertize the offer to the client
+    device.data_offer(&offer);
+    with_source_metadata(source, |meta| {
+        for mime_type in meta.mime_types.iter().cloned() {
+            offer.offer(mime_type);
+        }
+        offer.source_actions(meta.dnd_action);
+    })
+    .unwrap();
+    offer
 }
 
 impl<D> PointerGrab<D> for DnDGrab<D>

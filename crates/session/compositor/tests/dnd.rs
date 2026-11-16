@@ -22,7 +22,8 @@ use wayland_client::protocol::wl_data_device_manager::DndAction;
 use wayland_client::protocol::wl_shm;
 
 use crate::harness::{
-    DropLog, DropZone, TestClient, URI_LIST, headless, input, map, pump_one as pump, settle,
+    DropLog, DropZone, TestClient, URI_LIST, headless, input, map, pump as pump_all,
+    pump_one as pump, settle,
 };
 
 const BTN_LEFT: u32 = 0x110;
@@ -32,13 +33,8 @@ const FILES: &[u8] = b"file:///home/someone/a%20b.txt\r\nfile:///home/someone/c.
 fn setup(log: &Rc<RefCell<DropLog>>) -> (Compositor, TestClient) {
     let mut compositor = headless(Box::new(StackPolicy));
     compositor.add_host(Rc::new(RefCell::new(DropZone::new(Rc::clone(log)))));
-    let mut client = TestClient::connect(&mut compositor);
-    pump(&mut compositor, &mut client, |_, client| {
-        client.seen.data_manager.is_some() && client.seen.seat.is_some()
-    });
-    // Its data device comes before its window, as a toolkit binds it when it starts.
-    client.own_data_device();
-    let client = map(
+    let client = TestClient::connect(&mut compositor);
+    let mut client = map(
         client,
         &mut compositor,
         "files",
@@ -46,6 +42,7 @@ fn setup(log: &Rc<RefCell<DropLog>>) -> (Compositor, TestClient) {
         [255, 0, 0, 255],
     );
     assert_eq!(compositor.windows()[0].1, (220, 190, 200, 100));
+    client.own_data_device(&mut compositor);
     (compositor, client)
 }
 
@@ -194,6 +191,192 @@ fn files_dragged_out_of_a_hosted_surface_drop_on_a_window() {
     assert_eq!(received, FILES);
     offer.finish();
     settle(&mut compositor, &mut client);
+}
+
+/// A file manager that starts a drag while the window under the pointer still has no data device
+/// (it binds one when its toolkit is ready) gets the offer on the next move, not never.
+#[test]
+fn a_drag_from_a_hosted_surface_offers_itself_to_a_window_that_binds_its_data_device_mid_drag() {
+    let log = Rc::new(RefCell::new(DropLog::default()));
+    let mut compositor = headless(Box::new(StackPolicy));
+    compositor.add_host(Rc::new(RefCell::new(DropZone::new(Rc::clone(&log)))));
+    let mut client = map(
+        TestClient::connect(&mut compositor),
+        &mut compositor,
+        "files",
+        (200, 100),
+        [255, 0, 0, 255],
+    );
+
+    input(
+        &mut compositor,
+        InputEvent::PointerMotion { x: 550.0, y: 70.0 },
+    );
+    input(
+        &mut compositor,
+        InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: true,
+        },
+    );
+    assert!(
+        compositor
+            .start_drag(vec![(URI_LIST.to_owned(), FILES.to_vec())])
+            .unwrap()
+    );
+    input(
+        &mut compositor,
+        InputEvent::PointerMotion { x: 300.0, y: 240.0 },
+    );
+    settle(&mut compositor, &mut client);
+    assert!(
+        client.seen.offered.is_empty(),
+        "the drag is over the window, but its client listens to no data device yet"
+    );
+
+    client.own_data_device(&mut compositor);
+    input(
+        &mut compositor,
+        InputEvent::PointerMotion { x: 310.0, y: 245.0 },
+    );
+    pump(&mut compositor, &mut client, |_, client| {
+        client.seen.entered.is_some()
+    });
+    assert!(
+        client.seen.offered.contains(&URI_LIST.to_owned()),
+        "{:?}",
+        client.seen.offered
+    );
+
+    input(
+        &mut compositor,
+        InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: false,
+        },
+    );
+    pump(&mut compositor, &mut client, |_, client| {
+        client.seen.dropped
+    });
+    let offer = client.seen.entered.clone().unwrap();
+    let (mut reader, writer) = std::io::pipe().unwrap();
+    offer.receive(URI_LIST.into(), writer.as_fd());
+    drop(writer);
+    settle(&mut compositor, &mut client);
+    let mut received = Vec::new();
+    reader.read_to_end(&mut received).unwrap();
+    assert_eq!(received, FILES);
+    offer.finish();
+    settle(&mut compositor, &mut client);
+    assert_eq!(log.borrow().drag_ended, Some(true));
+}
+
+/// The same for a drag another window starts: the client dragging over a window that binds its
+/// data device mid-drag is offered the drag.
+#[test]
+fn a_drag_from_a_window_offers_itself_to_a_window_that_binds_its_data_device_mid_drag() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut target = map(
+        TestClient::connect(&mut compositor),
+        &mut compositor,
+        "target",
+        (200, 100),
+        [0, 0, 255, 255],
+    );
+    let source = TestClient::connect(&mut compositor);
+    let mut source = map(
+        source,
+        &mut compositor,
+        "source",
+        (100, 50),
+        [255, 0, 0, 255],
+    );
+    source.own_data_device(&mut compositor);
+
+    // The source window (270, 215, 100, 50) stands over the target's middle; pressing inside it
+    // starts a drag there, and (240, 200) is the target alone.
+    input(
+        &mut compositor,
+        InputEvent::PointerMotion { x: 300.0, y: 240.0 },
+    );
+    input(
+        &mut compositor,
+        InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: true,
+        },
+    );
+    pump_all(
+        &mut compositor,
+        &mut [&mut source, &mut target],
+        |_, clients| clients[0].seen.pressed.is_some(),
+    );
+    let _source = source.start_drag(
+        &[URI_LIST],
+        FILES,
+        DndAction::Copy,
+        source.seen.pressed.unwrap(),
+        None,
+    );
+    let mut rounds = 0;
+    pump_all(&mut compositor, &mut [&mut source, &mut target], |_, _| {
+        rounds += 1;
+        rounds >= 5
+    });
+    // Over the target window, which still binds no data device.
+    input(
+        &mut compositor,
+        InputEvent::PointerMotion { x: 240.0, y: 200.0 },
+    );
+    let mut rounds = 0;
+    pump_all(&mut compositor, &mut [&mut source, &mut target], |_, _| {
+        rounds += 1;
+        rounds >= 5
+    });
+    assert!(
+        target.seen.offered.is_empty(),
+        "the drag is over the window, but its client listens to no data device yet"
+    );
+
+    target.own_data_device(&mut compositor);
+    input(
+        &mut compositor,
+        InputEvent::PointerMotion { x: 245.0, y: 205.0 },
+    );
+    pump_all(
+        &mut compositor,
+        &mut [&mut source, &mut target],
+        |_, clients| clients[1].seen.entered.is_some(),
+    );
+    assert!(
+        target.seen.offered.contains(&URI_LIST.to_owned()),
+        "{:?}",
+        target.seen.offered
+    );
+
+    input(
+        &mut compositor,
+        InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: false,
+        },
+    );
+    pump_all(
+        &mut compositor,
+        &mut [&mut source, &mut target],
+        |_, clients| clients[1].seen.dropped,
+    );
+    pump_all(
+        &mut compositor,
+        &mut [&mut source, &mut target],
+        |_, clients| {
+            clients[0]
+                .seen
+                .source_events
+                .iter()
+                .any(|event| event == "performed")
+        },
+    );
 }
 
 #[test]

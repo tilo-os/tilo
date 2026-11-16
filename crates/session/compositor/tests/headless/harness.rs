@@ -350,8 +350,9 @@ impl TestClient {
         manager.create(self.surface.as_ref().expect("surface"), &qh, ())
     }
 
-    /// Bind this client's data device, through which it copies, pastes and drags.
-    pub fn own_data_device(&mut self) {
+    /// Bind this client's data device, through which it copies, pastes and drags, and let the
+    /// compositor have it before any input follows.
+    pub fn own_data_device(&mut self, compositor: &mut Compositor) {
         let qh = self.queue.handle();
         let manager = self
             .seen
@@ -360,6 +361,7 @@ impl TestClient {
             .expect("wl_data_device_manager");
         let seat = self.seen.seat.as_ref().expect("wl_seat");
         self.seen.data_device = Some(manager.get_data_device(seat, &qh, ()));
+        settle(compositor, self);
     }
 
     /// A data source offering `formats`, serving `payload` for each.

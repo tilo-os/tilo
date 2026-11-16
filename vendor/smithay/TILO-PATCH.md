@@ -87,6 +87,27 @@ source `cancelled`, so a move never completed and the source kept the item.
 
 Remove this once smithay lets a compositor complete drops on its own targets.
 
+## A data device a client binds mid-drag is offered the drag
+
+A drag enters the surface under the pointer and remembers it, so it tells a
+client's data devices about the drag once, when it enters. A client that
+binds its `wl_data_device` after the drag entered its window listens to
+nothing: it is never offered the drag, and cannot take the drop. Toolkits
+that bind the seat late, and a window that maps while a drag is already
+under the pointer, are ordinary cases.
+
+- `src/wayland/selection/data_device/dnd_grab.rs` and
+  `server_dnd_grab.rs`: each grab remembers the devices it entered
+  (`entered_devices`, cleared with the offers when the drag leaves), and a
+  move over the same surface enters a device of that client it has not
+  entered yet: an offer of its own from the same offer state (the source's
+  mime types and actions, or none for a client's drag inside itself), sent
+  before the move. The offer creation is one `make_offer` per file, which
+  the enter and the move both use.
+
+Remove this once smithay offers a drag to devices a client binds while it
+runs.
+
 ## What the focused field committed (`text-input-v3`)
 
 smithay's text-input handle keeps a client's pending state but takes the

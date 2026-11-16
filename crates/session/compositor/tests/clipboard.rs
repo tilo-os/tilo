@@ -41,7 +41,7 @@ fn copy(client: &mut TestClient, formats: &[&str], payload: &[u8]) {
 fn setup() -> (Compositor, TestClient) {
     let mut compositor = headless(Box::new(StackPolicy));
     let mut client = mapped_client(&mut compositor, "editor", (200, 100), [0, 255, 0, 255]);
-    client.own_data_device();
+    client.own_data_device(&mut compositor);
     (compositor, client)
 }
 
