@@ -1,24 +1,14 @@
-//! What an agent's task does through the door is the task's, for the person it acts for, and
-//! history and undo group it by task like any app's agent-driven change.
+//! What an agent session does is its own, for the person it acts for, and history and undo group
+//! it by session like any app's agent-driven change.
 
-use super::Session;
+use super::{Session, agent_session};
 use crate::change_marks::{Driven as _, action_id, flattened, settle};
 use serde_json::{Map, Value as Json, json};
 use tilolang_tilo::action::resource_ids;
 use ui::history_source::steps::Scope;
-use ui::tilo_actions::{ActionContext, ActionInvoker};
 
 const NOTES: &str = "so.tilo.lang.notes";
 const HOST: &str = "tl:host";
-
-/// An agent's task `7` on behalf of `ada`: the delegate the door admitted, and the task its work
-/// is grouped under.
-fn task() -> (ActionInvoker, ActionContext) {
-    (
-        ActionInvoker::agent("agent-task:7").acting_for("ada"),
-        ActionContext::default().with_group("task:7", "Tidy the notes", "task"),
-    )
-}
 
 fn arguments(value: &Json) -> Map<String, Json> {
     value.as_object().cloned().unwrap_or_default()
@@ -59,9 +49,9 @@ fn notes_in(app: &mut Session) -> usize {
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "one story: person, task, history, undo"
+    reason = "one story: person, session, history, undo"
 )]
-fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under_the_task() {
+fn what_an_agent_session_does_is_its_own_for_the_person_and_grouped_under_its_session() {
     let (mut app, root) = notes_open();
     let notebook = format!("tl:{NOTES}:{root}");
     // The person adds a note themselves.
@@ -69,8 +59,8 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
     app.invoke(None, None, &notebook, &new_note, &Map::new())
         .unwrap();
     settle(&mut app);
-    // The task adds one by a block, and one by the published verb.
-    let (agent, ambient) = task();
+    // The agent session adds one by a block, and one by the published verb.
+    let (agent, ambient) = agent_session();
     let block = format!("notes.new_note(@notes.Notebook:{root})");
     let run_block = action_id(&mut app, HOST, "Run a block");
     let answer = app
@@ -92,24 +82,28 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
     )
     .unwrap();
     settle(&mut app);
-    assert_eq!(notes_in(&mut app), 3, "one by the person, two by the task");
+    assert_eq!(
+        notes_in(&mut app),
+        3,
+        "one by the person, two by the agent session"
+    );
 
     let versions = app.read(ui::tilo_resource::history::versions);
-    let by_task: Vec<_> = versions
+    let by_session: Vec<_> = versions
         .iter()
         .filter(|version| {
             version
                 .context
                 .as_ref()
                 .and_then(|context| context.invoker.as_ref())
-                .is_some_and(|invoker| invoker.key() == task().0.key())
+                .is_some_and(|invoker| invoker.key() == agent_session().0.key())
         })
         .collect();
     assert!(
-        by_task.len() >= 2,
-        "the task's changes are attributed to it: {versions:#?}"
+        by_session.len() >= 2,
+        "the agent session's changes are attributed to it: {versions:#?}"
     );
-    for version in &by_task {
+    for version in &by_session {
         let context = version.context.as_ref().unwrap();
         let invoker = context.invoker.as_ref().unwrap();
         assert!(invoker.acting.is_agent());
@@ -120,8 +114,8 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
         );
         assert_eq!(
             context.group.as_ref().map(|group| group.id.as_str()),
-            Some("task:7"),
-            "grouped under the task"
+            Some("agent-session:7"),
+            "grouped under the session"
         );
     }
     let person = versions
@@ -131,7 +125,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
                 .context
                 .as_ref()
                 .and_then(|context| context.invoker.as_ref())
-                .is_none_or(|invoker| invoker.key() != task().0.key())
+                .is_none_or(|invoker| invoker.key() != agent_session().0.key())
         })
         .filter(|version| {
             version
@@ -159,14 +153,14 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
         );
     }
 
-    // Undoing the task takes back what the task did, and nothing of the person's.
-    let task_scope = Scope::Session("task:7".to_owned());
-    assert!(by_task.iter().all(|version| task_scope.owns(version)));
-    assert!(person.iter().all(|version| !task_scope.owns(version)));
+    // Undoing the session takes back what it did, and nothing of the person's.
+    let session_scope = Scope::Session("agent-session:7".to_owned());
+    assert!(by_session.iter().all(|version| session_scope.owns(version)));
+    assert!(person.iter().all(|version| !session_scope.owns(version)));
     let left = app.read(|doc| {
         let entries: Vec<_> = ui::tilo_resource::history::versions(doc)
             .iter()
-            .filter(|version| task_scope.owns(version))
+            .filter(|version| session_scope.owns(version))
             .map(|version| ui::history_source::entry_id_from_hash(&version.hash.to_string()))
             .collect();
         let changes = ui::history_source::revert::changes_of_entries(doc, &entries);
@@ -178,10 +172,10 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
     assert_eq!(left, 1, "only the person's note is left");
 }
 
-/// The undo steps of the task's that are in effect in `app`'s record, newest first, each the
-/// number of changes it takes back.
-fn task_steps(app: &mut Session) -> Vec<usize> {
-    let scope = Scope::Session("task:7".to_owned());
+/// The undo steps of the agent session's that are in effect in `app`'s record, newest first,
+/// each the number of changes it takes back.
+fn session_steps(app: &mut Session) -> Vec<usize> {
+    let scope = Scope::Session("agent-session:7".to_owned());
     app.read(|doc| {
         ui::history_source::steps::steps_in_effect(doc, &|version| scope.owns(version), 16)
             .iter()
@@ -191,12 +185,12 @@ fn task_steps(app: &mut Session) -> Vec<usize> {
 }
 
 #[test]
-fn the_invocations_of_one_task_step_undo_as_one_step_and_separate_calls_as_their_own() {
+fn the_invocations_of_one_agent_session_step_undo_as_one_step_and_separate_calls_as_their_own() {
     let (mut app, root) = notes_open();
     let notebook = format!("tl:{NOTES}:{root}");
     let new_note = action_id(&mut app, &notebook, "New note");
-    let (agent, ambient) = task();
-    // One program: both invocations carry the step the door gave its task step.
+    let (agent, ambient) = agent_session();
+    // One program: both invocations carry the one step it named.
     let step = ambient
         .clone()
         .in_gesture(Some(ui::tilo_actions::ActionId::new()));
@@ -212,7 +206,7 @@ fn the_invocations_of_one_task_step_undo_as_one_step_and_separate_calls_as_their
         settle(&mut app);
     }
     assert_eq!(notes_in(&mut app), 2);
-    let steps = task_steps(&mut app);
+    let steps = session_steps(&mut app);
     assert_eq!(steps.len(), 1, "one program is one undo step: {steps:?}");
     assert!(steps[0] >= 2, "it holds both invocations: {steps:?}");
     // Two separate calls: each its own step.
@@ -231,12 +225,12 @@ fn the_invocations_of_one_task_step_undo_as_one_step_and_separate_calls_as_their
         settle(&mut app);
     }
     assert_eq!(notes_in(&mut app), 4);
-    let steps = task_steps(&mut app);
+    let steps = session_steps(&mut app);
     assert_eq!(steps.len(), 3, "each call is a step of its own: {steps:?}");
 }
 
 #[test]
-fn the_installed_package_is_the_app_and_opens_on_its_root_committed_through_the_door() {
+fn the_installed_package_is_the_app_and_opens_on_its_root_the_action_api_committed() {
     let definition = crate::support::installed("notes");
     assert_eq!(definition.app_id(), NOTES, "the app's id is the package's");
     assert_eq!(definition.title(), "Notes");
@@ -256,7 +250,7 @@ fn history_names_what_was_made_and_changed_by_title_never_by_id() {
     app.invoke(None, None, &notebook, &new_note, &Map::new())
         .unwrap();
     settle(&mut app);
-    // The record's history, as an agent or a person asks it at the door.
+    // The record's history, as an agent or a person asks the Action API for it.
     let package = format!("tl:{NOTES}");
     let history = action_id(&mut app, &package, "History");
     let listed = app
@@ -304,7 +298,7 @@ fn an_agent_reads_what_a_record_holds_and_each_item_it_names() {
     settle(&mut app);
     let read_at = |app: &mut Session, resource: &str, version: Option<&str>| {
         let read = action_id(app, resource, "Read the content");
-        let (invoker, context) = task();
+        let (invoker, context) = agent_session();
         let mut arguments = Map::new();
         if let Some(version) = version {
             arguments.insert("version".into(), json!(version));

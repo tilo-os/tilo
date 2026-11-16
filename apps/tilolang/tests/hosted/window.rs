@@ -1,6 +1,7 @@
 //! A hosted window as a person reads and uses it: the notebook's tree and the note beside it, the
 //! window's search over a list, a tree and an open note, the chat's channels, what an agent finds
-//! and runs at the door, and a send that leaves the workspace only once a person allows it.
+//! and runs through the Action API, and a send that leaves the workspace only once a person
+//! allows it.
 
 use std::sync::atomic::Ordering;
 
@@ -10,22 +11,16 @@ use tilo_ui_host::{UiNode, Value};
 use tilolang_tilo::runtime::{Principal, ResourceRef, Value as RtValue};
 use ui::component::RowSource as _;
 use ui::component_lifecycle::WindowTitle as _;
-use ui::tilo_actions::{ActionContext, ActionInvoker};
+use ui::tilo_actions::ActionInvoker;
 use ui::widget::{FilterCount, FindOptions, InPlace, SearchDriver};
 
-use super::{CHAT, HANDMADE, NOTES, Session, TASKS, find, note_row, place_at, press_new_note};
+use super::{
+    CHAT, HANDMADE, NOTES, Session, TASKS, agent_session, find, note_row, place_at, press_new_note,
+};
 use crate::change_marks::action_id;
 
 const HOST: &str = "tl:host";
 const LETTERS: &str = "test.letters";
-
-/// An agent's task `7` on behalf of `ada`.
-fn task() -> (ActionInvoker, ActionContext) {
-    (
-        ActionInvoker::agent("agent-task:7").acting_for("ada"),
-        ActionContext::default().with_group("task:7", "Tidy the notes", "task"),
-    )
-}
 
 /// `app`'s window in the frame harness with the scenario `scenario` staged.
 fn staged(app: &str, scenario: &str) -> Session {
@@ -438,7 +433,7 @@ fn an_empty_notebook_says_so_once_and_its_bar_makes_the_first_note() {
     );
 }
 
-/// What an agent's task or a script makes through the door moves nobody's view: the note the
+/// What an agent session or a script makes moves nobody's view: the note the
 /// person has open stays open, and only their own press opens what it made.
 #[test]
 fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
@@ -451,9 +446,9 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     press_new_note(&mut session);
     session.settle();
     let mine = opened(&mut session).expect("the person's note opened");
-    // An agent's task makes a note, and so does a script on the control socket, which acts as
+    // An agent session makes a note, and so does a script on the control socket, which acts as
     // the person but not at the window.
-    let (agent, ambient) = task();
+    let (agent, ambient) = agent_session();
     let script = ActionInvoker::person("ada".to_owned());
     for (invoker, ambient) in [(agent.clone(), Some(&ambient)), (script, None)] {
         session
@@ -463,7 +458,7 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
         assert_eq!(
             opened(&mut session).as_ref(),
             Some(&mine),
-            "the note made through the door did not open"
+            "the note the agent made did not open"
         );
     }
     assert_eq!(items_of(&mut session, NOTES, "notes").len(), 3);
@@ -503,7 +498,7 @@ fn a_change_marks_item_opens_the_note_it_names() {
     press_new_note(&mut session);
     session.settle();
     let mine = opened(&mut session).expect("the person's note opened");
-    let (agent, ambient) = task();
+    let (agent, ambient) = agent_session();
     session
         .invoke(
             Some(agent),
@@ -885,12 +880,12 @@ fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
     );
 }
 
-// ----- the door ----------------------------------------------------------------------------
+// ----- the Action API ----------------------------------------------------------------------
 
-/// What the host's operation labelled `label` answers an agent's task given `arguments`.
+/// What the host's operation labelled `label` answers an agent session given `arguments`.
 fn agent_runs(session: &mut Session, label: &str, arguments: &Json) -> Result<Json, String> {
     let action = action_id(session, HOST, label);
-    let (agent, ambient) = task();
+    let (agent, ambient) = agent_session();
     session
         .invoke(
             Some(agent),
@@ -902,7 +897,7 @@ fn agent_runs(session: &mut Session, label: &str, arguments: &Json) -> Result<Js
         .map(|output| output.value.unwrap_or_default())
 }
 
-/// An agent finds the host's operations at the door: the catalogue names every installed app's
+/// An agent finds the host's operations through the Action API: the catalogue names every app's
 /// actions, and a block answers as a view, as a value, or with why it does not compile.
 #[test]
 fn an_agent_reads_the_catalogue_and_a_view_block_a_value_block_and_a_bad_block_answer_it() {
@@ -958,7 +953,7 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
         .unwrap();
     assert_eq!(
         record.author,
-        Principal::new(task().0.key()),
+        Principal::new(agent_session().0.key()),
         "the suggestion is the agent's"
     );
     assert!(!sent(&mut session, &draft), "nothing left");

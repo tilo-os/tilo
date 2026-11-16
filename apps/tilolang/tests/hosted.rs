@@ -490,6 +490,22 @@ impl Window {
     }
 }
 
+/// An agent session acting for `ada`: the invoker it was admitted as and the group its changes
+/// belong to.
+fn agent_session() -> (
+    ui::tilo_actions::ActionInvoker,
+    ui::tilo_actions::ActionContext,
+) {
+    (
+        ui::tilo_actions::ActionInvoker::agent("helper").acting_for("ada"),
+        ui::tilo_actions::ActionContext::default().with_group(
+            "agent-session:7",
+            "Tidy the notes",
+            ui::tilo_actions::context::AGENT_SESSION_GROUP,
+        ),
+    )
+}
+
 /// A person at a window whose instance a tilolang host runs.
 pub(crate) struct Session {
     /// The app whose window it is: what its actions' identities name before the operation.
