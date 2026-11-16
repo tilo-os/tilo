@@ -232,7 +232,7 @@ fn texts(app: &TestApp<ChecklistApp>) -> Vec<(String, bool)> {
 tilo_test_env::scenario! {
     fn actions_update_the_record_and_view_as_undoable_attributed_versions;
 
-    phase actions_through_the_door_update_the_record_and_the_view;
+    phase actions_through_the_api_update_the_record_and_the_view;
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         app.invoke(Checklist::ADD.with("milk")).unwrap();

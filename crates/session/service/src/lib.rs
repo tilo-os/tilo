@@ -4,7 +4,7 @@
 //! resources: each one a reading of the device (Wi-Fi's networks, the sound
 //! outputs, the power mode) and the actions that change it. Quick settings,
 //! Settings, the desktop, a script and an agent read the same readings and
-//! invoke the same actions, by address, through the session's action door.
+//! invoke the same actions, by address, through the session's action API.
 //!
 //! A service's actions are an [`Effect`] vocabulary: its specs are derived
 //! ([`offer`]) and an invocation is decoded back into the vocabulary
@@ -18,7 +18,7 @@
 //! answers through its actions.
 //!
 //! [`Services`] is the session's side: every service it started, with one
-//! catalogue, one reader and one door over them.
+//! catalogue, one reader and one api over them.
 
 pub mod lines;
 pub mod questions;
@@ -117,7 +117,7 @@ pub trait Service {
     /// Carry out the action `action` of its resource `resource`.
     ///
     /// # Errors
-    /// The door's refusal (no such action, bad arguments, unavailable) or
+    /// The API's refusal (no such action, bad arguments, unavailable) or
     /// why the device did not do it.
     fn invoke(
         &mut self,
@@ -130,7 +130,7 @@ pub trait Service {
     /// attributed to. The default runs it as the person seated here, as [`Self::invoke`] does.
     ///
     /// # Errors
-    /// The door's refusal.
+    /// The API's refusal.
     fn invoke_as(
         &mut self,
         _invoker: &tilo_actions::ActionInvoker,
@@ -146,7 +146,7 @@ pub trait Service {
     /// default runs it as [`Self::invoke_as`], for a service that keeps no history of its own.
     ///
     /// # Errors
-    /// The door's refusal.
+    /// The API's refusal.
     fn invoke_in_run(
         &mut self,
         invoker: &tilo_actions::ActionInvoker,
@@ -411,7 +411,7 @@ pub fn reading<T: serde::Serialize>(state: &T) -> Value {
     })
 }
 
-/// Every service the session started: one catalogue, reader and door.
+/// Every service the session started: one catalogue, reader and api.
 #[derive(Default)]
 pub struct Services {
     started: Vec<Box<dyn Service>>,
@@ -592,7 +592,7 @@ impl Services {
 
     /// [`Self::invoke`] as `invoker` (an agent, a script): what the change it makes is
     /// attributed to, as a step of the run `run` when it is one of a run's
-    /// ([`Service::invoke_in_run`]). The service's own door decides whether the caller may.
+    /// ([`Service::invoke_in_run`]). The service's own api decides whether the caller may.
     ///
     /// # Errors
     /// The service's refusal.
@@ -705,7 +705,7 @@ impl Services {
     }
 
     /// [`Self::invoke`] as `invoker` (an agent, a script), behind the same confirmation:
-    /// what the change it makes is attributed to, where the door's caller is not the person.
+    /// what the change it makes is attributed to, where the API's caller is not the person.
     pub fn invoke_by(
         &mut self,
         invoker: &tilo_actions::ActionInvoker,

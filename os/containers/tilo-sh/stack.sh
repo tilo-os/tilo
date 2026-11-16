@@ -35,10 +35,10 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
       what ships, which t's tilo-sh-local check runs; the first run on a
       commit waits for those image builds.
       --seed fills the Lounge to its production size for entry-speed work:
-      300 members joined through its door and 200 chat messages posted
+      300 members joined through its entry and 200 chat messages posted
       through the API server (minutes, once per state). --discord starts a
       fake Discord and points the Lounge's Discord sign-in and bridge at
-      it. --fresh wipes the state first (a new Lounge, a new door).
+      it. --fresh wipes the state first (a new Lounge, a new entry).
   stack.sh restart NAME  after a code change: rebuild NAME and start it again,
                          the rest left running (relay, api, web, tls,
                          discord, releases; not with --images). The web
@@ -49,7 +49,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
       (new Tilo()) and an agent's MCP client all reach the local API server.
   stack.sh status        what runs, at which address, and whether it answers
   stack.sh logs NAME     a service's log (relay, tls, api, web, discord, releases, mail)
-  stack.sh mail          the mail the door sent (wait-list confirmations,
+  stack.sh mail          the mail the entry sent (wait-list confirmations,
                          invitations), with the links in each
   stack.sh owner [KEY] [--name NAME]
                          the owner link: opening it in any browser (one with
@@ -109,7 +109,7 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
             skipped, with the reason, where /dev/kvm or root is missing. It
             always runs from its image; natively it starts with the rest when
             TILO_SH_VM_HOST=1 names it
-  mail      the mail sink the door's mail goes to (production: Resend),
+  mail      the mail sink the entry's mail goes to (production: Resend),
             http://127.0.0.1:BASE+23; stack.sh mail lists what it kept
   discord   with --discord, the fake Discord (crates/dev/fake-discord)
 
@@ -182,7 +182,7 @@ api_port=$((base + 10))       # the API server (mcp.tilo.sh)
 site_port=$((base + 20))       # Caddy: the site's public origin (tilo.sh, Cloudflare's edge)
 web_port=$((base + 21))        # the web entry's own plain listener (8080), behind it
 releases_port=$((base + 22))   # this checkout's tilo command, as the site's /releases serves it
-mail_port=$((base + 23))       # the mail sink the door's mail goes to instead of Resend
+mail_port=$((base + 23))       # the mail sink the entry's mail goes to instead of Resend
 discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
@@ -392,7 +392,7 @@ relay_env() {
     "TILO_WORKSPACES_WEB_ENTRY=$site_origin/"
     "TILO_WORKSPACES_SITE_ORIGINS=$site_origin"
     # The site is plain http on this machine: the relay's local mode, in which
-    # its door mails links to such a page (production's is https).
+    # its entry mails links to such a page (production's is https).
     TILO_WORKSPACES_LOCAL=1
     "TILO_WORKSPACES_ROOT_FILE=$secrets_path/workspace-root-lounge"
     TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback
@@ -410,11 +410,11 @@ relay_env() {
     "TILO_WORKSPACES_LINK=127.0.0.1:$link_port"
     "TILO_WORKSPACES_LINK_ORIGIN=https://127.0.0.1:$link_port"
   )
-  # Production's door: only people invited, or declared by the operator
+  # Production's entry: only people invited, or declared by the operator
   # (stack.sh owner), join, and a stranger leaves an address on its wait
   # list. TILO_SH_ADMISSION=open lets anyone in as a guest instead, for the
   # checks whose visitors arrive as strangers. A service started again later
-  # (`restart relay`) serves the door the stack was brought up with, which its
+  # (`restart relay`) serves the entry the stack was brought up with, which its
   # state keeps: the restart carries no environment of the up that made it.
   local admission=${TILO_SH_ADMISSION:-$(cat "$state/admission" 2>/dev/null || echo invite)}
   case $admission in
@@ -514,9 +514,9 @@ trust_bundle() {
   die 'this machine has no CA bundle at /etc/pki/ca-trust or /etc/ssl/certs'
 }
 
-# The mail service the relay's door posts to, here a sink that keeps each mail as a
+# The mail service the relay's entry posts to, here a sink that keeps each mail as a
 # file under the state (stack.sh mail lists them) and sends nothing. Started
-# before the relay, whose door mails as soon as someone leaves an address.
+# before the relay, whose entry mails as soon as someone leaves an address.
 start_mail() {
   local log=$state/logs/mail.log
   [[ -f $state/mail.pid ]] && kill "$(cat "$state/mail.pid")" 2>/dev/null || true
@@ -607,7 +607,7 @@ owner_link() {
 }
 
 # The running Lounge declares KEY an owner, as production's operator does: its
-# governance holds them as an administrator, and its door lets them in. NAME,
+# governance holds them as an administrator, and its entry lets them in. NAME,
 # when the stack knows it, is how the Lounge names them from then on.
 declare_owner_at_lounge() {
   local key=$1
@@ -651,7 +651,7 @@ else:
 PY
 }
 
-# The mails the door sent, oldest first: who to, the subject and the links in
+# The mails the entry sent, oldest first: who to, the subject and the links in
 # each, which a person would follow.
 list_mail() {
   [[ -d $state/mail ]] || die 'no mail yet (the stack keeps it in '"$state"'/mail)'
@@ -793,7 +793,7 @@ sdk_python() {
 }
 
 # The Lounge at production's membership, by the paths people take:
-# TILO_SH_SEED_MEMBERS (300) people join through its door (the seed-lounge
+# TILO_SH_SEED_MEMBERS (300) people join through its entry (the seed-lounge
 # example), and one of them posts TILO_SH_SEED_MESSAGES (200) chat messages
 # through the API server with a key of their own. Once per state, and as many
 # as the chat should hold: what a post costs must not grow with what the chat
@@ -815,7 +815,7 @@ seed() {
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["workspaces"][0]["members"])')
   local want=$((${TILO_SH_SEED_MEMBERS:-300} - members))
   if ((want > 0)); then
-    say "seeding $want members through the Lounge's door"
+    say "seeding $want members through the Lounge's entry"
     "$seeder" "$relay_origin" "$workspace" "$want" > "$out/members.json" \
       || die 'seeding the members failed'
   fi

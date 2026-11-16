@@ -368,7 +368,7 @@ pub(super) const APPS: &[FleetApp] = &[
         name: "Console",
         category: "System",
         platforms: &["tilo-os", "web"],
-        tagline: "What your agents do in your workspaces, and the door they come in by",
+        tagline: "What your agents do in your workspaces, and the way they come in by",
         names: &[],
         keywords: &[
             "agents",

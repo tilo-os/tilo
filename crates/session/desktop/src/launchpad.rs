@@ -243,7 +243,7 @@ impl LaunchpadAction {
 }
 
 /// What a person chose on the launchpad, waiting for the shell to take it: a card's verb, or the app
-/// opener. The launchpad decides nothing itself — the shell carries the choice out through the door
+/// opener. The launchpad decides nothing itself — the shell carries the choice out through the action API
 /// every other host action uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LaunchpadPress {

@@ -9,7 +9,7 @@ the host stamped and checked it with ``tilo_clock::wall()``, the device with
 was refused by the device itself before the host could answer for it.
 
 So the crates that decide what a peer may do — the owner state, the session
-client, its sync door, the room host, the action broker, and the wire and join
+client, its sync API, the room host, the action broker, and the wire and join
 types they share — read the clock through [`tilo_clock`] only:
 
 * validity and expiry compare against ``tilo_clock::wall()``;

@@ -80,7 +80,7 @@ impl ResourceApp for DeckApp {
 }
 
 tilo_test_env::scenario! {
-    fn an_edit_effect_answers_from_what_the_door_answered;
+    fn an_edit_effect_answers_from_what_the_api_answered;
 
     phase an_edit_effect_answers_with_what_its_edit_made_after_it_landed;
     {

@@ -144,7 +144,7 @@ tilo_test_env::scenario! {
         clippy::arithmetic_side_effects,
         reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
     )]
-    fn declared_actions_are_typed_and_apply_through_the_one_door;
+    fn declared_actions_are_typed_and_apply_through_the_one_api;
 
     phase methods_become_declared_typed_actions;
     {
@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
         assert!(published_ids.contains(&tilo_resource::APPLY));
     }
 
-    phase actions_apply_through_the_same_door_as_every_surface;
+    phase actions_apply_through_the_same_api_as_every_surface;
     {
         let mut board = Replica::<Board>::new();
         board.apply(Board::RENAME.with("Launch")).unwrap();

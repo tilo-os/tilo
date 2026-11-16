@@ -165,7 +165,7 @@ tilo_test_env::scenario! {
         // A card submits the launchpad verb for what the empty shell shows, and a script or an agent
         // invokes the same verb by the row this resource publishes. People reach the verbs through
         // their host actions, which is what the palette lists, so this resource is never the palette's
-        // door.
+        // action API.
         let launchpad = launchpad_resource(&tilo_desktop::launchpad::LaunchpadAction::ALL);
         assert!(
             !launchpad.children.is_empty(),

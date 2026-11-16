@@ -2,7 +2,7 @@
 //! answered by id, and either side sends events that need no answer. Frames are a
 //! little-endian length, then JSON.
 //!
-//! The app socket and the session door both run on it: a call whose link closes is
+//! The app socket and the session's action API both run on it: a call whose link closes is
 //! answered by nothing, and its receiver sees the sender dropped.
 
 use std::collections::HashMap;

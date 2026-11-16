@@ -11,7 +11,7 @@ Everything goes through the production paths: the shell's `new-workspace` and
 `switch-workspace`, Terminal opened from the app catalogue, its own actions (`create-environment`, `open-in`,
 `run`, `read`), the sheet's own answers (`so.tilo.portal-sheet`) and the shell's Stop
 (`session:agents` `stop-agent`). The harness reads the agents' transcripts and the workspace
-trees through the slot's own account (`tilo-vm slot exec`), never through ush or the door.
+trees through the slot's own account (`tilo-vm slot exec`), never through ush or the server.
 
 The checks share one scenario and run in order (E01..E07, `run.py` E2E_ORDER); each needs
 the ones before it. `t test e2e-agents` runs this area alone (tools/ci/vm-acceptance.sh
@@ -42,7 +42,7 @@ SHELL = "session:agents"
 AGENT = Path(__file__).resolve().parents[2] / "guest" / "mcp_agent.sh"
 # Where in each workspace's tree (the environments' `~`) the agents keep their transcripts.
 AGENTS_DIR = ".e2e-agents"
-# The client names itself as Claude Code does; the door proposes it as this agent.
+# The client names itself as Claude Code does; the MCP server proposes it as this agent.
 CLIENT = "claude-code"
 PROTOCOL = "2025-06-18"
 # The two workspaces, and the environment made in each.
@@ -454,12 +454,12 @@ def session_keys(ctx) -> list[str]:
 
 
 # What the shell says beside each agent's name of where it works from: the other device it came
-# from, and the environment whose door it came in by. Every field is there, empty for none.
+# from, and the environment whose socket it came in by. Every field is there, empty for none.
 WHERE = ("device", "device_name", "environment", "environment_id")
 
 
 def sessions_in(ctx, env: dict) -> list[dict]:
-    """The agents the shell seats as come in by `env`'s door: by the environment's id beside
+    """The agents the shell seats as come in by `env`'s socket: by the environment's id beside
     their names, the one its shell reads as TILO_ENVIRONMENT. Never by the words of a name."""
     return [a for a in agent_sessions(ctx) if a.get("stoppable", True) and env["environment"]
             and a.get("environment_id") == env["environment"]]
@@ -544,7 +544,7 @@ def environments(ctx, res):
         want(e["home"] == f"{GUEST_TREES}/{e['tilo_workspace']}",
              f"{e['name']}: ~ is {e['home']}, not its workspace's tree {GUEST_TREES}/{e['tilo_workspace']}")
         want(e["agent_sock"] == "/run/tilo/agent.sock",
-             f"{e['name']}: TILO_AGENT_SOCK is {e['agent_sock']!r}, not the environment's door")
+             f"{e['name']}: TILO_AGENT_SOCK is {e['agent_sock']!r}, not the environment's socket")
     one, two = envs
     want(one["tilo_workspace"] != two["tilo_workspace"], "both environments name one workspace")
     # Each shell writes in its `~`; each sees its own file alone, and not the other's tree.
@@ -931,7 +931,7 @@ def _shell_stop(ctx, agent_id: str) -> tuple[str, str, dict]:
 
 
 # The host probe: a program of the login, outside every environment, connecting to an
-# environment's door directly, its path given as the client finds a door (TILO_AGENT_SOCK).
+# environment's socket directly, its path given as the client finds a socket (TILO_AGENT_SOCK).
 HOST_PROBE = r'''
 import json, os, socket, sys
 path = sys.argv[1]
@@ -956,19 +956,19 @@ print("E2E-HOST " + json.dumps(out))
 '''
 
 
-# A program of the login, outside every environment, coming in by the session's own door as
+# A program of the login, outside every environment, coming in by the session's own server as
 # Claude Code on the host does (`tilo-runtime-mcp --connect`): admitted, it stays connected until
 # the harness writes the file named first, then leaves.
 HOST_AGENT = r'''
 import json, os, select, shutil, subprocess, sys, time
 done = sys.argv[1]
 out = {}
-door = shutil.which("tilo-runtime-mcp") or "/usr/libexec/tilo/tilo-runtime-mcp"
-if not os.path.exists(door):
+mcp = shutil.which("tilo-runtime-mcp") or "/usr/libexec/tilo/tilo-runtime-mcp"
+if not os.path.exists(mcp):
     out["missing"] = "tilo-runtime-mcp"
     print("E2E-HOST-AGENT " + json.dumps(out))
     sys.exit(0)
-proc = subprocess.Popen([door, "--connect"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+proc = subprocess.Popen([mcp, "--connect"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL, bufsize=0)
 def send(message):
     proc.stdin.write((json.dumps(message) + "\n").encode())
@@ -1011,7 +1011,7 @@ print("E2E-HOST-AGENT " + json.dumps(out))
 
 def host_agent_seated(ctx, res) -> None:
     """A program of the login outside every environment, admitted through the session's own
-    door once, is seated with nothing beside its name: no environment, no other device."""
+    server once, is seated with nothing beside its name: no environment, no other device."""
     before = set(session_keys(ctx))
     done = f".e2e-host-agent-done-{uuid.uuid4().hex[:8]}"
     held: dict = {}
@@ -1047,14 +1047,14 @@ def host_agent_seated(ctx, res) -> None:
         raise Unobservable(f"the guest has no {said['missing']} for a host program to come in by")
     init = said.get("initialize")
     expect(isinstance(init, dict) and "result" in init,
-           f"the host program was not admitted through the session's own door: {str(said)[:300]}")
+           f"the host program was not admitted through the session's own server: {str(said)[:300]}")
     expect(len(fresh) == 1, f"the shell does not seat the host program as one new agent: {fresh}")
     wrong = where_wrong(fresh[0], None)
     expect(not wrong, "the host program: the shell " + "; ".join(wrong) + f": {fresh[0]}")
 
 
-@check("E07", AREA, "A program of the login outside the environments cannot use an environment's door; "
-                    "through the session's own door it is seated with no environment and no device")
+@check("E07", AREA, "A program of the login outside the environments cannot use an environment's socket; "
+                    "through the session's own server it is seated with no environment and no device")
 def host_refused(ctx, res):
     scene = _scene(ctx)
     _need(scene, "agents", "E02")
@@ -1071,9 +1071,9 @@ def host_refused(ctx, res):
 def _host_refused(ctx, res) -> None:
     listed = ctx.vm.exec('ls -1 "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo-session/environments/" 2>&1; true')
     socks = [l.strip() for l in listed.splitlines() if l.strip() and not l.startswith("receipt")]
-    res.metrics["doors"] = socks
+    res.metrics["sockets"] = socks
     if not socks:
-        raise Unobservable(f"no environment door under tilo-session/environments: {listed[:300]}")
+        raise Unobservable(f"no environment socket under tilo-session/environments: {listed[:300]}")
     results = []
     for sock in socks:
         path = f'"${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}"/tilo-session/environments/{shlex.quote(sock)}'
@@ -1084,7 +1084,7 @@ def _host_refused(ctx, res) -> None:
     res.metrics["host"] = results
     if asked:
         answer_sheet(ctx, ALLOW_ONCE, "host-unexpected")
-    expect(asked is None, f"the person was asked about a host program on an environment's door: {asked}")
+    expect(asked is None, f"the person was asked about a host program on an environment's socket: {asked}")
     for r in results:
         reply = r.get("reply", "")
         expect('"result"' not in reply, f"a host program was served on {r.get('path')}: {reply[:300]}")

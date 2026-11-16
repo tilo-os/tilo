@@ -899,7 +899,7 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
 }
 
 #[test]
-fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
+fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
     {
         let mut app = app();
         activate_bound_button(&mut app);

@@ -698,7 +698,7 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     assert!(!part.accepts_pointer(100.0, 10.0), "it takes no pointer");
     assert!(
         !crate::Published::offered(&part),
-        "the door reaches the bars still standing, not this one"
+        "the API reaches the bars still standing, not this one"
     );
     // The compositor tells it of the outputs left: it does not stretch over them.
     part.outputs_changed(&[tilo_session_core::surface::HostedOutput {

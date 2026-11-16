@@ -3,7 +3,7 @@
 //! ([`ToUi::Actions`](tilo_render_protocol::patch::ToUi::Actions)); the window offers them as
 //! [`PublishesResources`], where the palette, the action directory and every other reader of its
 //! surface find them, and choosing one hands its address back to the app, which runs it through the
-//! door it publishes. So a window offers the same palette whichever way its app runs, and neither
+//! action API it publishes. So a window offers the same palette whichever way its app runs, and neither
 //! side knows how the other works.
 
 use tilo_actions::{

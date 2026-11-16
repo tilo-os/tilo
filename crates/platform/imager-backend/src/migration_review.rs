@@ -754,7 +754,7 @@ struct InstallerCustody {
     stable: (u64, u32, u32, u32),
 }
 #[cfg(target_os = "linux")]
-/// The lock and door of the settings profile the running setup holds.
+/// The lock and socket of the settings profile the running setup holds.
 #[cfg(target_os = "linux")]
 fn running_setup_files(home: &Path) -> Vec<PathBuf> {
     let Some(root) = tilo_settings_records::profile_root() else {

@@ -112,7 +112,7 @@ class AuthenticatedStagingPlan:
 def bind_service_candidate(attested, candidate, setup_binding):
     """Bind observations to the native-authenticated manifest, not source hints.
 
-    This is not installed consumer admission. The temporary native door is
+    This is not installed consumer admission. The temporary native path is
     root-owned, namespace/actor bound and independently checks the sealed person.
     """
     from service_sessions import selections

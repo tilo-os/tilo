@@ -2,7 +2,7 @@
 """An agent works through Files and Chat by actions alone, in a real session.
 
 A program of this login asks at the session's MCP server to work here, the
-person allows it on the sheet the door puts up, and from then on every step is
+person allows it on the sheet the MCP server puts up, and from then on every step is
 the agent's own tool call (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_put_*`):
 nothing is clicked or typed for it. Each claim is read back off the disk, the
 apps' published state or the shell, never off the agent's own reply.
@@ -62,10 +62,10 @@ def check(label: str, ok: bool, detail: str = "") -> bool:
 
 
 def admitted(session: "ra.Session") -> "ra.Agent":
-    """An agent at the session's door, once the person allowed it on the sheet."""
-    door = Path(session.runtime_directory()) / "tilo-session/agent.sock"
-    ra.until("the MCP server", door.exists, 60)
-    agent = ra.Agent(door, "Story Agent")
+    """An agent at the session's MCP server, once the person allowed it on the sheet."""
+    mcp = Path(session.runtime_directory()) / "tilo-session/agent.sock"
+    ra.until("the MCP server", mcp.exists, 60)
+    agent = ra.Agent(mcp, "Story Agent")
     # The person's own keyboard answers the sheet: "Allow for this session".
     # Keys that came before the sheet did are pressed again.
     for _ in range(10):
@@ -74,7 +74,7 @@ def admitted(session: "ra.Session") -> "ra.Agent":
         session.key("ArrowDown")
         session.key("Enter")
     if not agent.answered():
-        raise ra.Failed(f"the door refused the agent: {agent.served}")
+        raise ra.Failed(f"the MCP server refused the agent: {agent.served}")
     agent.notify("notifications/initialized")
     return agent
 
@@ -131,7 +131,7 @@ def files_home(session: "ra.Session") -> Path:
 
 
 def put(agent: "ra.Agent", data: bytes) -> str:
-    """Upload `data` through the door's content puts; its content reference."""
+    """Upload `data` through the server's content puts; its content reference."""
     begun, failed = call(agent, "tilo_put_begin", {"size": len(data)})
     upload = int(re.search(r"\d+", begun).group()) if not failed else -1
     call(agent, "tilo_put_append", {"upload": upload, "offset": 0,

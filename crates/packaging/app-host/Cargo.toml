@@ -22,7 +22,7 @@ path = "src/lib.rs"
 # fetch and the control socket. The Store app depends on this crate with
 # `default-features = false` and gets only the client side (the typed client,
 # the wire and local-archive review), so an app never compiles the
-# privileged door it talks to, and the shared app runtime never carries it.
+# privileged service it talks to, and the shared app runtime never carries it.
 default = ["service"]
 service = [
     "package-store/store",

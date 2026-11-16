@@ -554,7 +554,7 @@ fn probe(
 }
 
 /// A process the session's sandbox runs (`bwrap`'s namespaces), below `leader`: what a client of its
-/// MCP server joins, since the door serves only programs in its own namespaces. `None` when the
+/// MCP server joins, since the server serves only programs in its own namespaces. `None` when the
 /// session runs in this process's namespaces.
 fn sandboxed(leader: u32) -> Option<u32> {
     let ours = std::fs::read_link("/proc/self/ns/mnt").ok()?;

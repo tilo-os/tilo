@@ -140,10 +140,10 @@ mod tests {
 
         enabled.store(true, Ordering::Relaxed);
         assert_eq!(auto.wait(), Some(SAMPLE));
-        let indoors = auto
+        let inside = auto
             .follow(start, false, Some(40.0))
             .expect("the first reading moves the panel");
-        assert!((40.0..=50.0).contains(&indoors), "{indoors}");
+        assert!((40.0..=50.0).contains(&inside), "{inside}");
         assert_eq!(
             auto.follow(start + Duration::from_secs(1), false, Some(30_000.0)),
             None,
@@ -157,7 +157,7 @@ mod tests {
         let daylight = auto
             .follow(start + 2 * SAMPLE, false, Some(30_000.0))
             .expect("a sustained change reaches the panel");
-        assert!(daylight > indoors, "{daylight} brighter than {indoors}");
+        assert!(daylight > inside, "{daylight} brighter than {inside}");
 
         enabled.store(false, Ordering::Relaxed);
         assert_eq!(

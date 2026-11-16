@@ -8,7 +8,7 @@ workspace it names, and approves a key of their own on the site's sign-in
 page. The answer is `{key, person, joined}`, where `joined` is the workspace
 the link landed them in with the role their key finds them holding there.
 
-    python3 reviewer.py PORT SITE RELAY DOOR TILO_BIN OUT_DIR
+    python3 reviewer.py PORT SITE RELAY API_URL TILO_BIN OUT_DIR
 
 Prints `{"invitee": URL}` once it listens.
 """
@@ -26,13 +26,13 @@ from pathlib import Path
 
 from tilo import AsyncTilo
 
-PORT, SITE, RELAY, DOOR, TILO_BIN, OUT = sys.argv[1:7]
+PORT, SITE, RELAY, API_URL, TILO_BIN, OUT = sys.argv[1:7]
 PERSON = Path(__file__).with_name("person.mjs")
 counter = itertools.count(1)
 
 
 async def role_in(key: str, workspace: str) -> str | None:
-    client = AsyncTilo(key=key, url=DOOR)
+    client = AsyncTilo(key=key, url=API_URL)
     try:
         listed = await client.workspaces.list()
         return next((row.role for row in listed if row.id == workspace), None)
@@ -44,7 +44,7 @@ def review(link: str) -> dict:
     out = Path(OUT) / f"reviewer-{next(counter)}"
     ran = subprocess.run(
         ["node", str(PERSON), SITE, RELAY, str(out), "--follow", link,
-         "--key", "Rosa's review", "--tilo", TILO_BIN, "--api", DOOR],
+         "--key", "Rosa's review", "--tilo", TILO_BIN, "--api", API_URL],
         capture_output=True, text=True, timeout=600,
     )
     sys.stderr.write(ran.stderr)

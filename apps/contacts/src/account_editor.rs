@@ -590,7 +590,7 @@ fn endpoint_list(
             person: selected.person.clone(),
             association: id.as_str().to_owned(),
         };
-        let edit = dispatcher.clone();
+        let edit_api = dispatcher.clone();
         let edit = AccountEffect::EditAccount {
             person: selected.person.clone(),
             association: id.as_str().to_owned(),
@@ -614,7 +614,7 @@ fn endpoint_list(
                                 "contacts-account-edit",
                             )
                             .on_view(move || {
-                                edit.effect(&edit);
+                                edit_api.effect(&edit);
                             }),
                         ))
                         .push(Box::new(

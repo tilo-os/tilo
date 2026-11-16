@@ -2,7 +2,7 @@
 //! display, so a shell spanning several displays shows the cards on each empty display rather than
 //! one grid across them.
 //! A pad asks for nothing of its own: what a person chooses on it leaves as the host action its
-//! card declares, the same door every other host action comes through.
+//! card declares, the same action API every other host action comes through.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -65,7 +65,7 @@ pub(super) struct PadWant {
 /// The start cards of every display that shows no window. A shell spanning several displays shows
 /// them on each empty display, centred there; a shell of one display shows them once, over the whole
 /// shell, while it has no window. What a person chooses on any of them leaves as the host action its
-/// card declares ([`LaunchpadAction::host_id`]), the same door every other host action comes
+/// card declares ([`LaunchpadAction::host_id`]), the same action API every other host action comes
 /// through.
 pub(super) struct EmptyWorkspace {
     /// What each pad is made from: the words and scope the host gave it.

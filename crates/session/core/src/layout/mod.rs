@@ -63,7 +63,7 @@ const FLOAT_HEIGHT: u32 = 480;
 
 /// The operation type every layout action carries.
 pub const OPERATION: &str = "tilo.shell.layout";
-/// The resource the person's layout is published as. Its id is the one every door that names
+/// The resource the person's layout is published as. Its id is the one every api that names
 /// the system's `open` names ([`session_actions::LAYOUT_RESOURCE`]): the broker rewrites a
 /// served app's `open` into the layout's own, so the two are one address.
 pub const RESOURCE: &str = session_actions::LAYOUT_RESOURCE;
@@ -249,7 +249,7 @@ pub enum LayoutAction {
     /// The system's `open` (`docs/designs/app-language/one-app-model.md` §3): the resource
     /// `resource` placed with its view `view` (empty for its primary one) beside the place showing
     /// `beside` — the turn that asked, by the address of its message — or beside the place in
-    /// front when it names none. A resource already standing is brought forward instead. The door
+    /// front when it names none. A resource already standing is brought forward instead. The action API
     /// resolves it into the `Place` (or `Activate`) it makes before the step is recorded, so the
     /// record holds ids. Appended last.
     Open {
@@ -822,7 +822,7 @@ impl Layout {
     }
 
     /// The resources the session publishes now, by id: what a place made from a resource reads its
-    /// app and views from. The session keeps it in step with the door's tree.
+    /// app and views from. The session keeps it in step with the API's tree.
     #[must_use]
     pub fn targets(&self) -> Rc<RefCell<Catalog>> {
         Rc::clone(&self.catalog)
@@ -1373,7 +1373,7 @@ impl Layout {
 
     /// The layout as a shell's views read it: every workspace, row, strip and place, each by
     /// its key, laid out as the shell's layout type holds it. This is what the session
-    /// publishes on its door for a shell to draw, read off the layout as it stands.
+    /// publishes on its api for a shell to draw, read off the layout as it stands.
     #[must_use]
     pub fn reading(&self) -> Reading {
         let records = self.records();

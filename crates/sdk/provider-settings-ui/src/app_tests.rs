@@ -259,7 +259,7 @@ fn a_typed_endpoint_takes_the_location_its_address_has() {
 
 /// Test `provider`'s connection through its row's action, and require the
 /// answer to be the result the action declares.
-fn list_models_through_the_door(
+fn list_models_through_the_api(
     app: &mut TestApp<ProviderSettingsApp>,
     provider: &str,
 ) -> ui::tilo_actions::ActionOutput {
@@ -426,7 +426,7 @@ fn agents_set_model_capabilities_and_cannot_plan_with_a_model_without_tools() {
     app.settle();
     assert_private(&mut app);
     // The provider lists its models, answered as the action declares.
-    let listed = list_models_through_the_door(&mut app, &provider);
+    let listed = list_models_through_the_api(&mut app, &provider);
     assert_eq!(listed.value.as_ref().unwrap()[0]["id"], "listed-a");
     app.settle();
     // One is taken, and is said to call no tools.

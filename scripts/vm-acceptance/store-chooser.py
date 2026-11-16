@@ -107,25 +107,25 @@ class Chooser:
         return first["state"], matches[0]["id"]
 
 
-def review(door, fixture, filename, directories, out, initial_up=0):
+def review(api, fixture, filename, directories, out, initial_up=0):
     require(isinstance(initial_up, int) and not isinstance(initial_up, bool) and 0 <= initial_up <= 16,
             "initial parent count must be bounded")
     component(filename)
     for name in directories:
         component(name)
-    vm = door.vm
-    workspace(vm, door.bound[1])
+    vm = api.vm
+    workspace(vm, api.bound[1])
     require(not picker_rows(vm), "another chooser already active; no Import submitted")
-    row = app.choose(app.catalog(vm, app.STORE), app.STORE, "store.catalog", "import-package", {}, door.bound)
+    row = app.choose(app.catalog(vm, app.STORE), app.STORE, "store.catalog", "import-package", {}, api.bound)
     original = begin(vm, row, {}, out, f"import-{filename}")
     def appeared():
         original.pending()
-        workspace(vm, door.bound[1])
+        workspace(vm, api.bound[1])
         rows = picker_rows(vm)
         return request(rows) if rows else None
     identity = wait_until(appeared, 30)
     require(identity is not None, "Import did not publish an observable chooser")
-    chooser = Chooser(vm, identity, door.bound[1], out, original)
+    chooser = Chooser(vm, identity, api.bound[1], out, original)
     chooser.ascend(initial_up)
     for name in directories:
         state, entry = chooser.find(name, True)
@@ -137,7 +137,7 @@ def review(door, fixture, filename, directories, out, initial_up=0):
     require(completed.get("completed") is True, "chooser did not complete the portal request")
     original.finish(120)
     require(not picker_rows(vm), "chooser authority still visible after completion")
-    value = door.settled(fixture["package_id"])
+    value = api.settled(fixture["package_id"])
     expected = {"app": fixture["package_id"], "root": fixture["offer"]["tapp_root_hash_hex"],
                 "version": fixture["offer"]["version"]}
     require(value.get("imported_package") == expected and value.get("detail", {}).get("trust") == "PublisherSigned",
@@ -165,12 +165,12 @@ def opened_subject(vm, window):
     return probe()
 
 
-def install_open(door, fixture, installed_before, out):
-    vm = door.vm
+def install_open(api, fixture, installed_before, out):
+    vm = api.vm
     package, offer = fixture["package_id"], fixture["offer"]
     before = app.windows(vm.state(), package)
-    door.call("install-imported-package", {"app": package, "root": offer["tapp_root_hash_hex"]}, 300)
-    require(door.settled(package)["detail"]["installed"] is True, "Store install readback absent")
+    api.call("install-imported-package", {"app": package, "root": offer["tapp_root_hash_hex"]}, 300)
+    require(api.settled(package)["detail"]["installed"] is True, "Store install readback absent")
     audit = Path(__file__).with_name("acceptance") / "official_runtime.py"
     verified = first_json(vm.run("slot", "exec", "--", "python3", "-c", audit.read_text(),
         package, offer["tapp_root_hash_hex"], offer["version"], offer["target"]["runtime"],
@@ -178,11 +178,11 @@ def install_open(door, fixture, installed_before, out):
     require(verified.get("uid") == vm.slot_uid() and verified.get("files"),
             "canonical installed official runtime audit unavailable")
     (out / "official-runtime.json").write_text(json.dumps(verified, indent=2))
-    opened = door.call("open-app", {"app": package})
+    opened = api.call("open-app", {"app": package})
     launch = opened.get("launch") if isinstance(opened, dict) else None
     window = launch.get("adopted_window") if isinstance(launch, dict) else None
     require(isinstance(window, dict) and window.get("package_id") == package
-            and window.get("workspace") == door.bound[1]
+            and window.get("workspace") == api.bound[1]
             and type(window.get("surface_id")) is int and window["surface_id"] > 0,
             "Open did not return an authenticated adopted application window")
     def subject():
@@ -224,14 +224,14 @@ def main():
             "55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa2abe06"
             and fixture.get("offer", {}).get("target", {}).get("architecture") == "aarch64",
             "expected independently verified official ARM fixture receipt required")
-    door = app.store(vm, args.out)
+    api = app.store(vm, args.out)
     app.mapped(vm, "store", installed_sdk, vm.slot_uid(), args.out)
-    first = review(door, fixture, args.thin, args.directories, args.out, args.initial_up)
-    review(door, fixture, args.full, args.directories, args.out, args.initial_up)
+    first = review(api, fixture, args.thin, args.directories, args.out, args.initial_up)
+    review(api, fixture, args.full, args.directories, args.out, args.initial_up)
     result = {"reviewed_full_and_thin": True, "installed_before": first["detail"]["installed"],
               "installation": "not requested", "runtime": fixture["offer"]["target"]["runtime"]}
     if args.install_open:
-        result.update(install_open(door, fixture, first["detail"]["installed"], args.out))
+        result.update(install_open(api, fixture, first["detail"]["installed"], args.out))
     (args.out / "result.json").write_text(json.dumps(result, indent=2))
 
 

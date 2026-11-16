@@ -1,7 +1,7 @@
 //! The community site this computer is configured with, joined as the session starts.
 //! A computer set up for a community is in that community already: nobody wants to be told to join
-//! the lounge they were given a computer for. So the session asks the site's door once — the same
-//! door, and the same verified invitation, a listing's Join asks — and the workspace comes onto the
+//! the lounge they were given a computer for. So the session asks the site's entry once — the same
+//! entry, and the same verified invitation, a listing's Join asks — and the workspace comes onto the
 //! shell like any other joined one.
 //! There is no loop and no timer: one ask per session start, and one more when the machine's
 //! network comes back while the join is still waiting, which is the one thing that can make a join
@@ -22,7 +22,7 @@ use crate::workspaces::Personal;
 pub(crate) struct Community {
     /// The site whose home workspace is joined, when one is configured.
     site: Option<url::Url>,
-    /// Whether this session asked its site's door already.
+    /// Whether this session asked its site's entry already.
     asked: bool,
     /// Whether this machine had a network at the last pass: a network coming back is when a join
     /// still waiting is asked again.
@@ -77,7 +77,7 @@ impl Community {
             Some(CommunityState::Pending) if self.asked && !came_online => return,
             Some(CommunityState::Pending) | None => {}
         }
-        // Written down before the door is asked, so a session that ends mid-join leaves the
+        // Written down before the entry is asked, so a session that ends mid-join leaves the
         // decision behind it.
         personal
             .borrow_mut()

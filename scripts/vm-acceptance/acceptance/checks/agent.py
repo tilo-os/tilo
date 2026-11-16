@@ -3,17 +3,17 @@
 Inside the booted session, `tilo-runtime-mcp --connect` (no profile) must relay to the
 desktop's own agent socket: the person is asked in trusted chrome, an admitted client is an
 agent member of the workspace, and `tilo_ls` lists the desktop's running apps, not the
-empty catalogue of a second, standalone runtime. The door serves the path-addressed agent
+empty catalogue of a second, standalone runtime. The MCP server serves the path-addressed agent
 tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`), which answer in text. The headless proof
 (`scripts/headless-examples/agent-sessions-proof.py`) covers the protocol and its refusals
-against a compositor with no session around it; only a session has the door.
+against a compositor with no session around it; only a session has the MCP server.
 
 The client is `guest/mcp_client.py`, run in the guest through `tilo-vm slot exec` (the
-session's view, as the account's own process). The door asks the person on its own sheet
+session's view, as the account's own process). The MCP server asks the person on its own sheet
 (`so.tilo.portal-sheet`, `session.mcp-server`), and the harness answers as the person does:
 it presses the sheet's "Allow once" and then Allow, or its Deny (`acceptance/sheets.py`).
 
-Until the door is in the image (`$XDG_RUNTIME_DIR/tilo-session/agent.sock`), these are
+Until the MCP server is in the image (`$XDG_RUNTIME_DIR/tilo-session/agent.sock`), these are
 expected failures that say so (core.ExpectedFailure); once it is, they are ordinary checks.
 """
 
@@ -34,14 +34,14 @@ AREA = "agent"
 
 CLIENT = Path(__file__).resolve().parents[2] / "guest" / "mcp_client.py"
 GUEST_CLIENT = ".cache/acceptance/mcp_client.py"
-DOOR = '"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo-session/agent.sock"'
+MCP_SERVER = '"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo-session/agent.sock"'
 MARK = "ACC-MCP "
-# The tools the door serves.
-DOOR_TOOLS = ["tilo_do", "tilo_find", "tilo_ls", "tilo_read", "tilo_status"]
-# The client names itself so (clientInfo), and the door admits it as this agent.
+# The tools the MCP server serves.
+MCP_TOOLS = ["tilo_do", "tilo_find", "tilo_ls", "tilo_read", "tilo_status"]
+# The client names itself so (clientInfo), and the MCP server admits it as this agent.
 AGENT = "acceptance-agent"
 
-NO_DOOR = ("the session serves no MCP server ($XDG_RUNTIME_DIR/tilo-session/agent.sock): this image "
+NO_MCP_SERVER = ("the session serves no MCP server ($XDG_RUNTIME_DIR/tilo-session/agent.sock): this image "
            "predates the in-session MCP server (fix/mcp-server, 2d43ddb51e), so `tilo-runtime-mcp "
            "--connect` in a Tilo login starts a second, empty standalone runtime instead of "
            "reaching the desktop")
@@ -90,22 +90,22 @@ def is_error(reply) -> bool | None:
         return None
 
 
-def _door_or_xfail(ctx) -> None:
+def _mcp_or_xfail(ctx) -> None:
     if "mcp_server" not in ctx.facts:
-        out = ctx.vm.exec(f"test -S {DOOR} && echo door || echo no-door; "
+        out = ctx.vm.exec(f"test -S {MCP_SERVER} && echo mcp || echo no-mcp; "
                           "command -v tilo-runtime-mcp >/dev/null && echo mcp || echo no-mcp; "
                           "command -v python3 >/dev/null && echo python || echo no-python")
         words = set(out.split())
         for need, what in (("mcp", "tilo-runtime-mcp"), ("python", "python3")):
             if need not in words:
                 raise Unobservable(f"the guest has no {what} on PATH")
-        ctx.facts["mcp_server"] = "door" in words
+        ctx.facts["mcp_server"] = "mcp" in words
     if not ctx.facts["mcp_server"]:
-        raise ExpectedFailure(NO_DOOR)
+        raise ExpectedFailure(NO_MCP_SERVER)
 
 
 def _answer_prompt(ctx, decision: str) -> str:
-    """Answer the door's question as the person: admit the client once, or refuse it."""
+    """Answer the MCP server's question as the person: admit the client once, or refuse it."""
     what = f"mcp-server-{decision}"
     if decision == "deny":
         return deny_sheet(ctx, what)["chosen"]
@@ -142,7 +142,7 @@ def _run_client(ctx, scenario: str, decision: str, title: str = "") -> dict:
 
 def _session(ctx) -> dict:
     """The admitted agent's whole conversation, run once for M01..M03."""
-    _door_or_xfail(ctx)
+    _mcp_or_xfail(ctx)
     if "agent_session" not in ctx.facts:
         ctx.reset()
         ctx.open_app("so.tilo.notes")
@@ -158,7 +158,7 @@ def _session(ctx) -> dict:
 
 
 @check("M01", AREA, "tilo-runtime-mcp --connect in a session: the person is asked, then initialize and "
-                    "tools/list answer, with no pixel tools on the door")
+                    "tools/list answer, with no pixel tools on the MCP server")
 def handshake(ctx, res):
     t = _session(ctx)
     init = t.get("initialize")
@@ -168,12 +168,12 @@ def handshake(ctx, res):
     names = tool_names(t)
     res.metrics["tools"] = names
     expect(not [n for n in names if n.startswith("computer")],
-           f"the door offers pixel tools, which an MCP server must not: {names}")
-    missing = [n for n in DOOR_TOOLS if n not in names]
+           f"the MCP server offers pixel tools, which it must not: {names}")
+    missing = [n for n in MCP_TOOLS if n not in names]
     expect(not missing, f"tools/list offers no {missing}: {names}")
 
 
-@check("M02", AREA, "The door lists the desktop's running apps (Notes is open), not an empty standalone runtime")
+@check("M02", AREA, "The MCP server lists the desktop's running apps (Notes is open), not an empty standalone runtime")
 def live_apps(ctx, res):
     t = _session(ctx)
     reply = t.get("list_apps")
@@ -193,7 +193,7 @@ def new_note(ctx, res):
     t = _session(ctx)
     title = t["title"]
     expect("#new-note" in text_of(t.get("notes_listing")),
-           f"Notes never listed its new-note action on the door: {str(t.get('notes_listing'))[:300]}")
+           f"Notes never listed its new-note action on the MCP server: {str(t.get('notes_listing'))[:300]}")
     params = text_of(t.get("new_note_params"))
     expect(is_error(t.get("new_note_params")) is False and "title" in params,
            f"Notes' new-note action names no title parameter: {str(t.get('new_note_params'))[:300]}")
@@ -246,4 +246,4 @@ def refusals(ctx, res):
            f"a denied client did not get a JSON-RPC error on initialize: {str(init)[:300]}")
     expect(init["error"].get("message"), f"the denial names no reason: {init}")
     expect("after_refusal" in denied and denied["after_refusal"] is None,
-           f"the door stayed open after refusing: {str(denied.get('after_refusal'))[:200]}")
+           f"the MCP server stayed open after refusing: {str(denied.get('after_refusal'))[:200]}")

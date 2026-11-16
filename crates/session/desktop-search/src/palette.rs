@@ -1,7 +1,7 @@
 //! The desktop search palette: the toolkit's [`ActionPalette`] over the
 //! portable sources. The host owns placement and input routing; a chosen row
 //! is handed back through [`DesktopSearch::take_choice`], an action row as
-//! the address the host's action door resolves against the live resource
+//! the address the host's action API resolves against the live resource
 //! tree.
 
 use std::sync::Arc;
@@ -1113,7 +1113,7 @@ impl DesktopSearch {
     /// choosing it does, with `argument` the line its action asks for:
     /// what a caller of the desktop's published search runs. An app's own
     /// action row ([`Target::Action`]) runs only from its window, through
-    /// the host's action door. Returns whether there was such a row.
+    /// the host's action API. Returns whether there was such a row.
     pub fn choose(&mut self, index: usize, argument: Option<String>) -> bool {
         let Some(hit) = self.rows.get(index).cloned() else {
             return false;

@@ -82,7 +82,7 @@
 # TILO_SH_CADDY, or this machine's own build). WORK keeps what it found
 # (pages' consoles and screenshots, the visa run's
 # log, report.json); default $TILO_SH_STATE/check. The stack is left up; it
-# is stopped first when TILO_SH_FRESH=1 (a new Lounge and door). The tilo
+# is stopped first when TILO_SH_FRESH=1 (a new Lounge and entry). The tilo
 # command is TILO_SH_TILO_BIN, else this checkout's release build the stack
 # serves at /releases, else target/{debug,release}/tilo. VISA_APPLICANTS
 # sets how many workspaces the run makes (25 here). The questions put to the
@@ -285,7 +285,7 @@ step 'bring the stack up'
 up_args=()
 [[ ${TILO_SH_FRESH:-} == 1 ]] && up_args+=(--fresh)
 [[ ${TILO_SH_SEED:-} == 1 ]] && up_args+=(--seed)
-# Its visitors arrive as strangers and enter the Lounge as guests: the door
+# Its visitors arrive as strangers and enter the Lounge as guests: the entry
 # open to anyone, not production's, which takes people by invitation.
 TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open} bash "$here/stack.sh" up "${up_args[@]}" || fail 'the stack did not come up'
 bring_up=$(cat "$state/bring-up-seconds")

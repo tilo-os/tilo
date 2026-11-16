@@ -12,7 +12,7 @@
 # `release` fetches the release's source from the forge, checked against the
 # pin, builds its relay tests with `seed.rs` added and runs the seed: the
 # release's relay keeps a Lounge (its people, one of them invited at an address,
-# a workspace of one member's own, a chat one of them wrote in, the door's
+# a workspace of one member's own, a chat one of them wrote in, the entry's
 # settings), and the state it leaves is OUT/state.tar. Its result is kept as
 # long as this directory is unchanged, so the release is built once.
 #

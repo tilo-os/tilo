@@ -652,7 +652,7 @@ pub fn draft_capability(ws: &Workspace, person: &str, draft: &GrantDraft) -> Opt
 pub use tilo_desktop_model::grants::PolicyEdit;
 
 /// Grant what `draft` names, as `actor`, through the workspace's governance:
-/// the same check every door and the workspace's host make.
+/// the same check every action API and the workspace's host make.
 ///
 /// # Errors
 /// The workspace refused the grant, saying why.

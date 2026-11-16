@@ -193,7 +193,7 @@ mod tests {
                     std::path::Path::new("/nonexistent"),
                     &opts,
                 )
-                .expect_err("the second door into the sandbox builder is closed too");
+                .expect_err("the second way into the sandbox builder is closed too");
                 assert!(matches!(err, RunError::HostAppNotAPackage { .. }));
             }
             {

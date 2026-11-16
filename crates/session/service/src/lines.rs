@@ -292,7 +292,7 @@ impl Service for Remote {
 }
 
 /// A service in a child process, started by the session: its readings and
-/// door as [`Remote`]; dropping it closes the child's input, which stops
+/// API as [`Remote`]; dropping it closes the child's input, which stops
 /// it, and reaps it.
 pub struct Process {
     remote: Remote,

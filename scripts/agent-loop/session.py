@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """An isolated session for testing what an agent experiences in a Tilo app.
 
-The agent's only door is the ordinary one: `tilo-runtime-mcp` over the app's
+The agent's only way in is the ordinary one: `tilo-runtime-mcp` over the app's
 published actions, and the app's window as a person uses it: the `computer`
 tool with `app_id` clicks, drags, types and scrolls in the window, in the
 window's pixels, and answers with what the window then shows. This script
@@ -269,7 +269,7 @@ def start_session(session: Session, env: dict) -> subprocess.Popen:
 
 def mint_identity(session: Session, env: dict) -> None:
     """Give the session the throwaway identity a development login opens its
-    shell with, through the door the tree's own development harnesses use, and
+    shell with, through the MCP server the tree's own development harnesses use, and
     stop the session that minted it: the one started after it reads the shell
     through that identity."""
     control = pathlib.Path(env["TILO_TEST_CONTROL"])

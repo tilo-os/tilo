@@ -138,7 +138,7 @@ class ClockContractTests(unittest.TestCase):
             )
             self.assertEqual(contract.audit(root), [])
 
-    def test_the_sync_door_is_judged_and_other_crates_are_not(self):
+    def test_the_sync_api_is_judged_and_other_crates_are_not(self):
         root = self.fixture(
             {
                 f"{SYNC}/client/adopt.rs": "fn at() { std::time::SystemTime::now(); }\n",

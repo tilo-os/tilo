@@ -5,7 +5,7 @@ The kernel takes a Unix socket's path in a fixed buffer (108 bytes on Linux),
 so `UnixListener::bind(path)` and `UnixStream::connect(path)` fail for a
 socket in a deep enough directory. Whether a socket works then depends on
 where its profile, state root or worktree happens to live, and a holder whose
-door failed to open looks to everyone else exactly like one that is gone.
+socket failed to open looks to everyone else exactly like one that is gone.
 `tilo_files::native::socket::{bind, connect}` reach a path of any length
 through its directory and refuse loudly where they cannot.
 

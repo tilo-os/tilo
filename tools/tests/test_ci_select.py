@@ -182,11 +182,11 @@ class SelectorTests(unittest.TestCase):
         # A gate entry is a test target of the session's, so two entries are two
         # runs; the real gate names one, its shell tests being modules of it.
         gate = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(shell::)")
-        door = ci_select.path_suites.ReaderScope((), "probe", "binary(probe)")
+        probe_scope = ci_select.path_suites.ReaderScope((), "probe", "binary(probe)")
         saved = ci_select.DESKTOP_GATE
         self.addCleanup(setattr, ci_select, "DESKTOP_GATE", saved)
         # "leaf" stands in for the session: the end of the dependency chain.
-        ci_select.DESKTOP_GATE = {("leaf", "it"): gate, ("leaf", "probe"): door}
+        ci_select.DESKTOP_GATE = {("leaf", "it"): gate, ("leaf", "probe"): probe_scope}
         with self.subTest(phase="a foundation change reaching it without testing it runs its shell tests"):
             plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
             self.assertIn("leaf", plan["selected"])
@@ -196,7 +196,7 @@ class SelectorTests(unittest.TestCase):
                 "leaf:probe": "--test probe -E 'binary(probe)'"})
             rows = [json.loads(row["scoped_tests"]) for row in plan["matrix"]["include"] if row["scoped_tests"]]
             self.assertEqual(rows, [[{"package": "leaf", "test": "it", "filter": gate.filter},
-                                     {"package": "leaf", "test": "probe", "filter": door.filter}]])
+                                     {"package": "leaf", "test": "probe", "filter": probe_scope.filter}]])
         with self.subTest(phase="a change to it tests all of it, and the shell tests are part of that"):
             plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/main.rs"], 2)
             self.assertIn("leaf", plan["tested"])

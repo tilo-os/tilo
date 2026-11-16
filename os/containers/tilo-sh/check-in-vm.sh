@@ -27,7 +27,7 @@ mkdir -p "$work"
 find "$work" -mindepth 1 -delete
 chown "$user:$user" "$work"
 
-# The stack's state: the Lounge's, the door's, and what the check writes.
+# The stack's state: the Lounge's, the entry's, and what the check writes.
 state=${TILO_SH_STATE:?}
 mkdir -p "$state"
 chown "$user:$user" "$state"

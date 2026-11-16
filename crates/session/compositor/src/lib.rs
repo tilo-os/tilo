@@ -591,7 +591,7 @@ impl Compositor {
     }
 
     /// Take in what arrived while the caller worked out this frame (a commit, an acked configure,
-    /// a door message) and send the clients what is queued, without waiting for any of it.
+    /// a channel message) and send the clients what is queued, without waiting for any of it.
     /// Whether an output then owes a frame: what arrived is answered in this turn, not the next.
     ///
     /// # Errors
@@ -1473,7 +1473,7 @@ impl Compositor {
         Ok(())
     }
 
-    /// Bind the liveness door beside the control socket at `control` : a heartbeat answered on the
+    /// Bind the liveness socket beside the control socket at `control` : a heartbeat answered on the
     /// loop, and every thread's state and backtrace when asked. The socket is `control` 's with
     /// `.live` after it ([`tilo_liveness::socket_path`]). `None` when this compositor has no loop
     /// to answer from, or the socket could not be bound.

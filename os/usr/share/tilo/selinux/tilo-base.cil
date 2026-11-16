@@ -222,7 +222,7 @@
 ; helper (policykit_auth_t), console login (local_login_t) and sshd, whose
 ; per-connection sshd-session runs the PAM stack in sshd_session_t.
 ; Sessions run unconfined and need nothing. The daemon decides what each
-; peer may ask from its credentials, so this grant only opens the door.
+; peer may ask from its credentials, so this grant only opens that way.
 (allow xdm_t var_run_t (sock_file (getattr write)))
 (allow xdm_t unconfined_service_t (unix_stream_socket (connectto)))
 (allow policykit_auth_t var_run_t (sock_file (getattr write)))

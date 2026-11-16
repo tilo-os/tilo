@@ -312,8 +312,8 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase a_window_the_door_itself_opened_is_not_judged_as_the_next_writers;
-    // What the door's own device writes (a window a member's agent opened through the host) is
+    phase a_window_the_api_itself_opened_is_not_judged_as_the_next_writers;
+    // What the API's own device writes (a window a member's agent opened through the host) is
     // followed, never decided: a guest whose page holds it and sends everything it holds is judged
     // by what the guest changed. Unfollowed, Ben's window would read as one the guest attributed
     // to him.

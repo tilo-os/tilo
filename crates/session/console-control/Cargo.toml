@@ -10,7 +10,7 @@ description = "The tilo-control action protocol served by a console session app 
 name = "console_control"
 path = "src/lib.rs"
 
-# Pure transport + door logic: no ui, winit or rendering dependencies. The
+# Pure transport and API logic: no ui, winit or rendering dependencies. The
 # owning app delivers queued requests to its UI thread itself.
 [dependencies]
 tilo-paths.workspace = true

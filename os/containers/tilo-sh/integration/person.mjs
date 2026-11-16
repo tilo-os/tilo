@@ -7,7 +7,7 @@
 //                   backend's terminal runs it, and the person approves the
 //                   link it prints on the site's own /sign-in page, in this
 //                   same browser, by pressing Allow;
-//   --no-pages      the key they make on the door's grants page does not
+//   --no-pages      the key they make on the api's grants page does not
 //                   operate web pages in Browser: the box is unticked;
 //   --root FILE     they are a person another program can hold: the page
 //                   makes a recovery key for them (its own "save a recovery
@@ -65,7 +65,7 @@
 // measures. Saves the page's console and a screenshot in OUT_DIR, and exits
 // non-zero, saying what never happened, when a step did not. With `--key` it
 // also keeps what the person reads there, in both appearances: the sign-in
-// card they allow, the door's grants page, and the key that page makes.
+// card they allow, the api's grants page, and the key that page makes.
 import {spawn} from 'node:child_process';
 import {appendFileSync, createReadStream, existsSync, mkdirSync, writeFileSync} from 'node:fs';
 import {createInterface} from 'node:readline';
@@ -88,7 +88,7 @@ const rootFile = option('--root');
 const noPages = rest.includes('--no-pages');
 const passkey = rest.includes('--passkey');
 const tiloBin = option('--tilo');
-const door = option('--api');
+const api = option('--api');
 const windowName = option('--window');
 const typed = option('--type');
 const pageName = option('--page');
@@ -530,13 +530,13 @@ if (pageName) {
 }
 
 if (keyName) {
-  if (!tiloBin || !door) await finish(2, '--key needs --tilo and --api');
-  // A backend's terminal: its own home, the local door.
+  if (!tiloBin || !api) await finish(2, '--key needs --tilo and --api');
+  // A backend's terminal: its own home, the local api.
   const home = join(out, 'terminal');
   mkdirSync(home, {recursive: true});
   const terminal = spawn(tiloBin, ['keys', 'create', keyName], {
     env: {...process.env, HOME: home, XDG_STATE_HOME: join(home, 'state'), XDG_CONFIG_HOME: join(home, 'config'),
-      TILO_API_URL: door},
+      TILO_API_URL: api},
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let said = '';
@@ -574,7 +574,7 @@ if (keyName) {
   // The grants page the same browser is now signed in to: the keys, each
   // saying whether it operates web pages in Browser, and the way to revoke
   // one; and the page that shows the key it makes once.
-  await tab.navigate(`${door}/grants`);
+  await tab.navigate(`${api}/grants`);
   await until(`document.querySelector('ul.grants, form.new') !== null`, 'the grants page');
   await capture('grants');
   await tab.evaluate(`(() => {
@@ -586,7 +586,7 @@ if (keyName) {
     document.querySelector('form.new').requestSubmit();
     return true;
   })()`);
-  // The door asks the person to allow the key it would make (the same card
+  // The api asks the person to allow the key it would make (the same card
   // the site showed for the terminal's key); allowing it answers with the
   // key, which that page shows once.
   const making = await until(`document.querySelector('code.key') ? 'made'

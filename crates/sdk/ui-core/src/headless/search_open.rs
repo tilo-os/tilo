@@ -99,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_search_uses_the_published_host_door_and_refuses_invalid_requests() {
+    fn semantic_search_uses_the_published_host_api_and_refuses_invalid_requests() {
         let mut frame = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(crate::widget::Text::new("search-fixture")),

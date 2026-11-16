@@ -1014,7 +1014,7 @@ tilo_test_env::scenario! {
         search.palette_mut().activate_selected();
         assert!(search.observe());
         let Some(Target::Action(action)) = search.take_choice() else {
-            panic!("the host's action door runs it");
+            panic!("the host's action API runs it");
         };
         assert_eq!(
             action.address(),

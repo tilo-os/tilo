@@ -1231,7 +1231,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         violations, _ = contract.audit(root, counts)
         # The submit of a published action is written at the call, in a helper
         # the view binds first, or in a function the callback names: all three
-        # run the shared action route, at any of the dispatcher's doors and for
+        # run the shared action route, at any of the dispatcher's action APIs and for
         # a composite's closure-run button too. A callback that keeps its own
         # outbox, a submit whose action the call does not name, and a helper
         # that submits nothing are still counted.

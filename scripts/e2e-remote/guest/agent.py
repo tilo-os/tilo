@@ -168,7 +168,7 @@ def touch(path: str) -> None:
 
 
 def do(client: Client, path: str, args: dict | None, patience: float):
-    """Run an action and wait for how it went: the door answers one that takes longer than a
+    """Run an action and wait for how it went: the API answers one that takes longer than a
     few seconds as pending, and `tilo_status` says how it ended."""
     call = {"path": path}
     if args is not None:
@@ -217,8 +217,8 @@ def devices(client: Client, out: dict) -> None:
         want in line and line.rstrip().endswith("  reachable") for line in text.splitlines()),
         WAIT_S)
     out["devices_at"] = client.since()
-    # The same action the agent takes on the other device, taken here: whether this door
-    # carries it out tells a refusal of the other device's door from every door's.
+    # The same action the agent takes on the other device, taken here: whether this API
+    # carries it out tells a refusal of the other device's API from every API's.
     out["open_here"] = client.tool("tilo_do", {"path": "notes#open"})
 
 
@@ -269,14 +269,14 @@ def work(client: Client, out: dict) -> None:
         time.sleep(0.5)
     out["go"] = os.path.exists(go)
     out["new_note"] = do(client, "notes#new-note", {"title": title}, 60)
-    # The door's "nothing matches <title>" names the title too: that is not the note.
+    # The API's "nothing matches <title>" names the title too: that is not the note.
     out["found_note"] = until(client, "tilo_find", {"query": title, "app": "notes"},
                               lambda text: title in text and not text.startswith("nothing matches"), 30)
 
 
 def page_of(client: Client, out: dict, patience: float = 60.0) -> str | None:
-    """The Browser's page as this door names it: by what it is, else by its key. A Browser that
-    was only now opened takes a moment to publish it. None when the door names no page."""
+    """The Browser's page as this API names it: by what it is, else by its key. A Browser that
+    was only now opened takes a moment to publish it. None when the API names no page."""
     out["page_listings"] = {}
     deadline = time.monotonic() + patience
     while True:
@@ -298,7 +298,7 @@ def browser(client: Client, out: dict) -> None:
     if not admitted:
         return
     # A step that acts on a page is put to the person at the desktop first: it answers once
-    # they have, so it is waited for as long as the door waits for them.
+    # they have, so it is waited for as long as the API waits for them.
     asked_s = float(os.environ.get("E2E_ASKED_S", "240"))
     page = page_of(client, out)
     out["page"] = page

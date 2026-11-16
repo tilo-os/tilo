@@ -161,7 +161,7 @@ pub type StripReading = LayoutStripReading;
 pub type PlaceReading = LayoutPlaceReading;
 
 /// The resources the session publishes now, by id: what a place made from a resource takes its app
-/// and view from. The session hands it the door's tree each time it changes, and never reads it
+/// and view from. The session hands it the API's tree each time it changes, and never reads it
 /// inside an invocation.
 #[derive(Default)]
 pub struct Catalog {
@@ -169,7 +169,7 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Take in `resources` (a door's whole tree), recursing into children.
+    /// Take in `resources` (an action API's whole tree), recursing into children.
     pub fn take(&mut self, resources: &[ResourceSpec]) {
         let mut by_id = BTreeMap::new();
         for resource in resources {
@@ -193,13 +193,13 @@ impl Catalog {
     }
 
     /// Put `target` under `id` , as the resource is published: a place made from a resource the
-    /// session has just published but the door's tree does not hold yet.
+    /// session has just published but the API's tree does not hold yet.
     pub fn remember(&mut self, id: &str, target: Target) {
         self.by_id.insert(id.to_owned(), target);
     }
 
     /// Remember `resource` as its app publishes it: the app, the views it publishes, and what it
-    /// is called — the same target the door's tree yields for it, so a place made from a resource
+    /// is called — the same target the API's tree yields for it, so a place made from a resource
     /// the session has just published shows it through its app's own view, never as the app's
     /// window.
     pub fn remember_resource(&mut self, resource: &ResourceSpec) {

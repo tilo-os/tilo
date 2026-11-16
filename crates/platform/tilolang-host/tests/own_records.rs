@@ -38,7 +38,7 @@ const ADAS: [&str; 3] = ["Launch plan", "Grace Hopper", "lease renewal"];
 /// Subjects her inbox's messages are published under: the launch thread's replies are its own
 /// messages, and the lease's is its one, so the API offers Ada's messages and not only the
 /// conversations they are in.
-const ON_HER_DOOR: [&str; 2] = [
+const ON_HER_MAIL: [&str; 2] = [
     "Re: Launch plan for the autumn release",
     "Your lease renewal",
 ];
@@ -246,7 +246,7 @@ fn nothing_of_reaches(ada: &Member, bo: &Member) {
             "Bo's search does not find {what}"
         );
     }
-    for what in ADAS.iter().chain(&ON_HER_DOOR) {
+    for what in ADAS.iter().chain(&ON_HER_MAIL) {
         assert!(
             !bo.published().contains(what),
             "Bo's api does not offer {what}"
@@ -304,7 +304,7 @@ fn mail_is_each_members_own_record_of_the_workspace() {
         assert!(ada.window.shows().contains(what), "Ada's Mail shows {what}");
         assert!(ada.found().contains(what), "Ada's search finds {what}");
     }
-    for what in ON_HER_DOOR {
+    for what in ON_HER_MAIL {
         assert!(
             ada.published().contains(what),
             "Ada's api offers {what}: {}",

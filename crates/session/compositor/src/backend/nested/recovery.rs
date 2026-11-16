@@ -4,7 +4,7 @@
 //! or reset the GPU, the driver refused the surface, the desktop was busy. None of that ends the
 //! session. The window drops its graphics and makes them again on the same window, a frame later
 //! at first and then less often ([`backoff`]), while the session goes on serving its clients, its
-//! door and its agent. A frame that is shown again ends the episode and the schedule starts over.
+//! API and its agent. A frame that is shown again ends the episode and the schedule starts over.
 //! The window is never given up: past the first minute it is tried every [`SLOW`], so a host that
 //! comes back brings it back, and it stays on the desktop for the person to close, which ends the
 //! session as closing any nested window does. The log tells an episode as it starts, once a minute

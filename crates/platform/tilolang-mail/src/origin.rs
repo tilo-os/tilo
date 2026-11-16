@@ -1478,7 +1478,7 @@ impl Origin for ImapOrigin {
                 self.subscribed = true;
             }
             // Reading the workspace writes nothing into it: a poll that only read it again
-            // (after a step the workspace would not take) has nothing for the door, and the
+            // (after a step the workspace would not take) has nothing to hand the server, and the
             // window does not turn again for it until something wakes it.
             self.state = Some(state);
             self.reload = false;

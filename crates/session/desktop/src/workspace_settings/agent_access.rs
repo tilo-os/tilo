@@ -19,7 +19,7 @@ pub const KINDS: [ActionKind; 3] = [ActionKind::Read, ActionKind::Undoable, Acti
 /// The three answers, in segment order.
 pub const ANSWERS: [Answer; 3] = [Answer::Allow, Answer::Ask, Answer::Deny];
 
-/// The key a kind of action is asked for by at the door.
+/// The key a kind of action is asked for by at the API.
 #[must_use]
 pub const fn kind_key(kind: ActionKind) -> &'static str {
     match kind {

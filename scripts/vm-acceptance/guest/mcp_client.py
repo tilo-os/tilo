@@ -9,7 +9,7 @@ It spawns `tilo-runtime-mcp --connect` (override with ACC_MCP_BIN) with no profi
 over its stdio, and prints one line, `ACC-MCP <json>`, with everything it saw. It judges
 nothing: the harness reads the transcript. Python standard library only (the guest image's).
 
-Inside a Tilo session `--connect` relays to the session's MCP server, and the door asks the
+Inside a Tilo session `--connect` relays to the session's MCP server, and the server asks the
 person before it answers `initialize`, so `initialize` may take as long as the person does.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ CALL_S = float(os.environ.get("ACC_MCP_CALL_S", "30"))
 PROTOCOL = "2025-06-18"
 # The note the agent makes, found again by its title (ACC_MCP_TITLE from the harness).
 TITLE = os.environ.get("ACC_MCP_TITLE", "Acceptance agent note")
-# How long an app's directory may take to appear on the door after it opens.
+# How long an app's directory may take to appear on the API after it opens.
 LISTED_S = float(os.environ.get("ACC_MCP_LISTED_S", "20"))
 # How long a server may take to exit once its stdin closes, before it is killed.
 CLOSE_S = float(os.environ.get("ACC_MCP_CLOSE_S", "5"))
@@ -202,7 +202,7 @@ def deny(out: dict) -> None:
     client = Client()
     try:
         out["initialize"] = initialize(client)
-        # The door closes a refused connection: the next read is EOF, not another reply.
+        # The MCP server closes a refused connection: the next read is EOF, not another reply.
         out["after_refusal"] = client.read(5.0)
     finally:
         out["stderr"] = client.close()

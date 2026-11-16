@@ -1266,7 +1266,7 @@ def debug_switch(ctx) -> str:
 JOURNAL_KINDS = {
     "launches": r"application launch requested|application launcher spawned|application toplevel mapped|"
                 r"application first frame|launch timing retired|running process opens the window|"
-                r"window door is closed|raised the window|asked for without a window",
+                r"window channel is closed|raised the window|asked for without a window",
     "ends": r"an app closed|an app stopped|could not open|launch was refused|launch did not start|"
             r"an app this session did not start|no notice for the app|app_output|\\[app so\\.tilo\\.chat",
     "scopes": r"app-tilo-so\\.tilo\\.chat-",
@@ -1659,7 +1659,7 @@ def agent_in_branch(ctx, res):
     agent.send("notifications/initialized", notify=True)
     res.metrics["sheet"] = dialog
     # The shell seats the agent in the branch's environment: the session whose environment_id is
-    # the TILO_ENVIRONMENT its shell reads (the agent door is the MCP server since a3a6caf4255).
+    # the TILO_ENVIRONMENT its shell reads (the agent API is the MCP server since a3a6caf4255).
     environment = agent.hello.get("environment", "")
     seated = wait_until(lambda: [a for a in ae.agent_sessions(ctx) if a.get("stoppable", True)
                                  and environment and a.get("environment_id") == environment] or None,

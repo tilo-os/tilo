@@ -4,7 +4,7 @@
 //! model; setting a field is an edit at its typed path, and every other change
 //! is a verb with typed parameters. The buttons, the action palette, agents,
 //! scripts and tests all make the same edits and invoke the same verbs
-//! through the same door. A refused change changes nothing. A destructive verb
+//! through the same action API. A refused change changes nothing. A destructive verb
 //! Undo takes back runs at once, wherever it is invoked, and offers Undo.
 
 /// The application id.

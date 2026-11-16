@@ -55,7 +55,7 @@ fn every_control_edits_its_field() {
     assert_eq!(app.state().region.0, "Europe/Berlin");
 }
 
-/// Controls follow the resource: an edit through the action door, as an
+/// Controls follow the resource: an edit through the action API, as an
 /// agent makes it, shows up in the control.
 #[test]
 fn controls_follow_edits_from_elsewhere() {

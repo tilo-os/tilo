@@ -1,7 +1,7 @@
 //! An item of a record as JSON, read straight from the Automerge document
 //! at given heads.
 //!
-//! A host process (a bot's door, the session serving History) never runs app
+//! A host process (a bot's API, the session serving History) never runs app
 //! code beside its keys, so it cannot read an item through the app's model. Records keep their items in maps keyed
 //! by item id, so the item is the first map entry with that key, searched
 //! breadth first, and its subtree is read by [`tilo_automerge::json`], the one

@@ -473,7 +473,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.state(), 0, "rows change nothing in the document");
     }
 
-    phase no_widget_below_the_root_changes_the_document_through_the_door;
+    phase no_widget_below_the_root_changes_the_document_through_the_api;
     // Only the root speaks for the resource: a document action any other
     // widget offers, in a plain view or a hosted surface, never reaches the
     // document through the API, even resolved by id.

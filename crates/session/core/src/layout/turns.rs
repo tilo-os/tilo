@@ -192,7 +192,7 @@ impl Layout {
                 self.awaiting.borrow_mut().push(ask);
                 continue;
             };
-            // Published from this pass on, and placed now: the door's tree takes them in later.
+            // Published from this pass on, and placed now: the API's tree takes them in later.
             for resource in &published {
                 self.catalog.borrow_mut().remember_resource(resource);
             }

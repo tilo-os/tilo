@@ -89,7 +89,7 @@ shell-window-waits-for-host = { $app } is waiting for { $host } to take this dev
 ## A window the person's record kept whose saved state this version cannot
 ## read: its tab says why the window is not here instead of the place being
 ## dropped.
-## The "Always allow" answers this computer kept for the agents at its door,
+## The "Always allow" answers this computer kept for the agents that connect to it,
 ## which could not be read: each agent whose answer it was is asked again.
 agent-bindings-app-name = Agents
 send-to-agent-unnamed = Agent

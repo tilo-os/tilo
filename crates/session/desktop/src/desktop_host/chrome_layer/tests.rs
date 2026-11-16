@@ -62,7 +62,7 @@ fn layout_tree() -> Layout {
     tree
 }
 
-/// The chrome over a shell, its overview open on a door that let an agent in
+/// The chrome over a shell, its overview open on an API that let an agent in
 /// and is working now.
 fn chrome_with_an_agent() -> DesktopChrome {
     let tree = layout_tree();
@@ -223,7 +223,7 @@ fn a_workspace_arriving_on_a_shell_that_shows_none_is_shown() {
 /// where the card's Revoke goes too: the person's root signs the device's
 /// revocation from there. It asks first, and only the answer revokes.
 #[test]
-fn an_agents_row_revokes_through_the_doors_own_path() {
+fn an_agents_row_revokes_through_the_apis_own_path() {
     en();
     let mut chrome = chrome_with_an_agent();
     assert!(

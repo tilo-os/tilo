@@ -4,7 +4,7 @@
 //! The session publishes them to the apps it runs, Settings first among
 //! them: an app reads [`wire::RESOURCE`] for every record and
 //! [`wire::record`] of one for its text, and so does an agent or a script
-//! through the same door. Nothing here draws, and nothing changes a record.
+//! through the same action API. Nothing here draws, and nothing changes a record.
 
 use std::path::PathBuf;
 

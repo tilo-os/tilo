@@ -62,7 +62,7 @@ pub struct FullscreenHint {
 impl FullscreenHint {
     /// A window took `display` full screen at `entered`, or left it (`None`):
     /// leaving takes the words away with it. Each entry says them once,
-    /// whichever door it came through.
+    /// whichever API it came through.
     pub fn follow(&mut self, entered: Option<(Rect, Instant)>) {
         let said = entered.map(|(display, at)| Said {
             display,

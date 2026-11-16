@@ -31,7 +31,7 @@ printed and who ran it. History keeps it as that person's or agent's run.
               the tenant, never as Browser's account, and what it costs in
               the VM's memory is measured.
 
-usage: hosted-terminal.py DOOR SERVER_KEY OUT_DIR [--refused|--card|--terminal|--agent|--isolated|--gui]
+usage: hosted-terminal.py API_URL SERVER_KEY OUT_DIR [--refused|--card|--terminal|--agent|--isolated|--gui]
 
 SERVER_KEY is the startup's own key (`tilo keys create`, named for the backend
 that asked for it). OUT_DIR is the hosted Browser's work directory: its
@@ -41,7 +41,7 @@ the key scoped to that one workspace. Without it — a run of these steps alone
 which is a workspace's Linux commands and no Browser.
 
 HOSTED_TERMINAL_CLI is the `tilo` command `--agent` runs, and
-HOSTED_TERMINAL_API_URL the door it points at (default: DOOR).
+HOSTED_TERMINAL_API_URL the API it points at (default: API_URL).
 HOSTED_TERMINAL_PLANS is the plans file the provider writes and the account
 HOSTED_TERMINAL_ACCOUNT is named in it (default: the account the local stack
 places its workspaces' VMs for). Prints one JSON line, and keeps what it read
@@ -65,7 +65,7 @@ from tilo import AsyncTilo, ProtocolError, Refused, Run
 
 import plans
 
-DOOR, SERVER_KEY, OUT = sys.argv[1:4]
+API_URL, SERVER_KEY, OUT = sys.argv[1:4]
 
 # How History names the runs of each key: the name a key is made with is the
 # agent it is (the API test's `history_names_a_minted_keys_agent_by_the_name_it
@@ -74,7 +74,7 @@ DOOR, SERVER_KEY, OUT = sys.argv[1:4]
 PERSON_KEY_NAME = "Visa backend"
 AGENT_KEY_NAME = "Jane Doe's agent"
 CLI = os.environ.get("HOSTED_TERMINAL_CLI", "tilo")
-CLI_DOOR = os.environ.get("HOSTED_TERMINAL_API_URL", DOOR)
+CLI_API_URL = os.environ.get("HOSTED_TERMINAL_API_URL", API_URL)
 # The person answering what the host asks before a command runs: a Terminal
 # run reaches outside the workspace's records, so a person's standing puts it
 # to them, and `tilo-approve` is the approving device that answers.
@@ -174,7 +174,7 @@ def write_json(name: str, value: object) -> str:
 
 async def outcome(call: object) -> object:
     """What an action answered: its result, or the run it waits in, followed
-    to its end (a command can take longer than the door waits)."""
+    to its end (a command can take longer than the API waits)."""
     answer = await call
     if isinstance(answer, Run):
         try:
@@ -187,8 +187,8 @@ async def outcome(call: object) -> object:
 
 
 def client(key: str) -> AsyncTilo:
-    """A client of the door as the key's agent."""
-    return AsyncTilo(key=key, url=DOOR)
+    """A client of the API as the key's agent."""
+    return AsyncTilo(key=key, url=API_URL)
 
 
 async def state() -> dict[str, object]:
@@ -483,9 +483,9 @@ async def terminal() -> dict[str, object]:
 def run_cli(workspace: str, key: str, command: str) -> tuple[int, str, str]:
     """`tilo -w WORKSPACE do terminal#run command=…`, with the key in the
     environment as the command takes it."""
-    env = dict(os.environ, TILO_API_KEY=key, TILO_API_URL=CLI_DOOR)
+    env = dict(os.environ, TILO_API_KEY=key, TILO_API_URL=CLI_API_URL)
     ran = subprocess.run(
-        [CLI, "--api", CLI_DOOR, "-w", workspace, "do", "terminal#run", f"command={command}"],
+        [CLI, "--api", CLI_API_URL, "-w", workspace, "do", "terminal#run", f"command={command}"],
         capture_output=True,
         text=True,
         timeout=600,
@@ -518,7 +518,7 @@ async def agent() -> dict[str, object]:
     agent_client = client(key)
     try:
         aws = agent_client.workspace(workspace)
-        # A run the door stopped waiting for comes back pending; the same
+        # A run the API stopped waiting for comes back pending; the same
         # invocation is followed with the key it was asked with.
         pending = re.search(r"pending ([0-9a-f-]{8,})", out)
         if pending:
@@ -761,7 +761,7 @@ async def main() -> int:
             report[name.lstrip("-")] = await one()
     else:
         if phase not in phases:
-            raise SystemExit(f"usage: hosted-terminal.py DOOR SERVER_KEY OUT [{'|'.join(phases)}]")
+            raise SystemExit(f"usage: hosted-terminal.py API_URL SERVER_KEY OUT [{'|'.join(phases)}]")
         report[phase.lstrip("-")] = await phases[phase]()
     write_json("terminal.json", report)
     print(json.dumps(report), flush=True)

@@ -1951,7 +1951,7 @@ impl DesktopChrome {
             || self.compact.iter().any(TopBarChrome::holds_itself_shown)
     }
 
-    /// Carry out a verb of the chrome's: whether it did, or why it could not, which the door that
+    /// Carry out a verb of the chrome's: whether it did, or why it could not, which the action API that
     /// asked answers as a refusal.
     fn perform(&mut self, verb: &ChromeEffect) -> Result<bool, String> {
         if let Some(done) = self.perform_workspace_action(verb) {

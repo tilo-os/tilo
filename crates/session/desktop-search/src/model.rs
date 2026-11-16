@@ -88,7 +88,7 @@ pub fn launched_record(launch: &str) -> Option<(&str, &str)> {
 
 /// What choosing a hit does. The host performs it exactly as its other
 /// controls do: a launch opens a window, a window hit focuses it, an action
-/// runs through the host's action door.
+/// runs through the host's action API.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
     /// Open the application where the person asks of it (`place`).

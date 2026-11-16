@@ -4,7 +4,7 @@
 //! picker appears only where there is something to pick: another player to
 //! steer, or another place to hear it. Every control is one of the panel's
 //! effects, so a person, an agent and a script reach the player through the
-//! same door.
+//! same action API.
 
 use ui::LocalState;
 use ui::TextRole;

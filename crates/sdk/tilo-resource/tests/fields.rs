@@ -663,7 +663,7 @@ tilo_test_env::scenario! {
         assert!(state.notes.is_empty() && state.drafts.is_empty());
     }
 
-    phase any_door_reads_a_field_edit_s_confirmation_from_the_published_contract;
+    phase any_api_reads_a_field_edit_s_confirmation_from_the_published_contract;
     // An action API without the app's code — the broker, a relay — decides from the
     // published field edit alone, and as the app does: the record's edits are
     // undoable, so none asks, whatever it removes.

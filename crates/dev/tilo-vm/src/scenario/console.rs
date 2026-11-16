@@ -52,7 +52,7 @@ pub trait Console {
     ///
     /// # Errors
     ///
-    /// [`ConsoleError::Refused`] with the door's code when the app refused.
+    /// [`ConsoleError::Refused`] with the API's code when the app refused.
     fn invoke(
         &mut self,
         provider: &str,

@@ -200,7 +200,7 @@ fn app_row(
 
 /// The rows that act on one app of the person's, under the app's own row:
 /// uninstalling it, which asks them on the uninstall sheet first, the one
-/// question every door asks, and taking it off the apps while its file
+/// question every action API asks, and taking it off the apps while its file
 /// stays.
 fn app_action_rows(workspace: &str, app: &DownloadedApp) -> [(Vec<(String, FieldWeight)>, Hit); 2] {
     // Uninstalling goes to the session, whose uninstall sheet holds the

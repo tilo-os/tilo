@@ -22,7 +22,7 @@ fn read_at(app: &mut TestApp<BoardApp>, version: &str) -> Value {
 }
 
 tilo_test_env::scenario! {
-    fn history_is_read_reviewed_and_restored_through_the_native_door;
+    fn history_is_read_reviewed_and_restored_through_the_native_api;
 
     phase historical_read_is_typed_frozen_and_matches_the_history_preview;
     {

@@ -7,7 +7,7 @@ This proof drives two such clients at once, through a headless session of its
 own, and reads every claim back off the session rather than off the clients:
 
   1. asking    each client opens with `initialize` and waits: nothing it asked
-               for runs until the person answers the sheet the door puts up.
+               for runs until the person answers the sheet the MCP server puts up.
   2. admitted  the person answers each sheet, once per client; each agent is
                admitted as an agent session of its own (`Claude Code #1`) acting
                for the person, and shows on the shell as its own presence, a
@@ -23,7 +23,7 @@ own, and reads every claim back off the session rather than off the clients:
   6. taking    Take over on the other agent's card ends its work here: the
                person is left with nobody admitted, and the agent's connection is
                over.
-  7. revoking  Revoke on a door-admitted agent's card ends its work here, and
+  7. revoking  Revoke on an MCP-admitted agent's card ends its work here, and
                the next client of that program has to be answered for.
 
 Usage:
@@ -47,7 +47,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SESSION_LAUNCHER = REPO / "dist" / "dev" / "nested-session.sh"
 # The nightly step points this at the binary Cargo built for the run.
 SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "tilo-session"))
-# What each client calls itself, and the agent of its own the door admits it as:
+# What each client calls itself, and the agent of its own the MCP server admits it as:
 # the first connection of that client on this device.
 CLIENTS = [("Claude Code", "Claude Code #1"), ("Codex", "Codex #1")]
 
@@ -122,13 +122,13 @@ class Shell:
         # there, from the one place that picks it.
         self.runtime = runtime_directory(self.state)
         self.control = self.runtime / "control.sock"
-        self.door = self.runtime / "agent.sock"
+        self.mcp = self.runtime / "agent.sock"
         self.env = {
             **os.environ,
             "HOME": str(self.home),
             "TILO_TEST_CONTROL": str(self.control),
-            # The door a developer names, so this proof never meets the login's own.
-            "TILO_MCP_SERVER": str(self.door),
+            # The MCP socket a developer names, so this proof never meets the login's own.
+            "TILO_MCP_SERVER": str(self.mcp),
             "TILO_IDENTITY_ROOT": str(self.identity),
             "XDG_RUNTIME_DIR": str(self.runtime),
             "XDG_DATA_HOME": str(self.dir / "data"),
@@ -142,7 +142,7 @@ class Shell:
 
     def start(self) -> None:
         self.control.unlink(missing_ok=True)
-        self.door.unlink(missing_ok=True)
+        self.mcp.unlink(missing_ok=True)
         self.session = subprocess.Popen(
             [
                 str(SHELL),
@@ -210,7 +210,7 @@ class Shell:
     def answer(self, choice: int = 1) -> bool:
         """Answer the sheet up as the person's own keyboard does.
 
-        `choice` counts down from the first row: the door's sheet offers
+        `choice` counts down from the first row: the server's sheet offers
         "Allow once", "Allow for this session" and "Always allow".
         """
         for _ in range(choice):
@@ -219,7 +219,7 @@ class Shell:
         return True
 
     def stop_row(self) -> dict | None:
-        """The Stop the person's own door lists on the shell, if it lists one."""
+        """The Stop the person's own MCP server lists on the shell, if it lists one."""
         rows = (self.call({"op": "actions_enumerate", "query": "stop"}).get("answer")
                 or {}).get("actions") or []
         return next((row for row in rows
@@ -248,11 +248,11 @@ def main() -> int:
         shell.start()
         check("the shell opens with a workspace in front", bool(shell.workspace()),
               json.dumps(shell.workspace())[:80])
-        check("and its MCP server answers", until(lambda: shell.door.exists()))
+        check("and its MCP server answers", until(lambda: shell.mcp.exists()))
 
         print("\n[1] two agents ask, and nothing they ask for runs yet")
         for name, _ in CLIENTS:
-            agents.append(Agent(shell.door, name))
+            agents.append(Agent(shell.mcp, name))
         # The sheet is up: the person's own keyboard is what answers it. The
         # clients are still waiting on their `initialize` until then.
         check("no client is served before the person answers",
@@ -275,7 +275,7 @@ def main() -> int:
             shell.answer(choice=1)
         check("each client is served its initialize", until(lambda: all(
             agent.hears() for agent in agents), 15) and all(agent.answered() for agent in agents),
-              "the door answered both")
+              "the server answered both")
         for agent in agents:
             agent.notify("notifications/initialized")
         check("admitting them grants nothing beyond the person's own",
@@ -296,18 +296,18 @@ def main() -> int:
             text, failed = agent.call("tilo_ls", {})
             check(f"{name}'s listing answers its own work", not failed,
                   text.splitlines()[0][:100] if text else "")
-        # What the shell offers the person's own door as a write is not what an
+        # What the shell offers the person's own MCP server as a write is not what an
         # agent is offered: the session's Stop is the person's.
         stop = shell.stop_row()
-        check("the person's own door lists the session's Stop", stop is not None)
+        check("the person's own MCP server lists the session's Stop", stop is not None)
         text, failed = agents[0].call("tilo_do", {"path": "session#stop-agent",
                                                   "args": {"agent": shell.agents()[-1].get("key")}})
         check("an agent is not offered it", failed, text.splitlines()[0][:100] if text else "")
-        # The same door speaks the control protocol to a program inside an app this
+        # The same server speaks the control protocol to a program inside an app this
         # session started, and to nothing else: a program of this login's own is told so.
         with socket.socket(socket.AF_UNIX) as outsider:
             outsider.settimeout(30)
-            outsider.connect(str(shell.door))
+            outsider.connect(str(shell.mcp))
             outsider.sendall(b'{"op":"state_dump"}\n')
             reply = b""
             while not reply.endswith(b"\n"):
@@ -382,7 +382,7 @@ def main() -> int:
         print("\n[7] the person revokes what let an agent in")
         # A client of the same program, admitted as its own connection: Revoke takes back its
         # work here, and the next client of that program is asked about, as the first was.
-        again = Agent(shell.door, "Claude Code")
+        again = Agent(shell.mcp, "Claude Code")
         agents.append(again)
         shell.answer(choice=1)
         check("a client of the program is admitted",
@@ -403,7 +403,7 @@ def main() -> int:
               json.dumps(shell.agents())[:160])
         # What let it in is not the previous answer: the next client of that program is asked
         # about, and served once the person answers.
-        next_client = Agent(shell.door, "Claude Code")
+        next_client = Agent(shell.mcp, "Claude Code")
         agents.append(next_client)
         check("the next client of the program waits for the person",
               not next_client.hears(1.0))

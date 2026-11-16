@@ -127,7 +127,7 @@ fn arguments(value: Value) -> Map<String, Value> {
 }
 
 /// An action runs on the worker and its result lands in the reading the
-/// service publishes; the door checks the arguments before anything runs.
+/// service publishes; the action API checks the arguments before anything runs.
 #[test]
 fn an_action_lands_in_the_reading() {
     let mut services = Services::default();

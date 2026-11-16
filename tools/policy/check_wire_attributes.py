@@ -410,7 +410,7 @@ def use_tree_path(tree: str, name: str, prefix: tuple[str, ...] = ()) -> tuple[s
 
 def narrowed(declared: list, path: tuple[str, ...]) -> list:
     """Of several declarations of one name in a crate, those in the module `path`
-    names (`crate::workspaces::door` is `src/workspaces/door.rs`); all of them when
+    names (`crate::workspaces::listing` is `src/workspaces/listing.rs`); all of them when
     the path names no module that tells them apart."""
     if len({source for source, _, _ in declared}) <= 1:
         return declared

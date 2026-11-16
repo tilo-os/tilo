@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Fixed installed first-use qualifier; all assertions run on normal action doors."""
+"""Fixed installed first-use qualifier; all assertions run on normal action APIs."""
 import argparse
 import array
 import socket

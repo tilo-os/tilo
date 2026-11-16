@@ -93,7 +93,7 @@ fn offered(app: &mut TestApp<PlayerApp>) -> Vec<String> {
 }
 
 #[test]
-fn the_door_offers_a_by_app_verb_to_nobody_and_takes_it_from_nobody() {
+fn the_api_offers_a_by_app_verb_to_nobody_and_takes_it_from_nobody() {
     let mut app = TestApp::<PlayerApp>::for_person(&ada()).unwrap();
     let played = app.person::<Played>().unwrap();
     app.harness().relayout();

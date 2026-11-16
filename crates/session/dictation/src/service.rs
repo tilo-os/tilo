@@ -40,7 +40,7 @@ pub fn dictation_resource() -> ResourceSpec {
 }
 
 /// What the session was asked of dictation: by the person's key, by the
-/// palette, or by an app through the door.
+/// palette, or by an app through the action API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
     /// The dictation key: start one, or finish the one listening.

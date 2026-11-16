@@ -104,7 +104,7 @@ must_not_contain "$CONFINEMENT" 'CAP_NET_BIND_SERVICE' \
 
 echo "== nothing listens on the network =="
 must_contain "$SOCKET_DROPIN" '^ListenStream=/run/cups/cups.sock' \
-    "the local socket must be the only door"
+    "the local socket must be the only way in"
 must_not_contain "$SOCKET_DROPIN" '^ListenStream=[^/]' \
     "a non-path ListenStream is a TCP listener"
 must_contain "$CUPSD_CONF" '^Listen /run/cups/cups.sock' \

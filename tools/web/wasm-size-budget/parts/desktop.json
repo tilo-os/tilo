@@ -118,7 +118,7 @@
  "tilo_browser_runtime::browser": 252062,
  "tilo_browser_runtime::desktop": 64343,
  "tilo_browser_runtime::host_services": 13706,
- "tilo_browser_runtime::identity_door": 10262,
+ "tilo_browser_runtime::identity_api": 10262,
  "tilo_browser_runtime::over_page": 24145,
  "tilo_browser_runtime::shell": 62852,
  "tilo_browser_runtime::storage": 9124,

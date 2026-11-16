@@ -119,7 +119,7 @@ pub async fn enter_invitation(
 /// The provider a relay answers its host operations under: creating,
 /// listing and entering the workspaces it governs. Only the devices of the
 /// relay's own person are offered them, and invoking one is decided as
-/// every door decides a host operation.
+/// every action API decides a host operation.
 pub const HOST_ACTIONS_PROVIDER: &str = "tilo.host";
 /// The one resource the host operations are published on.
 pub const HOST_WORKSPACES_RESOURCE: &str = "host.workspaces";

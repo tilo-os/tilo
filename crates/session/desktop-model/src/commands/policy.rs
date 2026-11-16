@@ -226,7 +226,7 @@ mod tests {
     use crate::layout::{Strip, Tab, TileContent, WindowGroup};
     use crate::width::WindowWidth;
 
-    /// A guest who came in through a public workspace's door: the workspace
+    /// A guest who came in through a public workspace's entry: the workspace
     /// lets guests write, as members do.
     const GUEST: Standing<'static> = Standing {
         person: "guest",

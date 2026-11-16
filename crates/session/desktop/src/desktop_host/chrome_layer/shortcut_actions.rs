@@ -171,7 +171,7 @@ impl DesktopChrome {
 
     /// Open the app picker, as an empty shell's own button does: search over the apps, for a new
     /// window of the one the person chooses, placed by the shell's rule. The shell carries this out
-    /// itself; the surface's verb door refuses it.
+    /// itself; the surface's verb API refuses it.
     fn open_the_app_picker(&self) {
         self.handle
             .open_search(ui::search::Scope::WindowGroup(None), None);

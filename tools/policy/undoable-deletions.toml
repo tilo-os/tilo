@@ -6,7 +6,7 @@
 # person who is always asked about an ordinary deletion has learned to answer
 # without reading. tools/policy/check_action_confirmation.py therefore refuses
 # such an action unless it is tagged `undo:irreversible` — which says what it
-# destroys, and makes every door ask — or listed here with the reason Undo
+# destroys, and makes every action API ask — or listed here with the reason Undo
 # cannot take it back.
 #
 # A reason says what is lost outside what Undo holds, and in whose words the

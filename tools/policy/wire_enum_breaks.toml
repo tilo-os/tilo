@@ -164,19 +164,19 @@ enum = "HostRequest"
 reason = "write-only: the desktop hands its embedded page a JSON list of requests, tagged by name (`rename_all = kebab-case`), and nothing deserializes it back, so the requests that opened and sent a Chat message take their names with them and their places carry no bytes"
 
 [[break]]
-file = "crates/session/messaging-service/src/door.rs"
+file = "crates/session/messaging-service/src/service"
 enum = "Call"
-reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the calls that carried private Tilo texts went with that lane, and no byte of the door is kept"
+reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the calls that carried private Tilo texts went with that lane, and no byte of the wire is kept"
 
 [[break]]
-file = "crates/session/messaging-service/src/door.rs"
+file = "crates/session/messaging-service/src/service"
 enum = "Reply"
-reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the reply carrying a device certificate went with the private Tilo lane, and no byte of the door is kept"
+reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the reply carrying a device certificate went with the private Tilo lane, and no byte of the wire is kept"
 
 [[break]]
-file = "crates/session/messaging-service/src/door.rs"
+file = "crates/session/messaging-service/src/service"
 enum = "PublicationKind"
-reason = "the kind of an account the service publishes into the person's accounts record, tagged by name on the same one-image door; the compositor turns it into that record's own fields, which keep no variant name, so the Tilo account kind went with the lane that received private texts"
+reason = "the kind of an account the service publishes into the person's accounts record, tagged by name on the same one-image wire; the compositor turns it into that record's own fields, which keep no variant name, so the Tilo account kind went with the lane that received private texts"
 
 [[break]]
 file = "crates/hosting/tilo-relay-protocol/src/operator.rs"
@@ -211,7 +211,7 @@ reason = "drops `Browser`, its last variant, so every other variant keeps its po
 [[break]]
 file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
 enum = "WorkspacesRequest"
-reason = "puts the wait-list requests back at the places they kept when retired: a page and the host it asks are the same build (the relay serves the page's own assets), and these requests are live messages of a session or a door, never bytes kept anywhere, so nothing written under the retirement is read back"
+reason = "puts the wait-list requests back at the places they kept when retired: a page and the host it asks are the same build (the relay serves the page's own assets), and these requests are live messages of a session or a server, never bytes kept anywhere, so nothing written under the retirement is read back"
 
 [[break]]
 file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
@@ -331,14 +331,14 @@ reason = "the task-run actors went with the task-run path; the variants left kee
 [[break]]
 file = "crates/hosting/tilo-relay-protocol/src/entering.rs"
 enum = "EnterRefusal"
-reason = "`Door` is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
+reason = "the retired variant is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
 
 [[break]]
 file = "crates/hosting/tilo-relay-protocol/src/entering.rs"
 enum = "Through"
-reason = "`Door` is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
+reason = "the retired variant is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
 
 [[break]]
 file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"
 enum = "SettingsChange"
-reason = "`Door` is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
+reason = "the retired variant is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"

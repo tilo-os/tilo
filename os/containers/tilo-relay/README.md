@@ -64,5 +64,5 @@ This image is the **relay / home peer** — not the MCP server:
 
 1. **Relay / headless store-and-forward** — this daemon (authenticated workspace host).
 2. **Home server / full always-on peer** — this Compose file: host-capable device cert, full file replica, LAN pair from Settings.
-3. **Agent on an existing OS** — an MCP client talking to the **local** runtime beside this relay: `tilo mcp` over the profile's own socket, or the host's own `/v1` API and MCP door (`docs/developers/api.md`). Nothing here is exposed to the network.
+3. **Agent on an existing OS** — an MCP client talking to the **local** runtime beside this relay: `tilo mcp` over the profile's own socket, or the host's own `/v1` API and MCP server (`docs/developers/api.md`). Nothing here is exposed to the network.
 

@@ -347,7 +347,7 @@ fn a_collaborators_new_paragraph_appears_without_moving_me() {
 }
 
 #[test]
-fn an_agent_edit_through_the_action_door_is_shown_and_undoable() {
+fn an_agent_edit_through_the_action_api_is_shown_and_undoable() {
     let mut app = open();
     app.harness().type_text("typed");
     let block = app.read_document(|doc| {

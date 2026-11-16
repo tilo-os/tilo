@@ -19,7 +19,7 @@
 //! has the compositor, so the bar puts what the person chose on a [`Link`]
 //! ([`Ask`]) and the session carries it out and hands back what came of it
 //! ([`Scene`]). Its actions ([`CaptureEffect`]) reach the same asks through
-//! the normal action door, so a shortcut, the palette and an agent take a
+//! the normal action API, so a shortcut, the palette and an agent take a
 //! screenshot the way the bar does.
 
 pub mod audio;

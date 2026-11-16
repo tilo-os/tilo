@@ -50,7 +50,7 @@ TOOLKIT_RESOURCE_VALUE = re.compile(
 )
 # A `tilo-app` framework app declares a resource type and hosts it through
 # `ResourceApp`; the framework publishes that resource's actions (named
-# declarations plus the typed `apply` door), builds its runtime Resource value
+# declarations plus the typed `apply` API), builds its runtime Resource value
 # and installs its replay decoder in the component registry.
 FRAMEWORK_APP = re.compile(
     r"\bimpl\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*ResourceApp\s+for\s+"
@@ -245,7 +245,7 @@ CLOSURE_CALLBACK_DEFINITION = re.compile(
     re.DOTALL,
 )
 CLOSURE_TYPE = re.compile(r"\bFn(?:Mut|Once)?\s*\(")
-# The dispatcher's doors, and what a call through one submits: a published
+# The dispatcher's action APIs, and what a call through one submits: a published
 # action of the resource. `dispatcher.submit(Tracker::PLACE.with(..))` is a
 # verb, `dispatcher.submit(Tracker::paths().title.set(..))` a field edit;
 # either names its action at the call, so the audit reads it there.
@@ -564,8 +564,8 @@ LEGACY_API_BANS = {
         re.compile(r"\bActionAddress\s*::\s*new\s*\("),
         "hand-built ActionAddress; name the action through its typed reference "
         "(`R::VERB.on(..)`, `effect.address_on(..)`, `invoke.address()`), take it from "
-        "what is published (`resource.action_address(..)`, `door::published`), or invoke "
-        "it through the door (`call_on`)",
+        "what is published (`resource.action_address(..)`, `api::published`), or invoke "
+        "it through the action API (`call_on`)",
     ),
     "untyped_action_args": (
         re.compile(r"\bargs\s*\.\s*(?:text|get|boolean|integer|number|array)\s*\("),

@@ -16,7 +16,7 @@
 //! lets them do ([`crate::ownership::act_node`]), and it binds no window to
 //! another record than the one it showed: a record route is a window's
 //! identity, so not even its maker rebinds it. Whoever holds the
-//! record decides a write with it before taking it in: a relay at its door,
+//! record decides a write with it before taking it in: a relay at its api,
 //! a governor admitting it, and every device that receives it.
 
 use std::collections::BTreeSet;
@@ -71,7 +71,7 @@ pub struct NotTheirView {
     pub owner: String,
 }
 
-/// A workspace's shared desktop as a door that decides its writes follows it.
+/// A workspace's shared desktop, whose writes its action API decides.
 pub struct DesktopGuard {
     doc: AutoCommit,
 }
@@ -230,19 +230,19 @@ impl DesktopGuard {
         Self { doc }
     }
 
-    /// The desktop as the door holds it.
+    /// The desktop as the API holds it.
     #[must_use]
     pub const fn doc(&self) -> &AutoCommit {
         &self.doc
     }
 
-    /// Take in changes the door's own device made, without judging them.
+    /// Take in changes the API's own device made, without judging them.
     pub fn absorb(&mut self, other: &mut AutoCommit) {
         let _ = self.doc.merge_incoming(other);
     }
 
-    /// Take in `mutation`, a write the door's own device made, without judging it: the
-    /// writes the door decides later build on it, and would otherwise be decided against
+    /// Take in `mutation`, a write the API's own device made, without judging it: the
+    /// writes the API decides later build on it, and would otherwise be decided against
     /// a desktop that lacks it.
     ///
     /// # Errors

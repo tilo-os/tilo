@@ -98,7 +98,7 @@ Examples:
 
 /// The file in a headless session's state its agent key is kept in: the session is started with it
 /// (`tilo-session --agent-key`), its person's root certifies a grant for it, and an MCP client
-/// presenting it is admitted without anyone answering the door.
+/// presenting it is admitted without anyone answering it.
 pub const AGENT_KEY_FILE: &str = "agent.key";
 
 /// What the command line asked for.
@@ -223,7 +223,7 @@ pub fn script(repo: &Path, options: &Options, ready: &Path, build: bool) -> Comm
     apps_to_build(&mut command, options);
     let mut session = options.session.clone();
     if options.mode == Mode::Headless {
-        // A headless session has no one at its door: the person starts it with a key for their
+        // A headless session has no one to answer: the person starts it with a key for their
         // agent.
         session.push("--agent-key".into());
         session.push(options.state.join(AGENT_KEY_FILE).display().to_string());

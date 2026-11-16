@@ -19,7 +19,7 @@ import time
 from typing import Any, Callable
 
 NOTES_APP = "so.tilo.notes"
-# The session's own services are offered on its door under this provider.
+# The session's own services are offered on its action API under this provider.
 SESSION_PROVIDER = "so.tilo.session"
 # The shell's "New workspace" (`tilo_session::desktop_surface::ChromeEffect`).
 NEW_WORKSPACE = "desktop:chrome\u001fnew-workspace"

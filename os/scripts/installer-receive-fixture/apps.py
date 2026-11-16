@@ -1,4 +1,4 @@
-"""Receiving app evidence through the installed semantic door and real Flatpak.
+"""Receiving app evidence through the installed semantic API and real Flatpak.
 
 Source descriptions select observations, never grant access. Missing actions,
 unknown completion or process retirement refuse the qualification.

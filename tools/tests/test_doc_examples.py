@@ -349,7 +349,7 @@ class DocExampleTests(unittest.TestCase):
         self.assertIn("is not lowercase kebab case", output)
         self.assertNotIn("[sh]", output)
 
-    def test_run_needs_a_door(self) -> None:
+    def test_run_needs_an_api(self) -> None:
         api, tilo = self.shell_book("""
             ```sh example=listing
             exit 0

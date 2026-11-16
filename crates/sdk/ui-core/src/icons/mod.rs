@@ -2592,7 +2592,7 @@ mod tests {
             assert_eq!(
                 icon_subpaths(Icon::Home).len(),
                 2,
-                "home = roof + doorway paths"
+                "home = roof + entry paths"
             );
             for icon in [
                 Icon::PenTool,

@@ -367,7 +367,7 @@ def prepare(state: Path, *, apps: str = APPS, built: bool = False, remote=None) 
 class Agent:
     """One MCP client at a session's MCP server, on its own connection: a
     program of the login asking to act as an agent, served once the person
-    answers the sheet the door puts up."""
+    answers the sheet the MCP server puts up."""
 
     def __init__(self, path: Path, name: str) -> None:
         self.name = name
@@ -408,12 +408,12 @@ class Agent:
                 return message
 
     def hears(self, timeout: float = 0.0) -> bool:
-        """Whether the door has sent anything back on this connection yet."""
+        """Whether the MCP server has sent anything back on this connection yet."""
         ready, _, _ = select.select([self.sock], [], [], timeout)
         return bool(ready)
 
     def answered(self, timeout: float = 120.0) -> bool:
-        """Whether the door answered its `initialize`, waiting up to `timeout`."""
+        """Whether the MCP server answered its `initialize`, waiting up to `timeout`."""
         if self.served is not None:
             return "error" not in self.served
         self.sock.settimeout(timeout)
@@ -421,7 +421,7 @@ class Agent:
         return self.served is not None and "error" not in self.served
 
     def call(self, tool: str, arguments: dict):
-        """(text, failed) of one tool call, once the door answers it.
+        """(text, failed) of one tool call, once the MCP server answers it.
 
         A connection the person stopped answers nothing: writing to it fails,
         which is the same answer as no reply at all."""

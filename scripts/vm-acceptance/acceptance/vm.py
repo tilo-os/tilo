@@ -1,4 +1,4 @@
-"""The suite's only door into the VM: the `tilo-vm` CLI.
+"""The suite's only way into the VM: the `tilo-vm` CLI.
 
 Everything goes through `tilo-vm control` (the compositor's control socket:
 semantic ops first), `tilo-vm input` (uinput devices on the slot's own seat),

@@ -220,7 +220,7 @@ pub fn shell_resource(
 /// A card is one declaration ([`crate::launchpad::LaunchpadAction`]): the host publishes it as a
 /// host action, which is how the palette and the catalogue of actions name it, and this lists the
 /// same verb to agents and scripts that invoke an action by the resource it is published on. Both
-/// reach the verb through the host's one door.
+/// reach the verb through the host's one action API.
 #[must_use]
 pub fn launchpad_resource(cards: &[crate::launchpad::LaunchpadAction]) -> ResourceSpec {
     let cards = cards

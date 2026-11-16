@@ -1,4 +1,4 @@
-//! The Settings app's door to speaker groups.
+//! The Settings app's API for speaker groups.
 //!
 //! Settings asks through the launcher-authenticated collaboration broker
 //! with [`runtime_collab::SpeakerCommand`]; this module answers from the

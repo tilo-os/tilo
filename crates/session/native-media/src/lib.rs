@@ -9,7 +9,7 @@
 //!   a channel and knows who is in the record's channels, and the session
 //!   that says where one call stands and what microphone it sends.
 //! - [`service::NativeMediaService`] — the call service an app reaches
-//!   through its session's action door: joining, leaving, muting, deafening
+//!   through its session's action API: joining, leaving, muting, deafening
 //!   and watching, each taken only above the last intent its own admitted
 //!   connection carried.
 

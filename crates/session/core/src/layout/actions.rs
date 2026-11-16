@@ -1,4 +1,4 @@
-//! The layout's action door: what a palette, a script, an agent and the host's own calls
+//! The layout's action API: what a palette, a script, an agent and the host's own calls
 //! reach its actions through.
 
 use std::cell::RefCell;
@@ -19,7 +19,7 @@ fn completed() -> ui::host_operation::ResourceOperationStart {
     ui::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
 }
 
-/// The layout's published side: the one door the palette, a script, an agent and the host's
+/// The layout's published side: the one action API the palette, a script, an agent and the host's
 /// own calls reach its actions through, beside the desktop's own.
 #[derive(Clone)]
 pub struct LayoutActions {
@@ -39,7 +39,7 @@ pub struct LayoutActions {
 }
 
 impl LayoutActions {
-    /// The door over `layout` , whose changes wait while `busy` says the person is arranging
+    /// The action API over `layout` , whose changes wait while `busy` says the person is arranging
     /// or typing.
     #[must_use]
     pub fn new(
@@ -205,13 +205,13 @@ impl LayoutActions {
         let find = Rc::clone(&self.find);
         let ask = Rc::clone(&self.ask);
         let ask_origin = Rc::clone(&self.ask_origin);
-        let door = self.clone();
+        let api = self.clone();
         let needle = text.trim().to_owned();
         let (asked, text, view) = (asked.to_owned(), text.to_owned(), view.to_owned());
         find(
             &needle,
             Box::new(move |hits| {
-                if let Err(why) = door.layout.borrow_mut().place_found(Found {
+                if let Err(why) = api.layout.borrow_mut().place_found(Found {
                     asked: &asked,
                     text: &text,
                     view: &view,
@@ -268,7 +268,7 @@ impl LayoutActions {
             height: *seen_height,
         });
         self.find_and_place_found(asked, text, view, *strip, ((*x, *y), size, seen), busy);
-        // The search is under way and the place stands on a later pass: the door answers as it
+        // The search is under way and the place stands on a later pass: the API answers as it
         // always did for an layout action, which is complete when the ask is taken. Nothing of
         // the place is left for the caller to read back, so it is not a pending invocation
         // (`Accepted` would be, and nothing completes it).

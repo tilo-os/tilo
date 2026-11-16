@@ -42,7 +42,7 @@ agent take there, with the person's answering device held by the check
      it releases: this window's next page action, and a Linux command in the
      same workspace's VM.
 
-usage: hosted-visa.py DOOR SERVER_KEY OUT_DIR FORM_URL [--open|--fill]
+usage: hosted-visa.py API_URL SERVER_KEY OUT_DIR FORM_URL [--open|--fill]
 
 SERVER_KEY is the startup's server key (`tilo keys create`). OUT_DIR keeps
 what it found: the capture, the page as the agent read it back, the reviewer's
@@ -75,7 +75,7 @@ from pathlib import Path
 from approver import Person
 from tilo import AsyncTilo, ProtocolError, Refused, Run
 
-DOOR, SERVER_KEY, OUT, FORM_URL = sys.argv[1:5]
+API_URL, SERVER_KEY, OUT, FORM_URL = sys.argv[1:5]
 
 RUN_TITLE = "Fill Jane Doe's visa application"
 REVIEWER_EMAIL = "rosa@example.com"
@@ -174,7 +174,7 @@ async def outcome(call: object) -> object:
 
 
 async def refusal_of(call: object) -> str:
-    """How the door refused `call`: its code and message and the steps it
+    """How the API refused `call`: its code and message and the steps it
     named, or `allowed`."""
     try:
         await outcome(call)
@@ -547,14 +547,14 @@ def post_invitee(link: str) -> dict:
 
 async def open_phase(report: dict[str, object]) -> int:
     """The workspace, its agent's key, and Browser opened in its VM."""
-    backend = AsyncTilo(key=SERVER_KEY, url=DOOR)
+    backend = AsyncTilo(key=SERVER_KEY, url=API_URL)
     say("a. the startup makes an applicant's workspace and mints their agent's key")
     workspace = await backend.workspaces.create("Visa applicant: Jane Doe")
     report["workspace"] = workspace.id
     made = backend.workspace(workspace.id)
     minted = await made.keys.mint(name="Jane Doe's agent")
     check(minted.mcp_url.endswith(f"/w/{workspace.id}/mcp"), "the key reaches that workspace alone")
-    agent = AsyncTilo(key=minted.token, url=DOOR)
+    agent = AsyncTilo(key=minted.token, url=API_URL)
     aws = agent.workspace(workspace.id)
 
     say("a. the key opens Browser in the workspace's VM")
@@ -587,7 +587,7 @@ async def fill_phase(report: dict[str, object]) -> int:
     with open(os.path.join(OUT, "open.json")) as opened:
         state = json.load(opened)
     workspace = state["workspace"]
-    agent = AsyncTilo(key=state["key"], url=DOOR)
+    agent = AsyncTilo(key=state["key"], url=API_URL)
     aws = agent.workspace(workspace)
     page = Page(aws, str(state["window"]))
     person = Person(APPROVER, PERSON_ROOT, HOST, check=check)
@@ -789,7 +789,7 @@ async def fill_phase(report: dict[str, object]) -> int:
             (accepted.get("joined") or {}).get("role") == "editor",
             f"the reviewer joined as an editor: {accepted}",
         )
-        reviewer = AsyncTilo(key=accepted["key"], url=DOOR)
+        reviewer = AsyncTilo(key=accepted["key"], url=API_URL)
         rws = reviewer.workspace(workspace)
         listing = await rws.ls("browser")
         check(
@@ -805,7 +805,7 @@ async def fill_phase(report: dict[str, object]) -> int:
 
     say("h. a key that may not operate web pages is asked about each page action")
     check(UNSCOPED_KEY, "the startup's key without the Browser scope is named")
-    unscoped = AsyncTilo(key=UNSCOPED_KEY, url=DOOR)
+    unscoped = AsyncTilo(key=UNSCOPED_KEY, url=API_URL)
     ows = unscoped.workspace(workspace)
     other, _ = await open_browser(ows)
     async with ows.run(RUN_TITLE):

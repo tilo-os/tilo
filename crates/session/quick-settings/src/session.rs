@@ -198,7 +198,7 @@ pub(crate) enum Refusal {
 }
 
 /// Whether `error` says the session serves nothing under the resource: either
-/// from the app's side of the wire, or with the door's own refusal.
+/// from the app's side of the wire, or with the API's own refusal.
 fn absent(error: &str) -> bool {
     error.starts_with("this session publishes no ") || error.starts_with("No service publishes ")
 }

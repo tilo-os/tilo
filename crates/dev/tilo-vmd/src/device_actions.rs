@@ -1,4 +1,4 @@
-//! The canonical console action door, carried by the existing owner-authenticated RPC.
+//! The canonical console action API, carried by the existing owner-authenticated RPC.
 
 use console_control::{catalog, wire};
 use serde_json::{Value, json};
@@ -76,7 +76,7 @@ impl Daemon {
             } => {
                 if let Err(refusal) = catalog::admit(PROVIDER, &resources(), &provider, &id, &args)
                 {
-                    // Door details can include malformed argument values. Return the
+                    // The refusal's details can include malformed argument values. Return the
                     // authoritative refusal code with a content-free human diagnostic.
                     return Ok(
                         json!({"err":{"code":refusal.code,"message":"Device action was refused; inspect its declared parameters and confirmation"}}),

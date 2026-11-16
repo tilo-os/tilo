@@ -403,7 +403,7 @@ fn named(args: &ActionArgs, name: &str, item: Item) -> Option<u64> {
 }
 
 /// The record key of a place, a strip or a row, as its actions take it. `0` for the keyless
-/// resource a package describes the kind with, which no door publishes.
+/// resource a package describes the kind with, which no api publishes.
 pub(super) fn count_of(key: &str) -> u64 {
     tilo_failure::ignored!(
         "a keyless resource has no count, and 0 is its count",
@@ -445,7 +445,7 @@ pub(super) fn place_label(words: &Words, place: &PlaceReading) -> String {
 /// `searching`, answered later into the app's records (shell.md §8). The invocation itself says,
 /// never a guess from the app's records.
 /// Feed what `specs` publish into `hasher` : each resource's id, kind and label, and its
-/// children's, so two revisions are equal exactly when the door publishes the same.
+/// children's, so two revisions are equal exactly when the action API publishes the same.
 pub(super) fn hash_resources(specs: &[ResourceSpec], hasher: &mut std::hash::DefaultHasher) {
     use std::hash::{Hash as _, Hasher as _};
     for spec in specs {

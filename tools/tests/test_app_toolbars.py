@@ -129,7 +129,7 @@ class AppToolbarsTests(unittest.TestCase):
             "    let nav = NavShell::new().content_header_leading(Box::new(path));\n"
             "    column().push(subpage_header(title, tx));\n"
             "}\n"
-            "fn subpage_header(title: &str, tx: &Door) -> El { todo!() }\n"
+            "fn subpage_header(title: &str, tx: &Api) -> El { todo!() }\n"
         )
         counts = app_toolbars.count_file(code)
         self.assertEqual(counts["nav-header-leading"], 2, "clearing the slot draws nothing")

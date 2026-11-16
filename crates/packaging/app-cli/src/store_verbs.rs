@@ -1,7 +1,7 @@
 //! The `app` verbs that are `tilo-install`'s and the launcher's work, said
 //! with app names: pin, unpin, verify, inspect, gc, trust, runtimes and
 //! what is running. Each runs the program that owns it, so there is one
-//! implementation and `app` is only the door.
+//! implementation and `app` is only the way in.
 
 use std::process::{Command, ExitCode, ExitStatus};
 

@@ -325,7 +325,7 @@ impl OverviewPanel {
             self.naming = None;
         }
         // A question about a row the shell no longer shows goes with it: there is nothing left to
-        // decide about a grant the door already took back.
+        // decide about a grant the API already took back.
         if let Some(key) = self.tilo_asking.clone()
             && self.tilo_row(&key).is_none()
         {

@@ -25,7 +25,7 @@ pub struct Manifest {
     /// image gate must drive the exact manifest/payload pair that was packed.
     #[serde(default, skip_serializing_if = "Accessibility::is_empty")]
     pub accessibility: Accessibility,
-    /// `[actions]` block — what the app may do on the session's action door
+    /// `[actions]` block — what the app may do on the session's action API
     /// under its own identity, beyond the actions it publishes itself.
     #[serde(default, skip_serializing_if = "ActionAccess::is_empty")]
     pub actions: ActionAccess,
@@ -653,7 +653,7 @@ impl TrustAttestation {
     }
 }
 
-/// `[actions]` — an application's own standing on the session's action door.
+/// `[actions]` — an application's own standing on the session's action API.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionAccess {
     /// Read the catalogue of actions the person using the app is offered:

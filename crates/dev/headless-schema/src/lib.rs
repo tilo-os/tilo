@@ -72,7 +72,7 @@ pub enum Action {
     Invoke(Invocation),
 }
 
-/// Invoke one action the app publishes, by its `(resource, action)` address, through the same door
+/// Invoke one action the app publishes, by its `(resource, action)` address, through the same action API
 /// every other caller uses. No coordinates: the scenario names what to do, not where to click.
 #[derive(Clone, PartialEq)]
 pub struct Invocation {
@@ -83,7 +83,7 @@ pub struct Invocation {
     pub confirm: bool,
     /// The exact phrase for an action whose contract asks for a typed one.
     pub confirmation_phrase: Option<String>,
-    /// Expect the invocation to be refused with this door code
+    /// Expect the invocation to be refused with this refusal code
     /// (`unknown_action`, `invalid_arguments`, `action_unavailable`,
     /// `action_confirmation_required`, `action_failed`) instead of running.
     pub expect_error: Option<String>,

@@ -13,7 +13,7 @@ use package_store::{Catalog, PackageStore, SystemStore};
 #[derive(Debug, Parser)]
 #[command(
     name = "tilo-app-host",
-    about = "Tilo app host: the package store's privileged door, over a control socket."
+    about = "Tilo app host: the package store's privileged service, over a control socket."
 )]
 struct Cli {
     /// Control socket path. Default:

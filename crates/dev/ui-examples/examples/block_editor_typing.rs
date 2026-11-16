@@ -18,7 +18,7 @@ use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, RawKeyEvent, Win
 use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
 
 /// A paragraph of ordinary prose: what a long note is made of.
-const PARAGRAPH: &str = "The rehearsal ran long and the doors opened late, so the \
+const PARAGRAPH: &str = "The rehearsal ran long and the venue opened late, so the \
 first half went out to a room that was still finding its seats. Nobody minded much.";
 
 const VIEWPORT: (u32, u32) = (1200, 800);

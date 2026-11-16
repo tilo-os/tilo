@@ -57,7 +57,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-# The window door an app's later windows are asked for on, and the release a
+# The window channel an app's later windows are asked for on, and the release a
 # launch takes it with.
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 launcher = { path = "../../packaging/launcher" }
@@ -68,7 +68,7 @@ package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 tilo-app-state = { path = "../../system/app-state" }
 hex.workspace = true
-# The window request the door carries, as the app reads it.
+# The window request the channel carries, as the app reads it.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

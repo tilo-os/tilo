@@ -1,5 +1,5 @@
 # The community a Tilo computer is in by default: the home workspace of this
-# site, joined through the site's own door as the person's session starts.
+# site, joined through the site's own entry as the person's session starts.
 # The person leaves it from the workspace switcher like any other workspace,
 # and joins it again from "Join a workspace…"; once they joined it or left
 # it, no computer of theirs joins it for them again. An administrator names

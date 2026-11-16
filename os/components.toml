@@ -147,7 +147,7 @@ files = [
   { from = "osk", to = "/usr/bin/tilo-osk", mode = "0755" },
 ]
 
-# The network-answers helper: search's one door to the network (exchange
+# The network-answers helper: search's one way to the network (exchange
 # rates), run by the compositor, which never opens a socket itself. It
 # confines itself to reading the trust bundle and resolver files and to
 # connecting to HTTPS.

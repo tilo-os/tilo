@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase deferred_semantic_tree_publishes_inert_address_and_uses_confirmation_door;
+    phase deferred_semantic_tree_publishes_inert_address_and_uses_confirmation_api;
     {
         use std::sync::atomic::Ordering;
         let (widget, calls, _) = deferred_fixture();

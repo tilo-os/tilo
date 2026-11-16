@@ -1,7 +1,7 @@
 """Give the Lounge a history: a member, with a key of their own, posts
 MESSAGES chat messages through the API server as any member's agent does.
 
-    python3 seed-history.py DOOR KEY RECORDS_DIR MESSAGES
+    python3 seed-history.py API_URL KEY RECORDS_DIR MESSAGES
 
 RECORDS_DIR is the relay's state of the workspace (stack.sh's
 relay/lounge/relay), whose size is reported before and after: the host
@@ -23,9 +23,9 @@ import time
 
 from tilo import AsyncTilo, Refused
 
-DOOR, KEY, RECORDS, MESSAGES = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+API_URL, KEY, RECORDS, MESSAGES = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 WORDS = ("tilo lounge workspace shell window share agent record history people call notes "
-         "sheets music photos relay door browser terminal build release sync device").split()
+         "sheets music photos relay entry browser terminal build release sync device").split()
 CHANNELS = ("c_general", "c_feedback")
 
 
@@ -34,7 +34,7 @@ def size(path: str) -> int:
 
 
 async def main() -> int:
-    tilo = AsyncTilo(key=KEY, url=DOOR)
+    tilo = AsyncTilo(key=KEY, url=API_URL)
     lounge = tilo.workspace("Lounge")
     rng = random.Random(1)
     began, posted = time.monotonic(), 0
@@ -56,7 +56,7 @@ async def main() -> int:
     took = 0.0
     first = 0.0
     while posted < MESSAGES:
-        # One at a time: the door answers one action per request, and a post
+        # One at a time: the API answers one action per request, and a post
         # changes the part the next one is posted to.
         sent = time.monotonic()
         await post(posted)

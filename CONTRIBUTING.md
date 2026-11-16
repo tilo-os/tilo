@@ -110,7 +110,7 @@ directory, session bus and state, and never reach your session bus, the system
 bus, systemd or logind; `cargo desktop --check` proves that on any machine,
 without a display. Close the window or press Ctrl-C to stop either.
 `cargo headless` prints how to drive it once it answers (`tilo-control` on its
-control socket, and an MCP agent with the session's agent key, which its door
+control socket, and an MCP agent with the session's agent key, which the MCP server
 admits without a click); `--ready FILE` writes the same as JSON for a script.
 
 `cargo web` builds the desktop bundle and serves it with the relay, API server

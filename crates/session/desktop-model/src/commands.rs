@@ -622,7 +622,7 @@ fn place(
 }
 fn remove(workspace: &mut Workspace, at: TabIndex, leaving: Leaving) -> Result<Tab, String> {
     let (strip, group, tab) = at;
-    // The one door every close goes through: what a person closed is
+    // The one api every close goes through: what a person closed is
     // remembered here, so it can be reopened, whatever closed it. A window
     // only moving keeps nothing to undo.
     if leaving == Leaving::Closed {

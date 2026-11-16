@@ -57,7 +57,7 @@ ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-cod
 # change, if it can alter the shell and the session's whole test suite is not
 # scheduled anyway, the shell's own integration tests run instead — a window
 # becomes a tab of the strip, an app opens where the shell puts it, the owner's
-# door answers. When the suite is scheduled they come with it and the gate adds
+# API answers. When the suite is scheduled they come with it and the gate adds
 # nothing.
 SHELL_PACKAGES = (
     "crates/session/desktop",
@@ -72,7 +72,7 @@ DESKTOP_GATE_MANIFEST = "crates/session/session/Cargo.toml"
 # of the package's one test binary (`tests/it.rs` includes each file), so the
 # gate names that binary once and picks the modules out by the name each test
 # gained from it.
-DESKTOP_GATE_TESTS = ("hosted_windows", "launch", "owner_door")
+DESKTOP_GATE_TESTS = ("hosted_windows", "launch", "owner_control")
 DESKTOP_GATE_BINARY = "it"
 
 

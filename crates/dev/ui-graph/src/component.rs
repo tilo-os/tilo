@@ -316,7 +316,7 @@ impl Accepts {
 }
 
 /// Something that happens to a component. What it does is data: an action reference, invoked
-/// through the door, or a view-state update; never a closure.
+/// through the action API, or a view-state update; never a closure.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Event {
@@ -330,7 +330,7 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Type>,
     /// Whether the event is the action of the control that raises it: a press runs the action the
-    /// view bound to it, through the door, so the press and an agent's invocation are the one
+    /// view bound to it, through the action API, so the press and an agent's invocation are the one
     /// route. An event that is not is the view's own: it is reported to the view.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub press: bool,

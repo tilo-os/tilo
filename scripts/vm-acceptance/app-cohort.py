@@ -57,7 +57,7 @@ def choose(rows, app, kind, operation, args, bound=None):
     return row
 
 
-class AppDoor:
+class AppApi:
     def __init__(self, vm, app, kind, bound, out):
         self.vm, self.app, self.kind, self.bound, self.out = vm, app, kind, bound, out
         self.sequence = 0
@@ -163,64 +163,64 @@ def store(vm, out):
         require(rows, "Store resource never appeared")
     require(not any(r.get("operation") == "use-flathub-for-account" for r in rows), "obsolete Flathub opt-in remains")
     row = choose(rows, STORE, "store.catalog", "inspect-catalogue", {})
-    return AppDoor(vm, STORE, "store.catalog", binding(row), out)
+    return AppApi(vm, STORE, "store.catalog", binding(row), out)
 
 
-def flatpak_flow(door, baseline):
+def flatpak_flow(api, baseline):
     require(CALCULATOR not in baseline["flatpak_apps"], "Calculator already installed; no first-install claim")
     require(baseline["flathub"] and all(r["official"] and not r["disabled"] for r in baseline["flathub"]),
             "official enabled Flathub prerequisite not observed")
-    initial = door.settled()
+    initial = api.settled()
     require(initial.get("flatpak_available") is True and initial.get("remotes_truncated") is False,
             "default Flatpak/remotes unavailable")
     remotes = [r for r in initial["remotes"] if r["name"] == "flathub" and r["disabled"] is False]
     require(remotes, "Flathub not exposed by Store")
     remote = next((r for r in remotes if r["scope"] == "account"), remotes[0])
-    door.call("browse-remote", {"remote": remote["resource"]}, timeout=300)
-    browsed = door.settled()
+    api.call("browse-remote", {"remote": remote["resource"]}, timeout=300)
+    browsed = api.settled()
     require(browsed["matching"] > 0, "Flathub browse returned no observable apps")
-    door.call("set-search", {"query": "Calculator"})
-    searched = door.settled()
+    api.call("set-search", {"query": "Calculator"})
+    searched = api.settled()
     require(searched["query"] == "Calculator" and any(i["id"] == CALCULATOR for i in searched["items"]),
             "real Flatpak Calculator search result missing")
-    door.call("show-details", {"app": CALCULATOR})
-    detail = door.settled(CALCULATOR)
+    api.call("show-details", {"app": CALCULATOR})
+    detail = api.settled(CALCULATOR)
     item = detail["detail"]
     require(detail["selected_app"] == CALCULATOR and item["source"] == "Flatpak"
             and item["installed"] is False and all(item.get(k) for k in ("name", "description", "latest_version", "repository", "trust")),
             "readable first-install details missing")
-    door.call("flatpak-install", {"app": CALCULATOR}, timeout=600)
-    item = door.settled(CALCULATOR)["detail"]
+    api.call("flatpak-install", {"app": CALCULATOR}, timeout=600)
+    item = api.settled(CALCULATOR)["detail"]
     require(item["installed"] is True, "Store did not observe installation")
-    door.vm.run("slot", "exec", "--", "flatpak", "--user", "info", CALCULATOR)
-    before = windows(door.vm.state(), CALCULATOR)
+    api.vm.run("slot", "exec", "--", "flatpak", "--user", "info", CALCULATOR)
+    before = windows(api.vm.state(), CALCULATOR)
     require(not before, "Calculator window already open before first launch")
-    door.call("flatpak-open", {"app": CALCULATOR})
-    require(wait_until(lambda: windows(door.vm.state(), CALCULATOR), 60), "installed Calculator never mapped")
+    api.call("flatpak-open", {"app": CALCULATOR})
+    require(wait_until(lambda: windows(api.vm.state(), CALCULATOR), 60), "installed Calculator never mapped")
     return {"app": CALCULATOR, "installed_before": False, "account_install_observed": True, "mapped": True}
 
 
-def package_flow(door, spec, local):
+def package_flow(api, spec, local):
     require(set(spec) == {"app", "root", "version", "path"} and re.fullmatch(r"[0-9a-f]{64}", spec["root"]),
             "fixture must name exact app/root/version and already sandbox-readable path")
     require(spec["app"] not in ("so.tilo.notes", STORE, BROWSER),
             "fixture must not touch Notes or replace the acceptance workers")
-    require(not windows(door.vm.state(), spec["app"]), "fixture app already has an owned window")
-    door.call("import-package", {"path": spec["path"]})
-    review = door.settled(spec["app"])
+    require(not windows(api.vm.state(), spec["app"]), "fixture app already has an owned window")
+    api.call("import-package", {"path": spec["path"]})
+    review = api.settled(spec["app"])
     require(review.get("imported_package") == {k: spec[k] for k in ("app", "root", "version")}, "reviewed identity differs")
     item = review["detail"]
     require(item["trust"] == ("TrustedAttestor" if local else "PublisherSigned"), "wrong independent trust route")
     baseline = item["installed"]
-    door.call("install-imported-package", {"app": spec["app"], "root": spec["root"]}, timeout=300)
-    result = door.settled(spec["app"])
+    api.call("install-imported-package", {"app": spec["app"], "root": spec["root"]}, timeout=300)
+    result = api.settled(spec["app"])
     require(result["detail"]["installed"] is True, "installed local package unobservable")
-    inventory = first_json(door.vm.run("slot", "exec", "--", "app", "list", "--installed", "--json"))
+    inventory = first_json(api.vm.run("slot", "exec", "--", "app", "list", "--installed", "--json"))
     installed = [row for row in inventory if row.get("package_id") == spec["app"]]
     require(len(installed) == 1 and installed[0]["version"] == spec["version"],
             "canonical installed inventory differs from reviewed version")
-    door.call("open-app", {"app": spec["app"]})
-    require(wait_until(lambda: windows(door.vm.state(), spec["app"]), 60),
+    api.call("open-app", {"app": spec["app"]})
+    require(wait_until(lambda: windows(api.vm.state(), spec["app"]), 60),
             "imported app never mapped")
     return {"route": "trusted-local" if local else "catalogue", "app": spec["app"], "root": spec["root"],
             "installed_before": baseline, "claim": "update/reuse" if baseline else "first-install"}
@@ -253,7 +253,7 @@ def fresh_browser(vm, out):
 
     result = wait_until(probe, 60)
     require(result, "queued Open did not create a new mapped tab and record; existing page left untouched")
-    return AppDoor(vm, BROWSER, "browser.page", result[0], out), result[1]
+    return AppApi(vm, BROWSER, "browser.page", result[0], out), result[1]
 
 
 def example_url(value):
@@ -267,16 +267,16 @@ def example_url(value):
         return False
 
 
-def browser_flow(door):
-    final_url = door.call("navigate", {"url": "https://example.com/"})
+def browser_flow(api):
+    final_url = api.call("navigate", {"url": "https://example.com/"})
     require(example_url(final_url), "HTTPS navigation completion missing")
-    settled = door.call("wait-page-settled", {"quiet_ms": 500, "timeout_ms": 10000})
+    settled = api.call("wait-page-settled", {"quiet_ms": 500, "timeout_ms": 10000})
     require(settled.get("data", {}).get("settled") is True, "successful job did not prove a settled page")
-    page = door.call("read-page")
+    page = api.call("read-page")
     require(page.get("provenance") == "web-content" and page.get("title") == "Example Domain"
             and example_url(page.get("url")) and "Example Domain" in page.get("outline", ""),
             "readable HTTPS page evidence missing")
-    return {"binding": door.bound, "url": page["url"], "title": page["title"], "settled": True}
+    return {"binding": api.bound, "url": page["url"], "title": page["title"], "settled": True}
 
 
 def run(args):
@@ -297,17 +297,17 @@ def run(args):
         require(baseline["trusted_attestor_count"] > 0, "no existing trusted local attestor; positive generic import blocked")
     proof = {"flows": flows, "source": receipt["cohort_source"], "layer": receipt["layer"], "results": {}}
     if any(flow != "browser" for flow in flows):
-        door = store(vm, out)
+        api = store(vm, out)
         mapped(vm, "store", installed, args.uid, out)
         if "flatpak" in flows:
-            proof["results"]["flatpak"] = flatpak_flow(door, baseline)
+            proof["results"]["flatpak"] = flatpak_flow(api, baseline)
         for route in ("catalogue", "local"):
             if route in flows:
-                proof["results"][route] = package_flow(door, specs[route], route == "local")
+                proof["results"][route] = package_flow(api, specs[route], route == "local")
     if "browser" in flows:
-        door, tab = fresh_browser(vm, out)
+        api, tab = fresh_browser(vm, out)
         mapped(vm, "browser", installed, args.uid, out)
-        proof["results"]["browser"] = dict(browser_flow(door), tab=tab)
+        proof["results"]["browser"] = dict(browser_flow(api), tab=tab)
     require(first_json(vm.run("--json", "slot", "show"))["slot"] == shown["slot"], "cohort changed during acceptance")
     (out / "proof.json").write_text(json.dumps(proof, indent=2))
     print(json.dumps(proof))

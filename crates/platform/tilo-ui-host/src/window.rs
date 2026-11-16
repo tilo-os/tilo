@@ -716,7 +716,7 @@ impl AppWindow {
     }
 
     /// Bind the window's controls to the actions the app publishes (`published`): a control whose
-    /// event runs one of them runs it through the door, the one path anyone else running the action
+    /// event runs one of them runs it through the action API, the one path anyone else running the action
     /// takes, and is where an agent running it is seen. An app whose instance runs in the window's
     /// own process publishes its actions itself and binds them here; an app in a host sends them
     /// ([`ToUi::Actions`]).

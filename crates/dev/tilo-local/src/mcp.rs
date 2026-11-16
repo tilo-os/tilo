@@ -1,6 +1,6 @@
 //! An MCP agent at a headless session's MCP server, as `cargo headless --check` proves one works:
 //! `tilo-runtime-mcp --connect`, the program an agent runs, presenting the session's agent key, is
-//! admitted without anyone answering the door, lists what the workspace offers and runs an action.
+//! admitted without anyone answering it, lists what the workspace offers and runs an action.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::Path;
@@ -12,18 +12,18 @@ use std::time::{Duration, Instant};
 const ANSWER: Duration = Duration::from_secs(60);
 
 /// How long the session may take to have its person's root certify the key's grant after it first
-/// answers: the door refuses the key, saying so, until it has.
+/// answers: the server refuses the key, saying so, until it has.
 const CERTIFIED: Duration = Duration::from_secs(60);
 
 /// Where the agent connects from and with what.
 pub struct Agent<'a> {
     /// The session's programs.
     pub bin: &'a Path,
-    /// The session's runtime directory, its door under it.
+    /// The session's runtime directory, its socket under it.
     pub runtime: &'a Path,
     /// The file holding the session's agent key.
     pub key: &'a Path,
-    /// A process in the session's sandbox, whose namespaces the agent joins (the door serves only
+    /// A process in the session's sandbox, whose namespaces the agent joins (the server serves only
     /// programs in its own); `None` when the session runs in this process's.
     pub inside: Option<u32>,
 }
@@ -75,7 +75,7 @@ impl Connection {
 }
 
 impl Agent<'_> {
-    /// Start the agent's program, connected to the session's door.
+    /// Start the agent's program, connected to the session's socket.
     fn connect(&self) -> Result<Connection, String> {
         let program = self.bin.join("tilo-runtime-mcp");
         let mut command = match self.inside {
@@ -131,7 +131,7 @@ impl Agent<'_> {
         })
     }
 
-    /// Connect and be admitted: the door answers `initialize` once it let the agent in, and with
+    /// Connect and be admitted: the server answers `initialize` once it let the agent in, and with
     /// why not otherwise. A key whose grant the session has not certified yet is tried again.
     fn admitted(&self) -> Result<(Connection, String), String> {
         let began = Instant::now();

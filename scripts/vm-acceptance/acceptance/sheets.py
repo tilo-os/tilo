@@ -9,7 +9,7 @@ presses those controls by the names an assistive technology reads
 shell's: the choice and the Allow are the person's answer, and Deny is their
 refusal.
 
-The door's admission is one of these questions (`session.mcp-server`), as an
+The MCP server's admission is one of these questions (`session.mcp-server`), as an
 app's access question is (`portal.access`), so every check that needs the person
 to answer one answers it here.
 """

@@ -14,7 +14,7 @@ Rust:
 - a `"CONFIRM"` literal anywhere: no person is ever asked to type it;
 - a deletion (`.destructive()` in a production chain) that Undo cannot take
   back and that says neither why — `undo:irreversible` in the same chain, which
-  also makes every door ask before it runs — nor in `undoable-deletions.toml`,
+  also makes every action API ask before it runs — nor in `undoable-deletions.toml`,
   whose entries carry the reason Undo cannot bring back what the deletion
   destroys. An entry names the one site that builds the action (`file`) or the
   resource whose actions hold it (`resource`), so the same id elsewhere is not

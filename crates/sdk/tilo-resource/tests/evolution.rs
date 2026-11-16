@@ -232,7 +232,7 @@ tilo_test_env::scenario! {
         assert_eq!(contact.state().unwrap().outbox.len(), 1);
     }
 
-    phase a_replica_acts_through_the_door;
+    phase a_replica_acts_through_the_api;
     {
         let mut contact = Replica::<Contact>::new();
         // A destructive verb asks the person first.

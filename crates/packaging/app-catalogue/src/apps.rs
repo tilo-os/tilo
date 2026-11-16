@@ -1,7 +1,7 @@
 //! The installed half of the catalogue: the applications this device can launch, with the signed
 //! manifest each was admitted with. Every installed package ([`package_store::Catalog`]) read
 //! through the view of its manifest ([`tilo_app_package::view`]), and what each declared it may do
-//! on the action door under its own identity. The desktop session, the per-user runtime and
+//! on the action API under its own identity. The desktop session, the per-user runtime and
 //! app-host launch from this one answer.
 
 use std::path::PathBuf;
@@ -178,7 +178,7 @@ impl InstalledApp {
     }
 }
 
-/// What an application declared it may do on the action door under its own
+/// What an application declared it may do on the action API under its own
 /// identity. A ceiling, never a grant.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DeclaredActions {

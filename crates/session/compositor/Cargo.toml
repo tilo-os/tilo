@@ -68,7 +68,7 @@ tilo-wayland-ext = { path = "../wayland-ext" }
 # What a hosted surface is, and the shapes, key claims and outputs it is told of: the session's
 # own vocabulary, so a surface app is written once for every host.
 tilo-session-core = { path = "../core" }
-# The liveness door beside the control socket: whether the loop still turns,
+# The liveness socket beside the control socket: whether the loop still turns,
 # and where every thread is when it does not.
 tilo-liveness = { path = "../liveness" }
 # A surface's HDR signal and the tone-mapped SDR rendition the scene draws:

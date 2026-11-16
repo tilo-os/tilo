@@ -227,7 +227,7 @@ def admit_request(raw, candidate, hash_file, log, deadline):
 
 
 def install_native_scope(request, phase, actor, log, *, authenticated=None):
-    """Root-only temporary door in this owner's isolated source/target namespace.
+    """Root-only temporary path in this owner's isolated source/target namespace.
 
     Signed artifacts are replayed here, never replaced with a capability receipt.
     The receiving person/binding comes ONLY from native password authentication.

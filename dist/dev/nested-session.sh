@@ -39,7 +39,7 @@
 #                      it. For agents and tests beside a live desktop.
 #   --community SITE   the community site this session is in (a site's
 #                      address, as /etc/tilo/community.toml names one): it
-#                      joins the site's home workspace through the site's door
+#                      joins the site's home workspace through the site's entry
 #                      as a computer joins tilo.sh's Lounge. Without it
 #                      the session follows this machine's configuration.
 #   --model-provider SPEC  give the session's person a model provider, as

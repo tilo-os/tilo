@@ -78,7 +78,7 @@ impl ResourceApp for NotesApp {
 }
 
 tilo_test_env::scenario! {
-    fn a_destructive_verb_through_the_door_asks_only_for_what_undo_cannot_take_back;
+    fn a_destructive_verb_through_the_api_asks_only_for_what_undo_cannot_take_back;
 
     phase an_undoable_destructive_verb_applies_at_once_and_undo_takes_it_back;
     // An undoable destructive verb applies at once and offers Undo, with no
@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.state().notes.len(), 1);
     }
 
-    phase an_irreversible_destructive_verb_through_the_door_asks_first;
+    phase an_irreversible_destructive_verb_through_the_api_asks_first;
     // What Undo cannot take back is asked first through the API: the
     // person's press of a control for an irreversible destructive verb.
     {

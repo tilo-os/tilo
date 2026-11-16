@@ -5,7 +5,7 @@
 
 Prints the check ids defined in the changed check modules (and in the modules that
 import from them), `provenance` when only documentation or unit tests changed, or
-nothing when anything else changed (the runner, the VM door, the report): then the
+nothing when anything else changed (the runner, the VM socket, the report): then the
 whole suite runs. P01/P02 come with any selection (run.py adds them).
 
 Paths outside this directory select by what they feed (FEATURES): the input path, the

@@ -7,7 +7,7 @@ one-line description, and the steps that set the situation up, in the
 action, `bind` its answer for later steps; `wait_for_named`; `expect`), with
 dates written relative to the day of the run (`${TODAY+1}`, `${MON+2}`: this
 week's Wednesday). No pointer or keyboard steps: a
-situation is reached through the app's resources and actions, the door every
+situation is reached through the app's resources and actions, the action API every
 other caller uses. An app without a plan gets one situation, the window as it
 opens. An app that shows the machine it runs on (its journal, processes,
 drives, files) is built from one of its own scenarios instead: each of its

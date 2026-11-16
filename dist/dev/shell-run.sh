@@ -53,7 +53,7 @@
 #                     canvas. Development builds only.
 #
 # Drive it from another terminal with the commands it prints:
-#   target/debug/tilolang repl --door "$TILO_MCP_SERVER"
+#   target/debug/tilolang repl --api "$TILO_MCP_SERVER"
 #   TILO_TEST_CONTROL=... target/debug/tilo-control snapshot /tmp/shot.png
 #
 # The tilolang runtime the apps run on: this tree's thin-app build
@@ -402,7 +402,7 @@ if ((${#apps[@]})); then
     install_apps
 fi
 
-door=$runtime/agent.sock
+socket=$runtime/agent.sock
 control=$runtime/test-control.sock
 # The session's own private session bus (dist/dev/session-bus.sh), as a dev
 # image has one and `dist/dev/nested-session.sh` gives its sessions: a Rust app
@@ -488,7 +488,7 @@ start_session() {
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
         TILO_FS_BLOB_SOCKET="$media_socket" \
         TILO_COMMUNITY_CONFIG="$community_file" \
-        TILO_MCP_SERVER="$door" \
+        TILO_MCP_SERVER="$socket" \
         setsid "$session_bus" "$dbus_daemon" \
         "${host_client[@]}" "$bin/tilo-session" "${backend[@]}" --no-x11 \
         --system-bus none --test-control "$control" "$@" \
@@ -535,7 +535,7 @@ else
     say "starting the session headless at $size (log: $log)"
 fi
 start_session --shell screen --admit-repl "$bin/tilolang" "${apps[@]}"
-# The door is announced once the session's own doors are up, which can be after its control
+# The MCP server is announced once the session's own sockets are up, which can be after its control
 # socket: wait for it as for the socket, while the session lives.
 # A debug build serves it where `TILO_MCP_SERVER` names; an optimised one at the seat's own
 # path in this session's runtime directory, which it announces the same way.
@@ -545,7 +545,7 @@ until grep -q "^TILO_MCP_SERVER=$runtime/" "$log"; do
     ((tries--)) || { tail -40 "$log" >&2; die "the session serves no MCP server"; }
     sleep 0.1
 done
-door=$(sed -n "s|^TILO_MCP_SERVER=\($runtime/.*\)\$|\1|p" "$log" | tail -1)
+socket=$(sed -n "s|^TILO_MCP_SERVER=\($runtime/.*\)\$|\1|p" "$log" | tail -1)
 
 if [[ -n $model_record ]]; then
     env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
@@ -559,11 +559,11 @@ if [[ -n $model_record ]]; then
 fi
 
 cat <<EOF
-TILO_MCP_SERVER=$door
+TILO_MCP_SERVER=$socket
 TILO_TEST_CONTROL=$control
 XDG_RUNTIME_DIR=$runtime
 The session runs (pid $session_pid). From another terminal:
-  the REPL:      $bin/tilolang repl --door $door
+  the REPL:      $bin/tilolang repl --api $socket
   a screenshot:  TILO_TEST_CONTROL=$control $bin/tilo-control snapshot /tmp/shot.png
 Stop it with Ctrl+C (or SIGTERM to pid $$); everything it started goes with it.
 EOF

@@ -12105,7 +12105,7 @@ mod a11y_driver_tests {
     }
 
     #[test]
-    fn a_projected_control_action_runs_through_the_door() {
+    fn a_projected_control_action_runs_through_the_api() {
         let (mut d, activated) = driver();
         let resource = d
             .resources()

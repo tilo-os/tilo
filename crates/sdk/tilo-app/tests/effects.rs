@@ -368,9 +368,9 @@ fn effect<'a>(surface: &'a serde_json::Value, id: &str) -> Option<&'a serde_json
 }
 
 tilo_test_env::scenario! {
-    fn effects_are_published_and_answered_through_the_door;
+    fn effects_are_published_and_answered_through_the_api;
 
-    phase effects_are_published_and_answer_every_caller_through_the_door;
+    phase effects_are_published_and_answer_every_caller_through_the_api;
     {
         let mut app = TestApp::<MailApp>::new().unwrap();
 

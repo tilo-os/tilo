@@ -2638,7 +2638,7 @@ impl Splitter<'_> {
     /// name contains `target`: why that function stays in the start module.
     fn explain_main_path(&self, target: &str) {
         let roots = self.main_roots();
-        // Every root that reaches it: each is a door to close.
+        // Every root that reaches it: each is a way in to close.
         let mut stack: Vec<Node> = self
             .main_graph
             .iter()
@@ -2655,7 +2655,7 @@ impl Splitter<'_> {
                 }
             }
         }
-        let doors: Vec<String> = roots
+        let reached: Vec<String> = roots
             .iter()
             .filter(|root| seen.contains(root))
             .filter_map(|root| match root {
@@ -2664,7 +2664,11 @@ impl Splitter<'_> {
             })
             .sorted()
             .collect();
-        eprintln!("  reached from {} roots: {}", doors.len(), doors.join(" "));
+        eprintln!(
+            "  reached from {} roots: {}",
+            reached.len(),
+            reached.join(" ")
+        );
         let mut queue: VecDeque<Node> = roots.iter().copied().collect();
         let mut parents = HashMap::<Node, Option<Node>>::new();
         for root in &roots {

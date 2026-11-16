@@ -179,7 +179,7 @@ fn serve(link: &SessionLink, service: &mut RecordService) {
         service
             .invoke(&ask.resource, &ask.action, &arguments)
             .map(drop)
-            .map_err(|error| panic!("the note's door refused {ask:?}: {error:?}"))
+            .map_err(|error| panic!("the note's API refused {ask:?}: {error:?}"))
     });
 }
 
@@ -263,7 +263,7 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
             .unwrap(),
         tilolang_tilo::runtime::EditOutcome::Applied
     );
-    assert!(link.has_asks(), "the edit is asked of the note's door");
+    assert!(link.has_asks(), "the edit is asked of the note's API");
 
     // The edit went to the note's API, as the session's turn runs what the shell asked.
     serve(&link, &mut service);

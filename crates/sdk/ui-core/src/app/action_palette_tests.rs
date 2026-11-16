@@ -817,7 +817,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase host_commands_present_host_services_and_enter_the_palette_door;
+    phase host_commands_present_host_services_and_enter_the_palette_api;
     {
         use crate::host_chrome::model::{CommandGroup, HostCommand};
         use crate::platform::HostShortcut;
@@ -868,7 +868,7 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
+fn native_history_discovery_tracks_the_same_focused_local_undo_api() {
     use crate::undo::{LocalUndo, LocalUndoStatus, UndoRequest, UndoStatus};
     struct Native {
         history: std::rc::Rc<std::cell::RefCell<Option<LocalUndoStatus>>>,

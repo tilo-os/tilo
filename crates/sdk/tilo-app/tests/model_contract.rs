@@ -252,7 +252,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.read_document(|doc| list(doc, OUTBOX)).len(), 3);
     }
 
-    phase publish_is_the_only_door_for_views_and_document_actions;
+    phase publish_is_the_only_api_for_views_and_document_actions;
     {
         let published = tilo_resource::publish::<Job>("job", "Job", &Vec::new());
         let ids: Vec<_> = published

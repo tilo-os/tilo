@@ -48,7 +48,7 @@ app gets on a real system:
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
-  read       the door's `read` of tilolang Notes lists the workspace's records, and
+  read       the API's `read` of tilolang Notes lists the workspace's records, and
              the notebook's read lists its notes by the ids a read takes
   idle       each app untouched for 10 s, native Notes and the tilolang host that
              runs the apps' instances included: every thread of them sleeps
@@ -917,7 +917,7 @@ def app_action(session: Session, app: str, declared: str, kind: str | None = Non
     """The action `declared` (`new_task`, as the app's source writes it) that the window of `app`
     publishes, of the kind its effect has when `kind` names one (`View`, `Document`). The action is
     found by the name the app publishes it under — as a native app's verb, which an agent at the
-    door calls it by — never by the words its title reads in. Its application is `app` exactly:
+    api calls it by — never by the words its title reads in. Its application is `app` exactly:
     so.tilo.notes never matches so.tilo.lang.notes."""
     for action in session.actions(""):
         if (action.get("application") == app and action.get("operation") == declared
@@ -982,7 +982,7 @@ def own_read(session: Session, app: str) -> dict:
 
 
 def check_read(session: Session) -> dict:
-    """An agent or a script reads what a tilolang app holds through the door's `read`, as it
+    """An agent or a script reads what a tilolang app holds through the API's `read`, as it
     reads a native app's content: the workspace's records, then one of them by its id."""
     action = own_read(session, app_id("notes"))
     answer = value_of(invoke_found(session, action))

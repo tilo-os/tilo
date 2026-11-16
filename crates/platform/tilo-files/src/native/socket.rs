@@ -103,7 +103,7 @@ mod tests {
         phase a_socket_in_a_deep_directory_binds_and_answers;
         {
             let (_root, dir) = deep();
-            let path = dir.join("door.sock");
+            let path = dir.join("files.sock");
             assert!(path.as_os_str().len() > MAX_PATH);
             let listener = bind(&path).unwrap();
             assert!(path.exists(), "the socket is named where it was asked for");
@@ -118,7 +118,7 @@ mod tests {
         phase nothing_bound_in_a_deep_directory_is_not_found;
         {
             let (_root, dir) = deep();
-            let error = connect(&dir.join("door.sock")).unwrap_err();
+            let error = connect(&dir.join("files.sock")).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::NotFound);
         }
 

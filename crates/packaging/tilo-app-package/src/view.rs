@@ -400,7 +400,7 @@ mod tests {
             // and adds a top-level `package_id` naming the Store. The signature
             // covers only the canonical fields, the registry and the installer
             // see `com.evil.app`, and so must every reader of the installed
-            // manifest: the sandbox grants the Store's install door by id.
+            // manifest: the sandbox grants the Store's install API by id.
             let confused = format!(
                 "package_id = \"so.tilo.store\"\nversion = \"9.9.9\"\n{}",
                 source(

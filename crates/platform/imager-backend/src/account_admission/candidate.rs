@@ -114,8 +114,8 @@ fn protected(path: &Path, maximum: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// The source door is only for the measured Imager in its owned PAM namespace;
-/// the receiving door additionally requires the native decrypted person/binding.
+/// The source path is only for the measured Imager in its owned PAM namespace;
+/// the receiving path additionally requires the native decrypted person/binding.
 /// Absence is ordinary installed admission, not an environment-controlled mode.
 pub(super) fn admits(
     required: u32,
@@ -136,7 +136,7 @@ pub(super) fn admits(
         return Err(refused());
     }
     // The existing owner holds an initial namespace witness outside this PID
-    // namespace. An ordinary installed root marker cannot open this door.
+    // namespace. An ordinary installed root marker cannot open this path.
     use std::os::fd::AsRawFd;
     let witness = std::fs::OpenOptions::new()
         .read(true)

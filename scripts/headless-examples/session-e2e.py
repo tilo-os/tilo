@@ -26,14 +26,14 @@ unit tests and found only by starting a session by hand:
            outside the frame the person sees). Where the windows land depends on the order the
            four concurrent opens arrive in: on integration 70ba3301da0 this check failed in 3 of 6
            runs (windows at y = -484 and y = 788 on a 752 px high frame).
-  repl     through the session's door (`tilolang repl`), on a session whose person named the
+  repl     through the session's MCP server (`tilolang repl`), on a session whose person named the
            program as they started it (`--admit-repl`, as naming it on the sheet would): the REPL
            reaches the four apps, reads the record the notes app's window shows, writes a note
            there by the names the app declares (`notes.new_note(notes.notebook)`), and changes
            the shell, whose published state says so.
-           Catches the door handing a task an installed tilolang app's surface instead of its
+           Catches the MCP server handing a task an installed tilolang app's surface instead of its
            package: its actions were named by their stored ids and its root by nothing.
-           Catches the door not forwarding record changes (fixed in 71382cec3d7): before the
+           Catches the MCP server not forwarding record changes (fixed in 71382cec3d7): before the
            fix every change answered "this desktop applies no task's changes at a record's
            origin". No build has the deadlock fix without this one, so on 08636f201d9 the run
            stops at `open` first. Also catches a tilolang app's first change (its schema
@@ -388,7 +388,7 @@ def windows_by_app(session: Session) -> dict[str, dict]:
 
 def said(session: Session, wait_ms: int = 0) -> list[dict]:
     """Chat's messages as the workspace's record holds them, each by the words it says and the
-    conversation it is in: what a person reads in Chat, read through the record door as they
+    conversation it is in: what a person reads in Chat, read through the record API as they
     read it. Held until the record moves or `wait_ms` passed when one is given."""
     answer = session.control_json("raw", json.dumps({
         "op": "record_read", "app": "so.tilo.chat", "records": [CHAT_MESSAGES],
@@ -410,10 +410,10 @@ def said(session: Session, wait_ms: int = 0) -> list[dict]:
 
 
 class Repl:
-    """`tilolang repl` on the session's door, one entry at a time. Off a terminal the REPL
+    """`tilolang repl` on the session's MCP server, one entry at a time. Off a terminal the REPL
     echoes each line it reads after its prompt (`tl> entry`), so an entry's answer is what it
     prints between that echo and the echo of the empty line sent after it. Its banner comes after
-    the line saying what the door waits on (`asking to act as you: ...`)."""
+    the line saying what the server waits on (`asking to act as you: ...`)."""
 
     PROMPT = "tl> "
 
@@ -426,7 +426,7 @@ class Repl:
             env={**os.environ, "XDG_STATE_HOME": str(out / "repl-state")})
         self.transcript = ""
         self.pending = ""
-        # The banner: the door it is on and the apps it reaches.
+        # The banner: the server it is on and the apps it reaches.
         self.banner = self._read_until(lambda text: text if "apps: " in text else None)
 
     def _read_until(self, done: Callable[[str], Any]) -> Any:
@@ -593,7 +593,7 @@ def check_canvas(session: Session) -> dict:
 
 
 def check_repl(session: Session, out: Path) -> dict:
-    """The door's REPL reaches the four apps, reads one's record, and changes the shell the
+    """The MCP server's REPL reaches the four apps, reads one's record, and changes the shell the
     session publishes, which the shell draws.
 
     The record it reads is the notes app's notebook, and the actions it lists are the app's
@@ -603,10 +603,10 @@ def check_repl(session: Session, out: Path) -> dict:
     publishes."""
     repl = Repl(session, out)
     try:
-        # The REPL says what the door waits on before it is in: its admission is the person's,
+        # The REPL says what the server waits on before it is in: its admission is the person's,
         # made on the sheet or ahead of time with `--admit-repl`, never answered by the REPL.
         if "asking to act as you" not in repl.banner:
-            raise Failed(f"the REPL gave itself the door without asking: {repl.banner.strip()!r}")
+            raise Failed(f"the REPL gave itself access without asking: {repl.banner.strip()!r}")
         apps = re.search(r"apps: ([^(]*)", repl.banner)
         if not apps or not all(n in apps.group(1) for n in TL_APPS):
             raise Failed(f"the REPL does not reach the four apps: {repl.banner.strip()}")

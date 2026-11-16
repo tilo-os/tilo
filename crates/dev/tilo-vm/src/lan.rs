@@ -3,7 +3,7 @@
 //! Each VM's own NIC (passt on libvirt) reaches out from the host but not the host's other VMs,
 //! so a person's boxes on one host could find each other only through an internet relay: a branch
 //! could not be taken in by its source without one, nor two boxes sync or reach each other's agent
-//! door. So every libvirt VM gets a second NIC on a network of its host's own: QEMU's socket
+//! API. So every libvirt VM gets a second NIC on a network of its host's own: QEMU's socket
 //! multicast, kept on the host's loopback (`localaddr=127.0.0.1`), so its frames never leave the
 //! host, it needs no root, no bridge and no route, and every VM of the same user on the host is on
 //! it. libvirt's own `<interface type='mcast'>` has no local address and would send the frames

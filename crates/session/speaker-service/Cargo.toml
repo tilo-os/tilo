@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Speaker groups and remote audio across one person's devices: the groups, their timed playback routes, acoustic calibration, and the Settings door to them."
+description = "Speaker groups and remote audio across one person's devices: the groups, their timed playback routes, acoustic calibration, and the Settings api to them."
 
 [lib]
 name = "tilo_speaker_service"

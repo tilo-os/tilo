@@ -31,7 +31,7 @@ Options:
   --release   build the bundle as it ships (optimised, wasm-opt): minutes
               longer; the default is the development profile (build.sh
               --profile quick), rebuilt in place
-  --fresh     start the stack on new state (a new Lounge, a new door)
+  --fresh     start the stack on new state (a new Lounge, a new entry)
   --bundle DIR  serve this built desktop bundle (build.sh --bundle desktop's
               output, such as CI's web-desktop-bundle) instead of building one
   --check     smoke test on a stack of its own (its own state and ports):

@@ -791,7 +791,7 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn the_door_records_gesture_time_history_and_minted_ids;
+    fn the_api_records_gesture_time_history_and_minted_ids;
 
     phase consecutive_edits_of_one_path_are_one_gesture;
     {
@@ -822,7 +822,7 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase the_door_stamps_the_time_not_the_caller;
+    phase the_api_stamps_the_time_not_the_caller;
     {
         let mut library = Replica::<Library>::new();
         library.set_now_ms(42);
