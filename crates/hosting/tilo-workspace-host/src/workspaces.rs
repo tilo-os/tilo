@@ -760,9 +760,8 @@ impl GovernedWorkspace {
             .unwrap_or_default()
     }
 
-    /// The people the workspace's governance admits, without the person whose
-    /// device governs it, which holds it by being its owner rather than by an
-    /// admission receipt: [`Workspaces::people`] is who the workspace has.
+    /// The people the workspace's governance has, its owner among them, as
+    /// [`Workspaces::people`] shows them.
     fn summary(&self) -> WorkspaceSummary {
         let list = self
             .peer()
@@ -1547,7 +1546,7 @@ impl Workspaces {
     ) -> Result<WorkspaceSummary, String> {
         let name = valid_name(name)?;
         if governed.peer().governance().workspace_name().as_deref() == Some(name) {
-            return Ok(governed.summary());
+            return Ok(self.people(governed));
         }
         let now = tilo_clock::wall();
         let key = &self.inner.host.key;
@@ -1557,7 +1556,7 @@ impl Workspaces {
             .author_workspace_name(name, key, now)?;
         let collaboration = governed.collaboration().clone();
         governed.commit(candidate, key, now, |_, _| Ok(collaboration))?;
-        Ok(governed.summary())
+        Ok(self.people(governed))
     }
 
     /// Every workspace this relay governs.
@@ -1780,32 +1779,21 @@ impl Workspaces {
         Ok(self.people(&governed))
     }
 
-    /// `governed`'s people as everything that lists or counts them reads them:
-    /// the ones its governance admits, and its structural owner — the person
-    /// whose device runs the workspace, which holds it by being its owner
-    /// rather than by an admission receipt that would list it.
-    ///
-    /// A host that keeps workspaces of people's own (a site such as tilo.sh)
-    /// takes nobody that way: it runs for everyone and is no person itself,
-    /// so its root is none of its workspaces' people. A workspace there is
-    /// its people's, let in on arrival or by an invitation, and an owner the
-    /// operator declared is one of them.
+    /// `governed`'s people as every list showing them has them: the ones its
+    /// governance has, its owner among them — without this host's own person
+    /// where it runs workspaces of people's own. There the host runs for
+    /// everyone and is no person of theirs, though its device founds each
+    /// workspace and so is the owner its policy names.
     fn people(&self, governed: &GovernedWorkspace) -> WorkspaceSummary {
         let mut summary = governed.summary();
-        let runs_for_people = self.own().is_some();
-        let owner = governed.peer().owner();
-        if !runs_for_people
-            && !summary
+        if self.own().is_some() {
+            let host = hex::encode(self.inner.host.cert.user_public_key);
+            summary
                 .members
-                .iter()
-                .any(|member| member.root() == Some(owner))
-        {
-            let mut owner_row = tilo_peer_state::join::Member::of_person(
-                &tilo_peer_state::join::Person::new(hex::encode(owner), ""),
-                Some(tilo_peer_state::join::Role::Editor),
-            );
-            owner_row.administrator = true;
-            summary.members.insert(0, owner_row);
+                .retain(|member| member.id.person_id() != Some(host.as_str()));
+            summary
+                .devices
+                .retain(|id, _| id.person_id() != Some(host.as_str()));
         }
         summary
     }
@@ -1823,8 +1811,9 @@ impl Workspaces {
         Ok(self.workspace(workspace).await?.lock().await.listing())
     }
 
-    /// Every person governance records in `workspace` other than its owner, by
-    /// person (hex root), with the workspace's governance generation.
+    /// Every person governance records in `workspace` other than this host's
+    /// own person, by person (hex root), with the workspace's governance
+    /// generation.
     ///
     /// # Errors
     ///
@@ -1840,7 +1829,7 @@ impl Workspaces {
             .peer()
             .permissions(self.inner.host.cert.device_public_key, now)?
             .policy;
-        let owner = self.inner.host.cert.user_public_key;
+        let host = self.inner.host.cert.user_public_key;
         let marks = governed
             .peer()
             .governance()
@@ -1848,7 +1837,7 @@ impl Workspaces {
             .unwrap_or_default()
             .members
             .into_iter()
-            .filter(|member| member.root() != Some(owner))
+            .filter(|member| member.root() != Some(host))
             .map(|member| {
                 let person = member.id.person_id().unwrap_or_default().to_owned();
                 let role = match member.role {

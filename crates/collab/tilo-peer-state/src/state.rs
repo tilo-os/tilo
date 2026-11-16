@@ -517,6 +517,9 @@ pub(crate) mod invitation_ledger;
 #[cfg(test)]
 #[path = "state/joined_tests.rs"]
 mod joined_tests;
+#[cfg(test)]
+#[path = "state/member_list_tests.rs"]
+mod member_list_tests;
 mod rebase;
 #[cfg(test)]
 #[path = "state/roster_beside_governance_tests.rs"]

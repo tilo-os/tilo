@@ -106,14 +106,9 @@ impl Presented {
     }
 }
 
-/// `workspace` as a page sees it, with `summary` its people as
-/// [`Workspaces::people`] names them, `certificates` the devices its
-/// governance records and `owner` the person whose workspace it is.
-fn page_workspace(
-    summary: WorkspaceSummary,
-    certificates: &[DeviceCert],
-    owner: [u8; 32],
-) -> Workspace {
+/// `workspace` as a page sees it, with `summary` its people as its
+/// governance keeps them and `certificates` the devices it records.
+fn page_workspace(summary: WorkspaceSummary, certificates: &[DeviceCert]) -> Workspace {
     let members: Vec<_> = summary
         .members
         .into_iter()
@@ -125,9 +120,6 @@ fn page_workspace(
                     .find(|cert| Some(cert.user_public_key) == root)
             {
                 member.name.clone_from(&cert.device_label);
-            }
-            if root == Some(owner) {
-                member.role = Some(Role::Owner);
             }
             member
         })
@@ -717,9 +709,8 @@ impl Workspaces {
             }
             let summary = self.people(&workspace);
             let certificates = workspace.peer().certificates();
-            let owner = workspace.peer().owner();
             drop(workspace);
-            listed.push(page_workspace(summary, &certificates, owner));
+            listed.push(page_workspace(summary, &certificates));
         }
         Ok(WorkspacesReply::Workspaces(listed))
     }
@@ -778,12 +769,10 @@ impl Workspaces {
         let workspace = workspace.lock().await;
         let summary = self.people(&workspace);
         let certificates = workspace.peer().certificates();
-        let owner = workspace.peer().owner();
         drop(workspace);
         Ok(WorkspacesReply::Workspace(page_workspace(
             summary,
             &certificates,
-            owner,
         )))
     }
 
