@@ -1240,6 +1240,7 @@ doc = false
 "tilo-locale" = { path = "../../../crates/platform/tilo-locale", default-features = false, features = [] }
 "tilo-location" = { path = "../../../crates/platform/tilo-location", default-features = false, features = [] }
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }
+"tilo-mail-session" = { path = "../../../crates/platform/mail-session", default-features = false, features = [] }
 "tilo-mcp" = { path = "../../../crates/runtime/tilo-mcp", default-features = false, features = ["test-support"] }
 "tilo-media" = { path = "../../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
 "tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = ["service-client", "wire"] }
@@ -1333,6 +1334,7 @@ doc = false
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
 "tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
 "tilo-theme-bauhaus" = { path = "../../../crates/sdk/themes/bauhaus", default-features = false, features = [] }
+"tilo-theme-painter-wasm" = { path = "../../../crates/sdk/theme-painter-wasm", default-features = false, features = [] }
 "tilo-theme-sdk" = { path = "../../../crates/sdk/theme-sdk", default-features = false, features = [] }
 "tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = [] }
 "tilo-tray-host" = { path = "../../../crates/session/tray-host", default-features = false, features = [] }
