@@ -104,7 +104,7 @@ export const SCREENS = {
   'invitation-only': ['{ $workspace } is invite-only for now', 'This workspace is invite-only for now',
     'Ask someone in it for an invite link, then open it here.'],
   gone: ['{ $workspace } no longer exists', 'This workspace no longer exists',
-    'Its host was set up again since this browser last opened it.'],
+    'It was reset since this browser last opened it.'],
   deleted: ['{ $workspace } was deleted', 'This workspace was deleted',
     'Its owner deleted it, so it can’t be opened anymore.'],
   'no-access': ['{ $workspace } didn’t let this browser in', 'This workspace didn’t let this browser in',

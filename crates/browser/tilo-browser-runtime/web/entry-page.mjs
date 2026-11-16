@@ -380,7 +380,8 @@ function pairingAsk(request, decide) {
     try {
       result = await decide(approved);
     } catch (failure) {
-      error.textContent = `That did not reach the host: ${failure?.message ?? failure}. Try again.`;
+      console.warn('pairing: answering the device', failure);
+      error.textContent = 'That didn’t go through. Try again.';
       error.hidden = false;
       approve.disabled = decline.disabled = false;
       return;
@@ -1274,7 +1275,10 @@ export async function startEntryPage({mode}) {
         onPairingCode: async pairingCode => {
           const response = await fetch(admit, {method: 'POST', headers: {'content-type': 'application/json'},
             body: JSON.stringify({ticket, pairingCode})});
-          if (!response.ok) status.textContent = (await response.json().catch(() => ({}))).error ?? 'The workspace did not let this device in';
+          if (!response.ok) {
+            console.warn('guest link:', (await response.json().catch(() => ({}))).error ?? response.status);
+            status.textContent = 'This guest link didn’t let this browser in. Ask whoever sent it for a new one.';
+          }
         }});
     },
     connectMember: async ({origin, workspace, account}) => {
