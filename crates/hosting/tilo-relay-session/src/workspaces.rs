@@ -147,7 +147,8 @@ pub const CREATE_OWN_WORKSPACE: &str = "workspace.create-own";
 /// `branch` is its identity (a UUID; a new one when omitted): asked again
 /// under the same one, the host answers the branch it made and copies
 /// nothing twice. All or nothing: a branch that could not take everything is
-/// deleted again and the refusal names what did not come. Only a person's
+/// deleted again and the refusal names what did not come
+/// ([`branch_not_made`]). Only a person's
 /// device, or an agent's grant reaching all their workspaces, branches; a
 /// workspace that is not theirs is refused with [`NOT_YOUR_OWN`]. Answers a
 /// [`CreatedWorkspace`] with the invitation the person's devices redeem to
@@ -167,6 +168,28 @@ pub const DELETE_WORKSPACE: &str = "workspace.delete";
 /// What the host refuses a person asking for, or deleting, a workspace that
 /// is not one of their own with.
 pub const NOT_YOUR_OWN: &str = "that workspace is not one of your own";
+/// What the host refuses a branch ([`BRANCH_OWN_WORKSPACE`]) that could not
+/// take everything with: it was not made, and the refusal names the part of the
+/// source that did not come, then why ([`branch_not_made`]).
+pub const BRANCH_NOT_MADE: &str = "the branch was not made:";
+/// What follows the part of the source a branch could not take.
+const DID_NOT_COME: &str = " did not come";
+
+/// The refusal of a branch that could not take `part` of its source (`the files
+/// its records name`, `the record plan of so.tilo.notes`) because `why`.
+#[must_use]
+pub fn branch_not_made(part: &str, why: &str) -> String {
+    format!("{BRANCH_NOT_MADE} {part}{DID_NOT_COME} ({why})")
+}
+
+/// The part of its source a branch could not take, when `reason` is the
+/// refusal of one ([`branch_not_made`]); `None` for any other refusal.
+#[must_use]
+pub fn branch_not_made_part(reason: &str) -> Option<&str> {
+    let (_, rest) = reason.split_once(BRANCH_NOT_MADE)?;
+    let (part, _) = rest.trim_start().split_once(DID_NOT_COME)?;
+    Some(part).filter(|part| !part.is_empty())
+}
 /// Admit the calling device to `workspace` as one of its owner's. Answers
 /// an [`EnteredWorkspace`]: the invitation the device redeems to hold the workspace,
 /// restricted to its person and redeemable `expires_in_seconds` (600 when

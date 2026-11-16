@@ -557,10 +557,22 @@ async fn only_its_owners_key_branches_and_a_failed_branch_leaves_nothing() {
             &[],
         )
         .await;
-    assert!(status >= 400, "{failed}");
+    // The caller tells this refusal from every other by its code, and reads
+    // which part of the template did not come; why stays in the host's log.
+    assert_eq!(
+        (status, &failed["error"]["code"]),
+        (422, &json!("branch_incomplete")),
+        "{failed}"
+    );
     let said = failed["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        said.contains("the files its records name") && said.contains("the disk refused it"),
+        said.contains("wasn't made") && said.contains("the files its records name"),
+        "{failed}"
+    );
+    assert!(
+        failed["error"]["next_steps"]
+            .as_array()
+            .is_some_and(|steps| !steps.is_empty()),
         "{failed}"
     );
     assert!(named(&backend, "Onboarding: Umbrella").await.is_empty());

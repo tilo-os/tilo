@@ -139,6 +139,26 @@ pub(crate) fn refused(error: &RelayError) -> Outcome {
     }
 }
 
+/// The code of a branch that could not take everything of its source: it was
+/// not made, and the message names the part that did not come.
+pub(crate) const BRANCH_INCOMPLETE: &str = "branch_incomplete";
+
+/// The answer to a branch the host could not make whole: none was made, and
+/// the caller reads which part of the source did not come; why stays in the
+/// log, as for every refusal. `None` for any other refusal.
+fn not_branched(error: &RelayError) -> Option<Outcome> {
+    let RelayError::Refused(reason) = error else {
+        return None;
+    };
+    let part = tilo_relay_session::workspaces::branch_not_made_part(reason)?;
+    tracing::info!(reason, "the relay made no branch");
+    Some(failed(
+        BRANCH_INCOMPLETE,
+        format!("The branch wasn't made: {part} didn't come along. Nothing of it was kept."),
+        "try the same call again in a little while; if the same part fails again, tell the person",
+    ))
+}
+
 /// A tool's result: the typed value as JSON text when the caller asked for
 /// typed answers (`structured`), else the agents' `text`.
 fn tool_result(structured: bool, text: &str, typed: &Value, is_error: bool) -> Value {
@@ -717,7 +737,7 @@ impl Server {
         };
         match self.relay.branch(key, source, name, &labels, id).await {
             Ok(branch) => Outcome::Ok(json!({"workspace": branch})),
-            Err(error) => refused(&error),
+            Err(error) => not_branched(&error).unwrap_or_else(|| refused(&error)),
         }
     }
 

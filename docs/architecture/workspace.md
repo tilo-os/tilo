@@ -705,7 +705,7 @@ What stays behind is the same rule as on a device
 only member the person, as its owner. The labels are the branch's own, given
 with it; the source's stay with the source. The call answers once the branch
 holds everything; if any part does not come, the branch is deleted again and
-the call fails naming that part, and it is listed among the person's
+the call fails naming that part (`branch_incomplete`; why stays in the host's log), and it is listed among the person's
 workspaces only once it is whole. `branch` is the new workspace's id: asked
 again under the same one, the host answers the branch it made and copies
 nothing twice (the API passes the id its `Idempotency-Key` names). Whoever keeps

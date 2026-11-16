@@ -92,6 +92,30 @@ mod copy {
     /// A record by its app and id.
     type Route = (String, String);
 
+    /// What a branch could not take: the part of its source, in words the
+    /// person reads, and why, which the host's log keeps.
+    pub(in crate::workspaces) struct NotMade {
+        pub(in crate::workspaces) part: String,
+        pub(in crate::workspaces) why: String,
+    }
+
+    impl NotMade {
+        fn of(part: impl Into<String>) -> impl FnOnce(String) -> Self {
+            let part = part.into();
+            move |why| Self { part, why }
+        }
+
+        /// The record `record` of `app`.
+        fn record(app: &str, record: &str) -> impl FnOnce(String) -> Self {
+            Self::of(format!("the record {record} of {app}"))
+        }
+
+        /// The refusal the host answers with.
+        pub(in crate::workspaces) fn refusal(&self) -> String {
+            tilo_relay_session::workspaces::branch_not_made(&self.part, &self.why)
+        }
+    }
+
     impl Workspaces {
         /// Make `branch` (a UUID), a branch of `source` named `name`, the person
         /// `person`'s own: every record of `source` but what stays behind, forked
@@ -109,12 +133,12 @@ mod copy {
             branch: &str,
             name: &str,
             person: [u8; 32],
-        ) -> Result<WorkspaceSummary, String> {
+        ) -> Result<WorkspaceSummary, NotMade> {
             let forked = self.forked(source, branch).await?;
             let summary = self
                 .create_workspace(name, Some(branch))
                 .await
-                .map_err(|why| format!("the branch: {why}"))?;
+                .map_err(NotMade::of("the new workspace"))?;
             match self.fill(source, branch, forked, person).await {
                 Ok(()) => {
                     tracing::info!(%source, %branch, "a workspace was branched");
@@ -126,7 +150,7 @@ mod copy {
                     Ok(summary)
                 }
                 Err(why) => {
-                    tracing::warn!(%source, %branch, %why, "a branch did not take everything; it is deleted again");
+                    tracing::warn!(%source, %branch, part = %why.part, why = %why.why, "a branch did not take everything; it is deleted again");
                     if let Err(error) = self.delete(branch).await {
                         tracing::error!(%branch, %error, "a branch that did not take everything stays");
                     }
@@ -141,11 +165,10 @@ mod copy {
             &self,
             source: &str,
             branch: &str,
-        ) -> Result<Vec<(Route, Vec<u8>)>, String> {
-            let peer = self
-                .state(source)
-                .await
-                .ok_or("the workspace is not governed here")?;
+        ) -> Result<Vec<(Route, Vec<u8>)>, NotMade> {
+            let peer = self.state(source).await.ok_or_else(|| {
+                NotMade::of("the workspace")("it is not governed here".to_owned())
+            })?;
             let comes: BTreeSet<Route> = peer
                 .plaintext_routes()
                 .into_iter()
@@ -156,9 +179,11 @@ mod copy {
             let read = self
                 .whole_records(source, Some(&comes))
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| NotMade::of("its records")(error.to_string()))?;
             if let Some(((app, record), why)) = read.unread.first() {
-                return Err(format!("{record} of {app} does not read whole here: {why}"));
+                return Err(NotMade::record(app, record)(format!(
+                    "it does not read whole here: {why}"
+                )));
             }
             let branch = branch.to_owned();
             // Forking a record's whole history is work for a thread that may block.
@@ -167,15 +192,15 @@ mod copy {
                     .into_iter()
                     .map(|((app, record), bytes)| {
                         let source = AutoCommit::load(&bytes)
-                            .map_err(|error| format!("{record} of {app}: {error}"))?;
+                            .map_err(|error| NotMade::record(&app, &record)(error.to_string()))?;
                         let mut forked = ui::record::transfer::branch(&source, &branch)
-                            .map_err(|error| format!("{record} of {app}: {error}"))?;
+                            .map_err(|error| NotMade::record(&app, &record)(error.to_string()))?;
                         Ok(((app, record), forked.save()))
                     })
-                    .collect::<Result<Vec<_>, String>>()
+                    .collect::<Result<Vec<_>, NotMade>>()
             })
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|error| NotMade::of("its records")(error.to_string()))?
         }
 
         /// Found each of `forked` in `branch`, copy the content they name from
@@ -186,27 +211,32 @@ mod copy {
             branch: &str,
             forked: Vec<(Route, Vec<u8>)>,
             person: [u8; 32],
-        ) -> Result<(), String> {
+        ) -> Result<(), NotMade> {
             for ((app, record), document) in &forked {
                 self.found_branched(branch, (app, record), document)
                     .await
-                    .map_err(|error| format!("{record} of {app}: {error}"))?;
+                    .map_err(|error| NotMade::record(app, record)(error.to_string()))?;
             }
             let content = self.inner.branch_content.read_recover().clone();
             if let Some(content) = content {
                 let (source, branch) = (source.to_owned(), branch.to_owned());
-                tokio::task::spawn_blocking(move || content.copy(&source, &branch, &forked))
+                let files = NotMade::of("the files its records name");
+                match tokio::task::spawn_blocking(move || content.copy(&source, &branch, &forked))
                     .await
-                    .map_err(|error| error.to_string())?
-                    .map_err(|why| format!("the files its records name: {why}"))?;
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(why)) => return Err(files(why)),
+                    Err(error) => return Err(files(error.to_string())),
+                }
             }
-            let own = self
-                .own()
-                .ok_or("this host keeps no workspaces of people's own")?;
-            own.record(&person, branch)?;
+            let ownership = || NotMade::of("its ownership");
+            let own = self.own().ok_or_else(|| {
+                ownership()("this host keeps no workspaces of people's own".to_owned())
+            })?;
+            own.record(&person, branch).map_err(ownership())?;
             self.administer_own(branch, person, tilo_clock::unix_now_ns())
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|error| ownership()(error.to_string()))
         }
 
         /// Found `record` of `app` in `branch` as `document`, the source's

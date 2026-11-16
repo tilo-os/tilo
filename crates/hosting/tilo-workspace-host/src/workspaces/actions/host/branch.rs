@@ -118,7 +118,7 @@ impl Workspaces {
     ) -> Result<crate::workspaces::WorkspaceSummary, ActionHostError> {
         self.branch_own(source, branch, name, person)
             .await
-            .map_err(|why| refused(&why))
+            .map_err(|not_made| refused(&not_made.refusal()))
     }
 
     /// A host built without the apps' records reads no record whole to fork.

@@ -52,7 +52,7 @@ when there are any. The HTTP status follows the code:
 | 403 | `not_permitted`, `beyond_scope` |
 | 404 | `not_found`, `unknown_action`, `unknown_resource` |
 | 409 | `idempotency_conflict`, `surface_changed` |
-| 422 | `failed`, `refused`, `action_confirmation_required` and every other code an app gives |
+| 422 | `failed`, `refused`, `branch_incomplete`, `action_confirmation_required` and every other code an app gives |
 | 429 | `rate_limited` |
 | 503 | `unavailable` |
 
@@ -82,7 +82,7 @@ same id is one run, one undo step per app (`POST …/runs/{run}/undo` takes it b
 | `GET /v1/account` | the person's plan and per workspace what it keeps and the VM time it ran |
 | `GET /v1/workspaces?label[name]=value` | `{"workspaces": [{"id", "name", "host", "role", "labels"}]}`: every workspace the key reaches, wherever it is hosted; with `label[…]`, those labelled with every one given |
 | `POST /v1/workspaces` `{name, labels?}` | `201` the workspace made: `{"id", "name", "host", "role": "owner", "labels"}`; the same `Idempotency-Key` answers the one it made |
-| `POST /v1/workspaces/{workspace}/branches` `{name, labels?}` | `201` a branch of a workspace of the person's own, as a workspace made: a new one of theirs holding every record of it with its history and the files they name, without its conversations, people's drafts and places, or anyone but the person (MCP: `account/workspaces#branch {workspace, name, labels?, id?}`). Answered once it holds everything; one that could not take a part is deleted again and the call names the part. The same `Idempotency-Key` answers the branch it made. A key for one workspace makes none |
+| `POST /v1/workspaces/{workspace}/branches` `{name, labels?}` | `201` a branch of a workspace of the person's own, as a workspace made: a new one of theirs holding every record of it with its history and the files they name, without its conversations, people's drafts and places, or anyone but the person (MCP: `account/workspaces#branch {workspace, name, labels?, id?}`). Answered once it holds everything; one that could not take a part is deleted again and the call answers `422 branch_incomplete` naming the part. The same `Idempotency-Key` answers the branch it made. A key for one workspace makes none |
 | `GET /v1/workspaces/{workspace}/export` | `{"workspace", "exported_at_ms", "resources": [...], "unread": [...]}`: every resource of every app, read whole and streamed as it reads |
 | `DELETE /v1/workspaces/{workspace}` | `{"deleted": "…", "revoked_keys": [...]}`: final, with everything in it and every key minted for it |
 | `GET /v1/keys` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}` |

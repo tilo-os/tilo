@@ -198,3 +198,22 @@ fn an_actions_invitation_decodes_to_what_was_issued() {
     };
     assert!(short.decode().is_err());
 }
+
+#[test]
+fn a_branch_not_made_names_the_part_that_did_not_come() {
+    use super::{branch_not_made, branch_not_made_part};
+    let refusal = branch_not_made(
+        "the record uuid:plan of so.tilo.notes",
+        "the disk refused it",
+    );
+    assert_eq!(
+        branch_not_made_part(&refusal),
+        Some("the record uuid:plan of so.tilo.notes")
+    );
+    // As a device hears it, after what the host said before it.
+    assert_eq!(
+        branch_not_made_part(&format!("the host refused: {refusal}")),
+        Some("the record uuid:plan of so.tilo.notes")
+    );
+    assert_eq!(branch_not_made_part(super::NOT_YOUR_OWN), None);
+}
